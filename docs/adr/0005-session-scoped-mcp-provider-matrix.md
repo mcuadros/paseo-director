@@ -5,6 +5,7 @@
 - **Beads Task:** `dir-m0.3`
 - **Plan gate:** M0 per-session MCP provider matrix
 - **Decision owner:** `dir-m0.3` Task owner
+- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform
 
 ## Context
 
@@ -58,7 +59,7 @@ model, or permission mode.
 - State the exact exclusion point and diagnostic for every failed row.
 - Preserve an empty fallback chain by default and distinguish retry from
   fallback.
-- Preserve ADR-0008's authority boundary and make no Windows claim.
+- Preserve ADR-0008's authority boundary.
 
 ## Evidence
 
@@ -200,8 +201,8 @@ support is excluded with the exact diagnostic above. No implicit fallback is
 permitted.
 
 This decision proves only the provider/MCP plan gate. It does not authorize M1,
-enable built-in Paseo MCP, resolve the ADR-0008 authority stop condition, prove
-Windows behavior, or approve a production credential topology.
+enable built-in Paseo MCP, resolve the ADR-0008 authority stop condition, or
+approve a production credential topology.
 
 ## Consequences
 

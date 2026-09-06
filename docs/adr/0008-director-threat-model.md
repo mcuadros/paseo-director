@@ -5,7 +5,7 @@
 - **Beads Task:** `dir-m0.8`
 - **Plan gate:** M0 security and isolation
 - **Decision owner:** M0 evidence owner; any plan or trust-scope change requires the human project owner
-- **Amended by:** [ADR-0010](0010-top-level-task-agent-parentage.md), which distinguishes top-level Task/Reviewer creation from Task-Agent-created helpers without weakening this ADR's containment requirements
+- **Amended by:** [ADR-0010](0010-top-level-task-agent-parentage.md), which distinguishes top-level Task/Reviewer creation from Task-Agent-created helpers without weakening this ADR's containment requirements; [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform
 
 ## Context
 
@@ -40,7 +40,7 @@ Specifically, can it enforce engine-only Director lifecycle effects, the
 scoped helper-creation exception in ADR-0010, fixed Project/Task/Run/role MCP
 scopes, canonical repository/path ownership, argv-only command execution,
 host-owned credential isolation, redacted logs/support bundles, and
-fail-closed P0 stops on Linux and Windows?
+fail-closed P0 stops on Linux?
 
 ## Acceptance criteria
 
@@ -50,8 +50,8 @@ fail-closed P0 stops on Linux and Windows?
   support bundles, MCP scope, persistence, delivery, and recovery.
 - Map material abuse cases to preventive, detective, and recovery controls.
 - State residual risks and explicit P0 stop conditions.
-- Identify the smallest public Linux and Windows authority-separation options
-  and whether they remain compatible with the supported Paseo topology.
+- Identify the smallest public Linux authority-separation options and whether
+  they remain compatible with the supported Paseo topology.
 - Return exactly one Go, No-go, or Inconclusive outcome without weakening a
   plan invariant.
 
@@ -86,8 +86,8 @@ The evidence establishes:
 - Paseo worktree setup and teardown can execute repository-controlled shell
   scripts and can expose the source-checkout path.
 - A documented custom-provider command can point at a trusted wrapper or
-  container image, providing a possible public integration point. No
-  cross-platform containment behavior has yet been proven.
+  container image, providing a possible public integration point. No supported
+  Linux containment behavior has yet been proven.
 
 The evidence is sufficient to falsify the same-user authority hypothesis. It
 is intentionally insufficient to approve any isolation contingency.
@@ -225,10 +225,9 @@ Forbidden from the agent boundary:
   canonical remote identity, default base, and a human-approved root. Every
   Run records Paseo workspace ID, worktree path, branch/ref, base SHA, expected
   Candidate SHA, and ownership nonce.
-- Lexical prefix tests are insufficient. Resolve platform-native canonical
-  paths and identities; reject traversal, symlink/junction/reparse-point
-  escapes, case and Unicode aliases, device/UNC surprises, nested repositories,
-  and a Git common directory outside the approved repository.
+- Lexical prefix tests are insufficient. Resolve canonical paths and identities;
+  reject traversal, symlink or mount escapes, path replacement, nested
+  repositories, and a Git common directory outside the approved repository.
 - Re-resolve ownership immediately before mutation to limit time-of-check to
   time-of-use replacement. A same-identity hostile process still requires OS
   separation; path checking alone cannot defeat it.
@@ -320,7 +319,7 @@ Forbidden from the agent boundary:
 | REP-1 | `paseo.json`, Git hook/filter, package script, test, dependency, or setup/teardown executes host code. | Disable implicit lifecycle code or require exact human approval; run only inside authority boundary with resource/network limits. | **Unresolved P0; `dir-m0.6` must include this path.** |
 | AGT-4 | Candidate text prompt-injects Reviewer or forges a verdict. | Detached read-only checkout, trusted reviewer instructions/schema, no effects, engine-bound SHA/identity, deterministic validation, fresh review after change. | Residual model-quality risk remains. |
 | AGT-5 | A Task Agent creates a writer helper in a sibling Workspace, exceeds its Run envelope, or mutates a shared checkout. | Task-Agent-created helper mechanism fixed to the current Run; separate writer checkout; Director-authorized and reconciled global/Task limits; reject caller-selected workspace. | MCP/provider proof pending `dir-m0.3`. |
-| FS-1 | Traversal, symlink, junction, case, Unicode, UNC, nested-Git, or TOCTOU alias escapes an approved root. | Platform-native canonical identity, Git common-dir proof, descendant check, no-follow deletion, just-in-time revalidation, quarantine on mismatch. | Linux/Windows proof pending `dir-m0.6`. |
+| FS-1 | Traversal, symlink, mount, nested-Git, or TOCTOU alias escapes an approved root. | Canonical identity, Git common-dir proof, descendant check, no-follow deletion, just-in-time revalidation, quarantine on mismatch. | Linux proof remains with `dir-m0.6`. |
 | FS-2 | Remote rewrite, stale base, branch-name injection, or repository swap targets the wrong remote/ref. | Canonical remote identity, no URL credentials, Git ref validation, exact base/Candidate, controlled Git config/env, refetch and compare before effect. | Delivery proof pending `dir-m0.7`. |
 | FS-3 | Cleanup removes dirty, unintegrated, shared, or unowned state. | Ownership ledger, verified snapshot ref, integration reachability, no active consumer, retention, preview/quarantine, idempotent cleanup. | P0 proof pending `dir-m0.6`. |
 | CMD-1 | Untrusted value becomes shell syntax, an option, executable, cwd, environment override, or pager/editor/hook. | `shell: false`, argv arrays, allowlisted executable/subcommand/options, `--`, minimal env, canonical cwd, disabled interactive helpers, bounded output/time. | Normative control; implementation tests required. |
@@ -405,10 +404,9 @@ all releases whenever it cannot prove the corresponding condition:
     durable intent and authoritative external facts before retry.
 11. **Daemon access:** the daemon is remotely reachable without the required
     authentication, host validation, and transport confidentiality.
-12. **Platform proof:** Linux or Windows path, process, credential, IPC,
-    containment, locked-file, and cleanup behavior is untested for a claimed
-    release platform. Failure blocks that platform; because both are stable
-    release gates, unresolved failure blocks stable 1.0.
+12. **Platform proof:** Linux path, process, credential, IPC, containment,
+    locked-file, and cleanup behavior is untested for the release topology.
+    Unresolved failure blocks stable `1.0`.
 
 An observed secret exposure, irreversible dirty-work loss, unowned deletion,
 or incorrect integration is an incident and release-blocking defect, not a
@@ -422,10 +420,8 @@ approved by this ADR.
 | Option | Minimum boundary | Paseo and platform compatibility |
 |---|---|---|
 | Linux provider wrapper in an OCI container | A trusted custom-provider argv wrapper launches the provider without the Docker/runtime socket; bind-mounts only the owned worktree and fixed-scope MCP endpoint; uses a distinct user namespace/UID; hides host home, source checkout, sibling paths, engine state, and Git/GitHub credentials; restricts egress to the provider/broker; applies process/disk limits. | Paseo publicly documents custom command/Docker wrappers, and installed 0.7.2 exposes command-array profiles. This is conceptually compatible with a Linux daemon but adds an external runtime and privileged setup. Stdio, cwd/path mapping, provider auth, custom MCP, interruption, and cleanup require proof. Containerizing the whole daemon is insufficient because plugin and agents still share one identity inside it. |
-| Linux separate service identity | A root-managed systemd unit or equivalent starts each provider under a dedicated static/dynamic user with `NoNewPrivileges`, protected home/system mounts, only the worktree writable, restricted address families/egress, no daemon/control/runtime socket, and a narrow MCP capability. | Uses public Linux primitives but requires a privileged launcher not documented in Paseo's per-session API. A custom provider wrapper might integrate it, subject to M0 proof and host policy. It is not portable to every Paseo-supported host. |
-| Windows AppContainer/restricted-token wrapper | A trusted wrapper launches the provider with a distinct restricted identity/AppContainer; ACLs grant only the owned worktree and fixed-scope IPC; credential stores, other profiles, named pipes, daemon endpoints, and process handles are denied; network capabilities/firewall allow only provider/broker traffic. | Public Windows primitives exist, and Paseo's custom command array is a possible entrypoint. No installed stable Paseo contract proves token/AppContainer creation, stdio, provider CLI behavior, path mapping, or teardown. Restricted tokens alone are insufficient where the same user ACL still grants access. |
-| Windows Hyper-V-isolated provider container | The provider runs in a per-Run Hyper-V container/VM with only the owned worktree and scoped IPC mounted, no host/container control socket, no Git/GitHub credentials, bounded egress/resources, and verified teardown. | Provides a stronger Windows boundary than process isolation but requires supported Windows editions/features, container images, and path/stdio/MCP/provider tests. It is not a universal Windows baseline and adds an external runtime. |
-| Credentialless agent host plus separate effect broker | Agents run on a dedicated VM/host that has only provider access and Task worktrees; a separately authenticated least-privilege engine/broker holds GitHub, Git delivery, and daemon administration authority. | Strongest cross-platform concept and limits fully adversarial Task Agent processes. It changes the approved single-daemon monolith/no-sidecar architecture and path topology, so it requires a human-approved plan ADR and new M0 validation before implementation. A dedicated host without separating effect credentials is insufficient. |
+| Linux separate service identity | A root-managed systemd unit or equivalent starts each provider under a dedicated static/dynamic user with `NoNewPrivileges`, protected home/system mounts, only the worktree writable, restricted address families/egress, no daemon/control/runtime socket, and a narrow MCP capability. | Uses public Linux primitives but requires a privileged launcher not documented in Paseo's per-session API. A custom provider wrapper might integrate it, subject to M0 proof and host policy. It is not available on every Linux host configuration. |
+| Credentialless agent host plus separate effect broker | Agents run on a dedicated VM/host that has only provider access and Task worktrees; a separately authenticated least-privilege engine/broker holds GitHub, Git delivery, and daemon administration authority. | Strongest topology-level concept and limits fully adversarial Task Agent processes. It changes the approved single-daemon monolith/no-sidecar architecture and path topology, so it requires a human-approved plan ADR and new M0 validation before implementation. A dedicated host without separating effect credentials is insufficient. |
 
 Every viable option must also address provider authentication. A fully
 adversarial provider process can steal any credential it directly consumes.
@@ -436,9 +432,9 @@ GitHub, Paseo, or cross-scope Director authority.
 The smallest promising experiment for prompt-injection containment is a
 human-configured custom provider profile whose argv wrapper enters an
 OS-enforced per-Run container and retains provider stdio while exposing only
-the owned worktree and narrow MCP channel. It is not yet evidence for Linux or
-Windows support, and it does not by itself contain a compromised provider
-binary or protect a raw provider credential.
+the owned worktree and narrow MCP channel. It is not yet evidence for Linux
+support, and it does not by itself contain a compromised provider binary or
+protect a raw provider credential.
 
 ## Alternatives considered
 
@@ -469,7 +465,7 @@ itself.
 This is the smallest technically credible direction for prompt-injected tools
 and repository processes. Public wrapper hooks and OS primitives exist, but
 the end-to-end Paseo contract, provider credential handling, stdio MCP,
-cross-platform behavior, and lifecycle cleanup are unproven. Selecting it now
+Linux behavior, and lifecycle cleanup are unproven. Selecting it now
 would turn a hypothesis into architecture without the required experiment.
 
 ### Add a privileged external-effect broker
@@ -489,8 +485,7 @@ instructions or a fully adversarial same-user process.
 The selected contingency is to keep the M1 security gate blocked. Director
 must not claim, implement against, or test away the affected plan invariants
 until public, OS-enforced authority separation is proven for every admitted
-provider on the claimed Linux and Windows topology, or the human project owner
-explicitly approves a plan/scope change. Undocumented Paseo internals, silent
+provider on the claimed Linux topology. Undocumented Paseo internals, silent
 fallback, and treating provider settings as a host boundary remain forbidden.
 
 The threat controls above remain the required baseline for accidental and
@@ -503,8 +498,8 @@ buggy behavior even if a stronger execution boundary is later selected.
 - `dir-m0.1` established the exact 0.7.2 public subset in ADR-0002 but did not
   prove authority separation. `dir-m0.2` must prove lifecycle and recovery;
   `dir-m0.3` must prove provider-specific MCP/options and fail-closed behavior;
-  `dir-m0.6` must cover
-  repository lifecycle execution plus Linux/Windows ownership/cleanup;
+  `dir-m0.6` must cover repository lifecycle execution plus Linux ownership
+  and cleanup;
   `dir-m0.7` must prove exact-SHA delivery; and `dir-m0.10` must preserve the
   authority boundary across every effect and recovery point.
 - Current online documentation must never substitute for installed artifact
@@ -513,7 +508,7 @@ buggy behavior even if a stronger execution boundary is later selected.
 - A later accepted isolation design must add adversarial tests that attempt
   credential reads, daemon/CLI access, sibling-workspace mutation, raw
   Git/GitHub effects, lifecycle scripts, token replay, container/runtime access,
-  network escape, and cleanup races on Linux and Windows.
+  network escape, and cleanup races on Linux.
 - If no supported authority boundary is available, the permitted outcomes are
   an explicit human-approved reduction to a trusted-agent/trusted-repository
   product, postponement of automatic execution/delivery, or an upstream Paseo
@@ -527,5 +522,5 @@ buggy behavior even if a stronger execution boundary is later selected.
 
 Pending independent reproduction and review of the exact Candidate SHA.
 Review must verify the No-go evidence, the mapping to plan invariants, the
-absence of an implicit trust-scope reduction, and the Linux/Windows option
-bounds. No PR, merge, or Task closure is authorized by this Candidate alone.
+absence of an implicit trust-scope reduction, and the Linux option bounds. No
+PR, merge, or Task closure is authorized by this Candidate alone.

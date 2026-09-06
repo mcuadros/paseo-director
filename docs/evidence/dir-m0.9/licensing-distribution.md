@@ -352,4 +352,4 @@ No separate official Paseo trademark or community-plugin naming policy was found
 | Product naming remains within a conservative descriptive-use boundary | Pass with mandatory disclaimer/no-logo rules |
 | Public artifact/ref was created during the spike | Pass: none created |
 
-Windows runtime behavior was not exercised by this licensing spike, and no compatibility beyond exact Paseo `0.7.2` is inferred. The license result is platform-neutral; later stable Paseo releases and the plan's separate Windows/Linux lifecycle and release-candidate gates remain subject to fresh validation.
+No compatibility beyond exact Paseo `0.7.2` on the recorded Linux topology is inferred. Later stable Paseo releases and the Linux lifecycle and release-candidate gates remain subject to fresh validation.
