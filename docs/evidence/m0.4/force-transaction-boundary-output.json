@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "question": "Can supported Dolt 2.3.2 privilege or connection configuration prevent the normal application identity from changing session or global dolt_force_transaction_commit while preserving required TaskStore writes?",
+  "environment": {
+    "run_id": "7ca94d57f031409c",
+    "dolt": "dolt version 2.3.2",
+    "operating_system": "Linux 6.12.107+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.107-1 (2026-08-29) x86_64 GNU/Linux",
+    "topology": "one disposable loopback SQL server; system_variables and per-user user_session_vars initialize dolt_force_transaction_commit to 0; one owner and one table-scoped application identity",
+    "server": {
+      "pid": 3503216,
+      "exit_code": 0,
+      "signal": null
+    },
+    "owned_temp_directory": {
+      "basename": "director-m0.4-force-boundary-7ca94d57f031409c-Hukilm",
+      "removed": true
+    }
+  },
+  "supported_controls": {
+    "system_variables_initial_global_value": 0,
+    "user_session_vars_initial_session_value": 0,
+    "read_only_rejected_as_boundary": "The public behavior.read_only control disables database modification, including required TaskStore INSERT and UPDATE operations.",
+    "per_user_statement_allowlist_available": false
+  },
+  "application_identity": {
+    "grants": [
+      "GRANT USAGE ON *.* TO `app_7ca94d57f031409c`@`%`",
+      "GRANT SELECT, INSERT, UPDATE ON `force_boundary_7ca94d57f031409c`.`aggregates` TO `app_7ca94d57f031409c`@`%`",
+      "GRANT SELECT, INSERT ON `force_boundary_7ca94d57f031409c`.`immutable_records` TO `app_7ca94d57f031409c`@`%`"
+    ],
+    "global_admin_or_super_grant_present": false,
+    "required_operations_before_probes": {
+      "immutable_rows": 1,
+      "aggregate_version": 1
+    },
+    "required_operations_after_owner_reset": {
+      "immutable_rows": 2,
+      "aggregate_version": 2
+    }
+  },
+  "override_results": {
+    "session_set_accepted": true,
+    "session_value_after_set": 1,
+    "global_set_accepted": true,
+    "owner_observed_global_value_after_app_set": 1,
+    "new_app_connection_after_global_override_rejected": true,
+    "new_app_connection_diagnostic": "Variable 'dolt_force_transaction_commit' was initialized more than 1x",
+    "owner_restored_global_value": 0
+  },
+  "decision": {
+    "enforceable_supported_boundary": false,
+    "direct_dolt_2_3_2": "NO-GO",
+    "reason": "The table-scoped application identity can override both configured safe defaults. Dolt 2.3.2 exposes no supported per-user SET restriction or statement allowlist, and read-only mode removes required writes.",
+    "activated_contingency": "dir-m0.16"
+  }
+}
