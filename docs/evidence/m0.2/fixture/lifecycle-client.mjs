@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createPaseoClient } from "@getpaseo/client";
+import { assertStableApi, runStructuralNegatives } from "./paseo-preflight.mjs";
 
 const command = process.argv[2];
 const url = process.env.DIRECTOR_PASEO_URL;
@@ -12,6 +13,7 @@ const provider = process.env.DIRECTOR_TEST_PROVIDER;
 const initialPrompt = process.env.DIRECTOR_INITIAL_PROMPT;
 const lifecycleRoot = process.env.DIRECTOR_LIFECYCLE_ROOT;
 const daemonPid = Number(process.env.DIRECTOR_DAEMON_PID);
+const expectedStatus = process.env.DIRECTOR_EXPECTED_STATUS;
 const archiveChildPath = fileURLToPath(new URL("./archive-child.mjs", import.meta.url));
 
 if (!command) throw new Error("A lifecycle command is required");
@@ -21,67 +23,6 @@ const labels = {
   "director.task": "dir-m0.2",
   "director.run": "run-1",
 };
-
-const requiredMethods = {
-  client: ["connect", "close", "ensureConnected", "getConnectionState"],
-  projects: ["list"],
-  workspaces: ["list", "ref", "open", "create", "archive", "subscribe"],
-  agents: ["list", "ref", "create", "subscribe"],
-  providers: [
-    "listModels",
-    "listModes",
-    "listFeatures",
-    "listAvailable",
-    "snapshot",
-    "waitForReady",
-    "refresh",
-    "diagnostic",
-    "subscribe",
-  ],
-  config: ["get", "patch"],
-  workspaceHandle: ["current", "refresh", "setTitle", "archive", "subscribe"],
-  workspaceAgents: ["create"],
-  agentHandle: [
-    "current",
-    "refresh",
-    "send",
-    "run",
-    "waitForFinish",
-    "commands",
-    "archive",
-    "detach",
-    "subscribe",
-  ],
-  agentTimeline: ["refetch", "subscribe"],
-};
-
-function requireMethods(value, path, methods) {
-  for (const method of methods) {
-    if (typeof value?.[method] !== "function") {
-      throw new Error(`Missing required public method: ${path}.${method}`);
-    }
-  }
-}
-
-function assertStableApi(client) {
-  for (const path of ["client", "projects", "workspaces", "agents", "providers", "config"]) {
-    requireMethods(path === "client" ? client : client[path], path, requiredMethods[path]);
-  }
-
-  const workspaceHandle = client.workspaces.ref("wks_director_structural_preflight");
-  const agentHandle = client.agents.ref("00000000-0000-4000-8000-000000000000");
-  const targets = {
-    workspaceHandle,
-    workspaceAgents: workspaceHandle?.agents,
-    agentHandle,
-    agentTimeline: agentHandle?.timeline,
-  };
-  for (const path of Object.keys(targets)) {
-    requireMethods(targets[path], path, requiredMethods[path]);
-  }
-
-  return targets;
-}
 
 async function connect() {
   const client = createPaseoClient({
@@ -274,101 +215,9 @@ async function archiveTwice(agent) {
   return { firstArchive, secondArchive };
 }
 
-function createFakeClient() {
-  const counters = { effects: 0, refs: 0 };
-  const method = () => {
-    counters.effects += 1;
-  };
-  const target = (path) =>
-    Object.fromEntries(requiredMethods[path].map((name) => [name, method]));
-  const workspaceHandle = {
-    ...target("workspaceHandle"),
-    agents: target("workspaceAgents"),
-  };
-  const agentHandle = {
-    ...target("agentHandle"),
-    timeline: target("agentTimeline"),
-  };
-  const client = {
-    ...target("client"),
-    projects: target("projects"),
-    workspaces: {
-      ...target("workspaces"),
-      ref() {
-        counters.refs += 1;
-        return workspaceHandle;
-      },
-    },
-    agents: {
-      ...target("agents"),
-      ref() {
-        counters.refs += 1;
-        return agentHandle;
-      },
-    },
-    providers: target("providers"),
-    config: target("config"),
-  };
-  return {
-    client,
-    counters,
-    targets: {
-      client,
-      projects: client.projects,
-      workspaces: client.workspaces,
-      agents: client.agents,
-      providers: client.providers,
-      config: client.config,
-      workspaceHandle,
-      workspaceAgents: workspaceHandle.agents,
-      agentHandle,
-      agentTimeline: agentHandle.timeline,
-    },
-  };
-}
-
-function runStructuralNegatives() {
-  const baseline = createFakeClient();
-  assertStableApi(baseline.client);
-  if (baseline.counters.effects !== 0) {
-    throw new Error("Structural preflight invoked a side effect in the complete baseline");
-  }
-
-  const results = [];
-  let totalEffects = baseline.counters.effects;
-  for (const [path, methods] of Object.entries(requiredMethods)) {
-    for (const method of methods) {
-      const fixture = createFakeClient();
-      delete fixture.targets[path][method];
-      let error = null;
-      try {
-        assertStableApi(fixture.client);
-      } catch (caught) {
-        error = caught instanceof Error ? caught.message : String(caught);
-      }
-      if (error !== `Missing required public method: ${path}.${method}`) {
-        throw new Error(`Structural negative did not fail precisely for ${path}.${method}: ${error}`);
-      }
-      if (fixture.counters.effects !== 0) {
-        throw new Error(`Structural negative invoked a side effect for ${path}.${method}`);
-      }
-      totalEffects += fixture.counters.effects;
-      results.push({ surface: `${path}.${method}`, error, sideEffects: fixture.counters.effects });
-    }
-  }
-
-  return {
-    checkedSurfaces: results.length,
-    failures: results.length,
-    sideEffects: totalEffects,
-    baselineRefCalls: baseline.counters.refs,
-    results,
-  };
-}
-
 async function run() {
   if (command === "negative-structural") {
-    console.log(JSON.stringify(runStructuralNegatives()));
+    console.log(JSON.stringify(runStructuralNegatives("lifecycle")));
     return;
   }
 
@@ -479,6 +328,26 @@ async function run() {
     const state = await loadState();
     if (command === "recover") {
       console.log(JSON.stringify(await recover(client, state)));
+      return;
+    }
+
+    if (command === "assert-unarchived-projection") {
+      if (!expectedStatus) throw new Error("DIRECTOR_EXPECTED_STATUS is required");
+      const recovered = await recover(client, state);
+      requireObservation(recovered.agent?.status === expectedStatus, "restart status changed");
+      requireObservation(recovered.agent?.archivedAt === null, "restart projection was archived");
+      requireObservation(recovered.agent?.activeTurn == null, "restart projection retained an active turn");
+      console.log(
+        JSON.stringify({
+          expectedStatus,
+          agent: recovered.agent,
+          terminated: false,
+          capacityBearing: true,
+          replacementAuthorized: false,
+          duplicatePromptAuthorized: false,
+          cleanupAuthorized: false,
+        }),
+      );
       return;
     }
 
@@ -604,6 +473,10 @@ async function run() {
       } catch (error) {
         if (error?.code !== "ENOENT") throw error;
       }
+      requireObservation(
+        terminationMarker === null,
+        "agent archive delivered a graceful signal to the child instead of hard-killing it",
+      );
       removeAgentListener();
       console.log(
         JSON.stringify({

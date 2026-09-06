@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createPaseoClient } from "@getpaseo/client";
+import { assertStableApi, runStructuralNegatives } from "./paseo-preflight.mjs";
 
 const command = process.argv[2];
 const url = process.env.DIRECTOR_PASEO_URL;
@@ -103,6 +104,10 @@ function parentAgentId(snapshot) {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function terminationIsReconciled(snapshot, externalFactsReconciled) {
+  return Boolean(snapshot?.status === "closed" && snapshot.archivedAt && externalFactsReconciled);
+}
+
 function agentSummary(snapshot) {
   if (!snapshot) return null;
   return {
@@ -168,6 +173,28 @@ async function waitForJsonFile(path, timeoutMs = 90_000) {
     }
   }
   throw new Error(`Timed out waiting for durable prompt marker: ${lastError}`);
+}
+
+async function readOptionalJson(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function terminationPathFor(markerPath) {
+  return markerPath.replace(/\.started\.json$/, ".terminated.json");
+}
+
+async function requireNoGracefulSignal(markerPaths) {
+  const observed = await Promise.all(markerPaths.map((path) => readOptionalJson(terminationPathFor(path))));
+  requireObservation(
+    observed.every((marker) => marker === null),
+    "agent archive delivered a graceful child signal instead of hard-killing the process tree",
+  );
+  return { gracefulSignalsObserved: 0, hardKillObserved: true };
 }
 
 async function readProcessIdentity(pid) {
@@ -297,7 +324,9 @@ async function observePromptProcess(agent, promptEvidence) {
 
 async function connect() {
   const client = createPaseoClient({ url, password, reconnect: { enabled: false } });
+  assertStableApi(client);
   await client.connect();
+  assertStableApi(client);
   return client;
 }
 
@@ -357,6 +386,8 @@ async function createTaskAgent(client, state, key) {
   await saveState(state);
   const observed = await observePromptProcess(agent, promptEvidence);
   task.originalProcess = observed.processEvidence;
+  task.currentProcess = observed.processEvidence;
+  task.currentMarkerPath = promptEvidence.markerPath;
   await saveState(state);
   const snapshot = (await agent.refresh())?.agent;
   requireObservation(snapshot?.title === task.title, `${key} Task Agent title was decorated`);
@@ -390,33 +421,96 @@ async function createReviewer(client, state) {
   return { finish, reviewer: agentSummary(snapshot) };
 }
 
-async function reserveAndCreateHelper(client, state, key, requestedCwd) {
+function providerSessionId(snapshot) {
+  return snapshot?.persistence?.sessionId ?? snapshot?.runtimeInfo?.sessionId ?? null;
+}
+
+async function resumeSameSession(client, record, promptToken) {
+  const agent = client.agents.ref(record.agentId);
+  const before = await refreshRequired(client, record.agentId);
+  requireObservation(!before.archivedAt, `${record.title} was archived before resume`);
+  requireObservation(before.activeTurn == null, `${record.title} still had an active turn before resume`);
+  const beforeSession = providerSessionId(before);
+  requireObservation(beforeSession, `${record.title} had no resumable provider session`);
+  await agent.send(`Reply with exactly ${promptToken}.`);
+  const finish = await agent.waitForFinish(120_000);
+  const after = await refreshRequired(client, record.agentId);
+  requireObservation(finish.lastMessage?.trim() === promptToken, `${record.title} resume prompt changed`);
+  requireObservation(providerSessionId(after) === beforeSession, `${record.title} changed provider session`);
+  requireObservation(after.id === before.id, `${record.title} changed native identity`);
+  return { before: agentSummary(before), finish, after: agentSummary(after), sameSession: true };
+}
+
+async function startExistingProcess(client, record, role) {
+  const agent = client.agents.ref(record.agentId);
+  const before = await refreshRequired(client, record.agentId);
+  requireObservation(!before.archivedAt && before.activeTurn == null, `${record.title} was not resumable`);
+  const promptEvidence = markerPrompt(role);
+  await agent.send(promptEvidence.prompt);
+  const observed = await observePromptProcess(agent, promptEvidence);
+  record.currentProcess = observed.processEvidence;
+  record.currentMarkerPath = promptEvidence.markerPath;
+  record.processHistory = [
+    ...(record.processHistory ?? []),
+    {
+      markerPath: promptEvidence.markerPath,
+      token: promptEvidence.token,
+      processEvidence: observed.processEvidence,
+    },
+  ];
+  return { ...observed, promptEvidence };
+}
+
+function requireAdmittedHelperRequest(request) {
+  for (const forbidden of ["projectId", "workspaceId", "taskId", "runId", "role", "labels", "parent"]) {
+    requireObservation(!hasOwn(request, forbidden), `helper request selected forbidden scope field ${forbidden}`);
+  }
+  requireObservation(typeof request.requestedCwd === "string", "helper request cwd was missing");
+}
+
+function helperAdapter(client, injected = {}) {
+  return {
+    save: injected.save ?? saveState,
+    capacity: injected.capacity ?? ((state) => capacityFacts(client, state)),
+    list: injected.list ?? ((labels) => listByLabels(client, labels)),
+    refresh: injected.refresh ?? ((agentId) => refreshRequired(client, agentId)),
+    parentRef: injected.parentRef ?? ((agentId) => client.agents.ref(agentId)),
+    marker: injected.marker ?? markerPrompt,
+    create: injected.create ?? ((options) => client.agents.create(options)),
+    observe: injected.observe ?? observePromptProcess,
+    now: injected.now ?? (() => new Date().toISOString()),
+  };
+}
+
+async function reserveAndCreateHelper(client, state, key, request, injected = {}) {
+  requireAdmittedHelperRequest(request);
+  const adapter = helperAdapter(client, injected);
   const helper = state.helpers[key];
   const parentTask = state.tasks.alpha;
   if (helper.agentId) {
-    const existing = await refreshRequired(client, helper.agentId);
-    return { created: false, helper: agentSummary(existing) };
+    const existing = await adapter.refresh(helper.agentId);
+    return { created: false, helper: agentSummary(existing), adapterIdempotencyHit: true };
   }
 
   const reservedAtEntry = helper.reservedAt;
   if (!reservedAtEntry) {
     const reservedHelpers = Object.values(state.helpers).filter((candidate) => candidate.reservedAt).length;
     requireObservation(reservedHelpers < limits.maxSubagentsPerTask, "Task helper quota was exhausted");
-    const accountingBefore = await capacityFacts(client, state);
+    const accountingBefore = await adapter.capacity(state);
     requireObservation(
       accountingBefore.globalConsumed < limits.maxConcurrentAgents,
       "global agent capacity was exhausted",
     );
-    helper.reservedAt = new Date().toISOString();
+    helper.reservedAt = adapter.now();
     helper.reservationStatus = "reserved";
-    await saveState(state);
+    await adapter.save(state);
   } else {
-    const matches = await listByLabels(client, { "director.intent": helper.labels["director.intent"] });
+    const matches = await adapter.list({ "director.intent": helper.labels["director.intent"] });
     if (matches.length === 1) {
       helper.agentId = matches[0].id;
-      helper.observedAt = new Date().toISOString();
+      helper.observedAt = adapter.now();
       helper.reservationStatus = "observed";
-      await saveState(state);
+      await adapter.save(state);
       return { created: false, helper: agentSummary(matches[0]), reconciledUnknownResult: true };
     }
     throw new Error(
@@ -424,36 +518,38 @@ async function reserveAndCreateHelper(client, state, key, requestedCwd) {
     );
   }
 
-  const promptEvidence = markerPrompt(`helper-${key}`);
+  const promptEvidence = adapter.marker(`helper-${key}`);
   helper.promptToken = promptEvidence.token;
   helper.markerPath = promptEvidence.markerPath;
-  await saveState(state);
-  const parent = client.agents.ref(parentTask.currentAgentId);
+  await adapter.save(state);
+  const parent = adapter.parentRef(parentTask.currentAgentId);
   const options = buildHelperOptions({
     parent,
-    requestedCwd,
+    requestedCwd: request.requestedCwd,
     title: helper.title,
     labels: helper.labels,
     prompt: promptEvidence.prompt,
     requestId: helper.requestId,
     clientMessageId: helper.clientMessageId,
   });
-  const agent = await client.agents.create(options);
+  const agent = await adapter.create(options);
   helper.agentId = agent.id;
   helper.workspaceId = parentTask.workspaceId;
   helper.workspaceDirectory = parentTask.workspaceDirectory;
-  helper.observedAt = new Date().toISOString();
+  helper.observedAt = adapter.now();
   helper.reservationStatus = "observed";
-  await saveState(state);
-  const observed = await observePromptProcess(agent, promptEvidence);
+  await adapter.save(state);
+  const observed = await adapter.observe(agent, promptEvidence);
   helper.process = observed.processEvidence;
-  await saveState(state);
-  const snapshot = (await agent.refresh())?.agent;
+  helper.currentProcess = observed.processEvidence;
+  helper.currentMarkerPath = promptEvidence.markerPath;
+  await adapter.save(state);
+  const snapshot = await adapter.refresh(agent.id);
   requireObservation(parentAgentId(snapshot) === parentTask.currentAgentId, `${key} helper parent changed`);
   requireObservation(snapshot.workspaceId === parentTask.workspaceId, `${key} helper escaped parent workspace`);
   requireObservation(snapshot.cwd === parentTask.workspaceDirectory, `${key} helper escaped parent cwd`);
   assertFixedLabels(snapshot, helper.labels);
-  return { created: true, helper: agentSummary(snapshot), requestedCwd, observed };
+  return { created: true, helper: agentSummary(snapshot), requestedCwd: request.requestedCwd, observed };
 }
 
 async function reconcileRecord(client, record, expectedParentId = null) {
@@ -471,18 +567,18 @@ async function reconcileRecord(client, record, expectedParentId = null) {
 }
 
 async function capacityFacts(client, state) {
-  const records = await listByLabels(client, { "director.project": projectId }, false);
-  const active = records.filter((snapshot) => !snapshot.archivedAt && snapshot.status !== "closed");
+  const records = await listByLabels(client, { "director.project": projectId }, true);
+  const capacityBearing = records.filter((snapshot) => !snapshot.archivedAt);
   const byRole = Object.fromEntries(
     ["task-agent", "reviewer", "helper"].map((role) => [
       role,
-      active.filter((snapshot) => snapshot.labels?.["director.role"] === role).length,
+      capacityBearing.filter((snapshot) => snapshot.labels?.["director.role"] === role).length,
     ]),
   );
   const helperByRun = Object.fromEntries(
     Object.values(state.tasks).map((task) => [
       `${task.taskId}/${task.runId}`,
-      active.filter(
+      capacityBearing.filter(
         (snapshot) =>
           snapshot.labels?.["director.role"] === "helper" &&
           snapshot.labels?.["director.task"] === task.taskId &&
@@ -490,7 +586,7 @@ async function capacityFacts(client, state) {
       ).length,
     ]),
   );
-  const taskAgentsInDirectorWorkspace = active.filter(
+  const taskAgentsInDirectorWorkspace = capacityBearing.filter(
     (snapshot) =>
       snapshot.labels?.["director.role"] === "task-agent" &&
       snapshot.labels?.["director.workspace"] === directorWorkspaceId,
@@ -602,21 +698,259 @@ async function recoverTopology(client, state) {
   };
 }
 
+function restartRecords(state) {
+  return {
+    alpha: {
+      agentId: state.tasks.alpha.currentAgentId,
+      title: state.tasks.alpha.title,
+    },
+    betaReplacement: {
+      agentId: state.tasks.beta.currentAgentId,
+      title: state.tasks.beta.title,
+    },
+    reviewer: {
+      agentId: state.reviewer.agentId,
+      title: state.reviewer.title,
+    },
+    cascadeHelper: {
+      agentId: state.helpers.cascade.agentId,
+      title: state.helpers.cascade.title,
+    },
+  };
+}
+
+async function assertRestartProjection(client, state, kind) {
+  const recovered = await recoverTopology(client, state);
+  const projections = {
+    alpha: recovered.tasks.alpha,
+    betaReplacement: recovered.tasks.beta,
+    reviewer: recovered.reviewer,
+    cascadeHelper: recovered.helpers.cascade,
+  };
+  const expectedStatus =
+    kind === "orderly"
+      ? {
+          alpha: "closed",
+          betaReplacement: "closed",
+          reviewer: "closed",
+          cascadeHelper: "closed",
+        }
+      : {
+          alpha: "running",
+          betaReplacement: "idle",
+          reviewer: "idle",
+          cascadeHelper: "running",
+        };
+  requireObservation(kind === "orderly" || kind === "abrupt", `unknown restart kind ${kind}`);
+  for (const [key, snapshot] of Object.entries(projections)) {
+    requireObservation(snapshot.status === expectedStatus[key], `${kind} ${key} status changed`);
+    requireObservation(snapshot.archivedAt === null, `${kind} ${key} was incorrectly archived`);
+    requireObservation(snapshot.activeTurn == null, `${kind} ${key} retained an active turn`);
+    requireObservation(
+      !terminationIsReconciled(snapshot, true),
+      `${kind} ${key} was incorrectly treated as terminated`,
+    );
+  }
+  requireObservation(recovered.capacity.globalConsumed === 4, `${kind} freed unarchived capacity`);
+  requireObservation(recovered.capacity.byRole["task-agent"] === 2, `${kind} Task capacity changed`);
+  requireObservation(recovered.capacity.byRole.reviewer === 1, `${kind} Reviewer capacity changed`);
+  requireObservation(recovered.capacity.byRole.helper === 1, `${kind} helper capacity changed`);
+  return { kind, projections, capacity: recovered.capacity, terminated: false };
+}
+
+async function resumeRestartRecords(client, state, kind) {
+  const before = await assertRestartProjection(client, state, kind);
+  const resumed = {};
+  for (const [key, record] of Object.entries(restartRecords(state))) {
+    const token = `${key.toUpperCase()}_AFTER_${kind.toUpperCase()}_${randomUUID().replaceAll("-", "_")}`;
+    resumed[key] = await resumeSameSession(client, record, token);
+  }
+  state.restartHistory = [
+    ...(state.restartHistory ?? []),
+    {
+      kind,
+      reconciledAt: new Date().toISOString(),
+      agentIds: Object.fromEntries(
+        Object.entries(resumed).map(([key, result]) => [key, result.after.id]),
+      ),
+    },
+  ];
+  await saveState(state);
+  return { before, resumed, capacity: await capacityFacts(client, state) };
+}
+
+async function startRestartPair(client, state, label) {
+  const alpha = await startExistingProcess(
+    client,
+    { ...state.tasks.alpha, agentId: state.tasks.alpha.currentAgentId },
+    `task-alpha-${label}`,
+  );
+  state.tasks.alpha.currentProcess = alpha.processEvidence;
+  state.tasks.alpha.currentMarkerPath = alpha.promptEvidence.markerPath;
+  await saveState(state);
+  const helper = await startExistingProcess(
+    client,
+    state.helpers.cascade,
+    `helper-cascade-${label}`,
+  );
+  state.helpers.cascade.currentProcess = helper.processEvidence;
+  state.helpers.cascade.currentMarkerPath = helper.promptEvidence.markerPath;
+  await saveState(state);
+  return { label, alpha, helper, capacity: await capacityFacts(client, state) };
+}
+
+async function archiveReviewerWorkspaceCascade(client, state) {
+  const reviewerBefore = await refreshRequired(client, state.reviewer.agentId);
+  requireObservation(!reviewerBefore.archivedAt, "Reviewer was already archived before workspace cascade");
+  const workspace = client.workspaces.ref(state.reviewer.workspaceId);
+  const first = await workspace.archive();
+  const reviewerAfter = await refreshRequired(client, state.reviewer.agentId);
+  const cascadeOffsetMs = Date.parse(first.archivedAt) - Date.parse(reviewerAfter.archivedAt);
+  requireObservation(
+    reviewerAfter.status === "closed" &&
+      reviewerAfter.archivedAt &&
+      Number.isFinite(cascadeOffsetMs) &&
+      cascadeOffsetMs >= 0 &&
+      cascadeOffsetMs < 5_000,
+    "workspace archive did not cascade an archivedAt to the Reviewer before completing",
+  );
+  const second = await workspace.archive();
+  requireObservation(second.archivedAt === first.archivedAt, "workspace cascade retry changed archivedAt");
+  const workspaceAfter = await workspace.refresh();
+  requireObservation(workspaceAfter === null, "archived Reviewer workspace remained active");
+  state.reviewer.workspaceCascadeArchivedAt = first.archivedAt;
+  await saveState(state);
+  return {
+    reviewerBefore: agentSummary(reviewerBefore),
+    first,
+    second,
+    reviewerAfter: agentSummary(reviewerAfter),
+    cascadeOffsetMs,
+    workspaceAfter,
+    capacity: await capacityFacts(client, state),
+  };
+}
+
 async function archiveIfActive(client, agentId) {
   const agent = client.agents.ref(agentId);
   const before = (await agent.refresh())?.agent;
-  if (!before || before.archivedAt || before.status === "closed") {
+  if (!before || before.archivedAt) {
     return { before: agentSummary(before), archived: false };
   }
   const result = await agent.archive();
   return { before: agentSummary(before), archived: true, result };
 }
 
-function runPolicyNegatives() {
-  let effects = 0;
-  const effect = () => {
-    effects += 1;
+async function createReplacementAfterTermination(previous, externalFactsReconciled, create) {
+  requireObservation(
+    terminationIsReconciled(previous, externalFactsReconciled),
+    "replacement requires closed plus archivedAt and reconciled external facts",
+  );
+  return create();
+}
+
+function policyFixture({ reserved = false, matches = [] } = {}) {
+  const helperLabels = roleLabels({
+    taskId: taskDefinitions.alpha.taskId,
+    runId: taskDefinitions.alpha.runId,
+    role: "helper",
+    intent: "helper-policy-fixture",
+  });
+  const state = {
+    tasks: {
+      alpha: {
+        ...taskDefinitions.alpha,
+        currentAgentId: "task-alpha-agent-id",
+        originalAgentId: "task-alpha-agent-id",
+        workspaceId: "task-alpha-workspace-id",
+        workspaceDirectory: "/owned/task-alpha",
+      },
+      beta: { ...taskDefinitions.beta },
+    },
+    reviewer: {},
+    helpers: {
+      policy: {
+        title: "Policy helper",
+        labels: helperLabels,
+        requestId: "helper-request-id",
+        clientMessageId: "helper-message-id",
+        ...(reserved
+          ? { reservedAt: "2026-09-06T00:00:00.000Z", reservationStatus: "reserved" }
+          : {}),
+      },
+    },
   };
+  const counters = { creates: 0, prompts: 0, saves: 0, lists: 0, refreshes: 0 };
+  const snapshot = {
+    id: "helper-agent-id",
+    workspaceId: state.tasks.alpha.workspaceId,
+    cwd: state.tasks.alpha.workspaceDirectory,
+    title: state.helpers.policy.title,
+    provider: "codex",
+    status: "running",
+    activeTurn: { turnId: "turn-1", startedAt: "2026-09-06T00:00:01.000Z" },
+    labels: { ...helperLabels, [parentLabel]: state.tasks.alpha.currentAgentId },
+    createdAt: "2026-09-06T00:00:01.000Z",
+    archivedAt: null,
+    persistence: { sessionId: "helper-session-id" },
+  };
+  const injected = {
+    async save() {
+      counters.saves += 1;
+    },
+    async capacity() {
+      return { globalConsumed: 1 };
+    },
+    async list() {
+      counters.lists += 1;
+      return matches;
+    },
+    async refresh() {
+      counters.refreshes += 1;
+      return snapshot;
+    },
+    parentRef(agentId) {
+      return { id: agentId };
+    },
+    marker() {
+      return {
+        token: "helper-token",
+        markerPath: "/owned/helper.started.json",
+        prompt: "helper-prompt",
+      };
+    },
+    async create(options) {
+      counters.creates += 1;
+      if (options.prompt) counters.prompts += 1;
+      return { id: snapshot.id };
+    },
+    async observe() {
+      return {
+        running: agentSummary(snapshot),
+        marker: { token: "helper-token", pid: 2 },
+        processEvidence: { childPid: 2, providerPids: [3], trackedPids: [2, 3] },
+      };
+    },
+    now() {
+      return "2026-09-06T00:00:00.000Z";
+    },
+  };
+  return { state, counters, snapshot, injected };
+}
+
+async function captureExpectedFailure(runCase, expectedFragment) {
+  let error = null;
+  try {
+    await runCase();
+  } catch (caught) {
+    error = caught instanceof Error ? caught.message : String(caught);
+  }
+  requireObservation(error?.includes(expectedFragment), `expected policy failure containing ${expectedFragment}`);
+  return error;
+}
+
+async function runPolicyNegatives() {
+  const totals = { creates: 0, prompts: 0 };
   const topLevel = buildTopLevelOptions({
     cwd: "/owned/task",
     title: taskDefinitions.alpha.title,
@@ -632,52 +966,185 @@ function runPolicyNegatives() {
   });
   requireObservation(!hasOwn(topLevel, "parent"), "top-level negative acquired a parent");
 
-  const frozenHelperLabels = roleLabels({
-    taskId: taskDefinitions.alpha.taskId,
-    runId: taskDefinitions.alpha.runId,
-    role: "helper",
-    intent: "helper-policy-negative",
-  });
-  const callerOverrides = {
-    "director.task": "another-task",
-    "director.run": "another-run",
-    "director.role": "task-agent",
-  };
-  const admittedLabels = { ...frozenHelperLabels };
+  const deniedScope = policyFixture();
+  const deniedScopeError = await captureExpectedFailure(
+    () =>
+      reserveAndCreateHelper(
+        null,
+        deniedScope.state,
+        "policy",
+        { requestedCwd: "/another/workspace", taskId: "another-task" },
+        deniedScope.injected,
+      ),
+    "forbidden scope field taskId",
+  );
   requireObservation(
-    Object.entries(callerOverrides).every(([key, value]) => admittedLabels[key] !== value),
-    "caller changed fixed helper scope or role",
+    deniedScope.counters.creates === 0 && deniedScope.counters.prompts === 0,
+    "denied helper scope produced a create or prompt",
   );
 
-  const unknownReservation = { status: "reserved", observedMatches: 0 };
-  if (unknownReservation.status === "reserved" && unknownReservation.observedMatches !== 1) {
-    // A real adapter parks here. It does not invoke the injected create effect.
-  } else {
-    effect();
-  }
-  requireObservation(effects === 0, "unknown helper result triggered a blind retry");
+  const unknown = policyFixture({ reserved: true, matches: [] });
+  const unknownError = await captureExpectedFailure(
+    () =>
+      reserveAndCreateHelper(
+        null,
+        unknown.state,
+        "policy",
+        { requestedCwd: "/owned/task-alpha" },
+        unknown.injected,
+      ),
+    "unknown; parked",
+  );
+  requireObservation(
+    unknown.counters.lists === 1 && unknown.counters.creates === 0 && unknown.counters.prompts === 0,
+    "unknown helper result performed a blind retry",
+  );
 
-  const previousTaskAgent = { status: "running", archivedAt: null };
-  if (previousTaskAgent.status !== "closed" || !previousTaskAgent.archivedAt) {
-    // A real adapter rejects replacement here. It does not invoke create.
-  } else {
-    effect();
+  const idempotent = policyFixture();
+  const first = await reserveAndCreateHelper(
+    null,
+    idempotent.state,
+    "policy",
+    { requestedCwd: "/owned/task-alpha" },
+    idempotent.injected,
+  );
+  const second = await reserveAndCreateHelper(
+    null,
+    idempotent.state,
+    "policy",
+    { requestedCwd: "/owned/task-alpha" },
+    idempotent.injected,
+  );
+  requireObservation(
+    first.helper.id === second.helper.id &&
+      second.adapterIdempotencyHit &&
+      idempotent.counters.creates === 1 &&
+      idempotent.counters.prompts === 1,
+    "Director adapter idempotency did not suppress a second create/prompt",
+  );
+
+  const replacementEffects = { creates: 0, prompts: 0 };
+  const closedUnarchived = { status: "closed", archivedAt: null };
+  const replacementError = await captureExpectedFailure(
+    () =>
+      createReplacementAfterTermination(closedUnarchived, true, async () => {
+        replacementEffects.creates += 1;
+        replacementEffects.prompts += 1;
+      }),
+    "closed plus archivedAt",
+  );
+  requireObservation(
+    replacementEffects.creates === 0 && replacementEffects.prompts === 0,
+    "closed-unarchived Task Agent allowed replacement create/prompt",
+  );
+
+  const unreconciledEffects = { creates: 0, prompts: 0 };
+  const closedArchived = {
+    status: "closed",
+    archivedAt: "2026-09-06T00:00:00.000Z",
+  };
+  const unreconciledError = await captureExpectedFailure(
+    () =>
+      createReplacementAfterTermination(closedArchived, false, async () => {
+        unreconciledEffects.creates += 1;
+        unreconciledEffects.prompts += 1;
+      }),
+    "reconciled external facts",
+  );
+  requireObservation(
+    unreconciledEffects.creates === 0 && unreconciledEffects.prompts === 0,
+    "unreconciled archived Task Agent allowed replacement create/prompt",
+  );
+
+  const archiveEffects = { archives: 0 };
+  const closedUnarchivedSnapshot = {
+    id: "closed-unarchived-agent-id",
+    status: "closed",
+    archivedAt: null,
+    labels: {},
+  };
+  const archiveClient = {
+    agents: {
+      ref() {
+        return {
+          async refresh() {
+            return { agent: closedUnarchivedSnapshot };
+          },
+          async archive() {
+            archiveEffects.archives += 1;
+            return { archivedAt: "2026-09-06T00:00:01.000Z" };
+          },
+        };
+      },
+    },
+  };
+  const closedArchiveResult = await archiveIfActive(
+    archiveClient,
+    closedUnarchivedSnapshot.id,
+  );
+  requireObservation(
+    closedArchiveResult.archived && archiveEffects.archives === 1,
+    "closed-unarchived record was skipped by explicit archive",
+  );
+
+  for (const counters of [
+    deniedScope.counters,
+    unknown.counters,
+    replacementEffects,
+    unreconciledEffects,
+  ]) {
+    totals.creates += counters.creates;
+    totals.prompts += counters.prompts;
   }
-  requireObservation(effects === 0, "active Task Agent allowed overlapping replacement");
 
   return {
-    cases: 4,
-    sideEffects: effects,
+    cases: 7,
+    sideEffects: totals.creates + totals.prompts,
+    deniedPathCreates: totals.creates,
+    deniedPathPrompts: totals.prompts,
     topLevelParentFieldOmitted: !hasOwn(topLevel, "parent"),
-    helperScopeOverridesRejected: true,
-    unknownHelperResultParksWithoutRetry: true,
-    activeReplacementRejectedBeforeCreate: true,
+    helperScopeOverride: {
+      error: deniedScopeError,
+      creates: deniedScope.counters.creates,
+      prompts: deniedScope.counters.prompts,
+    },
+    unknownHelperResult: {
+      error: unknownError,
+      reconciliations: unknown.counters.lists,
+      creates: unknown.counters.creates,
+      prompts: unknown.counters.prompts,
+    },
+    adapterIdempotency: {
+      sameAgentId: first.helper.id === second.helper.id,
+      creates: idempotent.counters.creates,
+      prompts: idempotent.counters.prompts,
+      reservationStatus: idempotent.state.helpers.policy.reservationStatus,
+    },
+    closedUnarchivedReplacement: {
+      error: replacementError,
+      creates: replacementEffects.creates,
+      prompts: replacementEffects.prompts,
+    },
+    archivedButUnreconciledReplacement: {
+      error: unreconciledError,
+      creates: unreconciledEffects.creates,
+      prompts: unreconciledEffects.prompts,
+    },
+    closedUnarchivedArchive: {
+      archived: closedArchiveResult.archived,
+      archiveCalls: archiveEffects.archives,
+    },
   };
 }
 
 async function run() {
+  if (command === "topology-negative-structural") {
+    console.log(JSON.stringify(runStructuralNegatives("topology")));
+    return;
+  }
+
   if (command === "topology-policy-negatives") {
-    console.log(JSON.stringify(runPolicyNegatives()));
+    console.log(JSON.stringify(await runPolicyNegatives()));
     return;
   }
 
@@ -799,19 +1266,21 @@ async function run() {
         client,
         state,
         "explicit",
-        state.tasks.beta.workspaceDirectory,
+        { requestedCwd: state.tasks.beta.workspaceDirectory },
       );
       const explicitRetry = await reserveAndCreateHelper(
         client,
         state,
         "explicit",
-        state.tasks.beta.workspaceDirectory,
+        { requestedCwd: state.tasks.beta.workspaceDirectory },
       );
       requireObservation(
         explicit.helper.id === explicitRetry.helper.id && !explicitRetry.created,
         "helper idempotency key created a duplicate",
       );
-      const cascade = await reserveAndCreateHelper(client, state, "cascade", reviewPath);
+      const cascade = await reserveAndCreateHelper(client, state, "cascade", {
+        requestedCwd: reviewPath,
+      });
       const recovered = await recoverTopology(client, state);
       requireObservation(recovered.capacity.byRole["task-agent"] === 2, "Task Agent capacity count changed");
       requireObservation(recovered.capacity.byRole.reviewer === 1, "Reviewer capacity count changed");
@@ -846,11 +1315,46 @@ async function run() {
       return;
     }
 
+    if (command === "topology-assert-orderly-restart") {
+      console.log(JSON.stringify(await assertRestartProjection(client, state, "orderly")));
+      return;
+    }
+
+    if (command === "topology-resume-orderly") {
+      console.log(JSON.stringify(await resumeRestartRecords(client, state, "orderly")));
+      return;
+    }
+
+    if (command === "topology-assert-abrupt-restart") {
+      console.log(JSON.stringify(await assertRestartProjection(client, state, "abrupt")));
+      return;
+    }
+
+    if (command === "topology-resume-abrupt") {
+      console.log(JSON.stringify(await resumeRestartRecords(client, state, "abrupt")));
+      return;
+    }
+
+    if (command === "topology-start-restart-pair") {
+      const label = process.env.DIRECTOR_RESTART_LABEL;
+      if (!label || !/^[a-z0-9-]+$/.test(label)) {
+        throw new Error("DIRECTOR_RESTART_LABEL is required and must be safe");
+      }
+      console.log(JSON.stringify(await startRestartPair(client, state, label)));
+      return;
+    }
+
+    if (command === "topology-workspace-cascade-reviewer") {
+      console.log(JSON.stringify(await archiveReviewerWorkspaceCascade(client, state)));
+      return;
+    }
+
     if (command === "topology-explicit-helper-cleanup") {
       const helper = state.helpers.explicit;
       const parentBefore = await refreshRequired(client, state.tasks.alpha.currentAgentId);
       const result = await archiveIfActive(client, helper.agentId);
-      const terminationMs = await waitForPidsGone(helper.process.trackedPids);
+      const terminationMs = await waitForPidsGone(helper.currentProcess.trackedPids);
+      const signalEvidence = await requireNoGracefulSignal([helper.currentMarkerPath]);
       const after = await refreshRequired(client, helper.agentId);
       const parentAfter = await refreshRequired(client, state.tasks.alpha.currentAgentId);
       requireObservation(after.status === "closed" && after.archivedAt, "explicit helper did not close");
@@ -864,6 +1368,7 @@ async function run() {
         JSON.stringify({
           result,
           terminationMs,
+          signalEvidence,
           helperAfter: agentSummary(after),
           parentAfter: agentSummary(parentAfter),
           capacity: await capacityFacts(client, state),
@@ -884,9 +1389,13 @@ async function run() {
       );
       const archiveResult = await parent.archive();
       const trackedPids = [
-        ...new Set([...task.originalProcess.trackedPids, ...helper.process.trackedPids]),
+        ...new Set([...task.currentProcess.trackedPids, ...helper.currentProcess.trackedPids]),
       ];
       const terminationMs = await waitForPidsGone(trackedPids);
+      const signalEvidence = await requireNoGracefulSignal([
+        task.currentMarkerPath,
+        helper.currentMarkerPath,
+      ]);
       const parentAfter = await refreshRequired(client, task.currentAgentId);
       const helperAfter = await refreshRequired(client, helper.agentId);
       requireObservation(parentAfter.status === "closed" && parentAfter.archivedAt, "parent did not close");
@@ -903,6 +1412,7 @@ async function run() {
           helperBefore: agentSummary(helperBefore),
           archiveResult,
           terminationMs,
+          signalEvidence,
           allTrackedPidsAbsent: trackedPids.every((pid) => !pidIsAlive(pid)),
           parentAfter: agentSummary(parentAfter),
           helperAfter: agentSummary(helperAfter),
@@ -922,6 +1432,7 @@ async function run() {
       const previousHandle = client.agents.ref(previous.id);
       const previousArchive = await previousHandle.archive();
       const terminationMs = await waitForPidsGone(task.originalProcess.trackedPids);
+      const signalEvidence = await requireNoGracefulSignal([task.agentIntent.markerPath]);
       const previousAfter = await refreshRequired(client, previous.id);
       requireObservation(
         previousAfter.status === "closed" && previousAfter.archivedAt,
@@ -948,7 +1459,14 @@ async function run() {
         requestId: task.replacementIntent.requestId,
         clientMessageId: task.replacementIntent.clientMessageId,
       });
-      const replacement = await client.workspaces.ref(task.workspaceId).agents.create(options);
+      const externalFactsReconciled = task.originalProcess.trackedPids.every(
+        (pid) => !pidIsAlive(pid),
+      );
+      const replacement = await createReplacementAfterTermination(
+        previousAfter,
+        externalFactsReconciled,
+        () => client.workspaces.ref(task.workspaceId).agents.create(options),
+      );
       task.currentAgentId = replacement.id;
       task.currentLabels = replacementLabels;
       task.replacementObservedAt = new Date().toISOString();
@@ -979,6 +1497,7 @@ async function run() {
           previousArchive,
           previousAfter: agentSummary(previousAfter),
           terminationMs,
+          signalEvidence,
           replacement: agentSummary(replacementSnapshot),
           finish,
           sameExactTitle: replacementSnapshot.title === previous.title,

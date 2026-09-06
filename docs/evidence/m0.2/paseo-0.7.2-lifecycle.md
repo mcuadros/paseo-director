@@ -28,7 +28,8 @@ The checked-in [fixture](./fixture/) is copied over an official `paseo plugin in
 - a server lifecycle marker used only to distinguish process starts, returned cleanup callbacks, and the deliberate crash;
 - a unique long-running Node child that writes its exact PID before waiting indefinitely;
 - an incompatible entry that checks a missing method before starting the marker;
-- a public `@getpaseo/client` harness for structural checks, subscriptions, create/list/ref/refresh, send/wait, and archive.
+- one shared 43-method structural preflight used by both public clients before and after connection;
+- a public `@getpaseo/client` harness for subscriptions, create/list/ref/refresh, send/wait, and archive;
 - a second public-client harness for top-level Task/Reviewer creation, concurrent worktree topology, parent-bound helpers, durable reservation/accounting facts, replacement guards, reconciliation, and cleanup.
 
 The process marker, `/proc`, `ps`, and `ss` are Linux-only test instrumentation used to validate lifecycle claims; they are not Director product state or production dependencies. Product recovery conclusions come from documented CLI or SDK results. Daemon output was used only to debug the fixture and is not an authority.
@@ -40,27 +41,29 @@ Final fixture SHA-256 values:
 | `archive-child.mjs` | `ccaef84a16f42f9b956272de7406eb092e194648872b51037b2f906fc5d7233e` |
 | `incompatible-index.ts` | `921857d1114e41bb956473e4ac60e8643aa8c6351a7697e347c445580f05f35e` |
 | `index.ts` | `1a8009ed1d00ed3554a7ceb18a5cfb6aa89195e1fc600bb4cb72c782cc10c52c` |
-| `lifecycle-client.mjs` | `7f43ba54c04c4c79df112559e8b71f9f7cb9a48189cab3cac1c6b040e943a085` |
+| `lifecycle-client.mjs` | `e69ca2b8926f5eb40f8a31381c16a6d4c5f67dc135fd172b295f06121b5d97bf` |
 | `main.client.tsx` | `bf234c037be01c75b5a0fe2329c0d09ee39ebe47a216daf90916b0e3b109c8a0` |
+| `paseo-preflight.mjs` | `1e04e533b65b3d3de12f9c8e821beec5f3955364aa5c1bcb6747e2b80e21b43e` |
 | `probe.server.ts` | `4cb67ba49003ea7fb28d4d9aedfc571635ff470eddb03949207833607b1f65aa` |
 | `probe.shared.ts` | `20405f579f488b1a2adf73d764810ab5d08cafe1d54e23f5075e1fddaa6cbd21` |
-| `topology-client.mjs` | `517d0d2e6417cc4bd896374f127cde13b6f177fb35ae609e5195ccc2b69b5b59` |
+| `topology-client.mjs` | `16060894b8e9880b66bfcbce7b613a7e401877238a30c54a55d876a25b4acc86` |
 
 ## Authentication and structural compatibility
 
 An unauthenticated documented CLI request failed with `Password required`. The same request and every subsequent operation succeeded only with the ephemeral password. The password is not retained in this repository.
 
-The official scaffold and fixture typechecked against exact `@getpaseo/plugin@0.7.2`. Before connecting, the real client now checks client lifecycle, every SDK root, and effect-free `ref()`-derived Workspace, scoped-agent, Agent, and timeline handles. The same checks repeat after connection and before any create.
+The official scaffold and fixture typechecked against exact `@getpaseo/plugin@0.7.2`. Both harnesses import the same preflight. Before connecting, each real client checks client lifecycle, every SDK root, and effect-free `ref()`-derived Workspace, scoped-agent, Agent, and timeline handles. The same checks repeat after connection and before any create.
 
 The offline negative suite removes each required method in turn. All 43 cases failed with the precise missing path, two baseline `ref()` calls, and no create, archive, send, plugin, marker, or state-write effect:
 
 ~~~json
-{"checkedSurfaces":43,"failures":43,"sideEffects":0,"baselineRefCalls":2}
+{"harness":"lifecycle","checkedSurfaces":43,"failures":43,"sideEffects":0,"baselineRefCalls":2}
+{"harness":"topology","checkedSurfaces":43,"failures":43,"sideEffects":0,"baselineRefCalls":2}
 ~~~
 
 The checked methods include `connect`/`close`; all five roots; Workspace `current`, `refresh`, `setTitle`, `archive`, `subscribe`, and scoped `agents.create`; Agent `current`, `refresh`, `send`, `run`, `waitForFinish`, `commands`, `archive`, `detach`, and `subscribe`; and timeline `refetch`/`subscribe`.
 
-Four additional effect-free policy negatives passed: top-level creation omitted `parent`; caller-supplied helper Task/Run/role overrides could not alter the frozen adapter labels; an unknown helper creation result parked without calling create; and an active prior Task Agent rejected replacement before create. Total reported side effects remained zero.
+Seven adapter-policy cases drove the real helper reservation, reconciliation, idempotency, archive, and replacement-gate functions through an injected fake client/effect recorder. Caller-supplied scope was rejected with zero creates/prompts; a reserved helper with zero observed matches parked after one reconciliation with zero creates/prompts; first admission created and prompted once while the repeated adapter call returned the same observed identity with no second create; both closed/unarchived and closed/archived-but-unreconciled replacement paths made zero creates/prompts; and closed/unarchived cleanup invoked archive exactly once. The idempotency result is Director adapter behavior from its durable reservation/observed-ID ledger, not a native Paseo `requestId` or create guarantee.
 
 Installing the incompatible plugin produced public status `failed` with:
 
@@ -89,12 +92,23 @@ All IDs below were stable exact values in the raw local run. They are represente
 | Plugin enable | `disabled` to `running`; new instance started | Same native resources remained | Full startup reconciliation |
 | Plugin subprocess exit 23 | Public status became `failed` with `Plugin process exited`; no cleanup marker | Same workspace/agent remained recoverable | Do not expect automatic restart; explicit reload after reconciliation |
 | Explicit reload after crash | Public status returned to `running` | Same workspace/agent remained | Treat crash as an interrupted engine attempt |
-| Daemon restart, idle initialized agent | Enabled plugin automatically returned to `running`; native records reloaded | Same IDs, labels, and provider session; a later send completed on the same session | Reconnect and reconcile from durable references |
-| Daemon restart, active turn | A unique child and two provider PIDs were live before shutdown; after restart the agent/workspace returned as `running`, but `activeTurn` was absent and did not self-resolve after five seconds | All old PIDs were absent; a new public `send` resumed the same provider session and completed without a duplicate agent | Previous turn outcome is ambiguous: reconcile durable effects first; never blindly retry; enter `Needs you` if ambiguity remains |
-| Active agent archive | Public `running` plus non-null `activeTurn`, a durable child start marker, and exact `/proc` ancestry proved one child and two provider processes live beneath the isolated daemon | Refreshed exact-fixture archive returned in 450 ms with all three PIDs gone; they stayed absent after two seconds, repeated archive returned the identical timestamp, public state was `closed`, and the workspace remained active | Archive is the supported close/interrupt operation |
-| Workspace archive | First archive returned no error; ref/active-list no longer returned the workspace | Second archive succeeded with the identical timestamp; archived closed agent remained recoverable by ref and label-filtered include-archived list | Archive agents first, then workspace; keep durable audit references |
+| Authenticated `paseo daemon stop --home`, then restart | `usedLifecycleRpc=true`; all unarchived no-prompt, active Task/helper, idle Reviewer, and idle replacement rows returned `closed`, null `archivedAt`, and no `activeTurn` | Exact IDs/workspaces/sessions remained; topology capacity stayed 4; safe sends resumed all initialized sessions only after reconciliation | `closed`/null-`archivedAt` is un-terminated, ambiguous, resumable, and capacity-consuming; it authorizes no retry/replacement/cleanup/new capacity |
+| Abrupt worker `SIGKILL` with supervisor alive | Supervisor PID stayed stable and auto-started a new worker; plugin reloaded without old cleanup | Idle Reviewer/replacement stayed `idle`; interrupted Task/helper/lifecycle rows returned `running` with no `activeTurn`; every old child/provider/worker PID was absent; safe sends resumed the same sessions after reconciliation | Attribute stale `running` to abrupt worker loss; never infer outcome or retry from status |
+| Active agent archive | Public `running` plus non-null `activeTurn`, a durable child start marker, and exact `/proc` ancestry proved one child and two provider processes live beneath the isolated daemon | Final archive returned in 396 ms with all three PIDs gone; they stayed absent after two seconds; no child signal handler ran; repeated archive returned one timestamp; public state was `closed` with non-null `archivedAt`; workspace remained active | Archive is the supported hard close/interrupt operation, not graceful pause or safe-boundary parking |
+| Workspace archive | First archive cascaded a non-null agent `archivedAt`, then removed the workspace from active ref/list | Retry kept the workspace timestamp; archived agent remained recoverable; managed worktree directories disappeared, but Task branches and one empty worktree-root directory remained | Record cascaded agent facts; Director separately cleans owned branch/ref/residual paths |
 
-The returned plugin cleanup callback ran on reload, disable, and explicit plugin removal. It did not write its marker during any of three graceful daemon shutdown/restart cycles. A daemon stop must therefore be treated like abrupt engine loss: cleanup callbacks are best effort, not a correctness boundary.
+Cleanup callback behavior was path-specific:
+
+| Stop path | Observed callback result |
+|---|---|
+| Reload, disable, explicit removal | Cleanup marker written |
+| Authenticated documented `paseo daemon stop --home` | `usedLifecycleRpc=true`, graceful result, cleanup marker written |
+| Explicit `SIGINT` to worker and supervisor | Both exited; cleanup marker written |
+| Process-group `SIGINT` | Supervisor, worker, plugin, and group exited; no cleanup marker because the plugin process received the group signal directly |
+| Worker `SIGKILL` | Supervisor auto-restarted a new worker/plugin; old plugin wrote no cleanup marker |
+| Deliberate plugin exit 23 | Public plugin state became `failed`; no cleanup marker |
+
+The callback remains best effort. Durable correctness cannot depend on it even for paths that invoked it in this run.
 
 ## PLAN v0.3 agent topology
 
@@ -103,8 +117,8 @@ The refreshed run created three workspaces from one disposable no-remote reposit
 | Role | Exact visible title | Parent | Workspace/lifecycle result |
 |---|---|---|---|
 | Task Agent alpha | `Implement concurrent topology alpha` | omitted; observed `null` | Unique Task workspace/worktree; ran concurrently with beta; later closed with its helper cascade |
-| Task Agent beta | `Validate concurrent topology beta` | omitted; observed `null` | Different unique Task workspace/worktree for the same repository; original closed before replacement |
-| Reviewer Agent | `Review topology candidate` | omitted; observed `null` | Independent workspace over the detached exact-SHA checkout; unique prompt completed; identity survived restart; explicitly archived |
+| Task Agent beta | `Validate concurrent topology beta` | omitted; observed `null` | Different unique Task workspace/worktree for the same repository; original reached closed plus non-null `archivedAt` with absent processes before replacement |
+| Reviewer Agent | `Review topology candidate` | omitted; observed `null` | Independent workspace over the detached exact-SHA checkout; unique prompt completed; identity survived both restart paths; workspace archive later cascaded its agent timestamp |
 | Helper explicit | `Topology explicit helper` | exact alpha Task Agent ID | Requested beta's directory but public placement was forced to alpha's workspace/cwd; explicit archive closed its live child/provider chain without affecting alpha |
 | Helper cascade | `Topology cascade helper` | exact alpha Task Agent ID | Requested the review directory but public placement was forced to alpha's workspace/cwd; parent archive cascaded closed state and process termination |
 
@@ -112,7 +126,7 @@ Every top-level creation options object was asserted to have no `parent` propert
 
 The helper fixture exercises the public SDK's agent-parent/caller contract without enabling daemon-wide MCP injection. It proves the native lifecycle substrate used by a Task-Agent-scoped helper request: parent attribution, parent-bound placement, cascade, ref/list/refresh recovery, and archive. It does not claim that a general top-level client may originate helper policy, or that Paseo's broad built-in MCP catalog is the admitted production ingress. Director must still expose only a narrowly authorized Task-Agent-scoped helper command and enforce ADR-0008's separate authority boundary.
 
-The helper adapter fixed Project/Workspace/Task/Run/role/intent labels from the owning Run rather than accepting those selectors from helper input. It wrote a per-Run reservation before create and the returned native identity before dependent work. Repeating the same observed helper intent returned the same identity without a second create. The unknown-result negative parked with zero create effects.
+The helper adapter fixed Project/Workspace/Task/Run/role/intent labels from the owning Run rather than accepting those selectors from helper input. It wrote a per-Run reservation before create and the returned native identity before dependent work. Repeating the adapter call after that identity was observed returned the persisted identity without a second create or prompt. That is Director adapter idempotency, not a native Paseo create guarantee. The real unknown-result path reconciled once and parked with zero creates/prompts when no match existed.
 
 At peak concurrency, public records plus the fixture's durable role ledger yielded:
 
@@ -129,18 +143,18 @@ At peak concurrency, public records plus the fixture's durable role ledger yield
 
 The Reviewer consumed global capacity but not helper quota. Both helpers consumed the owning Task's quota plus global capacity. Their durable role remained `helper`; the Task Agent IDs remained the Task, Run, and Candidate owners of record. Paseo supplies native identity, parentage, placement, lifecycle, and usage observations, but these Director ownership/quota/budget facts remain TaskStore responsibilities.
 
-The explicit helper's child/provider PIDs `3928339`, `3924943`, and `3924932` were live before archive and absent at the response. Its parent remained `running`. The cascade helper's PIDs `3929582`, `3928501`, and `3928494` and the parent Task Agent's PIDs `3921051`, `3919834`, and `3919827` were live before parent archive and absent at the response. Public refresh returned both parent and cascade helper as `closed` with preserved parentage. Explicit helper-first cleanup remains Director's normal rule; the observed parent cascade is an additional safety net.
+The explicit helper's child/provider PIDs `2446961`, `2445295`, and `2445288` were live before archive and absent at the response. Its parent remained `running`. The final cascade helper's PIDs `2643574`, `2631897`, and `2631840` and parent Task Agent PIDs `2642896`, `2608423`, and `2608368` were live before parent archive and absent at the response. None wrote a termination-signal marker. Public refresh returned both parent and cascade helper as `closed` with non-null `archivedAt` and preserved parentage. Explicit helper-first cleanup remains Director's normal rule; the observed parent cascade is an additional safety net.
 
-The beta original archived at `2026-09-06T05:17:43.377Z`; its replacement was created at `2026-09-06T05:17:44.181Z`, 804 ms later. The replacement had a different native ID, the same exact title and workspace, no parent, one completed initial prompt, and was the only active Task Agent for that Task/Run. The offline active-prior negative also proved zero create effects.
+The beta original archived at `2026-09-06T06:37:09.023Z`; its replacement was created at `2026-09-06T06:37:09.839Z`, 816 ms later. The replacement had a different native ID, the same exact title and workspace, no parent, one completed initial prompt, and was the only unarchived Task Agent for that Task/Run. The real replacement gate also denied closed/unarchived and archived-but-unreconciled fakes with zero creates/prompts.
 
-Reload, disable/enable, and failed-plugin reconciliation preserved all five simultaneously active topology identities, exact titles, parentage, workspace assignments, provider sessions, four unique prompt markers, and peak capacity facts. Same-home daemon restart later recovered the replacement and Reviewer plus the closed Task/helper records without duplication.
+Reload, disable/enable, and failed-plugin reconciliation preserved all five simultaneously active topology identities, exact titles, parentage, workspace assignments, provider sessions, four unique prompt markers, and peak capacity facts. Authenticated documented stop then recovered alpha, the beta replacement, Reviewer, and cascade helper as `closed`/unarchived and capacity 4. Each initialized session resumed only after reconciliation. After worker `SIGKILL`, interrupted alpha/helper rows were `running` without active turns while idle replacement/Reviewer rows stayed `idle`; capacity remained 4 and every session resumed with the same identity. Reviewer workspace archive later cascaded its agent `archivedAt` 378 ms before the workspace archive completed and reduced capacity to 3.
 
 ## Agent creation and recovery edges
 
 The initial no-prompt agent became public `idle` state and exposed a provider session ID. After daemon restart, its first send failed explicitly:
 
 ~~~console
-$ DIRECTOR_PASEO_URL=ws://127.0.0.1:17688/ws \
+$ DIRECTOR_PASEO_URL=ws://127.0.0.1:17693/ws \
   DIRECTOR_PASEO_PASSWORD='<ephemeral-password>' \
   DIRECTOR_LIFECYCLE_STATE=/tmp/director-m0.2/state.json \
   DIRECTOR_INITIAL_PROMPT='Reply with exactly SHOULD_NOT_RUN.' \
@@ -152,11 +166,11 @@ exit 1
 Failed to resume Codex thread <session>: no rollout found for thread id <session>
 ~~~
 
-Archiving that record twice was idempotent. A replacement created with its initial prompt in the same public create request completed `READY`, survived another daemon restart, and later resumed on the same provider session. Director must include the initial task prompt atomically in agent creation. If the host still fails before the first provider rollout becomes durable, the explicit resume error is recoverable only by archiving the unusable record and applying the plan's one-replacement limit after label/ID reconciliation.
+Before that failed send, the orderly-restart record was `closed` with null `archivedAt`, no `activeTurn`, and its original session. The fixture marked it non-terminated, capacity-bearing, and unauthorized for replacement, duplicate prompt, or cleanup. Only after the explicit non-resumability was observed did archiving it twice yield one non-null timestamp. A replacement created with its initial prompt in the same public create request completed `READY`. Director must include the initial task prompt atomically in agent creation. If the host still fails before the first provider rollout becomes durable, archive the unusable record, reconcile full termination, and only then apply the plan's one-replacement limit.
 
-For the refreshed active-restart case, the first prompt launched the fixture-owned long-running child. Its durable marker identified child PID `4040598`; `/proc` ancestry identified provider PIDs `4033014` and `4032977` under daemon PID `3950751`. All four were absent after daemon shutdown. After restart, list/ref/refresh preserved the record as `running` but omitted `activeTurn` for more than five seconds. Sending `Reply with exactly AFTER_RESTART.` through the same handle resumed the same agent and provider-session IDs and ended in `idle` with `AFTER_RESTART`.
+For the final abrupt-restart case, one lifecycle prompt launched child PID `2533286` under provider PIDs `2531920` and `2531906`; alpha/helper prompts added two independently marked chains under worker PID `2510123`. Worker `SIGKILL` left supervisor PID `2510112` alive and it started worker PID `2570076`. Every old worker/child/provider PID was absent and the old plugin instance wrote no cleanup marker. The lifecycle, alpha, and helper records returned `running` with no `activeTurn`; idle Reviewer and beta replacement records stayed `idle`. Reconciliation preserved every native/provider session ID and capacity. Only then did public sends resume all five initialized sessions and complete on the same identities.
 
-This demonstrates transport recovery, not proof that the interrupted turn had no external effect. Director must compare TaskStore, Git, GitHub, and workspace facts before deciding whether a recovery message, archive/replacement, or `Needs you` is safe.
+This demonstrates transport recovery, not proof that an interrupted turn had no external effect. Director must compare TaskStore, Git, GitHub, workspace, process, native ID/session, and archive facts before deciding whether a recovery message, archive/replacement, or `Needs you` is safe. Neither `closed`/unarchived nor `running`/no-active-turn releases capacity or authorizes another effect.
 
 ## Subscriptions and authority
 
@@ -190,23 +204,41 @@ Initial create and recovery:
 }
 ~~~
 
+Normal post-restart projection after authenticated documented stop:
+
+~~~json
+{
+  "rows":["no-prompt","task-alpha","task-beta-replacement","reviewer","cascade-helper"],
+  "status":"closed",
+  "archivedAt":null,
+  "activeTurn":null,
+  "sameNativeAndProviderSessionIds":true,
+  "topologyCapacity":{"globalConsumed":4,"taskAgents":2,"reviewers":1,"helpers":1},
+  "terminated":false,
+  "replacementAuthorized":false,
+  "duplicatePromptAuthorized":false,
+  "cleanupAuthorized":false
+}
+~~~
+
 Active archive:
 
 ~~~json
 {
   "before":{"status":"running","activeTurn":{"turnId":"codex-turn-0"}},
   "processEvidence":{
-    "daemonPid":3950751,
-    "childPid":4008549,
-    "providerPids":[3982929,3982871],
+    "daemonPid":2570076,
+    "childPid":2645388,
+    "providerPids":[2638215,2638208],
     "aliveBeforeArchive":true,
-    "archiveResponseMs":450,
+    "archiveResponseMs":396,
     "postResponseTerminationMs":0,
     "absentAfterArchive":true,
     "stillAbsentAfterDelay":true
   },
-  "after":{"status":"closed","archivedAt":"2026-09-06T05:19:03.764Z"},
-  "secondArchive":{"ok":true,"archivedAt":"2026-09-06T05:19:03.764Z"},
+  "terminationSignal":null,
+  "after":{"status":"closed","archivedAt":"2026-09-06T06:42:47.129Z"},
+  "secondArchive":{"ok":true,"archivedAt":"2026-09-06T06:42:47.129Z"},
   "workspaceAfterArchive":{"status":"done","archivedAt":null}
 }
 ~~~
@@ -215,10 +247,10 @@ Active daemon-restart recovery:
 
 ~~~json
 {
-  "beforeStop":{"daemonPid":3950751,"childPid":4040598,"providerPids":[4033014,4032977]},
-  "afterStop":{"allRecordedPidsAbsent":true},
+  "beforeKill":{"supervisorPid":2510112,"workerPid":2510123,"childPid":2533286,"providerPids":[2531920,2531906]},
+  "afterKill":{"newWorkerPid":2570076,"allOldWorkerAndChildPidsAbsent":true,"cleanupCallback":false},
   "afterRestart":{"status":"running","activeTurn":"<absent>"},
-  "afterPublicSend":{"status":"idle","activeTurn":null,"lastMessage":"AFTER_RESTART"},
+  "afterReconciledPublicSend":{"status":"idle","activeTurn":null,"lastMessage":"LIFECYCLE_AFTER_WORKER_KILL"},
   "sameAgentId":true,
   "sameProviderSession":true
 }
@@ -242,19 +274,23 @@ git -C /tmp/director-m0.2/source-repository worktree add --detach \
 
 paseo plugin init /tmp/director-m0.2/plugin --id director-lifecycle-probe --json
 # Copy index.ts, main.client.tsx, probe.server.ts, probe.shared.ts,
-# lifecycle-client.mjs, topology-client.mjs, and archive-child.mjs from the
-# checked-in fixture.
+# lifecycle-client.mjs, topology-client.mjs, paseo-preflight.mjs, and
+# archive-child.mjs from the checked-in fixture.
 cd /tmp/director-m0.2/plugin
 npm install --ignore-scripts
 npm run typecheck
+node --check paseo-preflight.mjs
 node --check lifecycle-client.mjs
 node --check topology-client.mjs
 node --check archive-child.mjs
 node lifecycle-client.mjs negative-structural
 # Expected: checkedSurfaces=43, failures=43, sideEffects=0, baselineRefCalls=2.
 DIRECTOR_TEST_PROVIDER=codex/gpt-5.4-mini \
+  node topology-client.mjs topology-negative-structural
+DIRECTOR_TEST_PROVIDER=codex/gpt-5.4-mini \
   node topology-client.mjs topology-policy-negatives
-# Expected: cases=4, sideEffects=0.
+# Expected: cases=7, sideEffects=0, deniedPathCreates=0,
+# deniedPathPrompts=0, adapterIdempotency creates=1/prompts=1.
 
 paseo plugin init /tmp/director-m0.2/incompatible --id director-lifecycle-incompatible --json
 # Copy incompatible-index.ts to incompatible/index.ts, then copy
@@ -264,12 +300,12 @@ npm install --ignore-scripts
 npm run typecheck
 
 # Run this foreground daemon in a dedicated terminal.
-PASEO_PASSWORD='<ephemeral-password>' DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime paseo daemon start --home /tmp/director-m0.2/home --listen 127.0.0.1:17682 --foreground --no-relay --no-mcp --no-inject-mcp --no-web-ui
+PASEO_PASSWORD='<ephemeral-password>' DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime paseo daemon start --home /tmp/director-m0.2/home --listen 127.0.0.1:17693 --foreground --no-relay --no-mcp --no-inject-mcp --no-web-ui
 
 # This must fail with "Password required".
-paseo plugin ls --host 127.0.0.1:17682 --json
+paseo plugin ls --host 127.0.0.1:17693 --json
 
-export DIRECTOR_PASEO_URL='ws://127.0.0.1:17682/ws'
+export DIRECTOR_PASEO_URL='ws://127.0.0.1:17693/ws'
 export DIRECTOR_PASEO_PASSWORD='<ephemeral-password>'
 export DIRECTOR_LIFECYCLE_STATE=/tmp/director-m0.2/state.json
 export DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime
@@ -283,93 +319,121 @@ export DIRECTOR_DAEMON_PID='<exact-live-daemon-pid-from-ss>'
 
 cd /tmp/director-m0.2/plugin
 node lifecycle-client.mjs enable-plugins
-PASEO_PASSWORD='<ephemeral-password>' paseo plugin install /tmp/director-m0.2/incompatible --host 127.0.0.1:17682 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin install /tmp/director-m0.2/incompatible --host 127.0.0.1:17693 --json
 test ! -e /tmp/director-m0.2/runtime/director-lifecycle-incompatible.events.jsonl
-PASEO_PASSWORD='<ephemeral-password>' paseo plugin remove director-lifecycle-incompatible --host 127.0.0.1:17682 --json
-PASEO_PASSWORD='<ephemeral-password>' paseo plugin install /tmp/director-m0.2/plugin --host 127.0.0.1:17682 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin remove director-lifecycle-incompatible --host 127.0.0.1:17693 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin install /tmp/director-m0.2/plugin --host 127.0.0.1:17693 --json
 node lifecycle-client.mjs create
 node lifecycle-client.mjs recover
 node topology-client.mjs topology-create
 git -C /tmp/director-m0.2/source-repository worktree list --porcelain
 
-PASEO_PASSWORD='<ephemeral-password>' paseo plugin reload director-lifecycle-probe --host 127.0.0.1:17682 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin reload director-lifecycle-probe --host 127.0.0.1:17693 --json
 node lifecycle-client.mjs recover
 node topology-client.mjs topology-recover
-PASEO_PASSWORD='<ephemeral-password>' paseo plugin disable director-lifecycle-probe --host 127.0.0.1:17682 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin disable director-lifecycle-probe --host 127.0.0.1:17693 --json
 node lifecycle-client.mjs recover
 node topology-client.mjs topology-recover
-PASEO_PASSWORD='<ephemeral-password>' paseo plugin enable director-lifecycle-probe --host 127.0.0.1:17682 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin enable director-lifecycle-probe --host 127.0.0.1:17693 --json
 node topology-client.mjs topology-recover
 
 # Deliberate test-only crash; observe "failed", reconcile, then reload.
 touch /tmp/director-m0.2/runtime/director-lifecycle-probe.crash
-PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17682 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17693 --json
 node lifecycle-client.mjs recover
 node topology-client.mjs topology-recover
-PASEO_PASSWORD='<ephemeral-password>' paseo plugin reload director-lifecycle-probe --host 127.0.0.1:17682 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin reload director-lifecycle-probe --host 127.0.0.1:17693 --json
 node topology-client.mjs topology-recover
 
 # Both helpers have proven live child/provider chains. Exercise normal explicit
-# helper cleanup, the parent-cascade safety net, then guarded same-title Task
-# Agent replacement.
+# helper cleanup and guarded same-title Task Agent replacement. Keep alpha and
+# the cascade helper active for the orderly-stop row.
 node topology-client.mjs topology-explicit-helper-cleanup
-node topology-client.mjs topology-cascade-parent-cleanup
 node topology-client.mjs topology-replace-beta
 
-# Stop the foreground daemon with SIGINT, then rerun this in its dedicated terminal.
-PASEO_PASSWORD='<ephemeral-password>' DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime paseo daemon start --home /tmp/director-m0.2/home --listen 127.0.0.1:17682 --foreground --no-relay --no-mcp --no-inject-mcp --no-web-ui
-node lifecycle-client.mjs recover
-node topology-client.mjs topology-recover
+# Authenticated documented stop. This must report usedLifecycleRpc=true and
+# graceful lifecycle_shutdown_rpc; restart the identical foreground command.
+PASEO_PASSWORD='<ephemeral-password>' paseo daemon stop \
+  --home /tmp/director-m0.2/home --json
+PASEO_PASSWORD='<ephemeral-password>' DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime paseo daemon start --home /tmp/director-m0.2/home --listen 127.0.0.1:17693 --foreground --no-relay --no-mcp --no-inject-mcp --no-web-ui
+DIRECTOR_EXPECTED_STATUS=closed \
+  node lifecycle-client.mjs assert-unarchived-projection
+node topology-client.mjs topology-assert-orderly-restart
 # This exact command must exit 1 with "no rollout found".
 DIRECTOR_INITIAL_PROMPT='Reply with exactly SHOULD_NOT_RUN.' node lifecycle-client.mjs resume
 DIRECTOR_INITIAL_PROMPT='Reply with exactly READY.' node lifecycle-client.mjs replace-started
+node topology-client.mjs topology-resume-orderly
 
-# Stop and restart the identical foreground daemon command again. Read the new
-# worker PID from this exact listener probe.
-PASEO_PASSWORD='<ephemeral-password>' DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime paseo daemon start --home /tmp/director-m0.2/home --listen 127.0.0.1:17682 --foreground --no-relay --no-mcp --no-inject-mcp --no-web-ui
-ss -ltnp 'sport = :17682'
-export DIRECTOR_DAEMON_PID='<exact-live-daemon-pid>'
-node lifecycle-client.mjs archive-active
-# Substitute the PIDs printed by archive-active. Only the daemon row may remain.
-export DIRECTOR_CHILD_PID='<child-pid>'
-export DIRECTOR_PROVIDER_PIDS='<provider-pid-1>,<provider-pid-2>'
-ps -p "${DIRECTOR_CHILD_PID},${DIRECTOR_PROVIDER_PIDS},${DIRECTOR_DAEMON_PID}" -o pid=,ppid=,stat=,args=
+# Preserve the READY control as archived evidence, then create a separately
+# initialized active child for abrupt worker loss.
+node lifecycle-client.mjs archive-current
 node lifecycle-client.mjs archive-workspace
-
-# Create another atomically prompted long-running child, then record its marker
-# and exact process ancestry before stopping the daemon.
 export DIRECTOR_RESTART_TOKEN='<new-uuid>'
 export DIRECTOR_INITIAL_PROMPT="Run this exact command and wait for it to finish: '/usr/bin/node' '/tmp/director-m0.2/plugin/archive-child.mjs' '/tmp/director-m0.2/runtime/restart-${DIRECTOR_RESTART_TOKEN}.started.json' '${DIRECTOR_RESTART_TOKEN}'"
 node lifecycle-client.mjs create-active
-sed -n '1,20p' "/tmp/director-m0.2/runtime/restart-${DIRECTOR_RESTART_TOKEN}.started.json"
-export DIRECTOR_CHILD_PID='<child-pid-from-marker>'
-export DIRECTOR_PROVIDER_PIDS='<provider-pid-1>,<provider-pid-2>'
-ps -p "${DIRECTOR_CHILD_PID},${DIRECTOR_PROVIDER_PIDS},${DIRECTOR_DAEMON_PID}" -o pid=,ppid=,stat=,args=
 
-# Stop the daemon with SIGINT. The exact child/provider/daemon PID probe must
-# return no rows. Restart the identical daemon command/home.
-ps -p "${DIRECTOR_CHILD_PID},${DIRECTOR_PROVIDER_PIDS},${DIRECTOR_DAEMON_PID}" -o pid=,ppid=,stat=,args=
-PASEO_PASSWORD='<ephemeral-password>' DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime paseo daemon start --home /tmp/director-m0.2/home --listen 127.0.0.1:17682 --foreground --no-relay --no-mcp --no-inject-mcp --no-web-ui
-node lifecycle-client.mjs recover
-node topology-client.mjs topology-recover
-sleep 5
-node lifecycle-client.mjs recover
-DIRECTOR_INITIAL_PROMPT='Reply with exactly AFTER_RESTART.' node lifecycle-client.mjs resume
-node lifecycle-client.mjs archive-current
+ss -ltnp 'sport = :17693'
+export DIRECTOR_DAEMON_PID='<exact-live-daemon-pid>'
+DIRECTOR_RESTART_LABEL=worker-kill \
+  node topology-client.mjs topology-start-restart-pair
+sed -n '1,20p' "/tmp/director-m0.2/runtime/restart-${DIRECTOR_RESTART_TOKEN}.started.json"
+ps -p '<worker-and-all-three-child/provider-chains>' -o pid=,ppid=,pgid=,stat=,args=
+
+# Kill only the listener/worker. The supervisor must retain its PID and start a
+# different worker; every old worker/child/provider PID must be absent.
+kill -KILL "${DIRECTOR_DAEMON_PID}"
+sleep 3
+ss -ltnp 'sport = :17693'
+export DIRECTOR_DAEMON_PID='<new-exact-live-daemon-pid>'
+ps -p '<old-worker-and-child/provider-pids>' -o pid=,ppid=,pgid=,stat=,args=
+DIRECTOR_EXPECTED_STATUS=running \
+  node lifecycle-client.mjs assert-unarchived-projection
+node topology-client.mjs topology-assert-abrupt-restart
+node topology-client.mjs topology-resume-abrupt
+DIRECTOR_INITIAL_PROMPT='Reply with exactly LIFECYCLE_AFTER_WORKER_KILL.' \
+  node lifecycle-client.mjs resume
+
+# Workspace cascade archives the unarchived Reviewer. Recreate a final live
+# parent/helper pair, prove agent-archive hard kill/cascade, then repeat the
+# independent active archive and workspace idempotency cases.
+node topology-client.mjs topology-workspace-cascade-reviewer
+DIRECTOR_RESTART_LABEL=cascade-final \
+  node topology-client.mjs topology-start-restart-pair
+node topology-client.mjs topology-cascade-parent-cleanup
+node lifecycle-client.mjs archive-active
 node lifecycle-client.mjs archive-workspace
 
-# Exact final public and process cleanup probes.
+# Native cleanup removes the two managed worktree directories, not their Task
+# branches or the empty worktree-root directory. Prove and remove those exact
+# Director-owned residuals explicitly.
 node topology-client.mjs topology-cleanup
-PASEO_PASSWORD='<ephemeral-password>' paseo ls --host 127.0.0.1:17682 --json
-PASEO_PASSWORD='<ephemeral-password>' paseo workspace ls --host 127.0.0.1:17682 --json
-PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17682 --json
-PASEO_PASSWORD='<ephemeral-password>' paseo plugin remove director-lifecycle-probe --host 127.0.0.1:17682 --json
-PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17682 --json
-ss -ltnp 'sport = :17682'
-# Stop the foreground daemon with SIGINT.
-ss -ltnp 'sport = :17682'
-ps -p '<comma-separated-recorded-owned-pids>' -o pid=,ppid=,stat=,args=
+PASEO_PASSWORD='<ephemeral-password>' paseo ls --host 127.0.0.1:17693 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo workspace ls --host 127.0.0.1:17693 --json
 git -C /tmp/director-m0.2/source-repository worktree list --porcelain
+git -C /tmp/director-m0.2/source-repository branch -a
+find /tmp/director-m0.2/home/worktrees -mindepth 1 -maxdepth 2 -print
+git -C /tmp/director-m0.2/source-repository branch -D \
+  task/topology-alpha task/topology-beta
+rmdir '<exact-empty-owned-worktree-root-directory>'
+
+# Record callback differences. First signal the exact worker and supervisor;
+# after restarting, signal their exact process group. The first path writes a
+# cleanup marker; the group path does not because it signals the plugin too.
+kill -INT '<worker-pid>' '<supervisor-pid>'
+PASEO_PASSWORD='<ephemeral-password>' DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime paseo daemon start --home /tmp/director-m0.2/home --listen 127.0.0.1:17693 --foreground --no-relay --no-mcp --no-inject-mcp --no-web-ui
+ps -p '<worker-pid>' -o pid=,ppid=,pgid=,stat=,args=
+kill -INT -- '-<exact-daemon-process-group-id>'
+
+# Restart once for public plugin removal, then use documented authenticated
+# stop. Verify public lists, every recorded PID, and the listener are empty.
+PASEO_PASSWORD='<ephemeral-password>' DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime paseo daemon start --home /tmp/director-m0.2/home --listen 127.0.0.1:17693 --foreground --no-relay --no-mcp --no-inject-mcp --no-web-ui
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin remove \
+  director-lifecycle-probe --host 127.0.0.1:17693 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17693 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo daemon stop \
+  --home /tmp/director-m0.2/home --json
+ss -ltnp 'sport = :17693'
+ps -p '<comma-separated-recorded-owned-pids>' -o pid=,ppid=,pgid=,stat=,args=
 git -C /tmp/director-m0.2/source-repository worktree remove \
   /tmp/director-m0.2/review-checkout
 rm -rf /tmp/director-m0.2
@@ -378,34 +442,33 @@ test ! -e /tmp/director-m0.2
 
 ## Cleanup evidence
 
-The refreshed clean reportable run used port 17688. Nine owned agents and five owned workspaces covered the preserved lifecycle controls plus the expanded topology. The topology cleanup explicitly handled helpers first, archived the remaining Task Agent and Reviewer, retried each workspace archive with one stable timestamp, and returned empty owned active-ID arrays. The public global agent and workspace lists then each returned `[]`.
+The final clean reportable run used port 17693. Nine owned agents and five owned workspaces covered the preserved lifecycle controls plus the expanded restart topology. Cleanup explicitly handled helpers first and archived every remaining unarchived record. The live matrix separately proved that a closed/unarchived fake invokes archive once and that Reviewer workspace archive cascades an agent timestamp. Workspace retries retained stable workspace timestamps. The public global agent and workspace lists then each returned `[]`.
 
 Plugin listing contained only the owned running probe. Plugin removal returned `disabled`, and the next plugin list returned `[]`:
 
 ~~~console
-$ PASEO_PASSWORD='<ephemeral-password>' paseo ls --host 127.0.0.1:17688 --json
+$ PASEO_PASSWORD='<ephemeral-password>' paseo ls --host 127.0.0.1:17693 --json
 []
-$ PASEO_PASSWORD='<ephemeral-password>' paseo workspace ls --host 127.0.0.1:17688 --json
+$ PASEO_PASSWORD='<ephemeral-password>' paseo workspace ls --host 127.0.0.1:17693 --json
 []
-$ PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17688 --json
+$ PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17693 --json
 [{"id":"director-lifecycle-probe","path":"<owned-plugin>","enabled":true,"status":"running"}]
-$ PASEO_PASSWORD='<ephemeral-password>' paseo plugin remove director-lifecycle-probe --host 127.0.0.1:17688 --json
+$ PASEO_PASSWORD='<ephemeral-password>' paseo plugin remove director-lifecycle-probe --host 127.0.0.1:17693 --json
 {"id":"director-lifecycle-probe","path":"<owned-plugin>","enabled":false,"status":"disabled"}
-$ PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17688 --json
+$ PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17693 --json
 []
 ~~~
 
-After workspace archive, `git worktree list --porcelain` contained only the disposable source repository and detached review checkout; both Paseo-managed Task worktrees and branches were gone. The detached checkout was unregistered explicitly. Immediately before final shutdown, the exact PID probe returned only current daemon PID `4107645`; every recorded Task/helper/lifecycle child, provider, prior daemon, and plugin PID was absent. The listener bound `127.0.0.1:17688` only to that daemon. After SIGINT, the listener and exact PID probes returned no rows.
+After workspace archive, `git worktree list --porcelain` contained only the disposable source repository and detached review checkout: Paseo removed both managed Task worktree directories. `git branch -a` still listed `task/topology-alpha` and `task/topology-beta`, and the empty owned directory `home/worktrees/2umivkad` remained. Director deleted both exact branches and removed that exact empty directory, then proved only `main` and no worktree residual remained. This corrects the earlier assumption that Paseo workspace archive owns branch/ref cleanup.
+
+After the explicit worker-plus-supervisor and process-group signal rows, the daemon was restarted only to remove the plugin. The final authenticated documented stop reported `usedLifecycleRpc=true`, `reason=lifecycle_shutdown_rpc`, and `forced=false`. The exact PID probe then returned no rows for every recorded Task/helper/lifecycle child, provider, plugin, worker, or supervisor PID; port 17693 had no listener.
 
 ~~~console
-$ ps -p '<all-recorded-owned-pids>,4107645' -o pid=,ppid=,stat=,args=
-4107645 <supervisor-pid> Sl+ Paseo Daemon
-$ ss -ltnp 'sport = :17688'
-LISTEN 0 511 127.0.0.1:17688 0.0.0.0:* users:(("Paseo Daemon",pid=4107645,fd=27))
-# After SIGINT:
-$ ss -ltnp 'sport = :17688'
+$ PASEO_PASSWORD='<ephemeral-password>' paseo daemon stop --home <owned-home> --json
+{"action":"stopped","forced":false,"usedLifecycleRpc":true,"reason":"lifecycle_shutdown_rpc"}
+$ ss -ltnp 'sport = :17693'
 State Recv-Q Send-Q Local Address:Port Peer Address:Port Process
-$ ps -p '<all-recorded-owned-pids>,4107645' -o pid=,ppid=,stat=,args=
+$ ps -p '<all-recorded-owned-pids>' -o pid=,ppid=,pgid=,stat=,args=
 exit 1; no rows
 $ git -C <source-repository> worktree remove <detached-review-checkout>
 $ rm -rf <owned-1.5-GiB-experiment-root>
@@ -413,15 +476,20 @@ $ test ! -e <owned-experiment-root>
 exit 0
 ~~~
 
-Both plugin fixtures, every agent/workspace/worktree/process/listener, the detached review checkout, source repository, daemon home, and 1.5 GiB experiment root were removed. No public Beads/Dolt ref or primary workspace was touched.
+Both plugin fixtures, every agent/workspace/worktree/Task branch/residual directory/process/listener, the detached review checkout, source repository, daemon home, and 1.5 GiB experiment root were removed. No public Beads/Dolt ref or primary workspace was touched.
 
 ## Independent-review corrections preserved
 
-- **Structural preflight P1:** resolved by checking 43 client/root/ref-handle methods before connection/create and by independently removing every method in an offline suite that reported 43 precise failures and zero effects.
-- **Active archive P1:** resolved by the durable unique child marker, exact child/provider/daemon ancestry, public active-turn observation, the prior 428 ms and refreshed 450 ms exact-fixture archive results, exact-PID absence at response and after delay, idempotent retry/reconciliation, and independently usable workspace.
+- **Structural preflight findings:** resolved with one imported 43-method preflight invoked before and after connection by both lifecycle and topology clients. Both offline harness rows removed every method in turn and reported 43 precise failures, two effect-free refs, and zero effects.
+- **Active archive P1:** preserved with the durable unique child marker, exact child/provider/daemon ancestry, public active-turn observation, 396 ms final archive result, exact-PID absence at response and after delay, idempotent retry/reconciliation, and independently usable workspace. New signal assertions prove archive hard-killed the child tree without a graceful handler.
 - **Reproduction P2:** resolved by the exact no-prompt failure command/output and the explicit active-list, plugin-removal, PID, listener, daemon-stop, owned-root deletion, and absence commands/results above.
 - **PLAN v0.3 / ADR-0010 P1:** resolved by the successful clean topology run: omitted top-level parentage, exact titles, concurrent Task worktrees, detached Reviewer, non-overlapping replacement, helper parentage/scope/accounting/interruption/reconciliation/cleanup, and zero final resources.
 - **Advanced base P1:** resolved by preserving the two prior commits and rebasing them onto exact `58dba422562c820b60fd1a214b66577b9dbbb83e` before the refreshed run. ADR-0005's provider/MCP result is cross-referenced without making a new provider admission or helper security claim.
+- **Closed/unarchived P1:** resolved by live authenticated documented-stop projections for no-prompt, Task, Reviewer, replacement, helper, and active-child rows; explicit non-termination assertions; capacity 4; same-session resume only after reconciliation; closed-plus-archived-plus-external-facts replacement; and explicit archive of a closed/unarchived fake.
+- **Policy-negative P2:** resolved by driving the real helper reservation/unknown/idempotency functions and replacement gate with injected clients/recorders. Denied paths made zero creates/prompts; adapter idempotency made exactly one create/prompt across two calls.
+- **Workspace cleanup P2:** corrected and proven: Paseo removed managed worktree directories but left both Task branches and one empty worktree-root directory; Director removed those exact owned residuals.
+- **Stop/signal P3:** reproduction now uses authenticated `paseo daemon stop --home` and exact process signalling. Documented stop and explicit worker-plus-supervisor `SIGINT` wrote cleanup; worker `SIGKILL` and process-group `SIGINT` did not.
+- **Archive-signal P3:** all archive assertions found no `SIGINT`/`SIGTERM`/`SIGHUP` termination marker. Archive is documented as hard termination, not graceful pause or safe-boundary parking.
 
 ## Result
 
@@ -431,14 +499,17 @@ The evidence supports **Go with mandatory recovery constraints**:
 - include the initial prompt atomically in create;
 - use subscriptions only to schedule list/ref/refresh reconciliation;
 - treat plugin crash as failed until an explicit reload after reconciliation;
-- assume no cleanup callback on daemon loss;
-- never infer completion from stale `running` or from missing `activeTurn`;
+- treat cleanup callbacks as path-specific best effort and never a correctness boundary;
+- treat every null-`archivedAt` record as un-terminated and capacity-consuming, including `closed`/no-active-turn after orderly restart;
+- attribute `running`/no-active-turn to abrupt worker loss in the tested topology, without inferring completion or retry permission;
 - reconcile durable external effects before any recovery send or retry;
-- archive and apply at most one replacement when a provider record cannot resume;
+- archive and apply at most one replacement when a provider record cannot resume, only after `closed` plus non-null `archivedAt` and external termination facts reconcile;
 - create Task Agents and Reviewers as top-level agents with omitted parents; use exact Task titles and separate Task worktrees;
 - reserve and reconcile helper identity, fixed scope, capacity, quota, and budget before helper work; never promote a helper into Task/Run/Candidate ownership;
-- require the previous top-level Task Agent to be closed before one same-title replacement;
+- require the previous top-level Task Agent to satisfy the full termination predicate before one same-title replacement;
 - enter `Needs you` whenever the interrupted effect remains ambiguous;
-- archive agents before workspaces and retain their durable audit references.
+- archive agents before workspaces and retain their durable audit references;
+- treat agent archive as hard termination, never graceful safe-boundary parking;
+- clean owned Task branches/refs and empty residual directories explicitly after native workspace archive.
 
 These constraints align ADR-0003 with PLAN v0.3 and ADR-0010. They do not authorize M1 while another M0 stop condition remains, and they do not weaken ADR-0008: labels, parentage, worktrees, provider settings, and MCP policy are not an OS or credential boundary.
