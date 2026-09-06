@@ -1,0 +1,3681 @@
+{
+  "schema_version": 6,
+  "environment": {
+    "run_id": "42767185e5301464",
+    "bd": "bd version 1.2.2 (6c124203e: HEAD@6c124203e771)",
+    "dolt": "dolt version 2.3.2",
+    "operating_system": "Linux 6.12.107+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.107-1 (2026-08-29) x86_64 GNU/Linux",
+    "topology": "isolated authenticated loopback TCP server on ephemeral port 43343; unique Beads and direct-Dolt databases; independent CLI client processes",
+    "server": {
+      "spawned_pid": 1947006,
+      "identity_verified": true,
+      "unauthenticated_root_denied": true,
+      "termination": 0
+    },
+    "databases": {
+      "beads": "beads_42767185e5301464",
+      "direct_dolt": "direct_42767185e5301464"
+    },
+    "credentials": "per-run random values passed only through supported process environment variables; no credential profile, argv, or output",
+    "temp_directory": {
+      "basename": "director-m0.4-42767185e5301464-TJJehW",
+      "removed": true
+    }
+  },
+  "checks": [
+    {
+      "id": "harness.authenticated_server_identity",
+      "system": "Harness",
+      "contract_result": "PASS",
+      "observed": "Spawned PID 1947006 remained live while a unique database marker and HMAC identity matched through per-run environment-authenticated owner credentials; unauthenticated root was denied."
+    },
+    {
+      "id": "beads.planning_graph",
+      "system": "Beads",
+      "contract_result": "PASS",
+      "observed": "Epic, Task, parent-child, and blocking dependency records round-tripped through public CLI commands."
+    },
+    {
+      "id": "beads.concurrent_distinct_writers",
+      "system": "Beads",
+      "contract_result": "PASS",
+      "observed": "Two independent CLI processes created distinct records against one external server."
+    },
+    {
+      "id": "beads.narrow_batch_atomicity",
+      "system": "Beads",
+      "contract_result": "PASS",
+      "observed": "A failing supported batch update rolled back the preceding update."
+    },
+    {
+      "id": "beads.optimistic_concurrency",
+      "system": "Beads",
+      "contract_result": "FAIL",
+      "observed": "The public update command rejects --expected-version; two writes derived from version 0 both succeeded and the latter silently replaced the former at version 1."
+    },
+    {
+      "id": "beads.atomic_state_and_structured_event",
+      "system": "Beads",
+      "contract_result": "FAIL",
+      "observed": "The only public multi-operation transaction rejects metadata (allowed update keys: status, priority, title, assignee), so it cannot atomically write a Director aggregate plus structured event/command records."
+    },
+    {
+      "id": "beads.immutable_event_records",
+      "system": "Beads",
+      "contract_result": "FAIL",
+      "observed": "A structured --type=event record was mutated successfully through the public update command."
+    },
+    {
+      "id": "beads.idempotency_key",
+      "system": "Beads",
+      "contract_result": "FAIL",
+      "observed": "Recreating an explicit issue ID with a conflicting command payload succeeded and overwrote the original record instead of returning the original result or rejecting the mismatch."
+    },
+    {
+      "id": "direct_dolt.guard_body_constraints",
+      "system": "Direct Dolt",
+      "contract_result": "CONTROL",
+      "observed": "Dolt 2.3.2 rejects SIGNAL (exit 1) and compound BEGIN ... END trigger bodies (exit 1), so each append-only guard is expressed as one supported multi-row INSERT into its identity ledger whose primary key raises the duplicate-identity error."
+    },
+    {
+      "id": "direct_dolt.definer_append_boundary",
+      "system": "Direct Dolt",
+      "contract_result": "CONTROL",
+      "observed": "Rejected alternative: a procedure recorded with the authenticated owner as explicit DEFINER and granted EXECUTE still ran its INSERT with app privileges and was denied, so SELECT+EXECUTE cannot replace the base-table grant."
+    },
+    {
+      "id": "direct_dolt.view_append_boundary",
+      "system": "Direct Dolt",
+      "contract_result": "CONTROL",
+      "observed": "Insert exit=1; ODKU exit=1; stored value=absent; insert diagnostic=error on line 1 for query INSERT INTO view_append_api (id, value) VALUES (1, 'original'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'; ODKU diagnostic=error on line 1 for query INSERT INTO view_append_api (id, value) VALUES (1, 'tampered') ON DUPLICATE KEY UPDATE value = 'tampered': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'."
+    },
+    {
+      "id": "direct_dolt.record_mapping",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "Explicit relational records round-tripped Project, Workspace, Epic, Task, dependency, Run, Candidate, Event, and Audit shapes; Command request/outcome tables were independently exercised below."
+    },
+    {
+      "id": "direct_dolt.referenced_parent_identity_immutability",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "Identity ledgers and a conditional aggregate UPDATE guard protected all 3 referenced parent keys across 18 direct and insert-derived rename attempts with foreign-key checks enforced, disabled, and disabled under relaxed sql_mode; every child remained linked and 3 version/data updates preserved the aggregate id."
+    },
+    {
+      "id": "direct_dolt.atomic_state_and_event",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "The append-only identity guard rejected a duplicate Event identity and aborted the transaction; aggregate version/data and Event count remained unchanged."
+    },
+    {
+      "id": "direct_dolt.concurrent_same_version_cas",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "Two barriered clients read version 0 on the same aggregate; one committed one state/Event/Audit/outcome and the other rolled back with SQLSTATE 40001 / Error 1213. Winner=cmd-42767185e5301464-a."
+    },
+    {
+      "id": "direct_dolt.concurrent_identity_uniqueness",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "Two barriered clients committed the same Event identity concurrently; exactly one transaction succeeded, one durable row and one ledger identity remained, and the loser failed explicitly (append-only identity guard)."
+    },
+    {
+      "id": "direct_dolt.trigger_activation_control",
+      "system": "Direct Dolt",
+      "contract_result": "CONTROL",
+      "observed": "A BEFORE UPDATE guard trigger is active on Dolt 2.3.2: a direct owner UPDATE exited 1 and preserved the row. The same owner then changed the row through INSERT ... ON DUPLICATE KEY UPDATE with exit 0, so the ODKU update path does not activate BEFORE UPDATE triggers for any identity."
+    },
+    {
+      "id": "direct_dolt.keyless_uniqueness_tradeoff",
+      "system": "Direct Dolt",
+      "contract_result": "CONTROL",
+      "observed": "Without a unique index the existing row survived, because ODKU had no key to match and appended instead (exit 0, 1 to 2 rows, 2 rows for one identifier) and REPLACE was denied (exit 1); such a table cannot enforce idempotency-key or event-id uniqueness. Adding back the required UNIQUE index immediately restored the bypass: ODKU exited 0 and changed the stored value."
+    },
+    {
+      "id": "direct_dolt.database_boundary_immutability",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "BEFORE INSERT identity guards on 5 immutable tables covering all 9 declared unique identities rejected every one of 118 non-transaction-wrapped base-table adversarial statements, including exact/mismatched, VALUES(), INSERT ... SELECT, primary-key-targeted, multi-row and IGNORE ON DUPLICATE KEY UPDATE, REPLACE, UPDATE, DELETE, TRUNCATE, ALTER, guard-drop/replace and ledger-tamper attempts, while 10 distinct appends before and after the base matrix succeeded and every protected value stayed unchanged. Deferred transaction-wrapped attacks are reported separately."
+    },
+    {
+      "id": "direct_dolt.ledger_boundary",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "The application identity holds SELECT and no write privilege on any identity ledger: 117 direct ledger statements were denied with byte-identical ledger contents, unused-identity reservation is impossible, and the two-step ledger-rename attack was denied at both steps for all 9 table/identity pairs."
+    },
+    {
+      "id": "direct_dolt.referential_parent_guards",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "Supported BEFORE INSERT and BEFORE UPDATE parent-existence guards covering all 11 declared foreign keys denied every orphan append across 21 probes with foreign_key_checks enforced, disabled, and disabled under a relaxed sql_mode, while valid appends still succeeded with foreign_key_checks disabled; a child could not commit against an uncommitted parent, a rolled-back parent/child transaction left no row or ledger residue, and the identical work replayed successfully afterwards."
+    },
+    {
+      "id": "direct_dolt.transaction_wrapped_attacks",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "All 18 transaction-wrapped ON DUPLICATE KEY UPDATE attacks against every immutable table identity and every ledger were rejected inside their transaction and left their target byte-identical. These run last because Dolt 2.3.2 keeps the write locks of a transaction whose client disconnects after a failed statement, which can block later writers to the same table until the server stops."
+    },
+    {
+      "id": "direct_dolt.schema_coverage_validation",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "Coverage is validated on ordered index columns plus per-column type, octet width, NULL semantics, prefix/expression status, and collation: the production schema produced 0 violations, while a deliberately drifted table using a case-insensitive UNIQUE key was rejected with a non_binary_collation violation and its ODKU bypass reproduced (exit 0, value now FORGED), proving column-set comparison alone is insufficient."
+    },
+    {
+      "id": "direct_dolt.identity_width",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "The ledger key width is derived from information_schema (535 bytes required, 640 provisioned), so 128-character four-byte identifiers append under both strict and relaxed session sql_mode and produced a 528-byte identity that a fixed VARBINARY(512) would have rejected or truncated."
+    },
+    {
+      "id": "direct_dolt.privilege_boundary",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "All 8 privilege-expansion operations were denied to the application identity, including reading mysql.user, creating users, granting itself any privilege, granting itself ledger INSERT, ALTER USER CURRENT_USER(), and altering or resetting the owner. The identity can rename its own credential with an explicit ALTER USER on itself: that rotation was permitted, invalidated its previous password, granted no additional privilege (the ledger write stayed denied), left the owner unaffected, and was reversed by the fixture, so it is an availability and recovery concern rather than a privilege boundary failure."
+    },
+    {
+      "id": "direct_dolt.adapter_replay_classification",
+      "system": "Direct Dolt",
+      "contract_result": "PASS",
+      "observed": "Exact winner and conflict replays returned the preserved stored outcome and a different canonical request raised IDEMPOTENCY_PAYLOAD_MISMATCH without writing, both before and after the complete adversarial statement matrix."
+    },
+    {
+      "id": "spike.cleanup",
+      "system": "Harness",
+      "contract_result": "PASS",
+      "observed": "Spawned PID 1947006 exited (0) before its owned disposable repository, databases, credential-free client config, and server configuration were removed."
+    }
+  ],
+  "contention_evidence": {
+    "winner_key": "cmd-42767185e5301464-a",
+    "loser_key": "cmd-42767185e5301464-b",
+    "winner_exit_code": 0,
+    "loser_exit_code": 1,
+    "loser_sqlstate": "40001",
+    "loser_error_code": 1213,
+    "loser_transaction_partial_rows_before_recovery": 0,
+    "final": {
+      "aggregate_version": 1,
+      "requests": 2,
+      "outcomes": 2,
+      "applied": 1,
+      "conflicts": 1,
+      "tampered": 0,
+      "events": 1,
+      "audits": 1,
+      "immutable_values_preserved": true
+    }
+  },
+  "immutability_evidence": {
+    "mechanism": "owner-definer BEFORE INSERT trigger per immutable table that records every declared unique identity in an append-only VARBINARY identity ledger with its own primary key",
+    "guarded_tables": [
+      "command_requests",
+      "command_outcomes",
+      "candidates",
+      "events",
+      "audit_entries"
+    ],
+    "guarded_identities": [
+      "command_requests(idempotency_key)",
+      "command_outcomes(idempotency_key)",
+      "candidates(id)",
+      "candidates(run_id, sequence)",
+      "events(global_sequence)",
+      "events(event_id)",
+      "events(run_id, sequence)",
+      "audit_entries(sequence)",
+      "audit_entries(audit_id)"
+    ],
+    "declared_unique_identities": [
+      "audit_entries:audit_id",
+      "audit_entries:sequence",
+      "candidates:id",
+      "candidates:run_id+sequence",
+      "command_outcomes:idempotency_key",
+      "command_requests:idempotency_key",
+      "events:event_id",
+      "events:global_sequence",
+      "events:run_id+sequence"
+    ],
+    "uncovered_identities": [],
+    "installed_triggers": 32,
+    "trigger_guard_rows": 1,
+    "trigger_activation_control": {
+      "identity": "database owner with full UPDATE privilege",
+      "direct_update_exit_code": 1,
+      "direct_update_activated_guard": true,
+      "odku_exit_code": 0,
+      "odku_activated_guard": false,
+      "value_before": "original",
+      "value_after_direct_update": "original",
+      "value_after_odku": "odku",
+      "guard_rows_after_control": 1
+    },
+    "uniqueness_tradeoff": {
+      "keyless_table": {
+        "unique_index": false,
+        "odku_exit_code": 0,
+        "replace_exit_code": 1,
+        "rows_before": 1,
+        "rows_after": 2,
+        "original_row_preserved": true,
+        "duplicate_identifier_rows": 2
+      },
+      "unique_indexed_table": {
+        "unique_index": true,
+        "odku_exit_code": 0,
+        "rows": 1,
+        "stored_value": "tampered"
+      }
+    },
+    "base_table_observations": 128,
+    "base_table_denied_statements": 118,
+    "base_table_successful_appends": 10,
+    "odku_existing_row_mutations": 0,
+    "version_control_probes": [
+      {
+        "procedure": "CALL DOLT_RESET('--hard')",
+        "exit_code": 1,
+        "denied": true,
+        "protected_row_preserved": true,
+        "diagnostic": "error on line 1 for query CALL DOLT_RESET('--hard'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "procedure": "CALL DOLT_CHECKOUT('-b', 'director-m04-bypass')",
+        "exit_code": 1,
+        "denied": true,
+        "protected_row_preserved": true,
+        "diagnostic": "error on line 1 for query CALL DOLT_CHECKOUT('-b', 'director-m04-bypass'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "procedure": "CALL DOLT_REVERT('HEAD')",
+        "exit_code": 1,
+        "denied": true,
+        "protected_row_preserved": true,
+        "diagnostic": "error on line 1 for query CALL DOLT_REVERT('HEAD'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "procedure": "CALL DOLT_BRANCH('director-m04-bypass')",
+        "exit_code": 1,
+        "denied": true,
+        "protected_row_preserved": true,
+        "diagnostic": "error on line 1 for query CALL DOLT_BRANCH('director-m04-bypass'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "procedure": "CALL DOLT_COMMIT('-A', '-m', 'bypass')",
+        "exit_code": 1,
+        "denied": true,
+        "protected_row_preserved": true,
+        "diagnostic": "error on line 1 for query CALL DOLT_COMMIT('-A', '-m', 'bypass'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      }
+    ],
+    "statement_results": [
+      {
+        "table": "command_requests",
+        "identity": "none",
+        "statement": "append_control_before",
+        "exit_code": 0,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 5
+      },
+      {
+        "table": "command_requests",
+        "identity": "pk",
+        "statement": "plain_duplicate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "'title', 'Tampered')): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f72657175657374732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "pk",
+        "statement": "insert_ignore",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "'title', 'Tampered')): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f72657175657374732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "pk",
+        "statement": "odku_literal",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f72657175657374732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "pk",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "UES(expected_version): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f72657175657374732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "pk",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f72657175657374732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "pk",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f72657175657374732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "pk",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f72657175657374732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "table",
+        "statement": "replace_collision",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "85e5301464-a', 'task-contention', 999, REPEAT('0', 64), JSON_OBJECT('title', 'Tampered')): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "table",
+        "statement": "update",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "yload = JSON_OBJECT('title', 'Tampered') WHERE idempotency_key = 'cmd-42767185e5301464-a': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "table",
+        "statement": "delete",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "1 for query DELETE FROM command_requests WHERE idempotency_key = 'cmd-42767185e5301464-a': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "table",
+        "statement": "truncate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE command_requests: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "table",
+        "statement": "alter",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": " on line 1 for query ALTER TABLE command_requests ADD COLUMN forbidden_mutation_probe INT: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "table",
+        "statement": "drop_append_guard",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "r query DROP TRIGGER command_requests_append_only: Error 1105 (HY000): Access denied for user 'app_42767185e5301464'@'%' to table 'command_requests_append_only'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "table",
+        "statement": "replace_append_guard",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "ER command_requests_bypass BEFORE INSERT ON command_requests FOR EACH ROW SET @bypass = 1: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "table",
+        "statement": "delete_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query DELETE FROM command_requests_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "table",
+        "statement": "truncate_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE command_requests_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "table",
+        "statement": "drop_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query DROP TABLE command_requests_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "table",
+        "statement": "alter_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query ALTER TABLE command_requests_identity DROP PRIMARY KEY: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_requests",
+        "identity": "none",
+        "statement": "append_control_after",
+        "exit_code": 0,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 6
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "none",
+        "statement": "append_control_before",
+        "exit_code": 0,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 5
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "pk",
+        "statement": "plain_duplicate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "'title', 'Tampered')): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f6f7574636f6d65732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "pk",
+        "statement": "insert_ignore",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "'title', 'Tampered')): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f6f7574636f6d65732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "pk",
+        "statement": "odku_literal",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f6f7574636f6d65732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "pk",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": " VALUES(outcome_type): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f6f7574636f6d65732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "pk",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f6f7574636f6d65732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "pk",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f6f7574636f6d65732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "pk",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [636f6d6d616e645f6f7574636f6d65732e706b1f636d642d343237363731383565353330313436342d6100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "table",
+        "statement": "replace_collision",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "ALUES ('cmd-42767185e5301464-a', 'tampered', 999, NULL, JSON_OBJECT('title', 'Tampered')): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "table",
+        "statement": "update",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "yload = JSON_OBJECT('title', 'Tampered') WHERE idempotency_key = 'cmd-42767185e5301464-a': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "table",
+        "statement": "delete",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "1 for query DELETE FROM command_outcomes WHERE idempotency_key = 'cmd-42767185e5301464-a': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "table",
+        "statement": "truncate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE command_outcomes: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "table",
+        "statement": "alter",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": " on line 1 for query ALTER TABLE command_outcomes ADD COLUMN forbidden_mutation_probe INT: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "table",
+        "statement": "drop_append_guard",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "r query DROP TRIGGER command_outcomes_append_only: Error 1105 (HY000): Access denied for user 'app_42767185e5301464'@'%' to table 'command_outcomes_append_only'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "table",
+        "statement": "replace_append_guard",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "ER command_outcomes_bypass BEFORE INSERT ON command_outcomes FOR EACH ROW SET @bypass = 1: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "table",
+        "statement": "delete_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query DELETE FROM command_outcomes_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "table",
+        "statement": "truncate_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE command_outcomes_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "table",
+        "statement": "drop_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query DROP TABLE command_outcomes_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "table",
+        "statement": "alter_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query ALTER TABLE command_outcomes_identity DROP PRIMARY KEY: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "none",
+        "statement": "append_control_after",
+        "exit_code": 0,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 6
+      },
+      {
+        "table": "candidates",
+        "identity": "none",
+        "statement": "append_control_before",
+        "exit_code": 0,
+        "protected_row_preserved": true,
+        "rows_before": 2,
+        "rows_after": 3
+      },
+      {
+        "table": "candidates",
+        "identity": "pk",
+        "statement": "plain_duplicate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "', 708, REPEAT('b', 40), JSON_OBJECT('current', false)): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e706b1f63616e6469646174652d3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "pk",
+        "statement": "insert_ignore",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "', 708, REPEAT('b', 40), JSON_OBJECT('current', false)): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e706b1f63616e6469646174652d3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "pk",
+        "statement": "odku_literal",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "= REPEAT('b', 40), data = JSON_OBJECT('current', false): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e706b1f63616e6469646174652d3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "pk",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "ON DUPLICATE KEY UPDATE commit_sha = VALUES(commit_sha): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e706b1f63616e6469646174652d3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "pk",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "= REPEAT('b', 40), data = JSON_OBJECT('current', false): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e706b1f63616e6469646174652d3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "pk",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "= REPEAT('b', 40), data = JSON_OBJECT('current', false): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e706b1f63616e6469646174652d3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "pk",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "= REPEAT('b', 40), data = JSON_OBJECT('current', false): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e706b1f63616e6469646174652d3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "run_sequence",
+        "statement": "plain_duplicate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "AT('b', 40), JSON_OBJECT('current', false)): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "run_sequence",
+        "statement": "insert_ignore",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "AT('b', 40), JSON_OBJECT('current', false)): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "run_sequence",
+        "statement": "odku_literal",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": ", 40), data = JSON_OBJECT('current', false): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "run_sequence",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": " KEY UPDATE commit_sha = VALUES(commit_sha): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "run_sequence",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": ", 40), data = JSON_OBJECT('current', false): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "run_sequence",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": ", 40), data = JSON_OBJECT('current', false): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "run_sequence",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": ", 40), data = JSON_OBJECT('current', false): Error 1062 (HY000): duplicate primary key given: [63616e646964617465732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "table",
+        "statement": "replace_collision",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "ata) VALUES ('candidate-1', 'run-1', 710, REPEAT('b', 40), JSON_OBJECT('current', false)): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "table",
+        "statement": "update",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "mmit_sha = REPEAT('b', 40), data = JSON_OBJECT('current', false) WHERE id = 'candidate-1': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "table",
+        "statement": "delete",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "error on line 1 for query DELETE FROM candidates WHERE id = 'candidate-1': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "table",
+        "statement": "truncate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE candidates: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "table",
+        "statement": "alter",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "error on line 1 for query ALTER TABLE candidates ADD COLUMN forbidden_mutation_probe INT: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "table",
+        "statement": "drop_append_guard",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "on line 1 for query DROP TRIGGER candidates_append_only: Error 1105 (HY000): Access denied for user 'app_42767185e5301464'@'%' to table 'candidates_append_only'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "table",
+        "statement": "replace_append_guard",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "CREATE TRIGGER candidates_bypass BEFORE INSERT ON candidates FOR EACH ROW SET @bypass = 1: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "table",
+        "statement": "delete_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "error on line 1 for query DELETE FROM candidates_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "table",
+        "statement": "truncate_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE candidates_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "table",
+        "statement": "drop_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "error on line 1 for query DROP TABLE candidates_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "table",
+        "statement": "alter_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 3,
+        "diagnostic": "error on line 1 for query ALTER TABLE candidates_identity DROP PRIMARY KEY: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "candidates",
+        "identity": "none",
+        "statement": "append_control_after",
+        "exit_code": 0,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 4
+      },
+      {
+        "table": "events",
+        "identity": "none",
+        "statement": "append_control_before",
+        "exit_code": 0,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 5
+      },
+      {
+        "table": "events",
+        "identity": "pk",
+        "statement": "plain_duplicate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "llide-12', 'run-1', 712, 'task-1', 0, 'tampered', JSON_OBJECT('title', 'Tampered')): Error 1062 (HY000): duplicate primary key given: [6576656e74732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "pk",
+        "statement": "insert_ignore",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "llide-12', 'run-1', 712, 'task-1', 0, 'tampered', JSON_OBJECT('title', 'Tampered')): Error 1062 (HY000): duplicate primary key given: [6576656e74732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "pk",
+        "statement": "odku_literal",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "CATE KEY UPDATE event_type = 'tampered', payload = JSON_OBJECT('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [6576656e74732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "pk",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "BJECT('title', 'Tampered')) ON DUPLICATE KEY UPDATE event_type = VALUES(event_type): Error 1062 (HY000): duplicate primary key given: [6576656e74732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "pk",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "CATE KEY UPDATE event_type = 'tampered', payload = JSON_OBJECT('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [6576656e74732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "pk",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "CATE KEY UPDATE event_type = 'tampered', payload = JSON_OBJECT('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [6576656e74732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "pk",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "CATE KEY UPDATE event_type = 'tampered', payload = JSON_OBJECT('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [6576656e74732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "event_id",
+        "statement": "plain_duplicate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": " 'task-1', 0, 'tampered', JSON_OBJECT('title', 'Tampered')): Error 1062 (HY000): duplicate primary key given: [6576656e74732e6576656e745f69641f6576656e742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "event_id",
+        "statement": "insert_ignore",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": " 'task-1', 0, 'tampered', JSON_OBJECT('title', 'Tampered')): Error 1062 (HY000): duplicate primary key given: [6576656e74732e6576656e745f69641f6576656e742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "event_id",
+        "statement": "odku_literal",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "pe = 'tampered', payload = JSON_OBJECT('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [6576656e74732e6576656e745f69641f6576656e742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "event_id",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "')) ON DUPLICATE KEY UPDATE event_type = VALUES(event_type): Error 1062 (HY000): duplicate primary key given: [6576656e74732e6576656e745f69641f6576656e742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "event_id",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "pe = 'tampered', payload = JSON_OBJECT('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [6576656e74732e6576656e745f69641f6576656e742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "event_id",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "pe = 'tampered', payload = JSON_OBJECT('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [6576656e74732e6576656e745f69641f6576656e742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "event_id",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "pe = 'tampered', payload = JSON_OBJECT('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [6576656e74732e6576656e745f69641f6576656e742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "run_sequence",
+        "statement": "plain_duplicate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "', 0, 'tampered', JSON_OBJECT('title', 'Tampered')): Error 1062 (HY000): duplicate primary key given: [6576656e74732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "run_sequence",
+        "statement": "insert_ignore",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "', 0, 'tampered', JSON_OBJECT('title', 'Tampered')): Error 1062 (HY000): duplicate primary key given: [6576656e74732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "run_sequence",
+        "statement": "odku_literal",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "mpered', payload = JSON_OBJECT('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [6576656e74732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "run_sequence",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "UPLICATE KEY UPDATE event_type = VALUES(event_type): Error 1062 (HY000): duplicate primary key given: [6576656e74732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "run_sequence",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "mpered', payload = JSON_OBJECT('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [6576656e74732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "run_sequence",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "mpered', payload = JSON_OBJECT('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [6576656e74732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "run_sequence",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "mpered', payload = JSON_OBJECT('title', 'Tampered'): Error 1062 (HY000): duplicate primary key given: [6576656e74732e72756e5f73657175656e63651f72756e2d311f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "table",
+        "statement": "replace_collision",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "ent-collide-15', 'run-1', 715, 'task-1', 0, 'tampered', JSON_OBJECT('title', 'Tampered')): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "table",
+        "statement": "update",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "_type = 'tampered', payload = JSON_OBJECT('title', 'Tampered') WHERE event_id = 'event-0': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "table",
+        "statement": "delete",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query DELETE FROM events WHERE event_id = 'event-0': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "table",
+        "statement": "truncate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE events: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "table",
+        "statement": "alter",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query ALTER TABLE events ADD COLUMN forbidden_mutation_probe INT: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "table",
+        "statement": "drop_append_guard",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query DROP TRIGGER events_append_only: Error 1105 (HY000): Access denied for user 'app_42767185e5301464'@'%' to table 'events_append_only'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "table",
+        "statement": "replace_append_guard",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "r query CREATE TRIGGER events_bypass BEFORE INSERT ON events FOR EACH ROW SET @bypass = 1: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "table",
+        "statement": "delete_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query DELETE FROM events_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "table",
+        "statement": "truncate_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE events_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "table",
+        "statement": "drop_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query DROP TABLE events_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "table",
+        "statement": "alter_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 5,
+        "diagnostic": "error on line 1 for query ALTER TABLE events_identity DROP PRIMARY KEY: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "events",
+        "identity": "none",
+        "statement": "append_control_after",
+        "exit_code": 0,
+        "protected_row_preserved": true,
+        "rows_before": 5,
+        "rows_after": 6
+      },
+      {
+        "table": "audit_entries",
+        "identity": "none",
+        "statement": "append_control_before",
+        "exit_code": 0,
+        "protected_row_preserved": true,
+        "rows_before": 3,
+        "rows_after": 4
+      },
+      {
+        "table": "audit_entries",
+        "identity": "pk",
+        "statement": "plain_duplicate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "ollide-17', 'event-0', 'tampered', JSON_OBJECT('source', 'tampered')): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "pk",
+        "statement": "insert_ignore",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "ollide-17', 'event-0', 'tampered', JSON_OBJECT('source', 'tampered')): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "pk",
+        "statement": "odku_literal",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": " actor_type = 'tampered', payload = JSON_OBJECT('source', 'tampered'): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "pk",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": " 'tampered')) ON DUPLICATE KEY UPDATE actor_type = VALUES(actor_type): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "pk",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": " actor_type = 'tampered', payload = JSON_OBJECT('source', 'tampered'): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "pk",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": " actor_type = 'tampered', payload = JSON_OBJECT('source', 'tampered'): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "pk",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": " actor_type = 'tampered', payload = JSON_OBJECT('source', 'tampered'): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e706b1f3100]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "audit_id",
+        "statement": "plain_duplicate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "tampered', JSON_OBJECT('source', 'tampered')): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e61756469745f69641f61756469742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "audit_id",
+        "statement": "insert_ignore",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "tampered', JSON_OBJECT('source', 'tampered')): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e61756469745f69641f61756469742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "audit_id",
+        "statement": "odku_literal",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": ", payload = JSON_OBJECT('source', 'tampered'): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e61756469745f69641f61756469742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "audit_id",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "TE KEY UPDATE actor_type = VALUES(actor_type): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e61756469745f69641f61756469742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "audit_id",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": ", payload = JSON_OBJECT('source', 'tampered'): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e61756469745f69641f61756469742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "audit_id",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": ", payload = JSON_OBJECT('source', 'tampered'): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e61756469745f69641f61756469742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "audit_id",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": ", payload = JSON_OBJECT('source', 'tampered'): Error 1062 (HY000): duplicate primary key given: [61756469745f656e74726965732e61756469745f69641f61756469742d3000]",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "table",
+        "statement": "replace_collision",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": " VALUES (1, 'audit-collide-19', 'event-0', 'tampered', JSON_OBJECT('source', 'tampered')): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "table",
+        "statement": "update",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "type = 'tampered', payload = JSON_OBJECT('source', 'tampered') WHERE audit_id = 'audit-0': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "table",
+        "statement": "delete",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "error on line 1 for query DELETE FROM audit_entries WHERE audit_id = 'audit-0': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "table",
+        "statement": "truncate",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE audit_entries: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "table",
+        "statement": "alter",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "ror on line 1 for query ALTER TABLE audit_entries ADD COLUMN forbidden_mutation_probe INT: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "table",
+        "statement": "drop_append_guard",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "e 1 for query DROP TRIGGER audit_entries_append_only: Error 1105 (HY000): Access denied for user 'app_42767185e5301464'@'%' to table 'audit_entries_append_only'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "table",
+        "statement": "replace_append_guard",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": " TRIGGER audit_entries_bypass BEFORE INSERT ON audit_entries FOR EACH ROW SET @bypass = 1: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "table",
+        "statement": "delete_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "error on line 1 for query DELETE FROM audit_entries_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "table",
+        "statement": "truncate_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE audit_entries_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "table",
+        "statement": "drop_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "error on line 1 for query DROP TABLE audit_entries_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "table",
+        "statement": "alter_identity_ledger",
+        "exit_code": 1,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 4,
+        "diagnostic": "error on line 1 for query ALTER TABLE audit_entries_identity DROP PRIMARY KEY: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'",
+        "blocked_without_returning": false
+      },
+      {
+        "table": "audit_entries",
+        "identity": "none",
+        "statement": "append_control_after",
+        "exit_code": 0,
+        "protected_row_preserved": true,
+        "rows_before": 4,
+        "rows_after": 5
+      }
+    ],
+    "preserved_values": {
+      "command_request_expected_version": "0",
+      "command_outcome_type": "applied",
+      "candidate_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "event_type": "task.created",
+      "audit_actor": "system"
+    },
+    "deferred_transaction_attack_observations": 18
+  },
+  "boundary_evidence": {
+    "ledger_privilege": "SELECT only; the application identity holds no write privilege on any identity ledger, on parent_guard, on guard_constants, or on immutable_write_guard",
+    "identity_byte_budget": 535,
+    "ledger_identity_width": 640,
+    "widest_stored_identity_bytes": 528,
+    "ledger_attacks": [
+      {
+        "ledger": "aggregates_identity",
+        "statement": "reserve_unused_identity",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "TO aggregates_identity (identity) VALUES ('unused.reservation.probe'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "aggregates_identity",
+        "statement": "insert_ignore_unused",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "TO aggregates_identity (identity) VALUES ('unused.reservation.probe'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "aggregates_identity",
+        "statement": "odku_rename_existing",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "57069632D31')) ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "aggregates_identity",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "1F657069632D31')) ON DUPLICATE KEY UPDATE identity = VALUES(identity): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "aggregates_identity",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "57069632D31')) ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "aggregates_identity",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "stants LIMIT 1 ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "aggregates_identity",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "57069632D31')) ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "aggregates_identity",
+        "statement": "replace",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "(identity) VALUES (UNHEX('616767726567617465732E706B1F657069632D31')): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "aggregates_identity",
+        "statement": "update",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "r' WHERE identity = UNHEX('616767726567617465732E706B1F657069632D31'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "aggregates_identity",
+        "statement": "delete",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "ty WHERE identity = UNHEX('616767726567617465732E706B1F657069632D31'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "aggregates_identity",
+        "statement": "truncate",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE aggregates_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "aggregates_identity",
+        "statement": "alter_drop_key",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": " on line 1 for query ALTER TABLE aggregates_identity DROP PRIMARY KEY: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "aggregates_identity",
+        "statement": "drop_table",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "error on line 1 for query DROP TABLE aggregates_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "reserve_unused_identity",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "mand_requests_identity (identity) VALUES ('unused.reservation.probe'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "insert_ignore_unused",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "mand_requests_identity (identity) VALUES ('unused.reservation.probe'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "odku_rename_existing",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "13436342D61')) ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "30313436342D61')) ON DUPLICATE KEY UPDATE identity = VALUES(identity): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "13436342D61')) ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "stants LIMIT 1 ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "13436342D61')) ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "replace",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "657175657374732E706B1F636D642D343237363731383565353330313436342D61')): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "update",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "2657175657374732E706B1F636D642D343237363731383565353330313436342D61'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "delete",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "2657175657374732E706B1F636D642D343237363731383565353330313436342D61'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "truncate",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE command_requests_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "alter_drop_key",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "ne 1 for query ALTER TABLE command_requests_identity DROP PRIMARY KEY: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_requests_identity",
+        "statement": "drop_table",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "error on line 1 for query DROP TABLE command_requests_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "reserve_unused_identity",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "mand_outcomes_identity (identity) VALUES ('unused.reservation.probe'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "insert_ignore_unused",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "mand_outcomes_identity (identity) VALUES ('unused.reservation.probe'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "odku_rename_existing",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "13436342D61')) ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "30313436342D61')) ON DUPLICATE KEY UPDATE identity = VALUES(identity): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "13436342D61')) ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "stants LIMIT 1 ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "13436342D61')) ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "replace",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "7574636F6D65732E706B1F636D642D343237363731383565353330313436342D61')): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "update",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "F7574636F6D65732E706B1F636D642D343237363731383565353330313436342D61'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "delete",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "F7574636F6D65732E706B1F636D642D343237363731383565353330313436342D61'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "truncate",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "error on line 1 for query TRUNCATE TABLE command_outcomes_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "alter_drop_key",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "ne 1 for query ALTER TABLE command_outcomes_identity DROP PRIMARY KEY: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "command_outcomes_identity",
+        "statement": "drop_table",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "error on line 1 for query DROP TABLE command_outcomes_identity: Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "reserve_unused_identity",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "TO candidates_identity (identity) VALUES ('unused.reservation.probe'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "insert_ignore_unused",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "TO candidates_identity (identity) VALUES ('unused.reservation.probe'): Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "odku_rename_existing",
+        "exit_code": 1,
+        "blocked_without_returning": false,
+        "contents_preserved": true,
+        "diagnostic": "46174652D31')) ON DUPLICATE KEY UPDATE identity = 'freed.by.attacker': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "replace",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "update",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "delete",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "truncate",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "alter_drop_key",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "candidates_identity",
+        "statement": "drop_table",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "reserve_unused_identity",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "insert_ignore_unused",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "odku_rename_existing",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "replace",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "update",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "delete",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "truncate",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "alter_drop_key",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "events_identity",
+        "statement": "drop_table",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "reserve_unused_identity",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "insert_ignore_unused",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "odku_rename_existing",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "replace",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "update",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "delete",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "truncate",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "alter_drop_key",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "audit_entries_identity",
+        "statement": "drop_table",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "reserve_unused_identity",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "insert_ignore_unused",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "odku_rename_existing",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "replace",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "update",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "delete",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "truncate",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "alter_drop_key",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "parent_guard",
+        "statement": "drop_table",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "reserve_unused_identity",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "insert_ignore_unused",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "odku_rename_existing",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "replace",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "update",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "delete",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "truncate",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "alter_drop_key",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "guard_constants",
+        "statement": "drop_table",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "reserve_unused_identity",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "insert_ignore_unused",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "odku_rename_existing",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "odku_values_function",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "insert_ignore_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "insert_select_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "multi_row_odku",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "replace",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "update",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "delete",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "truncate",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "alter_drop_key",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      },
+      {
+        "ledger": "immutable_write_guard",
+        "statement": "drop_table",
+        "exit_code": 1,
+        "blocked_without_returning": true,
+        "contents_preserved": true,
+        "diagnostic": "statement did not return within 4000ms and was killed"
+      }
+    ],
+    "two_step_attacks": [
+      {
+        "table": "command_requests",
+        "identity": "pk",
+        "protected_identity_present": true,
+        "step1_ledger_rename_exit_code": 1,
+        "step2_base_odku_exit_code": 1,
+        "base_row_preserved": true,
+        "ledger_preserved": true
+      },
+      {
+        "table": "command_outcomes",
+        "identity": "pk",
+        "protected_identity_present": true,
+        "step1_ledger_rename_exit_code": 1,
+        "step2_base_odku_exit_code": 1,
+        "base_row_preserved": true,
+        "ledger_preserved": true
+      },
+      {
+        "table": "candidates",
+        "identity": "pk",
+        "protected_identity_present": true,
+        "step1_ledger_rename_exit_code": 1,
+        "step2_base_odku_exit_code": 1,
+        "base_row_preserved": true,
+        "ledger_preserved": true
+      },
+      {
+        "table": "candidates",
+        "identity": "run_sequence",
+        "protected_identity_present": true,
+        "step1_ledger_rename_exit_code": 1,
+        "step2_base_odku_exit_code": 1,
+        "base_row_preserved": true,
+        "ledger_preserved": true
+      },
+      {
+        "table": "events",
+        "identity": "pk",
+        "protected_identity_present": true,
+        "step1_ledger_rename_exit_code": 1,
+        "step2_base_odku_exit_code": 1,
+        "base_row_preserved": true,
+        "ledger_preserved": true
+      },
+      {
+        "table": "events",
+        "identity": "event_id",
+        "protected_identity_present": true,
+        "step1_ledger_rename_exit_code": 1,
+        "step2_base_odku_exit_code": 1,
+        "base_row_preserved": true,
+        "ledger_preserved": true
+      },
+      {
+        "table": "events",
+        "identity": "run_sequence",
+        "protected_identity_present": true,
+        "step1_ledger_rename_exit_code": 1,
+        "step2_base_odku_exit_code": 1,
+        "base_row_preserved": true,
+        "ledger_preserved": true
+      },
+      {
+        "table": "audit_entries",
+        "identity": "pk",
+        "protected_identity_present": true,
+        "step1_ledger_rename_exit_code": 1,
+        "step2_base_odku_exit_code": 1,
+        "base_row_preserved": true,
+        "ledger_preserved": true
+      },
+      {
+        "table": "audit_entries",
+        "identity": "audit_id",
+        "protected_identity_present": true,
+        "step1_ledger_rename_exit_code": 1,
+        "step2_base_odku_exit_code": 1,
+        "base_row_preserved": true,
+        "ledger_preserved": true
+      }
+    ],
+    "transaction_wrapped_attacks": [
+      {
+        "scope": "command_requests",
+        "identity": "pk",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "command_outcomes",
+        "identity": "pk",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "candidates",
+        "identity": "pk",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "candidates",
+        "identity": "run_sequence",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "events",
+        "identity": "pk",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "events",
+        "identity": "event_id",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "events",
+        "identity": "run_sequence",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "audit_entries",
+        "identity": "pk",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "audit_entries",
+        "identity": "audit_id",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "aggregates_identity",
+        "identity": "identity",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "command_requests_identity",
+        "identity": "identity",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "command_outcomes_identity",
+        "identity": "identity",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "candidates_identity",
+        "identity": "identity",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "events_identity",
+        "identity": "identity",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "audit_entries_identity",
+        "identity": "identity",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "parent_guard",
+        "identity": "identity",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "guard_constants",
+        "identity": "singleton",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      },
+      {
+        "scope": "immutable_write_guard",
+        "identity": "singleton",
+        "statement": "transaction_wrapped_odku",
+        "exit_code": 1,
+        "target_preserved": true
+      }
+    ],
+    "blocked_without_returning": [
+      {
+        "target": "candidates_identity",
+        "statement": "odku_values_function"
+      },
+      {
+        "target": "candidates_identity",
+        "statement": "insert_ignore_odku"
+      },
+      {
+        "target": "candidates_identity",
+        "statement": "insert_select_odku"
+      },
+      {
+        "target": "candidates_identity",
+        "statement": "multi_row_odku"
+      },
+      {
+        "target": "candidates_identity",
+        "statement": "replace"
+      },
+      {
+        "target": "candidates_identity",
+        "statement": "update"
+      },
+      {
+        "target": "candidates_identity",
+        "statement": "delete"
+      },
+      {
+        "target": "candidates_identity",
+        "statement": "truncate"
+      },
+      {
+        "target": "candidates_identity",
+        "statement": "alter_drop_key"
+      },
+      {
+        "target": "candidates_identity",
+        "statement": "drop_table"
+      },
+      {
+        "target": "events_identity",
+        "statement": "reserve_unused_identity"
+      },
+      {
+        "target": "events_identity",
+        "statement": "insert_ignore_unused"
+      },
+      {
+        "target": "events_identity",
+        "statement": "odku_rename_existing"
+      },
+      {
+        "target": "events_identity",
+        "statement": "odku_values_function"
+      },
+      {
+        "target": "events_identity",
+        "statement": "insert_ignore_odku"
+      },
+      {
+        "target": "events_identity",
+        "statement": "insert_select_odku"
+      },
+      {
+        "target": "events_identity",
+        "statement": "multi_row_odku"
+      },
+      {
+        "target": "events_identity",
+        "statement": "replace"
+      },
+      {
+        "target": "events_identity",
+        "statement": "update"
+      },
+      {
+        "target": "events_identity",
+        "statement": "delete"
+      },
+      {
+        "target": "events_identity",
+        "statement": "truncate"
+      },
+      {
+        "target": "events_identity",
+        "statement": "alter_drop_key"
+      },
+      {
+        "target": "events_identity",
+        "statement": "drop_table"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "reserve_unused_identity"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "insert_ignore_unused"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "odku_rename_existing"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "odku_values_function"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "insert_ignore_odku"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "insert_select_odku"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "multi_row_odku"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "replace"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "update"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "delete"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "truncate"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "alter_drop_key"
+      },
+      {
+        "target": "audit_entries_identity",
+        "statement": "drop_table"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "reserve_unused_identity"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "insert_ignore_unused"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "odku_rename_existing"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "odku_values_function"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "insert_ignore_odku"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "insert_select_odku"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "multi_row_odku"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "replace"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "update"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "delete"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "truncate"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "alter_drop_key"
+      },
+      {
+        "target": "parent_guard",
+        "statement": "drop_table"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "reserve_unused_identity"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "insert_ignore_unused"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "odku_rename_existing"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "odku_values_function"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "insert_ignore_odku"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "insert_select_odku"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "multi_row_odku"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "replace"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "update"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "delete"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "truncate"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "alter_drop_key"
+      },
+      {
+        "target": "guard_constants",
+        "statement": "drop_table"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "reserve_unused_identity"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "insert_ignore_unused"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "odku_rename_existing"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "odku_values_function"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "insert_ignore_odku"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "insert_select_odku"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "multi_row_odku"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "replace"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "update"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "delete"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "truncate"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "alter_drop_key"
+      },
+      {
+        "target": "immutable_write_guard",
+        "statement": "drop_table"
+      }
+    ],
+    "post_transaction_ledger_probe": {
+      "exit_code": 1,
+      "blocked_without_returning": false
+    },
+    "declared_foreign_keys": [
+      "aggregates.parent_id->aggregates.id",
+      "aggregates.workspace_id->aggregates.id",
+      "dependencies.source_id->aggregates.id",
+      "dependencies.target_id->aggregates.id",
+      "candidates.run_id->aggregates.id",
+      "events.aggregate_id->aggregates.id",
+      "events.run_id->aggregates.id",
+      "audit_entries.event_id->events.event_id",
+      "command_requests.aggregate_id->aggregates.id",
+      "command_outcomes.event_id->events.event_id",
+      "command_outcomes.idempotency_key->command_requests.idempotency_key"
+    ],
+    "guarded_foreign_keys": [
+      "aggregates.parent_id->aggregates.id",
+      "aggregates.workspace_id->aggregates.id",
+      "dependencies.source_id->aggregates.id",
+      "dependencies.target_id->aggregates.id",
+      "candidates.run_id->aggregates.id",
+      "events.run_id->aggregates.id",
+      "events.aggregate_id->aggregates.id",
+      "audit_entries.event_id->events.event_id",
+      "command_requests.aggregate_id->aggregates.id",
+      "command_outcomes.idempotency_key->command_requests.idempotency_key",
+      "command_outcomes.event_id->events.event_id"
+    ],
+    "referenced_parent_identity_evidence": {
+      "referenced_parent_identities": [
+        "aggregates.id",
+        "command_requests.idempotency_key",
+        "events.event_id"
+      ],
+      "guarded_parent_identities": [
+        "aggregates.id",
+        "command_requests.idempotency_key",
+        "events.event_id"
+      ],
+      "mutation_probes": [
+        {
+          "parent_identity": "aggregates.id",
+          "session_mode": "foreign_keys_enforced",
+          "statement": "direct_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "aggregates.id",
+          "session_mode": "foreign_keys_enforced",
+          "statement": "insert_derived_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "aggregates.id",
+          "session_mode": "foreign_keys_disabled",
+          "statement": "direct_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "aggregates.id",
+          "session_mode": "foreign_keys_disabled",
+          "statement": "insert_derived_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "aggregates.id",
+          "session_mode": "foreign_keys_disabled_relaxed_sql_mode",
+          "statement": "direct_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "aggregates.id",
+          "session_mode": "foreign_keys_disabled_relaxed_sql_mode",
+          "statement": "insert_derived_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "events.event_id",
+          "session_mode": "foreign_keys_enforced",
+          "statement": "direct_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "events.event_id",
+          "session_mode": "foreign_keys_enforced",
+          "statement": "insert_derived_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "events.event_id",
+          "session_mode": "foreign_keys_disabled",
+          "statement": "direct_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "events.event_id",
+          "session_mode": "foreign_keys_disabled",
+          "statement": "insert_derived_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "events.event_id",
+          "session_mode": "foreign_keys_disabled_relaxed_sql_mode",
+          "statement": "direct_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "events.event_id",
+          "session_mode": "foreign_keys_disabled_relaxed_sql_mode",
+          "statement": "insert_derived_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "command_requests.idempotency_key",
+          "session_mode": "foreign_keys_enforced",
+          "statement": "direct_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "command_requests.idempotency_key",
+          "session_mode": "foreign_keys_enforced",
+          "statement": "insert_derived_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "command_requests.idempotency_key",
+          "session_mode": "foreign_keys_disabled",
+          "statement": "direct_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "command_requests.idempotency_key",
+          "session_mode": "foreign_keys_disabled",
+          "statement": "insert_derived_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "command_requests.idempotency_key",
+          "session_mode": "foreign_keys_disabled_relaxed_sql_mode",
+          "statement": "direct_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        },
+        {
+          "parent_identity": "command_requests.idempotency_key",
+          "session_mode": "foreign_keys_disabled_relaxed_sql_mode",
+          "statement": "insert_derived_update",
+          "exit_code": 1,
+          "parent_identity_preserved": true,
+          "every_child_remained_linked": true
+        }
+      ],
+      "legitimate_aggregate_updates": [
+        {
+          "session_mode": "foreign_keys_enforced",
+          "exit_code": 0,
+          "identity_preserved": true,
+          "version_after": 1
+        },
+        {
+          "session_mode": "foreign_keys_disabled",
+          "exit_code": 0,
+          "identity_preserved": true,
+          "version_after": 2
+        },
+        {
+          "session_mode": "foreign_keys_disabled_relaxed_sql_mode",
+          "exit_code": 0,
+          "identity_preserved": true,
+          "version_after": 3
+        }
+      ]
+    },
+    "referential_probes": [
+      {
+        "probe": "command_outcomes_without_request",
+        "session_mode": "enforced",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "command_outcomes_without_request",
+        "session_mode": "fk_checks_disabled",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "command_outcomes_without_request",
+        "session_mode": "fk_checks_disabled_relaxed_sql_mode",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "audit_without_event",
+        "session_mode": "enforced",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "audit_without_event",
+        "session_mode": "fk_checks_disabled",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "audit_without_event",
+        "session_mode": "fk_checks_disabled_relaxed_sql_mode",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "event_without_run",
+        "session_mode": "enforced",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "event_without_run",
+        "session_mode": "fk_checks_disabled",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "event_without_run",
+        "session_mode": "fk_checks_disabled_relaxed_sql_mode",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "candidate_without_run",
+        "session_mode": "enforced",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "candidate_without_run",
+        "session_mode": "fk_checks_disabled",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "candidate_without_run",
+        "session_mode": "fk_checks_disabled_relaxed_sql_mode",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "dependency_without_aggregate",
+        "session_mode": "enforced",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "dependency_without_aggregate",
+        "session_mode": "fk_checks_disabled",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "dependency_without_aggregate",
+        "session_mode": "fk_checks_disabled_relaxed_sql_mode",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "aggregate_without_parent",
+        "session_mode": "enforced",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "aggregate_without_parent",
+        "session_mode": "fk_checks_disabled",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "aggregate_without_parent",
+        "session_mode": "fk_checks_disabled_relaxed_sql_mode",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "aggregate_update_to_missing_parent",
+        "session_mode": "enforced",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "aggregate_update_to_missing_parent",
+        "session_mode": "fk_checks_disabled",
+        "exit_code": 1,
+        "denied": true
+      },
+      {
+        "probe": "aggregate_update_to_missing_parent",
+        "session_mode": "fk_checks_disabled_relaxed_sql_mode",
+        "exit_code": 1,
+        "denied": true
+      }
+    ],
+    "orphan_rows_after_probes": {
+      "orphan_aggregates": "0",
+      "orphan_audits": "0",
+      "orphan_candidates": "0",
+      "orphan_events": "0",
+      "orphan_outcomes": "0"
+    },
+    "valid_append_with_foreign_key_checks_disabled": 0,
+    "concurrent_parent_child": {
+      "child_before_parent_commit_exit_code": 1,
+      "parent_commit_exit_code": 0,
+      "child_after_parent_commit_exit_code": 0
+    },
+    "rollback_state": {
+      "child_rows": "0",
+      "ledger_rows": "0",
+      "parent_rows": "0"
+    },
+    "replay_after_rollback_exit_code": 0,
+    "schema_validation": {
+      "production_violations": [],
+      "drift_probe_violations": [
+        {
+          "table": "schema_drift_probe",
+          "index": "uq_schema_drift_probe",
+          "kind": "non_binary_collation",
+          "detail": "drift_key uses utf8mb4_0900_ai_ci, which can match values the binary ledger stores as distinct identities"
+        }
+      ],
+      "drift_probe_odku_exit_code": 0,
+      "drift_probe_value_after_attack": "FORGED"
+    },
+    "privilege_probes": [
+      {
+        "operation": "read_user_table",
+        "exit_code": 1,
+        "denied": true,
+        "diagnostic": " 1 for query SELECT COUNT(*) AS n FROM mysql.user: Error 1105 (HY000): Access denied for user 'app_42767185e5301464'@'%' to database 'mysql'"
+      },
+      {
+        "operation": "create_user",
+        "exit_code": 1,
+        "denied": true,
+        "diagnostic": " query CREATE USER 'escalated_42767185e5301464'@'%' IDENTIFIED BY 'x': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "operation": "grant_self",
+        "exit_code": 1,
+        "denied": true,
+        "diagnostic": "RANT ALL ON `direct_42767185e5301464`.* TO 'app_42767185e5301464'@'%': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "operation": "grant_ledger_insert",
+        "exit_code": 1,
+        "denied": true,
+        "diagnostic": "irect_42767185e5301464`.events_identity TO 'app_42767185e5301464'@'%': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "operation": "drop_owner",
+        "exit_code": 1,
+        "denied": true,
+        "diagnostic": "error on line 1 for query DROP USER 'owner_42767185e5301464'@'%': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      },
+      {
+        "operation": "set_password_owner",
+        "exit_code": 1,
+        "denied": true,
+        "diagnostic": "                   ^"
+      },
+      {
+        "operation": "alter_user_current_user",
+        "exit_code": 1,
+        "denied": true,
+        "diagnostic": "                        ^"
+      },
+      {
+        "operation": "alter_owner",
+        "exit_code": 1,
+        "denied": true,
+        "diagnostic": "'owner_42767185e5301464'@'%' IDENTIFIED BY 'rotated-42767185e5301464': Error 1105 (HY000): command denied to user 'app_42767185e5301464'@'%'"
+      }
+    ],
+    "self_credential_rotation": {
+      "permitted": true,
+      "old_password_rejected_after_rotation": true,
+      "new_password_accepted": true,
+      "privileges_unchanged_after_rotation": true,
+      "original_password_restored": true
+    }
+  },
+  "credential_transport_checks": [
+    {
+      "phase": "authenticated readiness",
+      "transport": "ephemeral process environment",
+      "credential_profile_present": false,
+      "inspected_regular_files": 26,
+      "plaintext_credential_files": 0,
+      "secret_in_argv_output_or_persistent_environment": false,
+      "credential_free_global_config_mode": "777"
+    },
+    {
+      "phase": "Beads initialization",
+      "transport": "ephemeral process environment",
+      "credential_profile_present": false,
+      "inspected_regular_files": 67,
+      "plaintext_credential_files": 0,
+      "secret_in_argv_output_or_persistent_environment": false,
+      "credential_free_global_config_mode": "777"
+    },
+    {
+      "phase": "Beads client phase",
+      "transport": "ephemeral process environment",
+      "credential_profile_present": false,
+      "inspected_regular_files": 68,
+      "plaintext_credential_files": 0,
+      "secret_in_argv_output_or_persistent_environment": false,
+      "credential_free_global_config_mode": "777"
+    },
+    {
+      "phase": "direct schema and grant phase",
+      "transport": "ephemeral process environment",
+      "credential_profile_present": false,
+      "inspected_regular_files": 85,
+      "plaintext_credential_files": 0,
+      "secret_in_argv_output_or_persistent_environment": false,
+      "credential_free_global_config_mode": "777"
+    },
+    {
+      "phase": "direct mapping append phase",
+      "transport": "ephemeral process environment",
+      "credential_profile_present": false,
+      "inspected_regular_files": 86,
+      "plaintext_credential_files": 0,
+      "secret_in_argv_output_or_persistent_environment": false,
+      "credential_free_global_config_mode": "777"
+    },
+    {
+      "phase": "barriered contention client phase",
+      "transport": "ephemeral process environment",
+      "credential_profile_present": false,
+      "inspected_regular_files": 323,
+      "plaintext_credential_files": 0,
+      "secret_in_argv_output_or_persistent_environment": false,
+      "credential_free_global_config_mode": "777"
+    },
+    {
+      "phase": "exact and mismatched replay phase",
+      "transport": "ephemeral process environment",
+      "credential_profile_present": false,
+      "inspected_regular_files": 336,
+      "plaintext_credential_files": 0,
+      "secret_in_argv_output_or_persistent_environment": false,
+      "credential_free_global_config_mode": "777"
+    },
+    {
+      "phase": "immutable-statement adversarial phase",
+      "transport": "ephemeral process environment",
+      "credential_profile_present": false,
+      "inspected_regular_files": 1458,
+      "plaintext_credential_files": 0,
+      "secret_in_argv_output_or_persistent_environment": false,
+      "credential_free_global_config_mode": "777"
+    },
+    {
+      "phase": "before cleanup",
+      "transport": "ephemeral process environment",
+      "credential_profile_present": false,
+      "inspected_regular_files": 1462,
+      "plaintext_credential_files": 0,
+      "secret_in_argv_output_or_persistent_environment": false,
+      "credential_free_global_config_mode": "777"
+    }
+  ],
+  "decision_evidence": {
+    "beads": "NO-GO",
+    "direct_dolt": "GO",
+    "selected_contingency": "DIRECT_DOLT_WITH_BEFORE_INSERT_IDENTITY_GUARDS"
+  }
+}

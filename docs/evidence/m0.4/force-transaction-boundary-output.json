@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "question": "Can supported Dolt 2.3.2 privilege or connection configuration prevent the normal application identity from changing session or global dolt_force_transaction_commit while preserving required TaskStore writes?",
+  "environment": {
+    "run_id": "c29a0732c2a27c60",
+    "dolt": "dolt version 2.3.2",
+    "operating_system": "Linux 6.12.107+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.107-1 (2026-08-29) x86_64 GNU/Linux",
+    "topology": "one disposable loopback SQL server; system_variables and per-user user_session_vars initialize dolt_force_transaction_commit to 0; one owner and one table-scoped application identity",
+    "server": {
+      "pid": 3726087,
+      "exit_code": 0,
+      "signal": null
+    },
+    "owned_temp_directory": {
+      "basename": "director-m0.4-force-boundary-c29a0732c2a27c60-2ucn2n",
+      "removed": true
+    }
+  },
+  "supported_controls": {
+    "system_variables_initial_global_value": 0,
+    "user_session_vars_initial_session_value": 0,
+    "read_only_rejected_as_boundary": "The public behavior.read_only control disables database modification, including required TaskStore INSERT and UPDATE operations.",
+    "per_user_statement_allowlist_available": false
+  },
+  "application_identity": {
+    "grants": [
+      "GRANT USAGE ON *.* TO `app_c29a0732c2a27c60`@`%`",
+      "GRANT SELECT, INSERT, UPDATE ON `force_boundary_c29a0732c2a27c60`.`aggregates` TO `app_c29a0732c2a27c60`@`%`",
+      "GRANT SELECT, INSERT ON `force_boundary_c29a0732c2a27c60`.`immutable_records` TO `app_c29a0732c2a27c60`@`%`"
+    ],
+    "global_admin_or_super_grant_present": false,
+    "required_operations_before_probes": {
+      "immutable_rows": 1,
+      "aggregate_version": 1
+    },
+    "required_operations_after_owner_reset": {
+      "immutable_rows": 2,
+      "aggregate_version": 2
+    }
+  },
+  "override_results": {
+    "session_set_accepted": true,
+    "session_value_after_set": 1,
+    "global_set_accepted": true,
+    "owner_observed_global_value_after_app_set": 1,
+    "new_app_connection_after_global_override_rejected": true,
+    "new_app_connection_diagnostic": "Variable 'dolt_force_transaction_commit' was initialized more than 1x",
+    "owner_restored_global_value": 0
+  },
+  "decision": {
+    "privilege_enforceable_against_engine_identity": false,
+    "accepted_trust_boundary": "TRUSTED_ENGINE_IS_SOLE_CREDENTIAL_HOLDER_AND_RAW_CLIENT",
+    "direct_dolt_2_3_2": "GO_WITH_TRUSTED_ENGINE_BOUNDARY",
+    "residual": "The trusted engine identity can override both configured safe values; deliberate compromise of that identity is outside the database boundary.",
+    "required_adapter_control": "Set and verify session and global dolt_force_transaction_commit=0 before writes and fail closed on any error or drift.",
+    "conditional_contingency": "dir-m0.16"
+  }
+}

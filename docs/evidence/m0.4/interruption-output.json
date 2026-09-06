@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "command": "node docs/evidence/m0.4/verify-interruption.mjs",
+  "injected_signal": "SIGINT",
+  "contract_exit_code": 130,
+  "run_id": "1d9e4d76da7b3239",
+  "spawned_server_pid": 2091338,
+  "authenticated_ready_port": 35315,
+  "server_terminated_before_storage_removal": true,
+  "owned_temp_directory_removed": true
+}
