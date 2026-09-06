@@ -49,6 +49,8 @@ Follow `skills/director-pull-request/SKILL.md` and the repository template.
 - Do not use PR comments for agent-to-agent conversation.
 - Do not merge while CI, review, base, or acceptance evidence is stale.
 
+After `approve_candidate`, the primary agent publishes and merges automatically when the reviewed head, relevant base, configured/required checks, mergeability, and human-feedback gates remain valid. A separate human merge confirmation is not required unless the Task is explicitly manual or one of the risk, policy, ambiguity, history-rewrite, or unauthorized-destructive exceptions in `AGENTS.md` applies.
+
 ## M0 spikes
 
 Follow `skills/director-spike/SKILL.md` and use `docs/adr/0000-template.md`.

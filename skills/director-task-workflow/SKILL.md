@@ -41,8 +41,9 @@ When new work is discovered, create a sibling Task under the same milestone Epic
 3. Require `$director-independent-review` to approve the exact final Candidate SHA.
 4. Address every blocking finding through the same primary Task owner and obtain a fresh review for a changed SHA.
 5. Use `$director-pull-request` only after independent approval.
-6. Update Beads with commit SHA, validation evidence, review verdict, PR link, and residual risks.
-7. Close the Task only after integration is verified and owned temporary resources are clean.
+6. After `approve_candidate`, publish and integrate automatically when the exact remote head, relevant base, configured/required checks, mergeability, and feedback gates remain valid and the Task is not explicitly manual.
+7. Update Beads with commit SHA, validation evidence, review verdict, PR link, integration evidence, and residual risks.
+8. Close the Task only after integration is verified and owned temporary resources are clean.
 
 Candidate approval is not Task completion. Keep every reviewer-listed post-review gate pending until push, PR, CI, integration, synchronization, and cleanup evidence exists.
 
@@ -58,4 +59,4 @@ Stop and update Beads instead of improvising when:
 - the worktree is dirty for reasons outside the Task;
 - implementation needs work from a later milestone.
 
-Never self-approve, bypass hooks or CI, force-push a protected branch, push directly to `main`, or hide incomplete work behind a passing status.
+Never self-approve, bypass hooks or required CI, force-push a protected branch, push directly to `main`, or hide incomplete work behind a passing status.

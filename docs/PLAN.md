@@ -1,7 +1,7 @@
 # Director for Paseo — Product and Engineering Plan
 
 - **Status:** Approved
-- **Plan version:** 0.1
+- **Plan version:** 0.2
 - **Last updated:** 2026-09-06
 - **Approved:** 2026-09-06
 - **Plugin repository:** <https://github.com/mcuadros/paseo-director>
@@ -1090,6 +1090,10 @@ After this plan is approved, development begins by initializing a new, clean Bea
 - No milestone starts with an unresolved entry gate.
 
 Initial development skills define commit, branch, PR, review, testing, and documentation rules before parallel implementation begins.
+
+For Director's own repository, integration is automatic after an independent `approve_candidate` verdict when the remote head still equals the reviewed SHA, the relevant base remains valid, every configured and Task-required check passes, the PR is mergeable, no human feedback is unresolved, and the Task is not explicitly manual. This repository workflow does not change Director's product default of manual merge described in section 14.
+
+Additional human confirmation is reserved for accepting P2 residual risk, expanding policy or permissions, resolving an ambiguous/manual gate, rewriting public history, or performing a destructive action outside the Task's approved cleanup scope.
 
 ## 23. Implementation roadmap
 
