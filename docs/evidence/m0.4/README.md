@@ -1,30 +1,82 @@
 # M0.4 TaskStore mapping evidence
 
-## Final decision
+## Decision
 
-**No-go for Beads `1.2.2` and No-go for direct Dolt `2.3.2` as Director's
-runtime `TaskStore`.**
+**Go for direct Dolt `2.3.2` behind Director's trusted typed `TaskStore`
+adapter. No-go for Beads `1.2.2` as the runtime store.**
 
-Beads' supported public interfaces fail the required transaction, optimistic
-concurrency, idempotency, and immutable-history contract. The direct-Dolt
-schema passed the accumulated table, trigger, transaction, credential, and
-lifecycle checks, but its normal writable application identity can change
-session and global `dolt_force_transaction_commit`. That variable allows
-constraint-violating transaction merges, so the database boundary cannot
-guarantee secondary-unique immutable identities.
+This decision uses an explicit human-approved trust boundary:
 
-No runtime TaskStore is selected here. Existing contingency Task `dir-m0.16` is
-activated, subject to independent approval of the exact decision Candidate.
-M1 remains blocked.
+- one trusted Director engine or adapter daemon is the sole TaskStore
+  credential holder;
+- only that engine may communicate directly with Beads or Dolt;
+- agents, Reviewer Agents, helpers, UI and plugin clients, repositories, prompts,
+  and configuration never receive SQL, TaskStore credentials, a raw connection,
+  or direct store access; and
+- all untrusted callers submit typed scoped commands that the engine validates
+  and executes through the TaskStore port.
 
-## Final root-boundary reproduction
+The database is not required to resist deliberately malicious SQL emitted by an
+already-compromised trusted engine identity. Such a principal can already
+replace or corrupt the trusted adapter and its observations. ADR-0008's separate
+requirement to keep engine credentials and raw endpoints inaccessible to agents
+remains an M0 stop condition; this evidence does not claim it is solved.
 
-Prerequisites:
+## Selected evidence
 
-- Node.js, tested with `v26.7.0`;
-- Dolt `2.3.2`, source tag commit
-  `f0feb352b1d3f0919b88ecd28869e515afb60ee0`;
-- permission to bind an ephemeral loopback port.
+The accumulated contract suite proves the direct-Dolt mapping and database
+behavior inside that boundary:
+
+- [`taskstore-contract.mjs`](taskstore-contract.mjs) and
+  [`observed-output.json`](observed-output.json);
+- [`verify-interruption.mjs`](verify-interruption.mjs) and
+  [`interruption-output.json`](interruption-output.json);
+- [`verify-listener-isolation.mjs`](verify-listener-isolation.mjs) and
+  [`listener-isolation-output.json`](listener-isolation-output.json).
+
+The committed output records:
+
+- 18 PASS, 4 intentionally reproduced Beads FAIL, and 5 CONTROL checks;
+- explicit mapping for Project, Workspace, Epic, Task, dependency, Run,
+  Candidate, Command request/outcome, Event, and Audit records;
+- atomic aggregate/Event rollback;
+- one barriered same-version winner and one SQLSTATE `40001` / Error `1213`
+  loser with zero partials;
+- exact command replay and explicit mismatched-payload rejection;
+- 128 non-transaction-wrapped immutable-table observations: 118 denials and 10
+  controlled appends;
+- 117 ledger/guard attacks, 9 two-step attacks, and 18 deferred transaction
+  attacks;
+- 21 missing-parent probes under enforced, disabled, and relaxed foreign-key
+  modes;
+- 18 referenced-parent rename probes plus 3 legitimate aggregate updates;
+- 9 credential checkpoints; and
+- listener identity, interruption, collision isolation, and owned cleanup.
+
+The historical timeout matrix was not rerun for the trust-boundary decision.
+Those six executable/output artifacts remain byte-identical to Candidate
+`1a5389b7954d5fc8df578f878e8e8d434979b991`, whose complete accumulated suite
+was independently reproduced before the human boundary decision.
+
+## Beads result
+
+Beads `1.2.2` remains No-go through supported public interfaces:
+
+- no generic expected-version update;
+- the supported batch grammar cannot atomically store structured aggregate,
+  Command, and Event facts;
+- `bd update` changes an Event record; and
+- recreating an explicit ID overwrites conflicting command content.
+
+Beads remains Director's development tracker. Product runtime code must not
+write Beads-owned tables or import its internal Go storage package.
+
+## Force-transaction residual
+
+The minimal public-interface reproduction is:
+
+- [`verify-force-transaction-boundary.mjs`](verify-force-transaction-boundary.mjs);
+- [`force-transaction-boundary-output.json`](force-transaction-boundary-output.json).
 
 Run from the repository root:
 
@@ -32,82 +84,104 @@ Run from the repository root:
 node docs/evidence/m0.4/verify-force-transaction-boundary.mjs
 ```
 
-The procedure uses one disposable Dolt server and two identities:
-
-- an owner used only for bootstrap, observation, reset, and cleanup; and
-- an application user with `USAGE` plus `SELECT, INSERT` on an immutable-record
-  table and `SELECT, INSERT, UPDATE` on an aggregate table. It has no global
-  administrative privilege or grant option.
-
-The server is configured through the supported public `config.yaml` surface:
-
-```text
-system_variables:
-  dolt_force_transaction_commit: 0
-user_session_vars:
-  - name: <application-user>
-    vars:
-      dolt_force_transaction_commit: 0
-```
-
-The exact output is
-[`force-transaction-boundary-output.json`](force-transaction-boundary-output.json).
-It records:
+It uses exact Dolt `2.3.2`, one disposable loopback server, safe global and
+per-user session defaults, and a runtime identity with only the table grants
+needed to append an immutable record and conditionally update aggregate state.
+The complete reproduction proves:
 
 | Check | Observation |
 |---|---|
 | Initial global value | `0` |
-| Initial application-session value | `0` |
+| Initial engine-session value | `0` |
+| Runtime global privilege | None beyond `USAGE`; table grants only |
 | Required immutable append and aggregate update | Passed |
-| Application session override | Accepted; read back `1` |
-| Application global override | Accepted; owner read back `1` |
-| New app connection after global override | Rejected: variable initialized more than once |
+| Runtime identity session override | Accepted; read back `1` |
+| Runtime identity global override | Accepted; owner read back `1` |
+| New connection with per-user safe default after global override | Rejected: variable initialized more than once |
 | Owner reset global to `0` | Passed |
 | Required writes after reset | Passed |
-| Server termination before directory removal | Passed |
+| Server exit and owned-directory cleanup | Passed |
 
-The public configuration controls initialize values; they do not make the
-values immutable or remove `SET` authority. Combining a global safe default with
-a per-user safe default turns the unauthorized global change into a connection
-failure rather than containing it. Public read-only mode is not a usable
-boundary because it also disables required TaskStore writes. The installed
-server surface exposes no per-user statement allowlist or system-variable deny
-list.
+The result is unchanged: `dolt_force_transaction_commit` is not
+privilege-enforceable against the SQL identity that performs writes. Under the
+approved trust boundary this is a documented residual against the trusted
+engine, not a database No-go. No untrusted agent or client receives that
+identity or can issue SQL.
 
-Primary references:
+The installed `dolt sql-server --help` and public
+[configuration reference](https://www.dolthub.com/docs/sql-reference/server/configuration/)
+show that `system_variables` and `user_session_vars` initialize values but do
+not provide a per-user statement or variable-deny policy. The public
+[system-variable reference](https://www.dolthub.com/docs/sql-reference/version-control/dolt-sysvars/)
+states that `dolt_force_transaction_commit=1` allows merges with conflicts,
+constraint violations, and other correctness failures. Server read-only mode
+is not a usable boundary because it also disables required TaskStore writes.
 
-- [Dolt SQL-server configuration](https://www.dolthub.com/docs/sql-reference/server/configuration/)
-- [Dolt system variables](https://www.dolthub.com/docs/sql-reference/version-control/dolt-sysvars/)
+## Required adapter control
 
-The references were read on 2026-09-06. Installed Dolt `2.3.2` behavior was
-tested instead of assuming current documentation matched the pinned release.
+The engine adapter must use the force variable as a checked fail-closed
+precondition:
 
-## Accumulated regression evidence
+1. At startup and after reconnect, use an engine-only control connection to set
+   `@@GLOBAL.dolt_force_transaction_commit = 0` and read it back.
+2. Before every write transaction, set
+   `@@SESSION.dolt_force_transaction_commit = 0` on that exact connection and
+   read back both the session and global values.
+3. Begin no write unless both values are exactly `0`.
+4. On any failed set/read, unexpected value, duplicate-initialization error,
+   connection reset, or drift, roll back when possible, perform no fallback or
+   retrying write, mark the TaskStore unhealthy, and route the Project to
+   Degraded/Needs you.
+5. Emit only a bounded redacted health code. Never log SQL payloads,
+   credentials, connection strings, or raw server output.
 
-The final reproduction does not rerun or broaden the previous adversarial
-matrix. These existing procedures and outputs are retained because they prove
-narrower facts and let another agent reproduce the history:
+This control addresses operator drift, connection reuse mistakes, and adapter
+bugs. It is not presented as privilege enforcement against the trusted engine.
 
-- [`taskstore-contract.mjs`](taskstore-contract.mjs) and
-  [`observed-output.json`](observed-output.json): mapping, Beads failures,
-  atomic rollback, barriered CAS, replay, immutable table/ledger guards,
-  referential guards, credentials, and normal cleanup;
-- [`verify-interruption.mjs`](verify-interruption.mjs) and
-  [`interruption-output.json`](interruption-output.json): precise `SIGINT`,
-  server termination before storage removal;
-- [`verify-listener-isolation.mjs`](verify-listener-isolation.mjs) and
-  [`listener-isolation-output.json`](listener-isolation-output.json):
-  authenticated listener identity, same-port collision failure, and no
-  cross-run attachment.
+## Raw-access exclusion
 
-The `direct_dolt: GO` value embedded in `observed-output.json` is a historical
-conclusion from the accumulated schema matrix. It is superseded by
-`force-transaction-boundary-output.json`, which tests the later-discovered root
-authority failure and records `direct_dolt_2_3_2: NO-GO`. Do not treat the older
-field as the final TaskStore decision.
+- A typed Director RPC or MCP tool never accepts SQL, credentials, connection
+  strings, database selection, or caller-chosen TaskStore scope.
+- The engine reauthorizes Project, Workspace, Task, Run, role, expected version,
+  and idempotency key from its own durable context.
+- TaskStore credentials are excluded from prompts, MCP arguments, Organizer
+  Git, product repositories, TaskStore rows, events, audit payloads, logs,
+  diagnostics, and support bundles.
+- Repository content and model output cannot select the adapter executable,
+  mutate connection configuration, or receive raw database output.
+- Failure to prove OS/process separation between agent execution and the engine
+  credential/raw endpoint fails ADR-0008 and keeps M1 blocked.
 
-The accumulated default chain remains reproducible when its narrower results
-are needed:
+## P3 documentation constraints
+
+### Coverage-validator scope
+
+The accumulated harness calls `validateGuardedSchema(immutableTableModel)`. It
+does not validate the later `aggregates.id` ledger in `identityLedgerModel` for
+collation, byte width, nullability, prefix, or expression drift. The tested live
+column is binary-collated and its mutation probes pass. `dir-m0.5` must extend
+this coverage as a hard migration gate before schema evolution; the current
+evidence does not claim the aggregate identity is covered by that validator.
+
+### Aggregate update operation
+
+The `aggregates` `BEFORE INSERT` identity ledger fires before Dolt selects the
+`ON DUPLICATE KEY UPDATE` path. Every duplicate-ID upsert is denied, including a
+version/data-only upsert. The adapter must use an expected-version update:
+
+```sql
+UPDATE aggregates
+SET version = ?, data = ?
+WHERE id = ? AND version = ?;
+```
+
+ODKU is not part of the aggregate adapter contract.
+
+## Reproduction and integrity checks
+
+The minimal boundary procedure is the only live database reproduction required
+for this trust-boundary revision. The historical slow suite is retained and can
+be reproduced later when its narrower database behavior must be revalidated:
 
 ```text
 DIRECTOR_M04_FOCUS=referenced-parent-identities node docs/evidence/m0.4/taskstore-contract.mjs
@@ -116,91 +190,27 @@ node docs/evidence/m0.4/verify-interruption.mjs
 node docs/evidence/m0.4/verify-listener-isolation.mjs
 ```
 
-It was not rerun in the final decision cycle. The fresh independent Fable review
-of Candidate `1a5389b7954d5fc8df578f878e8e8d434979b991` already reproduced the
-complete accumulated chain and recorded the force-commit defect separately in
-Beads comment `01a07698-a19f-7eb5-8cd6-b38e9a046f53`.
+For this Candidate, validate instead:
 
-## Accumulated direct-Dolt results
+- all four `.mjs` files pass `node --check`;
+- all four committed JSON outputs parse;
+- the minimal output records the raw force-variable observations and the
+  human-approved trusted-engine Go boundary; and
+- the six accumulated executable/output artifacts are byte-identical to
+  Candidate `1a5389b7954d5fc8df578f878e8e8d434979b991`.
 
-Before the root failure was known, the schema fixture proved:
+## Compatibility, cleanup, and follow-up
 
-- explicit mapping for Project, Workspace, Epic, Task, dependency, Run,
-  Candidate, Command request/outcome, Event, and Audit records;
-- atomic aggregate/Event rollback;
-- one barriered same-version winner and one SQLSTATE `40001` / Error `1213`
-  loser with zero partials;
-- exact command replay and explicit payload-mismatch rejection;
-- 128 non-transaction-wrapped immutable-table observations: 118 denials and 10
-  controlled appends;
-- 117 direct ledger/guard-table attacks and 9 two-step attacks denied;
-- 18 deferred transaction attacks denied;
-- 21 missing-parent probes denied under enforced, disabled, and relaxed
-  foreign-key modes;
-- 18 referenced-parent rename probes denied while 3 legitimate aggregate
-  version/data updates succeeded;
-- 9 clean credential checkpoints;
-- listener ownership, interruption, and owned-resource cleanup.
+Compatibility is bounded to the exact Beads, Dolt, Node, and Debian/Linux
+versions recorded above. Windows, synchronization, backup, restore, migration,
+partial-failure recovery, the aggregate-validator extension, and safe-variable
+reconciliation remain gates for `dir-m0.5` and `dir-m0.10`.
 
-These facts do not compensate for an application-settable commit override. The
-force variable acts at transaction merge/commit, after the statement-level
-guards that produced the accumulated passes.
+The minimal reproduction stops its owned server, restores the global variable,
+and removes its owned directory. Generated credentials do not enter argv,
+captured output, or the credential-free server configuration.
 
-## Beads result
-
-Beads `1.2.2` remains No-go through its supported public CLI only:
-
-- no expected-version update flag;
-- the supported batch grammar rejects structured metadata, so it cannot
-  atomically write aggregate and Command/Event facts;
-- `bd update` changes an Event record; and
-- recreating an explicit ID overwrites conflicting command content.
-
-Director continues to use Beads for development tracking. Product runtime code
-must not write Beads-owned tables or import its internal Go storage package.
-
-## P3 documentation corrections
-
-### Coverage-validator scope
-
-The accumulated harness calls `validateGuardedSchema(immutableTableModel)`. It
-does not validate the later `aggregates.id` ledger contained only in
-`identityLedgerModel`. The live tested `aggregates.id` column was binary
-collated and its mutation probes passed, but the earlier documentation
-overstated the migration validator: it does not cover that identity's
-collation, byte width, nullability, prefix, or expression properties.
-
-Because direct Dolt is rejected, this final cycle documents the gap rather than
-patching or broadening the obsolete schema matrix. Any future investigation
-must not reuse the old claim that every referenced parent identity is covered
-by the validator.
-
-### Aggregate update operation
-
-The `aggregates` `BEFORE INSERT` identity ledger fires before Dolt chooses the
-`ON DUPLICATE KEY UPDATE` path. It therefore denies every duplicate-ID upsert,
-including one that changes only aggregate version or data. The accumulated
-adapter design can update aggregate state only with a conditional statement of
-this form:
-
-```sql
-UPDATE aggregates
-SET version = ?, data = ?
-WHERE id = ? AND version = ?;
-```
-
-This constraint was missing from the previous ADR and README. It does not
-resolve the force-transaction authority failure.
-
-## Compatibility and cleanup
-
-The final result is bounded to Dolt `2.3.2` on the stated Debian/Linux topology.
-It does not claim Windows, synchronization, backup, restore, migration, or
-partial-failure proof; those gates must be reassigned to the store selected by
-`dir-m0.16`.
-
-Every completed final-boundary run stopped its owned server and removed its
-owned directory. Generated credentials were absent from argv, captured output,
-and the credential-free server configuration. The previously documented
-unattributable temporary artifact remains untouched because ownership cannot be
-proven.
+Existing contingency `dir-m0.16` remains open, conditional, unclaimed, and
+blocked by `dir-m0.4`. Do not close it until the new direct-Dolt Go Candidate is
+independently approved; then close it as not needed with the exact reviewed SHA
+linked. If review rejects the boundary or evidence, retain the contingency.

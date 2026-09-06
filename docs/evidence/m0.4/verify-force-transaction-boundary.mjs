@@ -441,11 +441,14 @@ user_session_vars:
       owner_restored_global_value: Number(globalAfterReset.global_value),
     },
     decision: {
-      enforceable_supported_boundary: false,
-      direct_dolt_2_3_2: "NO-GO",
-      reason:
-        "The table-scoped application identity can override both configured safe defaults. Dolt 2.3.2 exposes no supported per-user SET restriction or statement allowlist, and read-only mode removes required writes.",
-      activated_contingency: "dir-m0.16",
+      privilege_enforceable_against_engine_identity: false,
+      accepted_trust_boundary: "TRUSTED_ENGINE_IS_SOLE_CREDENTIAL_HOLDER_AND_RAW_CLIENT",
+      direct_dolt_2_3_2: "GO_WITH_TRUSTED_ENGINE_BOUNDARY",
+      residual:
+        "The trusted engine identity can override both configured safe values; deliberate compromise of that identity is outside the database boundary.",
+      required_adapter_control:
+        "Set and verify session and global dolt_force_transaction_commit=0 before writes and fail closed on any error or drift.",
+      conditional_contingency: "dir-m0.16",
     },
   };
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
