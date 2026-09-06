@@ -62,7 +62,7 @@ async function fileManifest(root) {
 }
 
 function providerHomeFor(name) {
-  return path.join(runtimeRoot, "provider-homes", name);
+  return process.env.DIRECTOR_PROVIDER_HOME ?? path.join(runtimeRoot, "provider-homes", name);
 }
 
 function providerEnvFor(name) {
@@ -90,7 +90,7 @@ async function assertIsolatedHome(name) {
     codex: [".codex/auth.json"],
     claude: [".claude.json", ".claude/.credentials.json"],
     opencode: [".local/share/opencode/auth.json"],
-  }[name];
+  }[name] ?? [];
   const unexpected = manifest.filter((entry) => !allowed.includes(entry));
   if (unexpected.length > 0) {
     throw new Error(`Provider home is not auth-only: ${JSON.stringify(unexpected)}`);
@@ -142,7 +142,7 @@ function assertProbeTranscript(events, expectedRow, expectedText) {
   return { receivedMethods, calls: calls.length, rejectedCalls: rejected.length };
 }
 
-async function chooseModel(provider) {
+async function chooseModel(provider, explicitModel) {
   const snapshot = await client.providers.waitForReady({
     cwd: path.join(runtimeRoot, "workspace"),
     timeoutMs: 120_000,
@@ -151,7 +151,7 @@ async function chooseModel(provider) {
   if (!entry || entry.status !== "ready" || entry.enabled !== true) {
     throw new Error(`${provider}: provider is not ready: ${JSON.stringify(entry ?? null)}`);
   }
-  const requested = process.env[`DIRECTOR_${provider.toUpperCase()}_MODEL`];
+  const requested = explicitModel ?? process.env[`DIRECTOR_${provider.toUpperCase()}_MODEL`];
   if (requested) {
     if (!entry.models?.some((model) => model.id === requested)) {
       throw new Error(`${provider}: requested model is absent: ${requested}`);
@@ -260,6 +260,7 @@ async function runBuiltIn(provider) {
 
 async function runCompatibleAcp() {
   const provider = "probe-acp";
+  const providerHomeManifest = await assertIsolatedHome(provider);
   const server = "director_scope_acp";
   const nonce = "m03-acp-scope-v1";
   const expectedText = `DIRECTOR_SCOPE_OK row=acp-compatible nonce=${nonce} tools=${allowedTool}`;
@@ -285,7 +286,7 @@ async function runCompatibleAcp() {
         },
       },
       cwd: path.join(runtimeRoot, "workspace"),
-      env: { DIRECTOR_ACP_LOG: acpLog },
+      env: { HOME: providerHomeFor(provider), DIRECTOR_ACP_LOG: acpLog },
       title: "Director M0.3 compatible ACP probe",
       labels: { task: "dir-m0.3", evidenceRow: "acp-compatible" },
     });
@@ -315,6 +316,7 @@ async function runCompatibleAcp() {
       verdict: "pass",
       provider,
       model: fixtureModel,
+      providerHomeManifest,
       liveSupportsMcpServers: agent.capabilities.supportsMcpServers,
       result: { status: run.status, error: run.error, lastMessage: run.lastMessage },
       probe,
@@ -334,6 +336,7 @@ async function runCompatibleAcp() {
 async function runOpenCodeBillingRejection() {
   const provider = "opencode";
   const model = "opencode/gpt-5-nano";
+  const { providerEntry } = await chooseModel(provider, model);
   const providerHomeManifest = await assertIsolatedHome(provider);
   const server = "director_scope_opencode_billing";
   const probeLog = rowPath("opencode-billing-rejected", "mcp.jsonl");
@@ -379,6 +382,8 @@ async function runOpenCodeBillingRejection() {
     return {
       row: "opencode-explicit-gpt-5-nano",
       verdict: "failed-no-fallback",
+      providerStatus: providerEntry.status,
+      providerSource: providerEntry.source ?? null,
       model,
       providerHomeManifest,
       liveSupportsMcpServers: agent.capabilities?.supportsMcpServers ?? null,
@@ -400,6 +405,7 @@ async function runOpenCodeBillingRejection() {
 
 async function runAcpPolicyRejection() {
   const provider = "probe-acp";
+  const providerHomeManifest = await assertIsolatedHome(provider);
   const server = "director_scope_acp_policy";
   const probeLog = rowPath("acp-policy-rejected", "mcp.jsonl");
   const acpLog = rowPath("acp-policy-rejected", "acp.jsonl");
@@ -424,7 +430,9 @@ async function runAcpPolicyRejection() {
         toolPolicy: { preapproved: [{ kind: "mcp", server, tool: allowedTool }] },
       },
       cwd: path.join(runtimeRoot, "workspace"),
-      env: { DIRECTOR_ACP_LOG: acpLog },
+      env: { HOME: providerHomeFor(provider), DIRECTOR_ACP_LOG: acpLog },
+      title: "Director M0.3 ACP policy rejection",
+      labels: { task: "dir-m0.3", evidenceRow: "acp-policy-rejected" },
     });
   } catch (cause) {
     observedError = cause instanceof Error ? cause.message : String(cause);
@@ -443,12 +451,18 @@ async function runAcpPolicyRejection() {
   if (probeEvents.length !== 0 || acpEvents.length !== 0) {
     throw new Error("ACP tool-policy rejection was not pre-launch");
   }
+  const registeredAgentCount = await countAgentsForRow("acp-policy-rejected");
+  if (registeredAgentCount !== 0) {
+    throw new Error("ACP tool-policy rejection registered an agent");
+  }
   return {
     row: "acp-compatible-with-exact-tool-policy",
     verdict: "fail-closed-excluded",
     observedError,
+    providerHomeManifest,
     acpProcessEvents: acpEvents.length,
     mcpProcessEvents: probeEvents.length,
+    registeredAgentCount,
     promptCount: 0,
     fallbackCount: 0,
   };
@@ -456,6 +470,7 @@ async function runAcpPolicyRejection() {
 
 async function runUnsupportedAcp() {
   const provider = "probe-acp-no-mcp";
+  const providerHomeManifest = await assertIsolatedHome(provider);
   const server = "director_scope_unsupported";
   const probeLog = rowPath("acp-unsupported", "mcp.jsonl");
   const acpLog = rowPath("acp-unsupported", "acp.jsonl");
@@ -479,7 +494,9 @@ async function runUnsupportedAcp() {
         },
       },
       cwd: path.join(runtimeRoot, "workspace"),
-      env: { DIRECTOR_ACP_LOG: acpLog },
+      env: { HOME: providerHomeFor(provider), DIRECTOR_ACP_LOG: acpLog },
+      title: "Director M0.3 unsupported-MCP ACP rejection",
+      labels: { task: "dir-m0.3", evidenceRow: "acp-unsupported" },
     });
   } catch (cause) {
     observedError = cause instanceof Error ? cause.message : String(cause);
@@ -501,10 +518,15 @@ async function runUnsupportedAcp() {
   ) {
     throw new Error("Unsupported ACP did not fail closed at the observed boundary");
   }
+  const registeredAgentCount = await countAgentsForRow("acp-unsupported");
+  if (registeredAgentCount !== 0) {
+    throw new Error("Unsupported ACP rejection registered an agent");
+  }
   return {
     row: "acp-declared-unsupported-mcp",
     verdict: "fail-closed-excluded",
     observedError,
+    providerHomeManifest,
     acp: {
       processStarted: acpEvents.some((event) => event.event === "process_started"),
       sessionCreated: true,
@@ -512,6 +534,7 @@ async function runUnsupportedAcp() {
       promptCount: prompts.length,
     },
     mcpProcessEvents: probeEvents.length,
+    registeredAgentCount,
     fallbackCount: 0,
   };
 }
@@ -525,11 +548,11 @@ async function discover() {
     client.config.get(),
   ]);
   const testedModels = {
-    codex: "gpt-5.4-mini",
-    claude: "claude-haiku-4-5",
-    opencode: "opencode/nemotron-3-ultra-free",
-    "probe-acp": fixtureModel,
-    "probe-acp-no-mcp": fixtureModel,
+    codex: ["gpt-5.4-mini"],
+    claude: ["claude-haiku-4-5"],
+    opencode: ["opencode/gpt-5-nano", "opencode/nemotron-3-ultra-free"],
+    "probe-acp": [fixtureModel],
+    "probe-acp-no-mcp": [fixtureModel],
   };
   return {
     row: "discovery",
@@ -548,15 +571,31 @@ async function discover() {
         error: entry.error ?? null,
         modelCount: entry.models?.length ?? 0,
         defaultModels: entry.models?.filter((model) => model.isDefault).map((model) => model.id) ?? [],
-        testedModel: testedModels[entry.provider],
-        testedModelPresent:
-          entry.models?.some((model) => model.id === testedModels[entry.provider]) ?? false,
+        testedModels: testedModels[entry.provider],
+        testedModelsPresent: testedModels[entry.provider].every((testedModel) =>
+          entry.models?.some((model) => model.id === testedModel),
+        ),
       })),
   };
 }
 
+async function countAgentsForRow(evidenceRow) {
+  const result = await client.agents.list({
+    filter: { labels: { task: "dir-m0.3", evidenceRow }, includeArchived: true },
+    page: { limit: 20 },
+  });
+  return result.entries.length;
+}
+
 async function verifyAgentCleanup() {
-  const [active, history] = await Promise.all([
+  const activeBefore = await client.agents.list({
+    filter: { labels: { task: "dir-m0.3" } },
+    page: { limit: 200 },
+  });
+  for (const entry of activeBefore.entries) {
+    await client.agents.ref(entry.agent).archive();
+  }
+  const [activeAfter, history] = await Promise.all([
     client.agents.list({
       filter: { labels: { task: "dir-m0.3" } },
       page: { limit: 200 },
@@ -566,8 +605,8 @@ async function verifyAgentCleanup() {
       page: { limit: 200 },
     }),
   ]);
-  if (active.entries.length !== 0) {
-    throw new Error(`Cleanup left ${active.entries.length} active evidence agents`);
+  if (activeAfter.entries.length !== 0) {
+    throw new Error(`Cleanup left ${activeAfter.entries.length} active evidence agents`);
   }
   const unarchived = history.entries.filter((entry) => !entry.agent.archivedAt);
   if (unarchived.length !== 0) {
@@ -575,7 +614,9 @@ async function verifyAgentCleanup() {
   }
   return {
     row: "cleanup",
-    activeAgentCount: active.entries.length,
+    activeAgentCountBeforeCleanup: activeBefore.entries.length,
+    archivedByCleanup: activeBefore.entries.length,
+    activeAgentCount: activeAfter.entries.length,
     archivedAgentCount: history.entries.length,
     archivedProviders: history.entries.map((entry) => entry.agent.provider).sort(),
     allHistoricalRowsArchived: true,

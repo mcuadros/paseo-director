@@ -22,6 +22,11 @@ unresolved permission. [ADR-0008](0008-director-threat-model.md) separately
 establishes that MCP scope and provider tool settings are defense in depth,
 not an operating-system or credential boundary.
 
+[ADR-0010](0010-top-level-task-agent-parentage.md) remains authoritative for
+Task Agent and Reviewer Agent lifecycle. These disposable capability probes
+use top-level `agents.create` calls with the parent omitted, but they are not
+product Task Agents or Reviewer Agents and make no helper-subagent claim.
+
 ## Question or hypothesis
 
 On exact Paseo 0.7.2 and the observed Linux host, can Codex, Claude Code,
@@ -67,9 +72,11 @@ reproducible fixtures are:
 - [`probe-acp.mjs`](../evidence/m0.3/probe-acp.mjs), a deterministic ACP v1
   agent that connects to the MCP server supplied in `session/new`; and
 - [`paseo-config.example.json`](../evidence/m0.3/paseo-config.example.json),
-  the isolated daemon and custom-provider configuration template; and
+  the isolated daemon and custom-provider configuration template;
 - [`run-matrix.mjs`](../evidence/m0.3/run-matrix.mjs), which uses only the
-  public `@getpaseo/client` 0.7.2 package root.
+  public `@getpaseo/client` 0.7.2 package root; and
+- [`reproduce-matrix.mjs`](../evidence/m0.3/reproduce-matrix.mjs), the complete
+  ordered clean-environment setup, row execution, and cleanup orchestrator.
 
 Observed matrix:
 
@@ -115,17 +122,20 @@ Paseo rejects this row before launching any process.
 OpenCode's separately selected `opencode/gpt-5-nano` attempt returned an
 explicit 401 billing error after MCP initialization/listing and before any tool
 call. It did not select another model. The successful free-model attempt was a
-new explicit run, not a fallback. One same-provider, same-model 502 retry
-occurred within the successful run and then completed; retrying the unchanged
-selection is not a provider/model fallback.
+new explicit run with a fresh provider home, not a fallback. Retryable 502
+responses occurred within successful runs and then completed without changing
+provider, model, policy, MCP server, or nonce; retrying the unchanged selection
+is not a provider/model fallback.
 
 The daemon's public configuration reported both `mcp.enabled: false` and
-`mcp.injectIntoAgents: false`. Each native provider process received a fresh
-home whose pre-run manifest contained only its provider authentication file
-and, for Claude, a minimal local onboarding record. The disposable Git
-repository had no remote, `.mcp.json`, provider settings, product code, or Git
-or GitHub credential. The provider credentials were never printed, hashed,
-placed in an argument, prompt, log, repository file, or evidence artifact.
+`mcp.injectIntoAgents: false`. Each native attempt, including both explicit
+OpenCode selections, received its own fresh home whose pre-run manifest
+contained only its provider authentication file and, for Claude, a minimal
+local onboarding record. Each ACP attempt received its own empty home. The
+disposable Git repository had no remote, `.mcp.json`, provider settings,
+product code, or Git or GitHub credential. The provider credentials were never
+printed, hashed, placed in an argument, prompt, log, repository file, or
+evidence artifact.
 
 Claude used its native `ToolSearch` helper before the MCP call. This does not
 expand the custom MCP catalog, which still contained one tool, but it proves

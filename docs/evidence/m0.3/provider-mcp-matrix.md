@@ -15,6 +15,11 @@ state, and inference. Provider credential values were not read into the
 harness, printed, hashed, or retained. Machine-local process, session, agent,
 account, and server identifiers are omitted.
 
+Every disposable probe uses a top-level public `agents.create` call with the
+parent omitted. These are bounded capability probes, not product Task Agents
+or Reviewer Agents; ADR-0010's exact-title, ownership, and independent-review
+rules remain unchanged, and this matrix makes no helper-subagent claim.
+
 ## Falsifiable method
 
 The probe MCP server advertises exactly one tool:
@@ -142,8 +147,10 @@ The public SDK later returned:
 }
 ```
 
-Each native session received a fresh provider home. Before the corresponding
-process started, recursive manifests contained only:
+Each native attempt received its own fresh provider home. The failed and
+successful explicit OpenCode selections therefore could not populate or depend
+on one another's home. Before the corresponding process started, recursive
+manifests contained only:
 
 ```text
 Codex:      .codex/auth.json
@@ -180,35 +187,45 @@ separate OS boundary denies them.
 
 ## Reproduction command
 
-Copy [`paseo-config.example.json`](paseo-config.example.json) to the isolated
-Paseo home as `config.json` and replace both example fixture paths with the
-absolute path of the detached evidence checkout. Keep the loopback listen
-address on the daemon command line so it cannot be inherited from another
-configuration. Seed each provider home with only the provider's authentication
-file and the minimal Claude onboarding object listed above; never print or hash
-those files.
-
-Each row used the same public package-root harness command; only the final row
-argument and an explicitly selected model variable changed:
+Run the complete orchestrator from a clean detached evidence checkout on Linux
+x86_64. The exact provider versions listed above must already be installed and
+authenticated in their standard homes:
 
 ```text
-$ DIRECTOR_PASEO_CLIENT_ENTRY=<installed-0.7.2-client>/dist/index.js \
-  DIRECTOR_MATRIX_ROOT=<runtime> \
-  DIRECTOR_PROBE_MCP=<checkout>/docs/evidence/m0.3/probe-mcp.mjs \
-  DIRECTOR_PASEO_URL=ws://127.0.0.1:16783/ws \
-  DIRECTOR_CODEX_MODEL=gpt-5.4-mini \
-  node docs/evidence/m0.3/run-matrix.mjs codex
-
-$ ... DIRECTOR_CLAUDE_MODEL=claude-haiku-4-5 \
-  node docs/evidence/m0.3/run-matrix.mjs claude
-
-$ ... DIRECTOR_OPENCODE_MODEL=opencode/nemotron-3-ultra-free \
-  node docs/evidence/m0.3/run-matrix.mjs opencode
-
-$ ... node docs/evidence/m0.3/run-matrix.mjs acp-compatible
-$ ... node docs/evidence/m0.3/run-matrix.mjs acp-policy-rejected
-$ ... node docs/evidence/m0.3/run-matrix.mjs acp-unsupported
+$ node docs/evidence/m0.3/reproduce-matrix.mjs
 ```
+
+The orchestrator fails if port `16783` is occupied; a reviewer may select a
+different dedicated port with `DIRECTOR_MATRIX_PORT`. Nonstandard executable,
+client-entry, or authentication-file locations can be supplied through
+`DIRECTOR_<PROVIDER>_BIN`, `DIRECTOR_PASEO_CLIENT_ENTRY`, and
+`DIRECTOR_<PROVIDER>_AUTH_SOURCE` environment variables. These values are
+paths, not credential contents, and are never emitted.
+
+The command performs one deterministic ordered procedure:
+
+```text
+discovery
+codex
+claude
+opencode-billing-rejected
+opencode
+acp-compatible
+acp-policy-rejected
+acp-unsupported
+cleanup
+graceful daemon shutdown
+exact owner-PID, process-tree, and listener absence checks
+nonce-owned temporary-path removal
+```
+
+It creates the isolated config and no-remote Git repository, seeds a different
+auth-only or empty home immediately before every row, starts the loopback-only
+daemon, runs every row through the public package-root harness, archives every
+registered agent in `finally`, runs a public cleanup query, and removes the
+runtime only after exact ownership and process checks. An assertion failure
+still attempts the same agent, daemon, process, listener, and path cleanup. It
+never prints or hashes provider credentials or raw daemon/provider logs.
 
 `run-matrix.mjs` advertises `appVersion: "0.7.2"` during the public SDK hello.
 Without that compatibility declaration, a 0.7.2 server intentionally filters
@@ -228,40 +245,40 @@ Sanitized `providers.waitForReady()` plus `config.get()` output:
       "status": "ready",
       "source": "builtin",
       "modelCount": 15,
-      "testedModel": "claude-haiku-4-5",
-      "testedModelPresent": true
+      "testedModels": ["claude-haiku-4-5"],
+      "testedModelsPresent": true
     },
     {
       "provider": "codex",
       "status": "ready",
       "source": "builtin",
       "modelCount": 6,
-      "testedModel": "gpt-5.4-mini",
-      "testedModelPresent": true
+      "testedModels": ["gpt-5.4-mini"],
+      "testedModelsPresent": true
     },
     {
       "provider": "opencode",
       "status": "ready",
       "source": "builtin",
       "modelCount": 69,
-      "testedModel": "opencode/nemotron-3-ultra-free",
-      "testedModelPresent": true
+      "testedModels": ["opencode/gpt-5-nano", "opencode/nemotron-3-ultra-free"],
+      "testedModelsPresent": true
     },
     {
       "provider": "probe-acp",
       "status": "ready",
       "source": "custom",
       "modelCount": 1,
-      "testedModel": "fixture",
-      "testedModelPresent": true
+      "testedModels": ["fixture"],
+      "testedModelsPresent": true
     },
     {
       "provider": "probe-acp-no-mcp",
       "status": "ready",
       "source": "custom",
       "modelCount": 1,
-      "testedModel": "fixture",
-      "testedModelPresent": true
+      "testedModels": ["fixture"],
+      "testedModelsPresent": true
     }
   ]
 }
@@ -374,9 +391,9 @@ boundary.
 ```
 
 OpenCode ran with bare `permission: "deny"`; the Paseo `toolPolicy` grant was
-the explicit exception. Before the call, the same unchanged provider/model
-selection reported one retryable 502 overload. Paseo retried that same
-selection, then completed. No fallback field or second model was involved.
+the explicit exception. Across clean ordered reproductions, the same unchanged
+provider/model selection reported one or two retryable 502 overloads before
+completing. No fallback field or second model was involved in any run.
 
 ## MCP receiver transcripts
 
@@ -422,6 +439,7 @@ second call, or the built-in `paseo` MCP server.
   "verdict": "pass",
   "provider": "probe-acp",
   "model": "fixture",
+  "providerHomeManifest": [],
   "liveSupportsMcpServers": true,
   "result": {
     "status": "idle",
@@ -461,8 +479,10 @@ Sanitized ACP receiver log:
   "row": "acp-compatible-with-exact-tool-policy",
   "verdict": "fail-closed-excluded",
   "observedError": "Provider 'probe-acp' cannot preapprove exact MCP tools for unattended execution; select Claude, Codex, or OpenCode",
+  "providerHomeManifest": [],
   "acpProcessEvents": 0,
   "mcpProcessEvents": 0,
+  "registeredAgentCount": 0,
   "promptCount": 0,
   "fallbackCount": 0
 }
@@ -479,6 +499,7 @@ does not admit ordinary custom ACP for Director's governed unattended profile.
   "row": "acp-declared-unsupported-mcp",
   "verdict": "fail-closed-excluded",
   "observedError": "Provider 'probe-acp-no-mcp' does not support MCP servers",
+  "providerHomeManifest": [],
   "acp": {
     "processStarted": true,
     "sessionCreated": true,
@@ -486,6 +507,7 @@ does not admit ordinary custom ACP for Director's governed unattended profile.
     "promptCount": 0
   },
   "mcpProcessEvents": 0,
+  "registeredAgentCount": 0,
   "fallbackCount": 0
 }
 ```
@@ -535,8 +557,8 @@ archived.
   process was launched by the harness.
 - The OpenCode 401 preserved the exact failed model. The later model selection
   was explicit and separately evidenced.
-- The successful OpenCode 502 retry preserved provider, model, permission
-  policy, MCP server, and nonce; it was a retry, not fallback.
+- Every successful OpenCode 502 retry preserved provider, model, permission
+  policy, MCP server, and nonce; it was a retry sequence, not fallback.
 - This evidence supports an empty default fallback chain. It does not authorize
   any particular future chain.
 
@@ -554,29 +576,36 @@ in a `finally` block. A public SDK query filtered by the Task label returned:
 ```json
 {
   "row": "cleanup",
+  "activeAgentCountBeforeCleanup": 0,
+  "archivedByCleanup": 0,
   "activeAgentCount": 0,
-  "archivedAgentCount": 10,
+  "archivedAgentCount": 5,
   "allHistoricalRowsArchived": true
 }
 ```
 
-The count includes discarded smoke runs and both explicit OpenCode attempts;
-it is not a claim of ten matrix rows. Before daemon shutdown:
+The isolated fresh run registered exactly Codex, Claude, both explicit OpenCode
+attempts, and the compatible ACP attempt. Both rejected ACP attempts registered
+zero agents. The row-level `finally` archives left nothing for the cleanup
+action to archive.
+
+Before daemon shutdown, an exact `/proc` scan found no provider-home, MCP-probe,
+or ACP-probe process. Every remaining runtime-associated PID formed one parent
+chain rooted at the owner PID returned by public `paseo daemon status`: Paseo
+Supervisor, Paseo Daemon, and one Node worker. Machine-local PIDs are omitted.
+After the graceful lifecycle command, status had no owner PID, the exact prior
+owner PID was absent, the listener refused connections, and the runtime scan
+was empty:
 
 ```text
-$ pgrep -af '<fixture paths>|<provider-home path>'
-[no matches]
+before stop: 3 Paseo-owned processes; 0 provider/probe processes
+after stop:  0 runtime-associated processes; listener closed
 ```
 
-The isolated daemon was then stopped through its own lifecycle command. The
-fixed disposable directory was deleted only after its absolute path and owner
-PID were rechecked. Final validation requires both the daemon PID and the
-runtime directory to be absent; no shared daemon, provider config, repository,
-Git ref, GitHub state, or user credential source is modified.
-
-The separate read-only Paseo `v0.7.2` source checkout and the fixture's initial
-standalone smoke log were also deleted. Final path checks returned `absent` for
-all three temporary targets.
+The runtime directory was deleted only after its canonical parent, generated
+prefix, nonce marker, empty process set, and closed listener were rechecked.
+The final path check returned absent. No shared daemon, provider config,
+repository, Git ref, GitHub state, or user credential source was modified.
 
 ## Fixture hashes
 
@@ -584,7 +613,8 @@ all three temporary targets.
 6a2baa520d96e57538f09ae0b441f3b19b9cfbac71c7221758e39def215bcf75  probe-mcp.mjs
 e3017065e67eaa351d2325ba4923c58e1ebd8e616b93a93d574ea760a896a326  probe-acp.mjs
 142f920a8c49b0cec1c8027cceb91608679d14b8d3a9b851682a77f6f212220a  paseo-config.example.json
-4468a2eab6f7d40599cf07292d4fcf4bdaa622996f3f9e7a4a1476798d824bc8  run-matrix.mjs
+4f94133f4670551510e3bbed3006e5f0a7dec7b38c901ef16f968db1f68b7165  run-matrix.mjs
+99206bcc3f770c5aa428cc00e3a7792fbf06bab5e64c62d4ff3546e9a37f9a98  reproduce-matrix.mjs
 ```
 
 These hashes bind the evidence run before the documentation commit. They must
