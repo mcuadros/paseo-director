@@ -304,9 +304,9 @@ verify session and global safe values before writes and fail closed on drift.
   by Accepted ADR-0014. This ADR does not authorize M1 by itself.
 - `dir-m0.10` must include the fail-closed variable check in interruption and
   reconciliation boundaries.
-- `dir-m0.16` is conditional and blocked. Do not close it until this Candidate
-  receives an independent `approve_candidate`; after approval, close it as not
-  needed with the exact reviewed SHA linked.
+- `dir-m0.16` was the conditional alternative-store contingency. It remained
+  blocked until this Candidate received an independent `approve_candidate`,
+  then closed as not needed with the exact reviewed SHA linked.
 - The unreviewed No-go Candidate `681c2e2` and its cancelled review remain
   historical audit records. They carry no verdict and no readiness authority.
 

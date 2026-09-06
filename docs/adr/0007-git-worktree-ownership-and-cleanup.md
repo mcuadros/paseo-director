@@ -99,10 +99,10 @@ locked-file failures?
   empty directories can use the private artifact alongside a Git snapshot. For a successfully integrated
   prospective-tree-clean worktree, ignored files/directories are preserved in
   a bounded owner-verified non-Git artifact before automatic removal, never
-  force-added to Git. Task policy cannot exceed the 2 GiB aggregate/per-file,
-  10,000 recovery-entry, 100,000 inspected-entry, or 64 KiB buffer evidence
-  ceilings, cannot exceed seven-day retention, and cannot reduce the 10%
-  free-space floor.
+  force-added to Git. Under ADR-0013's measured release envelope, Task policy
+  cannot exceed 512 MiB aggregate content, 256 MiB per file, 10,000 recovery
+  entries, 25,000 inspected entries, or the 64 KiB buffer; it cannot exceed
+  seven-day retention or reduce the 10% free-space floor.
 - Snapshot inspection allows declared filter attributes only when no clean or
   process command is configured, refuses executable clean filters, overrides
   repository hooks and `core.fsmonitor`, and records the residual same-user race boundary.

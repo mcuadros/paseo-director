@@ -142,7 +142,9 @@ Claude used its native `ToolSearch` helper before the MCP call. This does not
 expand the custom MCP catalog, which still contained one tool, but it proves
 that `toolPolicy` is not a complete native-tool or host boundary. Native tools
 also remain a concern for the other providers even when they were not selected
-in these turns. ADR-0008's P0 stop condition is unchanged.
+in these turns. At the time of this evidence, ADR-0008's P0 stop condition was
+unchanged; Accepted ADR-0014 later resolved it only through the practical
+trusted-provider Linux boundary and mandatory rootless-OCI defense in depth.
 
 ## Alternatives considered
 

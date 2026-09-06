@@ -40,9 +40,11 @@ The release envelope therefore needs measured entry, byte, per-file, memory,
 time, disk-reserve, retention, secrecy, ownership, retry, restoration, and
 cleanup behavior on the supported Linux topology.
 
-ADR-0008 remains authoritative. These checks protect engine cleanup from
-accidental, buggy, or ambiguous state; they are not containment against a
-hostile same-user process. `dir-m0.14` still owns that OS authority boundary.
+ADR-0008 was authoritative when this evidence was produced. Accepted ADR-0014
+later superseded its M1-blocking Decision while retaining its maximal threat
+analysis. These checks protect engine cleanup from accidental, buggy, or
+ambiguous state; they are not containment against a hostile same-user process.
+ADR-0014 records the resolved practical trusted-provider Linux boundary.
 
 ## Question or hypothesis
 

@@ -64,7 +64,7 @@ M0 exists to reject unsafe assumptions. A no-go result is valuable when it preve
 ADR status is normative and uses exactly these values:
 
 - `Proposed`: the decision has not yet completed exact-SHA independent review and integration. It is not an approved plan change or a satisfied milestone gate.
-- `Accepted`: an exact Candidate containing the substantively identical decision received `approve_candidate` and was integrated with its reviewed base. A later status-only reconciliation may rely on that integrated evidence, but the reconciliation must itself follow the normal review and integration workflow.
+- `Accepted`: an exact Candidate containing the substantively identical decision received `approve_candidate` and was integrated with its reviewed base. An ADR may be authored as Accepted in that Candidate, but the status is not authoritative until those gates complete. A later lifecycle or conditional-resolution reconciliation may rely on already integrated evidence, including changing an Inconclusive outcome after its recorded conditions are satisfied, but the reconciliation must cite that evidence and itself follow the normal review and integration workflow.
 - `Superseded`: a later Accepted ADR replaces the decision. The earlier evidence and analysis remain historical, but its Decision is no longer normative.
 
 Decision outcome and lifecycle status are separate. An Accepted `No-go` is a valid approved decision; an `Inconclusive` outcome cannot satisfy a gate that requires a resolved decision.
@@ -72,6 +72,38 @@ Decision outcome and lifecycle status are separate. An Accepted `No-go` is a val
 A partial change keeps the earlier ADR Accepted and uses reciprocal `Amends` / `Amended by` links. A complete replacement marks the earlier ADR Superseded and uses reciprocal `Supersedes` / `Superseded by` links. These relationships describe normative precedence, not the lines touched by a commit. Preserve the earlier Decision text, adding a prominent resolution note when needed, and put the new decision in the later ADR.
 
 The owning Beads Task records the exact Candidate, reviewed base, independent verdict, integration commit, checks, and residual risks. An author assertion or header edit alone never accepts an ADR.
+
+## Repository CI
+
+The Director maintainers own [the repository CI workflow](.github/workflows/ci.yml)
+and its checks under `tools/ci/`. Every pull request and update to `main` runs
+the same pinned Linux job. Workflow changes follow the normal Beads Task,
+exact-SHA review, and integration process; required checks cannot use
+`continue-on-error` or another silent skip.
+
+Before the product scaffold exists, the dependency-free baseline runs the
+PLAN section 21.1 checks that are applicable to the repository: text
+formatting, ADR lifecycle and relationship lint, JavaScript syntax, and focused
+tests of the CI guard itself. It also reuses the bounded deterministic M0
+contracts for policy and idempotency, state-file durability, exact-SHA delivery
+guards, the practical runtime boundary, operational limits, and worker-timeout
+cleanup. It never runs a live provider, a live forge operation, or the full
+large-tree and worktree experiments.
+
+Product typechecking, domain/policy tests, Zod contracts, responsive
+components, complete Linux product-path coverage, and the fake provider do not
+exist yet. The guard proves that precondition and fails if a root product
+manifest, TypeScript configuration, or product source/test root appears. The
+workflow is JSON-compatible YAML so Node validates its syntax without an
+unrecorded parser dependency.
+
+The Task that introduces the first product scaffold owns replacing that
+pre-product guard in the same Candidate with deterministic install, typecheck,
+lint, formatting, unit/contract/component, Linux coverage, and fake-provider
+commands for every applicable PLAN section 21.1 category. A category may be
+absent only while the guard can prove that its corresponding product surface
+does not exist. Actions and the Node runtime remain pinned to exact versions;
+an upgrade is an explicit reviewed workflow change.
 
 ## Definition of Done
 

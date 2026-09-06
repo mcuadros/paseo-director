@@ -7,9 +7,12 @@
 - **Decision owners:**
 
 Use only `Proposed`, `Accepted`, or `Superseded` as defined by the normative
-[ADR lifecycle](../../CONTRIBUTING.md#adr-lifecycle). A new decision starts as
-Proposed; its owning Beads Task carries the exact review and integration
-evidence required for acceptance.
+[ADR lifecycle](../../CONTRIBUTING.md#adr-lifecycle). A new decision normally
+starts as Proposed. It may be authored as Accepted in the Candidate that
+establishes it, but that status becomes authoritative only after the required
+exact-SHA review and integration. A conditional Inconclusive decision may be
+resolved from cited, already integrated evidence through a new reviewed and
+integrated reconciliation Candidate.
 
 ## Context
 
