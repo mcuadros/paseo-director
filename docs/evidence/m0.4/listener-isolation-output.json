@@ -2,16 +2,16 @@
   "schema_version": 1,
   "command": "node docs/evidence/m0.4/verify-listener-isolation.mjs",
   "owner": {
-    "run_id": "18c1421febd18a19",
-    "server_pid": 3608685,
-    "server_port": 40985,
+    "run_id": "a4c2821b457accab",
+    "server_pid": 2094695,
+    "server_port": 41725,
     "identity_reverified_after_collision": true,
     "cleanup_exit_code": 130
   },
   "contender": {
-    "run_id": "cc6586aee149971a",
-    "server_pid": 3609209,
-    "forced_port": 40985,
+    "run_id": "13861ebd50ee112c",
+    "server_pid": 2095150,
+    "forced_port": 41725,
     "failed_closed": true,
     "exit_code": 1,
     "storage_removed": true

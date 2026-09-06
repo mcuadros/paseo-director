@@ -26,7 +26,7 @@ neither importable nor a supported external contract. Depending on it, or
 writing Beads-owned SQL tables directly, would violate the TaskStore abstraction
 and the prohibition on private storage dependencies.
 
-Four independent review cycles shaped this decision. They established that table
+Five independent review cycles shaped this decision. They established that table
 `SELECT, INSERT` grants alone are not append-only on Dolt `2.3.2`, because
 `INSERT ... ON DUPLICATE KEY UPDATE` rewrites an existing row without `UPDATE`
 privilege; that `BEFORE UPDATE`/`BEFORE DELETE` triggers are active but are
@@ -48,6 +48,14 @@ This revision removes every application write privilege on the ledgers, adds
 supported parent-existence guards, derives the ledger key width from the live
 schema, and validates coverage on ordered columns, types, widths, NULL
 semantics, prefix/expression status, and collation.
+
+The fifth review found that those child-side guards were insufficient when a
+referenced aggregate identity itself remained mutable: with
+`foreign_key_checks=0`, the application could rename `aggregates.id` and leave
+immutable history pointing at the old value. This revision gives every
+referenced parent key an identity ledger, rejects changes to `aggregates.id`
+through both direct and insert-derived update paths, and still permits ordinary
+aggregate version/data updates.
 
 This decision does not change the repository's use of Beads for development
 tracking. It does not override ADR-0008's same-user authority-separation No-go
@@ -95,6 +103,10 @@ Audit history, and safe shared-server multiwriter behavior?
 - Referential children are rejected when their parent is absent, with session
   foreign-key checks enforced, disabled, and disabled under a relaxed
   `sql_mode`.
+- Every key referenced by a declared foreign key is immutable. Direct and
+  insert-derived rename attempts against each referenced parent key are denied
+  with foreign-key checks enforced, disabled, and disabled under a relaxed
+  `sql_mode`, while legitimate aggregate version/data updates remain available.
 - Coverage validation compares ordered index columns, column type, octet width,
   NULL semantics, prefix/expression status, and collation, and fails closed on a
   collation that can match values the ledger stores as distinct identities.
@@ -166,24 +178,28 @@ paths against the installed binary and created no credential-bearing profile.
 From the repository root:
 
 ```text
+DIRECTOR_M04_FOCUS=referenced-parent-identities node docs/evidence/m0.4/taskstore-contract.mjs
 node docs/evidence/m0.4/taskstore-contract.mjs
 node docs/evidence/m0.4/verify-interruption.mjs
 node docs/evidence/m0.4/verify-listener-isolation.mjs
 ```
 
 The commands exit zero only when all positive and negative observations match.
-The chain was run six consecutive times on the final content with identical
-results. The procedures and captured outputs are in
+The focused referenced-parent fixture was run first without the unchanged slow
+timeout cases. One complete three-procedure chain was then run on the final
+content. The procedures and captured outputs are in
 [`docs/evidence/m0.4`](../evidence/m0.4/README.md).
 
 ### The selected immutability boundary
 
 Each immutable table has an owner-definer `BEFORE INSERT` trigger and an
 identity ledger on which the application identity holds `SELECT` and nothing
-else:
+else. The width shown here is the current schema's derived value—535 bytes are
+required and the provisioning rule rounds that budget to 640—not a fixed schema
+constant:
 
 ```sql
-CREATE TABLE events_identity (identity VARBINARY(512) NOT NULL PRIMARY KEY);
+CREATE TABLE events_identity (identity VARBINARY(640) NOT NULL PRIMARY KEY);
 
 CREATE DEFINER = '<owner>'@'%' TRIGGER events_append_only
   BEFORE INSERT ON events FOR EACH ROW
@@ -224,6 +240,13 @@ trigger rather than a constraint. The ledger key width is derived from
 rejects any unique key whose collation, nullability, prefix, expression, type,
 or width would let the base key match values the binary ledger keeps apart.
 
+The mutable `aggregates` table uses the same `BEFORE INSERT` identity-ledger
+guard for its referenced primary key. A separate conditional `BEFORE UPDATE`
+guard inserts a duplicate sentinel only when `NEW.id` differs from `OLD.id`.
+The application holds `SELECT` only on that sentinel table, which is sufficient
+for the owner-definer trigger under the proven Dolt `2.3.2` semantics. This
+rejects direct identity changes without blocking version or data updates.
+
 ### Observations
 
 | Contract | Beads `1.2.2` | Direct Dolt `2.3.2` with identity guards |
@@ -234,10 +257,11 @@ or width would let the base key match values the binary ledger keeps apart.
 | Aggregate plus structured Event transaction | Failed: `bd batch` rejects metadata and accepts only narrow issue fields | Passed: a rejected duplicate Event identity rolled back aggregate state and Event count |
 | Optimistic concurrency | Failed: no supported expected-version update; two stale writes both succeeded | Passed: barriered clients produced one commit and one SQLSTATE `40001` / Error `1213` rollback |
 | Idempotency | Failed: recreating an explicit issue ID overwrote conflicting content | Passed: exact replays return the stored outcome, a different canonical request raises `IDEMPOTENCY_PAYLOAD_MISMATCH`, and the records cannot be rewritten |
-| Immutable records | Failed: a public `bd update` changed an Event | Passed: 127 adversarial statements denied, 0 mutations |
+| Immutable records | Failed: a public `bd update` changed an Event | Passed: 118 non-transaction-wrapped base-table statements denied, 0 mutations; deferred transaction attacks reported separately |
 | Identity coverage | Not applicable | Passed: all 9 declared unique identities guarded, 0 uncovered, verified on ordered columns, type, width, NULL semantics, prefix/expression status, and collation |
-| Ledger boundary | Not applicable | Passed: 91 direct ledger statements and 9 two-step rename-then-mutate attacks denied with byte-identical ledgers |
-| Referential integrity | Not applicable | Passed: 21 orphan probes denied with foreign-key checks enforced, disabled, and disabled under relaxed `sql_mode`; 0 orphan rows |
+| Ledger boundary | Not applicable | Passed: 117 direct ledger/guard statements and 9 two-step rename-then-mutate attacks denied with byte-identical guard state |
+| Referenced parent identities | Not applicable | Passed: all 3 referenced keys survived 18 direct and insert-derived rename attempts under enabled, disabled, and relaxed foreign-key modes; every child remained linked and 3 legitimate aggregate updates succeeded |
+| Referential integrity | Not applicable | Passed: 21 child/orphan probes denied with foreign-key checks enforced, disabled, and disabled under relaxed `sql_mode`; 0 orphan rows |
 | Ledger key width | Not applicable | Passed: 535 bytes required, 640 provisioned, 528-byte identity stored intact |
 | Privilege boundary | Not applicable | Passed: 8 privilege-expansion operations denied; self credential rotation permitted but grants nothing |
 | Concurrent identity uniqueness | Not applicable | Passed: two barriered clients appending one Event identity left exactly one row |
@@ -245,32 +269,42 @@ or width would let the base key match values the binary ledger keeps apart.
 | Credential transport | Beads password environment worked | Passed: environment-only clients; no profile or plaintext secret at nine checkpoints |
 | Listener ownership and cleanup | Not sufficient for Director | Passed: authenticated per-run identity, unauthenticated-root denial, PID binding, collision isolation, precise SIGINT, client settlement, and termination before storage removal |
 
-The base-table matrix produced 128 observations: 118 denials and 10 controlled
-appends. For every immutable table and every declared identity it ran a plain
-duplicate, `INSERT IGNORE`, and `ON DUPLICATE KEY UPDATE` in literal, `VALUES()`,
-`IGNORE`, `INSERT ... SELECT`, multi-row, and transaction-wrapped forms; per
-table it also ran `REPLACE`, `UPDATE`, `DELETE`, `TRUNCATE`, `ALTER`, guard drop
-and replacement, and ledger delete, truncate, drop, and primary-key removal.
-Every attempt failed, the protected row was byte-identical afterwards, and the
-table row count was unchanged, including for the multi-row form whose new
-companion row was not appended. A distinct append before and after each table's
-matrix succeeded, proving the guard blocks collisions rather than all writes.
+The non-transaction-wrapped base-table matrix produced 128 observations: 118
+denials and 10 controlled appends. For every immutable table and every declared
+identity it ran a plain duplicate, `INSERT IGNORE`, and
+`ON DUPLICATE KEY UPDATE` in literal, `VALUES()`, `IGNORE`,
+`INSERT ... SELECT`, and multi-row forms; per table it also ran `REPLACE`,
+`UPDATE`, `DELETE`, `TRUNCATE`, `ALTER`, guard drop and replacement, and ledger
+delete, truncate, drop, and primary-key removal. Every attempt failed, the
+protected row was byte-identical afterwards, and the table row count was
+unchanged, including for the multi-row form whose new companion row was not
+appended. A distinct append before and after each table's matrix succeeded,
+proving the guard blocks collisions rather than all writes.
 
-The ledger boundary was then attacked directly: 91 statements against the five
-identity ledgers, `parent_guard`, and `guard_constants` covering unused-identity
-reservation, `INSERT IGNORE`, `ON DUPLICATE KEY UPDATE` in literal, `VALUES()`,
-`IGNORE`, `INSERT ... SELECT` and multi-row forms, `REPLACE`, `UPDATE`,
-`DELETE`, `TRUNCATE`, `DROP PRIMARY KEY`, and `DROP TABLE`. Every one was
-rejected with byte-identical ledger contents. The reviewer's two-step attack was
-then run for all nine table/identity pairs: the ledger rename was denied and the
+The ledger boundary was then attacked directly: 117 statements against the six
+identity ledgers plus `parent_guard`, `guard_constants`, and
+`immutable_write_guard` covering unused-identity reservation, `INSERT IGNORE`,
+`ON DUPLICATE KEY UPDATE` in literal, `VALUES()`, `IGNORE`,
+`INSERT ... SELECT` and multi-row forms, `REPLACE`, `UPDATE`, `DELETE`,
+`TRUNCATE`, `DROP PRIMARY KEY`, and `DROP TABLE`. Every one was rejected with
+byte-identical guard state. The reviewer's two-step attack was then run for all
+nine immutable table/identity pairs: the ledger rename was denied and the
 follow-up base `ON DUPLICATE KEY UPDATE` with an otherwise non-colliding row was
 denied by the guard, leaving both the row and the ledger unchanged.
 
-Sixteen transaction-wrapped attacks run last, because Dolt `2.3.2` keeps the
+Eighteen deferred transaction-wrapped attacks run separately and last, because
+Dolt `2.3.2` keeps the
 write locks of a transaction whose client disconnects after a failed statement,
 which blocks later writers to the same table until the server stops.
 
-Forty-nine denied statements did not return within their four-second bound and
+A focused referenced-parent fixture runs before the broad matrices. It derives
+the three parent keys from the declared foreign-key model, proves each has an
+identity guard, seeds every declared child relationship, and performs 18 direct
+and insert-derived rename attempts across enforced, disabled, and relaxed
+foreign-key modes. Every parent identity and child link is preserved. Three
+positive-control updates advance aggregate version/data while retaining its ID.
+
+Seventy-five denied statements did not return within their four-second bound and
 were killed instead of producing a privilege or constraint error. In every case
 the target was byte-identical afterwards, so this is a liveness defect in Dolt
 `2.3.2`, not a mutation path. The exact statements are recorded in
@@ -372,11 +406,14 @@ schema is only compliant when all of the following hold:
   table's guard, proven against `information_schema` on ordered columns, type,
   octet width, NULL semantics, prefix/expression status, and collation;
 - the application identity holds `SELECT` and nothing else on every identity
-  ledger, on `parent_guard`, and on `guard_constants`, and holds no `UPDATE`,
-  `DELETE`, `TRUNCATE`, `ALTER`, `DROP`, or `TRIGGER` privilege on the immutable
-  tables;
+  ledger, on `parent_guard`, on `guard_constants`, and on
+  `immutable_write_guard`, and holds no `UPDATE`, `DELETE`, `TRUNCATE`, `ALTER`,
+  `DROP`, or `TRIGGER` privilege on the immutable tables;
 - every declared foreign key has a parent-existence guard, so referential
   integrity survives `foreign_key_checks=0`;
+- every referenced parent identity has an identity ledger, and mutable
+  aggregates have a conditional update guard that rejects ID changes while
+  allowing version/data changes;
 - the ledger key width is derived from the live schema rather than fixed.
 
 `1.0` ships this one runtime TaskStore, not two interchangeable engines.
@@ -399,11 +436,14 @@ schema is only compliant when all of the following hold:
   table to prove the check earns its place.
 - Each immutable row costs one ledger row per declared identity. Retention,
   backup size, and migration must account for the ledger as part of the data.
+- Aggregate IDs also cost one ledger row because they are referenced identities;
+  migrations must prove both child-side parent guards and parent-key
+  immutability from live foreign-key metadata.
 - The application identity holds only `SELECT` on the ledgers. It cannot reserve,
   rename, or remove an identity, so the earlier claim that ledger `INSERT` was a
   monitored availability residual is withdrawn: that grant was the integrity
   defect, and it is gone.
-- Dolt `2.3.2` does not always deny promptly. Forty-nine denied statements in the
+- Dolt `2.3.2` does not always deny promptly. Seventy-five denied statements in the
   matrix blocked instead of returning an error and were killed at a four-second
   bound, and a transaction whose client disconnects after a failed statement
   keeps its write locks until the server stops. Neither mutates data, but both
@@ -430,8 +470,8 @@ schema is only compliant when all of the following hold:
 ## Independent verification
 
 Pending independent review of the exact changed Candidate SHA. An independent
-top-level Reviewer Agent must run all three procedures from a detached
-disposable checkout, inspect the identity-coverage proof, the complete
-adversarial matrix, and the credential checkpoints, and record the exact SHA and
-verdict in `dir-m0.4`. No publication, integration, or Task closure is
-authorized by this Candidate.
+top-level Reviewer Agent must run the focused referenced-parent mode and all
+three complete procedures from a detached disposable checkout, inspect the
+identity-coverage proof, the complete adversarial matrix, and the credential
+checkpoints, and record the exact SHA and verdict in `dir-m0.4`. No publication,
+integration, or Task closure is authorized by this Candidate.

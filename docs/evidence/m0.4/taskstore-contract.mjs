@@ -71,6 +71,17 @@ const immutableTableModel = [
   },
 ];
 
+const mutableAggregateIdentityModel = [
+  { table: "aggregates", identities: [{ name: "pk", columns: ["id"] }] },
+];
+
+const identityLedgerModel = [...mutableAggregateIdentityModel, ...immutableTableModel];
+const focus = process.env.DIRECTOR_M04_FOCUS ?? "full";
+assertObservation(
+  focus === "full" || focus === "referenced-parent-identities",
+  `unsupported DIRECTOR_M04_FOCUS value: ${focus}`,
+);
+
 const parentMissingSentinel = "guard.parent_missing";
 
 const secretValues = [ownerPassword, appPassword, beadsPassword];
@@ -1283,7 +1294,7 @@ async function main() {
     return Number(fact.fact_precision) + 1;
   };
   const identityByteBudget = Math.max(
-    ...immutableTableModel.flatMap((spec) =>
+    ...identityLedgerModel.flatMap((spec) =>
       spec.identities.map(
         (identity) =>
           Buffer.byteLength(`${spec.table}.${identity.name}`, "utf8") +
@@ -1358,6 +1369,27 @@ async function main() {
       ...declaredForeignKeySet,
     ].join(", ")} guarded=${[...guardedForeignKeySet].join(", ")}`,
   );
+  const referencedParentIdentities = [
+    ...new Set(foreignKeyModel.map((entry) => `${entry.parent}.${entry.parentColumn}`)),
+  ].sort();
+  const guardedReferencedParentIdentities = [
+    ...new Set(
+      identityLedgerModel.flatMap((spec) =>
+        spec.identities
+          .filter((identity) => identity.columns.length === 1)
+          .map((identity) => `${spec.table}.${identity.columns[0]}`),
+      ),
+    ),
+  ]
+    .filter((identity) => referencedParentIdentities.includes(identity))
+    .sort();
+  assertObservation(
+    JSON.stringify(guardedReferencedParentIdentities) ===
+      JSON.stringify(referencedParentIdentities),
+    `identity ledgers do not protect every referenced parent key: referenced=${referencedParentIdentities.join(
+      ", ",
+    )} guarded=${guardedReferencedParentIdentities.join(", ")}`,
+  );
 
   const parentGuardBody = (entry) =>
     `INSERT INTO parent_guard (identity) SELECT '${parentMissingSentinel}' FROM guard_constants
@@ -1365,9 +1397,13 @@ async function main() {
          ON guarded_parent.\`${entry.parentColumn}\` = NEW.\`${entry.column}\`
        WHERE NEW.\`${entry.column}\` IS NOT NULL AND guarded_parent.\`${entry.parentColumn}\` IS NULL`;
   const ledgerSchema = `
-    ${immutableTableModel
+    ${identityLedgerModel
       .map((spec) => appendOnlyLedgerDdl(spec, ledgerIdentityWidth))
       .join("\n")}
+    CREATE DEFINER = '${ownerUser}'@'%' TRIGGER aggregates_reject_identity_update
+      BEFORE UPDATE ON aggregates FOR EACH ROW
+      INSERT INTO immutable_write_guard (singleton)
+        SELECT singleton FROM guard_constants WHERE NOT (NEW.id <=> OLD.id);
     CREATE TABLE schema_drift_probe_identity (
       identity VARBINARY(${ledgerIdentityWidth}) NOT NULL PRIMARY KEY
     );
@@ -1402,7 +1438,7 @@ async function main() {
     GRANT SELECT, INSERT ON \`${directDatabase}\`.audit_entries TO '${appUser}'@'%';
     GRANT SELECT, INSERT ON \`${directDatabase}\`.command_requests TO '${appUser}'@'%';
     GRANT SELECT, INSERT ON \`${directDatabase}\`.command_outcomes TO '${appUser}'@'%';
-    ${immutableTableModel
+    ${identityLedgerModel
       .map(
         (spec) =>
           `GRANT SELECT ON \`${directDatabase}\`.${spec.table}_identity TO '${appUser}'@'%';`,
@@ -1410,6 +1446,7 @@ async function main() {
       .join("\n    ")}
     GRANT SELECT ON \`${directDatabase}\`.parent_guard TO '${appUser}'@'%';
     GRANT SELECT ON \`${directDatabase}\`.guard_constants TO '${appUser}'@'%';
+    GRANT SELECT ON \`${directDatabase}\`.immutable_write_guard TO '${appUser}'@'%';
     GRANT SELECT, INSERT ON \`${directDatabase}\`.schema_drift_probe TO '${appUser}'@'%';
     GRANT SELECT ON \`${directDatabase}\`.schema_drift_probe_identity TO '${appUser}'@'%';
     GRANT SELECT, INSERT ON \`${directDatabase}\`.keyless_append_probe TO '${appUser}'@'%';
@@ -1494,6 +1531,40 @@ async function main() {
       VALUES ('event-0', 'run-1', 1, 'task-1', 0, 'task.created', JSON_OBJECT('title', 'Example'));
     INSERT INTO audit_entries (audit_id, event_id, actor_type, payload)
       VALUES ('audit-0', 'event-0', 'system', JSON_OBJECT('source', 'contract'));
+    INSERT INTO command_requests
+      (idempotency_key, aggregate_id, expected_version, request_hash, payload)
+      VALUES ('mapping-command-1', 'task-1', 0, REPEAT('b', 64),
+        JSON_OBJECT('title', 'Mapping command'));
+    INSERT INTO command_outcomes
+      (idempotency_key, outcome_type, observed_version, event_id, payload)
+      VALUES ('mapping-command-1', 'applied', 0, 'event-0',
+        JSON_OBJECT('title', 'Mapping command'));
+    INSERT INTO aggregates (id, kind, version, data)
+      VALUES ('referenced-aggregate-1', 'project', 0,
+        JSON_OBJECT('title', 'Referenced identity fixture'));
+    INSERT INTO aggregates (id, kind, parent_id, workspace_id, version, data)
+      VALUES ('referenced-aggregate-child-1', 'task', 'referenced-aggregate-1',
+        'referenced-aggregate-1', 0, JSON_OBJECT('title', 'Referencing aggregate'));
+    INSERT INTO dependencies (source_id, target_id, dependency_type)
+      VALUES ('referenced-aggregate-1', 'referenced-aggregate-1', 'identity_probe');
+    INSERT INTO candidates (id, run_id, sequence, commit_sha, data)
+      VALUES ('referenced-candidate-1', 'referenced-aggregate-1', 498,
+        REPEAT('c', 40), JSON_OBJECT('current', false));
+    INSERT INTO events
+      (event_id, run_id, sequence, aggregate_id, aggregate_version, event_type, payload)
+      VALUES ('referenced-event-1', 'referenced-aggregate-1', 498,
+        'referenced-aggregate-1', 0, 'identity.fixture', JSON_OBJECT('title', 'Referenced event'));
+    INSERT INTO audit_entries (audit_id, event_id, actor_type, payload)
+      VALUES ('referenced-audit-1', 'referenced-event-1', 'system',
+        JSON_OBJECT('source', 'identity fixture'));
+    INSERT INTO command_requests
+      (idempotency_key, aggregate_id, expected_version, request_hash, payload)
+      VALUES ('referenced-command-1', 'referenced-aggregate-1', 0, REPEAT('d', 64),
+        JSON_OBJECT('title', 'Referenced command'));
+    INSERT INTO command_outcomes
+      (idempotency_key, outcome_type, observed_version, event_id, payload)
+      VALUES ('referenced-command-1', 'applied', 0, 'referenced-event-1',
+        JSON_OBJECT('title', 'Referenced command'));
     COMMIT;
   `;
   doltSuccessfully(appDoltArgs(seedMapping));
@@ -1520,6 +1591,243 @@ async function main() {
     "PASS",
     "Explicit relational records round-tripped Project, Workspace, Epic, Task, dependency, Run, Candidate, Event, and Audit shapes; Command request/outcome tables were independently exercised below.",
   );
+
+  const parentMutationModes = [
+    { mode: "foreign_keys_enforced", prefix: "" },
+    { mode: "foreign_keys_disabled", prefix: "SET SESSION foreign_key_checks=0; " },
+    {
+      mode: "foreign_keys_disabled_relaxed_sql_mode",
+      prefix: "SET SESSION sql_mode=''; SET SESSION foreign_key_checks=0; ",
+    },
+  ];
+  const referencedParentProbes = [
+    {
+      table: "aggregates",
+      column: "id",
+      original: "referenced-aggregate-1",
+      insertDerived: (renamed) =>
+        `INSERT INTO aggregates (id, kind, parent_id, workspace_id, version, data)
+          VALUES ('referenced-aggregate-1', 'project', NULL, NULL, 0, JSON_OBJECT('title', 'Identity attack'))
+          ON DUPLICATE KEY UPDATE id = ${sqlString(renamed)}`,
+    },
+    {
+      table: "events",
+      column: "event_id",
+      original: "referenced-event-1",
+      insertDerived: (renamed) =>
+        `INSERT INTO events (event_id, run_id, sequence, aggregate_id, aggregate_version, event_type, payload)
+          VALUES ('referenced-event-1', 'referenced-aggregate-1', 499, 'referenced-aggregate-1', 0, 'task.identity_attack', JSON_OBJECT('title', 'Identity attack'))
+          ON DUPLICATE KEY UPDATE event_id = ${sqlString(renamed)}`,
+    },
+    {
+      table: "command_requests",
+      column: "idempotency_key",
+      original: "referenced-command-1",
+      insertDerived: (renamed) =>
+        `INSERT INTO command_requests
+          (idempotency_key, aggregate_id, expected_version, request_hash, payload)
+          VALUES ('referenced-command-1', 'referenced-aggregate-1', 0, REPEAT('e', 64), JSON_OBJECT('title', 'Identity attack'))
+          ON DUPLICATE KEY UPDATE idempotency_key = ${sqlString(renamed)}`,
+    },
+  ];
+  assertObservation(
+    JSON.stringify(
+      referencedParentProbes.map((probe) => `${probe.table}.${probe.column}`).sort(),
+    ) === JSON.stringify(referencedParentIdentities),
+    "focused parent-key probes do not cover every referenced identity",
+  );
+  const parentReferenceState = (probe, renamed) => {
+    const references = foreignKeyModel
+      .filter(
+        (entry) => entry.parent === probe.table && entry.parentColumn === probe.column,
+      )
+      .map((entry) => {
+        const counts = firstRow(
+          doltSuccessfully(
+            ownerDoltArgs(`
+              SELECT COUNT(*) AS child_rows,
+                SUM(guarded_parent.\`${entry.parentColumn}\` IS NOT NULL) AS linked_rows
+              FROM \`${entry.table}\` AS guarded_child
+              LEFT JOIN \`${entry.parent}\` AS guarded_parent
+                ON guarded_parent.\`${entry.parentColumn}\` = guarded_child.\`${entry.column}\`
+              WHERE guarded_child.\`${entry.column}\` = ${sqlString(probe.original)}
+            `),
+          ),
+        );
+        return {
+          foreign_key: foreignKeyKey(entry),
+          child_rows: Number(counts.child_rows),
+          linked_rows: Number(counts.linked_rows),
+        };
+      });
+    return {
+      original_parent_rows: Number(
+        firstRow(
+          doltSuccessfully(
+            ownerDoltArgs(
+              `SELECT COUNT(*) AS rows_present FROM \`${probe.table}\` WHERE \`${probe.column}\` = ${sqlString(
+                probe.original,
+              )}`,
+            ),
+          ),
+        ).rows_present,
+      ),
+      renamed_parent_rows: Number(
+        firstRow(
+          doltSuccessfully(
+            ownerDoltArgs(
+              `SELECT COUNT(*) AS rows_present FROM \`${probe.table}\` WHERE \`${probe.column}\` = ${sqlString(
+                renamed,
+              )}`,
+            ),
+          ),
+        ).rows_present,
+      ),
+      references,
+    };
+  };
+  const parentIdentityMutationResults = [];
+  for (const probe of referencedParentProbes) {
+    for (const { mode, prefix } of parentMutationModes) {
+      for (const [statement, sql] of [
+        [
+          "direct_update",
+          `UPDATE \`${probe.table}\` SET \`${probe.column}\` = ${sqlString(
+            `${probe.table}-${mode}-direct`,
+          )} WHERE \`${probe.column}\` = ${sqlString(probe.original)}`,
+        ],
+        [
+          "insert_derived_update",
+          probe.insertDerived(`${probe.table}-${mode}-insert`),
+        ],
+      ]) {
+        const renamed = `${probe.table}-${mode}-${
+          statement === "direct_update" ? "direct" : "insert"
+        }`;
+        const before = parentReferenceState(probe, renamed);
+        assertObservation(
+          before.original_parent_rows === 1 &&
+            before.renamed_parent_rows === 0 &&
+            before.references.length > 0 &&
+            before.references.every(
+              (reference) =>
+                reference.child_rows > 0 &&
+                reference.child_rows === reference.linked_rows,
+            ),
+          `parent-key fixture was not fully linked before ${probe.table}.${probe.column} ${mode} ${statement}: ${JSON.stringify(
+            before,
+          )}`,
+        );
+        const result = dolt(appDoltArgs(`${prefix}${sql};`), {
+          tolerateTimeout: true,
+          timeout: adversarialTimeoutMs,
+        });
+        const after = parentReferenceState(probe, renamed);
+        assertObservation(
+          result.code !== 0 && JSON.stringify(after) === JSON.stringify(before),
+          `referenced parent identity changed through ${probe.table}.${probe.column} ${mode} ${statement}: exit=${
+            result.code
+          } before=${JSON.stringify(before)} after=${JSON.stringify(after)}`,
+        );
+        parentIdentityMutationResults.push({
+          parent_identity: `${probe.table}.${probe.column}`,
+          session_mode: mode,
+          statement,
+          exit_code: result.code,
+          parent_identity_preserved: true,
+          every_child_remained_linked: true,
+        });
+      }
+    }
+  }
+  const mutableAggregateId = `mutable-aggregate-${runId}`;
+  doltSuccessfully(
+    appDoltArgs(
+      `INSERT INTO aggregates (id, kind, version, data) VALUES (${sqlString(
+        mutableAggregateId,
+      )}, 'project', 0, JSON_OBJECT('mode', 'seed'))`,
+    ),
+  );
+  const legitimateAggregateUpdateResults = [];
+  for (const [index, { mode, prefix }] of parentMutationModes.entries()) {
+    const result = dolt(
+      appDoltArgs(
+        `${prefix}UPDATE aggregates SET id = id, version = version + 1, data = JSON_OBJECT('mode', ${sqlString(
+          mode,
+        )}) WHERE id = ${sqlString(mutableAggregateId)};`,
+      ),
+    );
+    const state = firstRow(
+      doltSuccessfully(
+        ownerDoltArgs(
+          `SELECT id, version, JSON_UNQUOTE(JSON_EXTRACT(data, '$.mode')) AS mode FROM aggregates WHERE id = ${sqlString(
+            mutableAggregateId,
+          )}`,
+        ),
+      ),
+    );
+    assertObservation(
+      result.code === 0 &&
+        state.id === mutableAggregateId &&
+        state.version === String(index + 1) &&
+        state.mode === mode,
+      `legitimate aggregate update failed with ${mode}: exit=${result.code} state=${JSON.stringify(
+        state,
+      )}`,
+    );
+    legitimateAggregateUpdateResults.push({
+      session_mode: mode,
+      exit_code: result.code,
+      identity_preserved: true,
+      version_after: Number(state.version),
+    });
+  }
+  const referencedParentIdentityEvidence = {
+    referenced_parent_identities: referencedParentIdentities,
+    guarded_parent_identities: guardedReferencedParentIdentities,
+    mutation_probes: parentIdentityMutationResults,
+    legitimate_aggregate_updates: legitimateAggregateUpdateResults,
+  };
+  record(
+    "direct_dolt.referenced_parent_identity_immutability",
+    "Direct Dolt",
+    "PASS",
+    `Identity ledgers and a conditional aggregate UPDATE guard protected all ${referencedParentIdentities.length} referenced parent keys across ${parentIdentityMutationResults.length} direct and insert-derived rename attempts with foreign-key checks enforced, disabled, and disabled under relaxed sql_mode; every child remained linked and ${legitimateAggregateUpdateResults.length} version/data updates preserved the aggregate id.`,
+  );
+
+  if (focus === "referenced-parent-identities") {
+    assertCredentialTransport("focused referenced-parent identity phase");
+    await cleanup();
+    assertObservation(
+      !existsSync(tempRoot) &&
+        serverTermination &&
+        (serverTermination.exit_code !== null || serverTermination.signal !== null),
+      "focused fixture did not prove server termination before storage removal",
+    );
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          schema_version: 1,
+          focus,
+          environment: {
+            run_id: runId,
+            bd: bdVersion,
+            dolt: doltVersion,
+            operating_system: uname,
+            server_terminated_before_storage_removal: true,
+            owned_temp_directory_removed: true,
+          },
+          check: checks.find(
+            (entry) => entry.id === "direct_dolt.referenced_parent_identity_immutability",
+          ),
+          referenced_parent_identity_evidence: referencedParentIdentityEvidence,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    return;
+  }
 
   const failedAtomicWrite = dolt(
     appDoltArgs(
@@ -1626,7 +1934,9 @@ async function main() {
       appDoltArgs(`
         SELECT
           (SELECT COUNT(*) FROM command_requests WHERE aggregate_id = 'task-contention') AS requests,
-          (SELECT COUNT(*) FROM command_outcomes) AS outcomes,
+          (SELECT COUNT(*) FROM command_outcomes o
+            JOIN command_requests r USING (idempotency_key)
+            WHERE r.aggregate_id = 'task-contention') AS outcomes,
           (SELECT COUNT(*) FROM events WHERE aggregate_id = 'task-contention') AS events,
           (SELECT COUNT(*) FROM audit_entries a JOIN events e USING (event_id)
             WHERE e.aggregate_id = 'task-contention') AS audits,
@@ -2284,6 +2594,7 @@ async function main() {
   );
   const expectedTriggers =
     immutableTableModel.length * 3 +
+    mutableAggregateIdentityModel.length * 2 +
     1 +
     foreignKeyModel.length +
     foreignKeyModel.filter((entry) => entry.table === "aggregates").length +
@@ -2335,9 +2646,9 @@ async function main() {
     trigger_guard_rows: Number(guardState.guard_rows),
     trigger_activation_control: triggerControl,
     uniqueness_tradeoff: uniquenessEvidence,
-    adversarial_statement_observations: statementResults.length,
-    denied_statements: deniedStatements.length,
-    successful_appends: appendedStatements.length,
+    base_table_observations: statementResults.length,
+    base_table_denied_statements: deniedStatements.length,
+    base_table_successful_appends: appendedStatements.length,
     odku_existing_row_mutations: 0,
     version_control_probes: versionControlProbes,
     statement_results: statementResults,
@@ -2353,19 +2664,21 @@ async function main() {
     "direct_dolt.database_boundary_immutability",
     "Direct Dolt",
     "PASS",
-    `BEFORE INSERT identity guards on ${immutableTableModel.length} immutable tables covering all ${guardedIdentityCount} declared unique identities rejected every one of ${deniedStatements.length} adversarial statements, including exact/mismatched, VALUES(), INSERT ... SELECT, primary-key-targeted, multi-row, IGNORE and transaction-wrapped ON DUPLICATE KEY UPDATE, REPLACE, UPDATE, DELETE, TRUNCATE, ALTER, guard-drop/replace and ledger-tamper attempts, while ${appendedStatements.length} distinct appends before and after the matrix succeeded and every protected value stayed unchanged.`,
+    `BEFORE INSERT identity guards on ${immutableTableModel.length} immutable tables covering all ${guardedIdentityCount} declared unique identities rejected every one of ${deniedStatements.length} non-transaction-wrapped base-table adversarial statements, including exact/mismatched, VALUES(), INSERT ... SELECT, primary-key-targeted, multi-row and IGNORE ON DUPLICATE KEY UPDATE, REPLACE, UPDATE, DELETE, TRUNCATE, ALTER, guard-drop/replace and ledger-tamper attempts, while ${appendedStatements.length} distinct appends before and after the base matrix succeeded and every protected value stayed unchanged. Deferred transaction-wrapped attacks are reported separately.`,
   );
   const ledgerTables = [
-    ...immutableTableModel.map((spec) => `${spec.table}_identity`),
+    ...identityLedgerModel.map((spec) => `${spec.table}_identity`),
     "parent_guard",
     "guard_constants",
+    "immutable_write_guard",
   ];
+  const numericGuardTables = new Set(["guard_constants", "immutable_write_guard"]);
   const ledgerDigest = (table) =>
     createHash("sha256")
       .update(
         parseJson(
           doltSuccessfully(
-            ownerDoltArgs(`SELECT HEX(${table === "guard_constants" ? "singleton" : "identity"}) AS row_hex FROM ${table} ORDER BY 1`),
+            ownerDoltArgs(`SELECT HEX(${numericGuardTables.has(table) ? "singleton" : "identity"}) AS row_hex FROM ${table} ORDER BY 1`),
           ).stdout,
         )
           .rows.map((row) => row.row_hex)
@@ -2374,7 +2687,7 @@ async function main() {
       .digest("hex");
   const ledgerAttackResults = [];
   for (const ledger of ledgerTables) {
-    const keyColumn = ledger === "guard_constants" ? "singleton" : "identity";
+    const keyColumn = numericGuardTables.has(ledger) ? "singleton" : "identity";
     const sample = parseJson(
       doltSuccessfully(
         ownerDoltArgs(
@@ -2387,9 +2700,9 @@ async function main() {
       `${ledger} had no row to defend`,
     );
     const existing =
-      ledger === "guard_constants" ? String(parseInt(sample.sample_hex, 16)) : `UNHEX('${sample.sample_hex}')`;
-    const fresh = ledger === "guard_constants" ? "99" : sqlString("unused.reservation.probe");
-    const renamed = ledger === "guard_constants" ? "98" : sqlString("freed.by.attacker");
+      numericGuardTables.has(ledger) ? String(parseInt(sample.sample_hex, 16)) : `UNHEX('${sample.sample_hex}')`;
+    const fresh = numericGuardTables.has(ledger) ? "99" : sqlString("unused.reservation.probe");
+    const renamed = numericGuardTables.has(ledger) ? "98" : sqlString("freed.by.attacker");
     const forms = [
       ["reserve_unused_identity", `INSERT INTO ${ledger} (${keyColumn}) VALUES (${fresh})`],
       ["insert_ignore_unused", `INSERT IGNORE INTO ${ledger} (${keyColumn}) VALUES (${fresh})`],
@@ -2684,6 +2997,8 @@ async function main() {
     "PASS",
     `All ${transactionAttackResults.length} transaction-wrapped ON DUPLICATE KEY UPDATE attacks against every immutable table identity and every ledger were rejected inside their transaction and left their target byte-identical. These run last because Dolt 2.3.2 keeps the write locks of a transaction whose client disconnects after a failed statement, which can block later writers to the same table until the server stops.`,
   );
+  immutabilityEvidence.deferred_transaction_attack_observations =
+    transactionAttackResults.length;
 
   const indexRows = parseJson(
     doltSuccessfully(
@@ -2946,7 +3261,7 @@ async function main() {
   );
 
   boundaryEvidence = {
-    ledger_privilege: "SELECT only; the application identity holds no write privilege on any identity ledger, on parent_guard, or on guard_constants",
+    ledger_privilege: "SELECT only; the application identity holds no write privilege on any identity ledger, on parent_guard, on guard_constants, or on immutable_write_guard",
     identity_byte_budget: identityByteBudget,
     ledger_identity_width: ledgerIdentityWidth,
     widest_stored_identity_bytes: Number(widestIdentity.widest),
@@ -2967,6 +3282,7 @@ async function main() {
     },
     declared_foreign_keys: declaredForeignKeys.map(foreignKeyKey),
     guarded_foreign_keys: foreignKeyModel.map(foreignKeyKey),
+    referenced_parent_identity_evidence: referencedParentIdentityEvidence,
     referential_probes: referentialResults,
     orphan_rows_after_probes: orphanRows,
     valid_append_with_foreign_key_checks_disabled: validWithFkDisabled.code,
@@ -3075,7 +3391,7 @@ async function main() {
   );
 
   const report = {
-    schema_version: 5,
+    schema_version: 6,
     environment: {
       run_id: runId,
       bd: bdVersion,

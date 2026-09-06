@@ -18,10 +18,15 @@ Prerequisites:
 From the repository root, run:
 
 ```text
+DIRECTOR_M04_FOCUS=referenced-parent-identities node docs/evidence/m0.4/taskstore-contract.mjs
 node docs/evidence/m0.4/taskstore-contract.mjs
 node docs/evidence/m0.4/verify-interruption.mjs
 node docs/evidence/m0.4/verify-listener-isolation.mjs
 ```
+
+The focused mode stops after the referenced-parent identity fixture and cleanup;
+it does not run the unchanged slow adversarial timeout cases. The remaining
+three commands are the complete Candidate chain.
 
 The main contract creates one owned temporary directory containing an isolated
 Dolt server, Beads and direct-Dolt databases, a credential-free Dolt client
@@ -65,15 +70,17 @@ The application identity holds `SELECT, INSERT` and no `UPDATE`, `DELETE`,
 `TRUNCATE`, `ALTER`, `DROP`, or trigger-control privilege on the five immutable
 tables `command_requests`, `command_outcomes`, `candidates`, `events`, and
 `audit_entries`. It holds **`SELECT` only** on every identity ledger, on
-`parent_guard`, and on `guard_constants`.
+`parent_guard`, on `guard_constants`, and on `immutable_write_guard`.
 
 Grants alone are not enough. On Dolt `2.3.2`, `INSERT ... ON DUPLICATE KEY
 UPDATE` rewrites an existing row through that identity, and a `BEFORE UPDATE`
 trigger is never activated by that path. The contract therefore installs one
-owner-definer `BEFORE INSERT` guard per immutable table:
+owner-definer `BEFORE INSERT` guard per immutable table. The current schema
+derives a 535-byte maximum identity and rounds its provisioned width to 640; the
+example uses that derived result, not a fixed-width contract:
 
 ```sql
-CREATE TABLE events_identity (identity VARBINARY(512) NOT NULL PRIMARY KEY);
+CREATE TABLE events_identity (identity VARBINARY(640) NOT NULL PRIMARY KEY);
 
 CREATE DEFINER = '<owner>'@'%' TRIGGER events_append_only
   BEFORE INSERT ON events FOR EACH ROW
@@ -126,6 +133,14 @@ The contract verifies that all 11 declared foreign keys, read back from
 `SHOW CREATE TABLE`, have a guard, and that `aggregates` carries the same guard
 on `UPDATE` because it is the one application-updatable table.
 
+Child-side existence guards do not stop a referenced key from being renamed
+when foreign-key checks are disabled. Every referenced parent key therefore has
+an identity ledger. For mutable `aggregates`, a `BEFORE INSERT` ledger guard
+rejects insert-derived ID changes and a conditional `BEFORE UPDATE` guard
+rejects only `NEW.id != OLD.id`; unchanged-ID version/data updates remain valid.
+The application has `SELECT` only on the aggregate ledger and the conditional
+update sentinel.
+
 ## Guarded identities
 
 The contract reads every unique index of the five immutable tables from
@@ -159,8 +174,7 @@ For every table and every declared identity the contract executes and snapshots:
 5. `INSERT IGNORE ... ON DUPLICATE KEY UPDATE`;
 6. `INSERT ... SELECT ... ON DUPLICATE KEY UPDATE`;
 7. multi-row `ON DUPLICATE KEY UPDATE` pairing a brand-new row with a colliding
-   row;
-8. transaction-wrapped `ON DUPLICATE KEY UPDATE`.
+   row.
 
 Per table it also executes `REPLACE`, `UPDATE`, `DELETE`, `TRUNCATE`, `ALTER`,
 `DROP TRIGGER` on the guard, `CREATE TRIGGER` to replace the guard, and
@@ -174,22 +188,23 @@ unchanged, including the multi-row form whose new companion row was not
 appended. A distinct append before and after each table's matrix succeeded,
 which proves the guard rejects collisions rather than all writes.
 
-The ledgers are attacked directly as well: 91 statements against the five
-identity ledgers, `parent_guard`, and `guard_constants` covering unused-identity
-reservation, `INSERT IGNORE`, `ON DUPLICATE KEY UPDATE` in literal, `VALUES()`,
-`IGNORE`, `INSERT ... SELECT` and multi-row forms, `REPLACE`, `UPDATE`,
-`DELETE`, `TRUNCATE`, `DROP PRIMARY KEY`, and `DROP TABLE`. All were denied with
-byte-identical ledger contents. The reviewer's two-step attack runs for all nine
-table/identity pairs: the ledger rename is denied, the follow-up base
+The ledgers and guard tables are attacked directly as well: 117 statements
+against the six identity ledgers, `parent_guard`, `guard_constants`, and
+`immutable_write_guard` covering unused-identity reservation, `INSERT IGNORE`,
+`ON DUPLICATE KEY UPDATE` in literal, `VALUES()`, `IGNORE`,
+`INSERT ... SELECT` and multi-row forms, `REPLACE`, `UPDATE`, `DELETE`,
+`TRUNCATE`, `DROP PRIMARY KEY`, and `DROP TABLE`. All were denied with
+byte-identical guard state. The reviewer's two-step attack runs for all nine
+immutable table/identity pairs: the ledger rename is denied, the follow-up base
 `ON DUPLICATE KEY UPDATE` is denied by the guard, and both the row and the
 ledger are unchanged.
 
-Sixteen transaction-wrapped attacks run last on purpose. Dolt `2.3.2` keeps the
-write locks of a transaction whose client disconnects after a failed statement,
-so running them earlier blocks later writers to the same table for the rest of
-the run.
+Eighteen transaction-wrapped attacks are reported separately from the 128 base
+observations and run last on purpose. Dolt `2.3.2` keeps the write locks of a
+transaction whose client disconnects after a failed statement, so running them
+earlier blocks later writers to the same table for the rest of the run.
 
-Forty-nine denied statements did not return within their four-second bound and
+Seventy-five denied statements did not return within their four-second bound and
 were killed rather than producing an error. Their targets were byte-identical
 afterwards, so this is a liveness defect rather than a mutation path; each one
 is listed in `boundary_evidence.blocked_without_returning`.
@@ -209,6 +224,13 @@ and all are denied; a valid append still succeeds with checks disabled, and no
 orphan row exists afterwards. A child cannot commit against an uncommitted
 parent, a rolled-back parent/child transaction leaves no row and no ledger
 residue, and the identical work replays successfully afterwards.
+
+A separate referenced-parent fixture derives all three parent keys from the
+foreign-key model and seeds every declared child relationship. Eighteen direct
+and insert-derived rename attempts cover each parent identity with foreign-key
+checks enforced, disabled, and disabled under a relaxed `sql_mode`; every
+attempt is denied and every child stays linked. Three positive controls update
+aggregate version/data in those same modes while preserving the ID.
 
 Eight privilege-expansion operations are denied: reading `mysql.user`, creating
 a user, granting itself any privilege, granting itself ledger `INSERT`, dropping
@@ -291,11 +313,12 @@ the short-lived client process environment.
 - Cleanup now settles every tracked client process before terminating the
   server, and re-checks the owned root after removal so a late-writing client
   cannot leave a recreated directory behind.
-- The three procedures were run as a chain six consecutive times on the final
-  content. Every run exited zero and produced the same check results, the same
-  128 base-table observations, 91 ledger attacks, 9 two-step attacks, 16
-  transaction-wrapped attacks, 21 referential probes, 8 privilege probes, and
-  nine credential checkpoints.
+- The focused parent-identity fixture passed first without running the slow
+  adversarial matrix. One final three-procedure chain then exited zero and
+  produced 128 base-table observations, 117 ledger/guard attacks, 9 two-step
+  attacks, 18 deferred transaction-wrapped attacks, 21 child/orphan probes,
+  18 parent-key mutation probes, 8 privilege probes, and nine credential
+  checkpoints.
 - Every statement is bounded. Adversarial probes use a four-second bound and
   record a blocked denial explicitly; other statements use a sixty-second bound.
   A blocked statement can no longer wedge the suite.
@@ -328,9 +351,11 @@ unchanged and reproduced here.
 Direct Dolt `2.3.2` does provide it, but only with the complete posture proven
 here: a `BEFORE INSERT` identity guard on every immutable table covering every
 declared unique identity, ledgers the application can only read, a
-parent-existence guard on every declared foreign key, a ledger key width derived
-from the live schema, and coverage validation that fails closed on a collation
-or index shape that would reopen the update path. With that posture the
+parent-existence guard on every declared foreign key, an identity guard on every
+referenced parent key, a conditional update guard on mutable aggregate IDs, a
+ledger key width derived from the live schema, and coverage validation that
+fails closed on a collation or index shape that would reopen the update path.
+With that posture the
 application identity can append and read and can do nothing else to an existing
 Command request, Command outcome, Candidate, Event, or Audit record. The outcome
 is therefore Go for the Director-owned direct Dolt schema behind the `TaskStore`
