@@ -1,7 +1,7 @@
 # dir-m0.6 Git worktree ownership and cleanup evidence
 
 - Evidence date: 2026-09-06
-- Repository base: `2ca270bd2e6d7692ea5697ded4a88bd1b3270ef3`
+- Repository base: `ae06c376002b079f55f9fdbd92b9b0e70466f422`
 - Plan context: PLAN v0.3; accepted ADR-0010 top-level Task/Reviewer Agent semantics
 - Related M0 context: integrated ADR-0005 keeps MCP defense-in-depth, Linux-only, and separate from cleanup authority
 - Lifecycle context: integrated ADR-0003 requires full agent termination,
@@ -40,7 +40,7 @@ Artifacts:
 Final tracked executable hashes:
 
 ```text
-f5aceb1ed5c2863c298b2db7c24301c2e5206149ce5031d97361be0930558d41  tools/spikes/dir-m0.6/worktree-ownership.mjs
+387de53808f6e9333388d797f55dd862645812b2966db9750cc5add17d184f43  tools/spikes/dir-m0.6/worktree-ownership.mjs
 458822760e3cbe3f7a2121c446eedd812ee83cdc0797d0f3b2d776fccfdfc16b  .github/workflows/dir-m0.6-windows-post-review.yml
 ```
 
@@ -115,9 +115,11 @@ or command-mismatched tokens cannot dispatch. A table-driven family mutates
 all stored-evidence forms before move, remove, local deletion, and remote
 deletion, while a separate token fixture proves an unguarded deletion request
 leaves its sentinel ref intact. A valid token also rejects different argv and
-cannot be reused. The family contains 44 mutation/stage cases:
-16 private payload/envelope cases on the clean path and 28 Git-ref/OID plus
-private-envelope cases on the dirty path.
+cannot be reused. The family contains 51 mutation/stage cases:
+16 private payload/envelope cases on the clean path, 28 Git-ref/OID plus
+private-envelope cases on the dirty path, and seven retention-removal cases.
+No row restores a saved intent. Evidence repair is followed by ordinary retry;
+the five stage transitions are recorded and required in order.
 
 Local and remote Task-ref deletion each persist exact ref/Candidate/nonce
 intent before their effect. An absent ref after an unknown result is adopted;
@@ -125,6 +127,13 @@ any present ref is ambiguous and preserved. Once both absences are confirmed
 and cleanup reaches `complete`, reconciliation is observation-only: a later
 local or remote ref, even at the same Candidate, parks in Needs you and is
 never deleted by the completed operation.
+
+Deletion intent has a separate `refused_before_dispatch` result. A gate error
+persists that status and a stage-specific refusal phase before rethrowing. Once
+the human repairs the evidence, retry first proves the ref is still present at
+the exact Candidate, restores `intent_recorded`, and reruns the complete gate.
+Only then can dispatch occur. A genuine post-dispatch `intent_recorded` result
+keeps the stricter present-ref ambiguity and is never auto-cleared.
 
 Git `worktree --porcelain -z` paths and Node paths share one comparison
 function: resolve on the host, apply native realpath while present (expanding
@@ -243,7 +252,10 @@ artifact before removal. The artifact lifecycle is:
    exact bytes, mtimes, POSIX modes, and empty directories. Before expiry the
    result is ordinary scheduled `retained` state, not Needs you; at expiry an
    owner/identity-verified removal-ready intent precedes deletion. A crash after
-   deletion reconciles absence and repeated cleanup remains idempotent.
+   deletion reconciles absence and repeated cleanup remains idempotent. A
+   future Git recovery-ref expiry must wait until this artifact reaches verified
+   `removed`; the artifact gate still requires those refs and safely resumes
+   after a missing ref is repaired.
 
 The committed clean fixture has an ignored file and directory. It interrupts
 after the artifact rename but before result persistence, adopts the verified
@@ -267,8 +279,9 @@ owned by `dir-m0.17`.
 The superseded 250,000-entry default was not evidence-backed: the independent
 review measured roughly 17.77 seconds for 5,006 entries, 93.24 seconds for
 20,021 entries, and about 245 seconds for 30,031 entries on its Linux probe.
-The contract shares one buffer across each pass but intentionally revalidates
-source and artifact payload bytes at both destructive boundaries; it does not
+The contract shares one buffer across each pass and revalidates artifact
+payload bytes at all five destructive gates, plus source bytes while a
+worktree exists; it does not
 turn the earlier measurements into a product policy claim. Discovered sibling
 `dir-m0.17` owns representative Linux/real-
 Windows benchmarking and the release policy for large `node_modules`, `target`,
@@ -305,7 +318,7 @@ race between inspection and mutation; ADR-0008/`dir-m0.14` must contain it.
 - status 2: confirmed absence; and
 - every other status: unavailable/ambiguous, never absence.
 
-For a path/file origin, even observation or fetch can start another local
+For a bare-path or normalized `file://` origin, even observation or fetch can start another local
 repository process and push can run its receive hooks. These operations refuse
 unless both exact human approval and `dir-m0.14` containment are durable facts.
 The harness sets both only for its disposable root; a negative fixture installs
@@ -399,7 +412,12 @@ Fault injection covers:
   private artifact payload/manifest/owner/path identity before worktree move,
   worktree remove, local ref deletion, and remote ref deletion: every case
   returns path-free Needs you before dispatch and preserves every not-yet-
-  completed path/ref; and
+  completed path/ref;
+- repair followed by ordinary retry at move, remove, local-ref deletion,
+  remote-ref deletion, and retention removal without rewriting saved intent;
+- retention refusal when a required Git recovery ref is absent, successful
+  artifact removal after repair, and refusal of recovery-ref expiry until the
+  private artifact is removed; and
 - completed cleanup invoked repeatedly: confirmed absence is observed with no
   duplicate external effect, while any later same-SHA local/remote recreation
   is preserved and parked.
@@ -410,7 +428,7 @@ untracked, and nested untracked content is reproduced byte-for-byte.
 
 ## Corrected Linux result
 
-Repeated executions return `result: pass` with 85 real assertions: 82 common
+Repeated executions return `result: pass` with 89 real assertions: 86 common
 facts plus three Linux-specific facts. The report emits those counts
 and names separately so no platform receives a no-op assertion.
 
@@ -419,6 +437,7 @@ Common assertions:
 ```text
 all_installed_lifecycle_surfaces_refused
 local_origin_effects_require_approval_and_containment
+file_url_origin_refused_consistently
 destructive_commands_require_fresh_gate_token
 task_branch_and_worktree_owned
 worktree_registration_identity_verified
@@ -495,6 +514,9 @@ stored_evidence_gate_before_remote_delete_table
 owned_worktree_removed
 exact_local_ref_removed
 exact_remote_ref_removed
+stored_evidence_gate_before_retention_remove_table
+recovery_ref_expiry_ordered_after_artifact
+stored_evidence_repair_then_resume_all_stages
 source_and_unknown_resources_preserved
 snapshot_restored_after_removal
 cleanup_idempotent

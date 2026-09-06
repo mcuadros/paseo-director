@@ -30,6 +30,7 @@ import { createServer } from "node:http";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { platform, release, tmpdir } from "node:os";
 import { createHash } from "node:crypto";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ZERO_SHA = "0".repeat(40);
 const MAIN_REF = "refs/heads/main";
@@ -86,6 +87,7 @@ const SPECIAL_MATERIAL_ASSERTION = platform() === "win32"
 const EXPECTED_ASSERTIONS = [
   "all_installed_lifecycle_surfaces_refused",
   "local_origin_effects_require_approval_and_containment",
+  "file_url_origin_refused_consistently",
   "destructive_commands_require_fresh_gate_token",
   "task_branch_and_worktree_owned",
   "worktree_registration_identity_verified",
@@ -166,6 +168,9 @@ const EXPECTED_ASSERTIONS = [
   "owned_worktree_removed",
   "exact_local_ref_removed",
   "exact_remote_ref_removed",
+  "stored_evidence_gate_before_retention_remove_table",
+  "recovery_ref_expiry_ordered_after_artifact",
+  "stored_evidence_repair_then_resume_all_stages",
   "source_and_unknown_resources_preserved",
   "snapshot_restored_after_removal",
   "cleanup_idempotent",
@@ -280,7 +285,12 @@ function commonDir(cwd) {
 function remoteFacts(cwd) {
   const url = git(cwd, ["remote", "get-url", "origin"]);
   assert(!url.includes("@"), "fixture remote must contain no credentials");
-  const path = resolve(cwd, url);
+  let path;
+  try {
+    path = url.startsWith("file://") ? fileURLToPath(url) : resolve(cwd, url);
+  } catch {
+    throw new NeedsYouError("local-path origin effects require human approval and containment");
+  }
   try {
     const leaf = lstatSync(path);
     assert(!leaf.isSymbolicLink(), "origin became a symlink or junction");
@@ -331,13 +341,13 @@ function assertStateOwnership(manifest, state) {
     assert.equal(ready.indexSnapshotSha, state.indexSnapshotSha, "removal-ready index snapshot changed");
   }
   if (state.localDelete) {
-    assert(["intent_recorded", "confirmed_absent"].includes(state.localDelete.status), "local deletion status changed");
+    assert(["intent_recorded", "refused_before_dispatch", "confirmed_absent"].includes(state.localDelete.status), "local deletion status changed");
     assert.equal(state.localDelete.expectedSha, manifest.candidateSha, "local deletion Candidate changed");
     assert.equal(state.localDelete.taskRef, manifest.taskRef, "local deletion ref changed");
     assert.equal(state.localDelete.nonce, manifest.nonce, "local deletion nonce changed");
   }
   if (state.remoteDelete) {
-    assert(["intent_recorded", "confirmed_absent"].includes(state.remoteDelete.status), "remote deletion status changed");
+    assert(["intent_recorded", "refused_before_dispatch", "confirmed_absent"].includes(state.remoteDelete.status), "remote deletion status changed");
     assert.equal(state.remoteDelete.expectedSha, manifest.candidateSha, "remote deletion Candidate changed");
     assert.equal(state.remoteDelete.taskRef, manifest.remoteTaskRef, "remote deletion ref changed");
     assert.equal(state.remoteDelete.nonce, manifest.nonce, "remote deletion nonce changed");
@@ -1085,6 +1095,17 @@ function cleanupIgnoredRecovery(manifest, state, nowMs, options = {}) {
   return { status: "removed" };
 }
 
+function assertRecoveryRefsMayExpire(manifest, state) {
+  assertRepositoryOwnership(manifest, state);
+  if (state.phase !== "complete") {
+    throw new NeedsYouError("Git recovery refs cannot expire before cleanup completes");
+  }
+  if (state.ignoredRecovery && state.ignoredRecovery.cleanupPhase !== "removed") {
+    throw new NeedsYouError("private recovery artifact must expire before Git recovery refs");
+  }
+  return { status: "recovery_refs_may_expire" };
+}
+
 function observeLocalRef(manifest, state, ref) {
   assertRepositoryOwnership(manifest, state);
   validateRef(manifest.sourcePath, ref);
@@ -1730,7 +1751,7 @@ function reconcileWorktreeRemoval(manifest, state, options, pass = beginDestruct
     writeState(manifest, state);
     return;
   }
-  if (!["removal_ready", "worktree_removed", "local_delete_ready", "local_ref_removed", "remote_delete_ready", "remote_ref_removed", "complete"].includes(state.phase)) {
+  if (!["removal_ready", "worktree_removed", "local_delete_ready", "local_delete_refused", "local_ref_removed", "remote_delete_ready", "remote_delete_refused", "remote_ref_removed", "complete"].includes(state.phase)) {
     throw new Error("worktree vanished without verified removal-ready evidence");
   }
   assert(state.removalReady, "missing removal-ready evidence");
@@ -1748,6 +1769,17 @@ function refDeletionRecord(manifest, ref, status) {
     taskRef: ref,
     nonce: manifest.nonce,
   };
+}
+
+function issueRefDeletionTokenOrRecordRefusal(manifest, state, pass, effect, record, refusedPhase) {
+  try {
+    return issueDestructiveGateToken(manifest, state, pass, effect);
+  } catch (error) {
+    record.status = "refused_before_dispatch";
+    state.phase = refusedPhase;
+    writeState(manifest, state);
+    throw error;
+  }
 }
 
 function removeLocalRefExactly(manifest, state, options = {}, pass = beginDestructivePass()) {
@@ -1771,29 +1803,40 @@ function removeLocalRefExactly(manifest, state, options = {}, pass = beginDestru
     writeState(manifest, state);
     return;
   }
-  if (observed.kind === "absent") {
-    state.localDelete = refDeletionRecord(manifest, manifest.taskRef, "confirmed_absent");
-    state.phase = "local_ref_removed";
+  if (state.localDelete?.status === "refused_before_dispatch") {
+    if (observed.kind !== "present" || observed.sha !== manifest.candidateSha) {
+      throw new NeedsYouError("local Task ref changed after pre-dispatch refusal");
+    }
+    state.localDelete.status = "intent_recorded";
+    state.phase = "local_delete_ready";
     writeState(manifest, state);
-    return;
+  } else {
+    if (observed.kind === "absent") {
+      state.localDelete = refDeletionRecord(manifest, manifest.taskRef, "confirmed_absent");
+      state.phase = "local_ref_removed";
+      writeState(manifest, state);
+      return;
+    }
+    assert.equal(observed.sha, manifest.candidateSha, "local Task ref changed");
+    assertRepositoryOwnership(manifest, state);
+    verifyLiveIntegration(manifest, state);
+    assertNoOtherTaskRefConsumer(manifest, state);
+    const justInTime = observeLocalRef(manifest, state, manifest.taskRef);
+    assert.equal(justInTime.kind, "present");
+    assert.equal(justInTime.sha, manifest.candidateSha, "local Task ref raced");
+    state.localDelete = refDeletionRecord(manifest, manifest.taskRef, "intent_recorded");
+    state.phase = "local_delete_ready";
+    writeState(manifest, state);
   }
-  assert.equal(observed.sha, manifest.candidateSha, "local Task ref changed");
-  assertRepositoryOwnership(manifest, state);
-  verifyLiveIntegration(manifest, state);
-  assertNoOtherTaskRefConsumer(manifest, state);
-  const justInTime = observeLocalRef(manifest, state, manifest.taskRef);
-  assert.equal(justInTime.kind, "present");
-  assert.equal(justInTime.sha, manifest.candidateSha, "local Task ref raced");
-  state.localDelete = refDeletionRecord(manifest, manifest.taskRef, "intent_recorded");
-  state.phase = "local_delete_ready";
-  writeState(manifest, state);
   const deleteEffect = {
     kind: "local_ref_delete",
     activePath: null,
     ref: manifest.taskRef,
     expectedOid: manifest.candidateSha,
   };
-  const deleteToken = issueDestructiveGateToken(manifest, state, pass, deleteEffect);
+  const deleteToken = issueRefDeletionTokenOrRecordRefusal(
+    manifest, state, pass, deleteEffect, state.localDelete, "local_delete_refused",
+  );
   runGuardedDestructiveGit(
     pass, deleteToken, manifest.sourcePath,
     ["update-ref", "-d", manifest.taskRef, manifest.candidateSha],
@@ -1828,29 +1871,40 @@ function removeRemoteRefExactly(manifest, state, options = {}, pass = beginDestr
     writeState(manifest, state);
     return;
   }
-  if (observed.kind === "absent") {
-    state.remoteDelete = refDeletionRecord(manifest, manifest.remoteTaskRef, "confirmed_absent");
-    state.phase = "remote_ref_removed";
+  if (state.remoteDelete?.status === "refused_before_dispatch") {
+    if (observed.kind !== "present" || observed.sha !== manifest.candidateSha) {
+      throw new NeedsYouError("remote Task ref changed after pre-dispatch refusal");
+    }
+    state.remoteDelete.status = "intent_recorded";
+    state.phase = "remote_delete_ready";
     writeState(manifest, state);
-    return;
+  } else {
+    if (observed.kind === "absent") {
+      state.remoteDelete = refDeletionRecord(manifest, manifest.remoteTaskRef, "confirmed_absent");
+      state.phase = "remote_ref_removed";
+      writeState(manifest, state);
+      return;
+    }
+    assert.equal(observed.sha, manifest.candidateSha, "remote Task ref changed");
+    if (options.beforeRemoteDelete) options.beforeRemoteDelete();
+    assertRepositoryOwnership(manifest, state);
+    verifyLiveIntegration(manifest, state);
+    const justInTime = queryOwnedRemoteRef(manifest, state, manifest.remoteTaskRef);
+    assert.equal(justInTime.kind, "present", "remote Task ref disappeared before deletion");
+    assert.equal(justInTime.sha, manifest.candidateSha, "remote Task ref raced");
+    state.remoteDelete = refDeletionRecord(manifest, manifest.remoteTaskRef, "intent_recorded");
+    state.phase = "remote_delete_ready";
+    writeState(manifest, state);
   }
-  assert.equal(observed.sha, manifest.candidateSha, "remote Task ref changed");
-  if (options.beforeRemoteDelete) options.beforeRemoteDelete();
-  assertRepositoryOwnership(manifest, state);
-  verifyLiveIntegration(manifest, state);
-  const justInTime = queryOwnedRemoteRef(manifest, state, manifest.remoteTaskRef);
-  assert.equal(justInTime.kind, "present", "remote Task ref disappeared before deletion");
-  assert.equal(justInTime.sha, manifest.candidateSha, "remote Task ref raced");
-  state.remoteDelete = refDeletionRecord(manifest, manifest.remoteTaskRef, "intent_recorded");
-  state.phase = "remote_delete_ready";
-  writeState(manifest, state);
   const deleteEffect = {
     kind: "remote_ref_delete",
     activePath: null,
     ref: manifest.remoteTaskRef,
     expectedOid: manifest.candidateSha,
   };
-  const deleteToken = issueDestructiveGateToken(manifest, state, pass, deleteEffect);
+  const deleteToken = issueRefDeletionTokenOrRecordRefusal(
+    manifest, state, pass, deleteEffect, state.remoteDelete, "remote_delete_refused",
+  );
   if (options.beforeLeasePush) options.beforeLeasePush();
   const deletion = runGuardedDestructiveGit(
     pass, deleteToken, manifest.sourcePath,
@@ -2220,6 +2274,24 @@ async function run() {
           && error.message === "local-path origin effects require human approval and containment",
       );
     }
+    const fileOriginUrl = pathToFileURL(remote).href;
+    git(source, ["remote", "set-url", "origin", fileOriginUrl]);
+    const fileOriginAuthority = { humanApproved: false, contained: false };
+    const refusedFileOriginManifest = {
+      ...manifest,
+      remoteUrl: fileOriginUrl,
+      localOriginAuthority: fileOriginAuthority,
+    };
+    const refusedFileOriginState = {
+      ...structuredClone(state),
+      localOriginAuthority: fileOriginAuthority,
+    };
+    assert.throws(
+      () => removeRemoteRefExactly(refusedFileOriginManifest, refusedFileOriginState),
+      (error) => error instanceof NeedsYouError
+        && error.message === "local-path origin effects require human approval and containment",
+    );
+    git(source, ["remote", "set-url", "origin", remote]);
     assert(!existsSync(originHookSentinel));
     assert(existsSync(manifest.worktreePath));
     assert.equal(git(source, ["rev-parse", TASK_REF]), candidateSha);
@@ -2227,6 +2299,7 @@ async function run() {
     git(remote, ["config", "--unset", "core.hooksPath"]);
     rmSync(originHooks, { recursive: true });
     assertions.push("local_origin_effects_require_approval_and_containment");
+    assertions.push("file_url_origin_refused_consistently");
 
     git(source, ["update-ref", TOKEN_GUARD_REF, candidateSha, ZERO_SHA]);
     assert.throws(
@@ -2241,14 +2314,19 @@ async function run() {
     git(source, ["update-ref", "-d", TOKEN_GUARD_REF, candidateSha]);
     assertions.push("destructive_commands_require_fresh_gate_token");
 
-    const exerciseStoredEvidenceMutationTable = (assertionName, targetManifest, cases, assertNoDeletion) => {
+    const repairedDestructiveStages = [];
+
+    const exerciseStoredEvidenceMutationTable = (
+      assertionName, targetManifest, cases, assertNoDeletion,
+      attempt = () => reconcileCleanup(targetManifest),
+    ) => {
       for (const evidenceCase of cases) {
         const before = readState(targetManifest);
         const mutation = evidenceCase.mutate(before);
         try {
           let error;
           try {
-            reconcileCleanup(targetManifest);
+            attempt();
             assert.fail(`stored evidence case ${evidenceCase.name} reached a destructive command`);
           } catch (caught) {
             error = caught;
@@ -2258,7 +2336,6 @@ async function run() {
           mutation.assertPreserved?.();
         } finally {
           mutation.restore();
-          writeState(targetManifest, before);
         }
       }
       assertions.push(assertionName);
@@ -2965,6 +3042,8 @@ async function run() {
       cleanManifest,
       artifactEnvelopeEvidenceCases(cleanManifest, "clean-before-local-delete", ignoredPayloadPath),
       (current) => {
+        assert.equal(current.phase, "local_delete_refused");
+        assert.equal(current.localDelete.status, "refused_before_dispatch");
         assert(!existsSync(cleanManifest.worktreePath));
         assert(!existsSync(cleanManifest.quarantinePath));
         assertOwnedRegistrationsAbsent(cleanManifest, current);
@@ -3065,6 +3144,7 @@ async function run() {
     git(remote, ["update-ref", MAIN_REF, candidateSha, baseSha]);
     assertions.push("live_base_rewrite_refused");
 
+    cleanState = readState(cleanManifest);
     assert.throws(
       () => removeLocalRefExactly(cleanManifest, cleanState, { interruptAfterLocalDelete: true }),
       ExpectedInterruption,
@@ -3086,6 +3166,8 @@ async function run() {
       cleanManifest,
       artifactEnvelopeEvidenceCases(cleanManifest, "clean-before-remote-delete", ignoredPayloadPath),
       (current) => {
+        assert.equal(current.phase, "remote_delete_refused");
+        assert.equal(current.remoteDelete.status, "refused_before_dispatch");
         assert(!existsSync(cleanManifest.worktreePath));
         assert(!existsSync(cleanManifest.quarantinePath));
         assertOwnedRegistrationsAbsent(cleanManifest, current);
@@ -3094,6 +3176,7 @@ async function run() {
       },
     );
 
+    cleanState = readState(cleanManifest);
     const stateBeforeLeaseFault = structuredClone(cleanState);
     assert.throws(() => removeRemoteRefExactly(cleanManifest, cleanState, {
       beforeLeasePush: () => git(source, ["push", "--force", "origin", `${racedSha}:${CLEAN_REF}`]),
@@ -3475,6 +3558,7 @@ async function run() {
     assert(!existsSync(manifest.worktreePath));
     assert(existsSync(manifest.quarantinePath));
     assertOwnedRegistration(manifest, state, manifest.quarantinePath);
+    repairedDestructiveStages.push("worktree_move");
     writeFileSync(join(manifest.quarantinePath, "late-quarantine-change.txt"), "must survive refusal\n");
     assert.throws(() => reconcileCleanup(manifest), /pre-destructive recovery evidence is unverified/);
     assert.equal(readFileSync(join(manifest.quarantinePath, "late-quarantine-change.txt"), "utf8"), "must survive refusal\n");
@@ -3502,6 +3586,7 @@ async function run() {
     assert(!existsSync(manifest.worktreePath));
     assert(!existsSync(manifest.quarantinePath));
     assert.equal(observeLocalRef(manifest, state, RECOVERY_REF).sha, effectOnlySnapshotSha);
+    repairedDestructiveStages.push("worktree_remove");
     assertions.push("worktree_removal_effect_crash_reconciled");
 
     exerciseStoredEvidenceMutationTable(
@@ -3509,6 +3594,8 @@ async function run() {
       manifest,
       gitRecoveryEvidenceCases(manifest, "before-local-delete"),
       (current) => {
+        assert.equal(current.phase, "local_delete_refused");
+        assert.equal(current.localDelete.status, "refused_before_dispatch");
         assert(!existsSync(manifest.worktreePath));
         assert(!existsSync(manifest.quarantinePath));
         assertOwnedRegistrationsAbsent(manifest, current);
@@ -3530,11 +3617,14 @@ async function run() {
     assert.equal(state.localDelete.status, "confirmed_absent");
     assert.equal(observeLocalRef(manifest, state, TASK_REF).kind, "absent");
     assert.equal(queryOwnedRemoteRef(manifest, state, TASK_REF).sha, candidateSha);
+    repairedDestructiveStages.push("local_ref_delete");
     exerciseStoredEvidenceMutationTable(
       "stored_evidence_gate_before_remote_delete_table",
       manifest,
       gitRecoveryEvidenceCases(manifest, "before-remote-delete"),
       (current) => {
+        assert.equal(current.phase, "remote_delete_refused");
+        assert.equal(current.remoteDelete.status, "refused_before_dispatch");
         assert(!existsSync(manifest.worktreePath));
         assert(!existsSync(manifest.quarantinePath));
         assertOwnedRegistrationsAbsent(manifest, current);
@@ -3548,11 +3638,48 @@ async function run() {
     assert.equal(completed.snapshotSha, effectOnlySnapshotSha);
     assert(!existsSync(taskPath));
     assert(!existsSync(manifest.quarantinePath));
+    repairedDestructiveStages.push("remote_ref_delete");
     assertions.push("owned_worktree_removed");
     assert.equal(observeLocalRef(manifest, completed, TASK_REF).kind, "absent");
     assertions.push("exact_local_ref_removed");
     assert.equal(queryOwnedRemoteRef(manifest, completed, TASK_REF).kind, "absent");
     assertions.push("exact_remote_ref_removed");
+
+    assert.throws(
+      () => assertRecoveryRefsMayExpire(manifest, readState(manifest)),
+      /private recovery artifact must expire before Git recovery refs/,
+    );
+    exerciseStoredEvidenceMutationTable(
+      "stored_evidence_gate_before_retention_remove_table",
+      manifest,
+      gitRecoveryEvidenceCases(manifest, "before-retention-remove"),
+      (current) => {
+        assert.equal(current.phase, "complete");
+        assert(existsSync(manifest.ignoredArtifactPath));
+        assert.equal(observeLocalRef(manifest, current, TASK_REF).kind, "absent");
+        assert.equal(queryOwnedRemoteRef(manifest, current, TASK_REF).kind, "absent");
+      },
+      () => {
+        const current = readState(manifest);
+        cleanupIgnoredRecovery(manifest, current, current.ignoredRecovery.retentionUntilMs + 1);
+      },
+    );
+    state = readState(manifest);
+    assert.deepEqual(
+      cleanupIgnoredRecovery(manifest, state, state.ignoredRecovery.retentionUntilMs + 1),
+      { status: "removed" },
+    );
+    assert.deepEqual(assertRecoveryRefsMayExpire(manifest, state), { status: "recovery_refs_may_expire" });
+    assertions.push("recovery_ref_expiry_ordered_after_artifact");
+    repairedDestructiveStages.push("retained_artifact_remove");
+    assert.deepEqual(repairedDestructiveStages, [
+      "worktree_move",
+      "worktree_remove",
+      "local_ref_delete",
+      "remote_ref_delete",
+      "retained_artifact_remove",
+    ]);
+    assertions.push("stored_evidence_repair_then_resume_all_stages");
 
     assert(existsSync(source));
     assert(sameIdentity(manifest.sourceIdentity, identity(source)));

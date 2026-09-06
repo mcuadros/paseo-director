@@ -69,6 +69,12 @@ locked-file failures on real Linux and Windows hosts?
   reconciliation pass; the destructive wrapper refuses a missing, stale,
   consumed, wrong-target, or wrong-argv token. Any absent, moved, recreated, or
   changed evidence parks before command dispatch.
+- A local/remote deletion intent distinguishes `refused_before_dispatch` from
+  `intent_recorded`. If the gate refuses, that outcome and phase are persisted;
+  after repair, retry is allowed only while the target ref still equals the
+  exact expected Candidate, then the gate runs again. Once dispatch is
+  attempted, `intent_recorded` retains the existing present-ref ambiguity and
+  is never cleared automatically.
 - Git worktree registration paths are converted to the same native realpath,
   separator, drive-letter, and case comparison form as Node paths. A positive
   owned path/branch/HEAD registration must match before removal and exact owned
@@ -97,7 +103,8 @@ locked-file failures on real Linux and Windows hosts?
   repository hooks and `core.fsmonitor`, and records the residual same-user race boundary.
 - All automatic executable fields in the exact installed Paseo schema are
   refused without separate human approval and `dir-m0.14` containment.
-- Engine observation/fetch/push against a path or file origin is refused unless
+- Engine observation/fetch/push against a bare-path or normalized `file://`
+  origin is refused unless
   the exact operation is separately human-approved and runs inside proven
   `dir-m0.14` containment. The disposable harness records both facts explicitly;
   absence of either parks before origin execution.
@@ -172,6 +179,10 @@ original case plus these review-derived cases:
   manifest, owner, and path identity before move, before remove, before local
   ref deletion, and before remote ref deletion; every case parks with all
   not-yet-completed paths/refs intact and then restores the fixture evidence;
+- the table never rewrites durable intent after a refusal: repairing evidence
+  lets the existing state advance through move, remove, local deletion, remote
+  deletion, and retained-artifact removal; local/remote rows persist and resume
+  the explicit `refused_before_dispatch` outcome;
 - the same gate rejects a same-size worktree edit with restored mtime, and a
   wrapper invoked without a current one-use gate token cannot dispatch;
 - an unintegrated prospective-tree-clean worktree remains registered with both
@@ -201,7 +212,8 @@ original case plus these review-derived cases:
   days is accepted while seven days plus one millisecond is rejected;
 - a bare origin with an executable receive hook is not contacted when either
   human approval or containment is absent; the hook sentinel and every owned
-  worktree/ref remain intact;
+  worktree/ref remain intact, and the `file://` spelling returns the same policy
+  refusal rather than an outage;
 - clean and dirty paths persist removal-ready evidence, reconcile missing
   paths only after Git registration is also absent, and preserve the same
   recovery SHA across effect-before-state interruptions;
@@ -362,8 +374,8 @@ skip mechanism or keep launch blocked.
   to be written while rechecking the 10% floor.
 - Review measurements for the former default were about 17.77 seconds at 5,006
   entries, 93.24 seconds at 20,021, and 245 seconds at 30,031. The corrected
-  contract deliberately revalidates payload bytes at both destructive
-  boundaries; `dir-m0.17` owns representative Linux/real-Windows benchmarks
+  contract deliberately revalidates payload bytes at all five destructive
+  gates; `dir-m0.17` owns representative Linux/real-Windows benchmarks
   and the release policy for larger generated trees. It is
   a P0 sibling under `dir-m0`, discovered from this Task, so the broader M0
   cleanup claim remains blocked without expanding `dir-m0.6`.
@@ -374,7 +386,11 @@ skip mechanism or keep launch blocked.
   `dir-m0.14` containment, remote observation/fetch/push parks before executing
   that repository. Generic network-forge behavior remains `dir-m0.7`.
 - Recovery-ref expiry is a separate guarded local-ref effect with identical
-  identity, expected-SHA, active-consumer, and secret policy checks.
+  identity, expected-SHA, active-consumer, and secret policy checks. It may run
+  only after cleanup is complete and any bound private artifact has reached its
+  verified `removed` retention state. The retention gate continues to require
+  its Git recovery refs; a missing ref parks artifact removal, repair resumes,
+  and only then may a future ref-expiry effect proceed.
 - A dirty worktree remains ineligible for review. No individual snapshot or
   prior `removal_ready` check authorizes cleanup: the unified gate must freshly
   prove all recovery refs, OIDs, commit provenance/trees, artifact bytes and
@@ -403,6 +419,11 @@ skip mechanism or keep launch blocked.
   a later local or remote ref is observed and parked, never deleted again. The
   ref remains intact in Needs you pending the forge-aware ownership decision in
   `dir-m0.7`.
+- Gate refusal before local/remote dispatch is not an unknown effect. Its
+  durable `refused_before_dispatch` outcome can return to `intent_recorded`
+  only after fresh live-base/consumer/ref checks prove the target is still at
+  the expected Candidate; the full gate must then pass. An attempted command
+  keeps the stricter unknown-result ambiguity.
 - `dir-m0.7` still owns forge integration races; `dir-m0.10` owns the general
   effect/reconciliation contract; `dir-m0.14` owns OS authority; and
   `dir-m0.17` owns large ignored-tree policy/benchmarks. This spike does not
