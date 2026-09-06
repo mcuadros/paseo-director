@@ -1,6 +1,6 @@
 # ADR-0006: Bind GitHub delivery to live exact Candidate and base SHAs
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-06
 - **Beads Task:** `dir-m0.7`
 - **Plan gate:** M0 exact-SHA GitHub delivery
@@ -198,8 +198,9 @@ not authorize M1 while another M0 stop condition remains unresolved.
 
 ## Independent verification
 
-Pending review of the exact committed Task Candidate in a detached disposable
-checkout by a normal top-level Reviewer Agent. The reviewer must reconcile the
-retained private sandbox and verify the source/evidence hash. Publication, PR,
-integration, Task closure, sandbox deletion, and workspace removal remain
-outside this Candidate handoff.
+Exact Candidate `4118b701fe0903b6875fe43b78d0b57cf3d124b2` received an
+independent `approve_candidate` verdict and was integrated with its reviewed
+base as merge `d1d12a569c54061329e49bba9c4d93c63cf8e30a`. `dir-m0.7`
+records the exact-SHA contract checks, private-sandbox reconciliation,
+review, guarded integration, and cleanup. This status reconciliation uses
+that integrated evidence and does not recreate the live GitHub experiment.

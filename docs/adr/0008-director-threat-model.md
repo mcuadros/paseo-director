@@ -1,11 +1,17 @@
 # ADR-0008: Treat same-user agent authority as an M0 stop condition
 
-- **Status:** Proposed
+- **Status:** Superseded
 - **Date:** 2026-09-06
 - **Beads Task:** `dir-m0.8`
 - **Plan gate:** M0 security and isolation
 - **Decision owner:** M0 evidence owner; any plan or trust-scope change requires the human project owner
-- **Amended by:** [ADR-0010](0010-top-level-task-agent-parentage.md), which distinguishes top-level Task/Reviewer creation from Task-Agent-created helpers without weakening this ADR's containment requirements; [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform; [ADR-0014](0014-practical-linux-agent-boundary.md), which retains this maximal threat analysis but explicitly excludes compromised Director/Paseo/provider components from the practical Linux `1.0` guarantee
+- **Amended by:** [ADR-0010](0010-top-level-task-agent-parentage.md), which distinguishes top-level Task/Reviewer creation from Task-Agent-created helpers without weakening this ADR's containment requirements; [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform
+- **Superseded by:** [ADR-0014](0014-practical-linux-agent-boundary.md), which replaces this ADR's M1-blocking No-go decision with the human-approved practical trusted-provider Linux boundary while retaining this maximal threat analysis
+
+> **Supersession notice:** ADR-0014 replaces the Decision and the consequences
+> below that keep M1 blocked on fully adversarial engine/provider containment.
+> This ADR remains the historical maximal threat analysis; ADR-0014 is the
+> normative Linux `1.0` runtime boundary.
 
 ## Context
 
@@ -477,6 +483,9 @@ selected only through a human-approved plan ADR after a bounded M0 spike.
 
 ## Decision
 
+This Decision is historical and was superseded by Accepted ADR-0014. It no
+longer blocks M1 or defines the supported Linux `1.0` runtime boundary.
+
 **No-go.** The default stable Paseo same-user topology does not meet the
 falsifiable criteria for engine-only Director lifecycle effects or
 credential/control-plane isolation against prompt-injected repository
@@ -492,6 +501,10 @@ The threat controls above remain the required baseline for accidental and
 buggy behavior even if a stronger execution boundary is later selected.
 
 ## Consequences
+
+These consequences describe the state before ADR-0014 was accepted. ADR-0014
+replaces the M1 block and containment choice while retaining the threat cases
+and baseline controls as security inputs.
 
 - No M1 product code is authorized by this ADR. The stop condition is an M0
   result, not a request to improvise a sidecar or weaken an invariant.
@@ -520,7 +533,10 @@ buggy behavior even if a stronger execution boundary is later selected.
 
 ## Independent verification
 
-Pending independent reproduction and review of the exact Candidate SHA.
-Review must verify the No-go evidence, the mapping to plan invariants, the
-absence of an implicit trust-scope reduction, and the Linux option bounds. No
-PR, merge, or Task closure is authorized by this Candidate alone.
+Exact Candidate `700d8deaac43a9c27227fb5a11aa0375096f2495` received an
+independent `approve_candidate` verdict and was integrated with its reviewed
+base as merge `fb1257edc84fc8d1cf721a108113b96807d60699`. `dir-m0.8`
+records the threat-model checks, review, integration, cleanup, and original
+No-go bounds. Accepted ADR-0014 later superseded that Decision through its own
+independently approved and integrated record. This status reconciliation uses
+those records and does not rerun the security experiments.

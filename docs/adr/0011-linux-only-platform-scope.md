@@ -5,7 +5,7 @@
 - **Beads Task:** `dir-m0.19`
 - **Plan gate:** M0 platform scope and release readiness
 - **Decision owner:** Human project owner
-- **Amends:** PLAN §§3.1, 8.1, 19.3, 21, 23, 24, 25, and 27; [ADR-0002](0002-paseo-0.7.2-public-surface.md), [ADR-0003](0003-paseo-0.7.2-lifecycle-recovery.md), [ADR-0005](0005-session-scoped-mcp-provider-matrix.md), [ADR-0007](0007-git-worktree-ownership-and-cleanup.md), [ADR-0008](0008-director-threat-model.md), and [ADR-0009](0009-public-licensing-and-distribution.md)
+- **Amends normative platform scope in:** PLAN §§3.1, 8.1, 19.3, 21.1, 21.3, 23, 24.5, and 27; [ADR-0002](0002-paseo-0.7.2-public-surface.md), [ADR-0003](0003-paseo-0.7.2-lifecycle-recovery.md), [ADR-0005](0005-session-scoped-mcp-provider-matrix.md), [ADR-0007](0007-git-worktree-ownership-and-cleanup.md), [ADR-0008](0008-director-threat-model.md), and [ADR-0009](0009-public-licensing-and-distribution.md)
 
 ## Context
 
@@ -92,5 +92,8 @@ Director `1.0`.
 
 ## Independent verification
 
-Pending review of the exact `dir-m0.19` Candidate. Publication, integration,
-Task closure, and workspace cleanup remain outside this Candidate handoff.
+Exact Candidate `ca8d37c18d7e10f899b124a4e3bdfdc24b4f86c7` received an
+independent `approve_candidate` verdict and was integrated with its reviewed
+base as merge `ab32567f3ce12170b6c3b9531f6a8d926a8b0886`. `dir-m0.19`
+records the Linux-only scope checks, review, integration, cleanup, and
+compatibility bounds.

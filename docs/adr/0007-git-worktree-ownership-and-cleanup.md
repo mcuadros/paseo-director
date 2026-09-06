@@ -1,11 +1,11 @@
 # ADR-0007: Require exact ownership and secret-safe recovery before Git cleanup
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-06
 - **Beads Task:** `dir-m0.6`
 - **Plan gate:** M0 Git worktree ownership and Linux cleanup
 - **Decision owner:** `dir-m0.6` Task Agent; platform reduction requires the human project owner
-- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform
+- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform; [ADR-0013](0013-scalable-ignored-tree-recovery-policy.md), which replaces the provisional recovery ceilings with the measured supported Linux policy
 
 All clauses in this ADR apply to the recorded Linux scope only. ADR-0011 does
 not weaken the cleanup contract or any unrelated M0 gate.
@@ -29,10 +29,11 @@ and snapshot operations.
 The installed `@getpaseo/protocol@0.7.2` schema exposes four automatic
 repository worktree surfaces: `worktree.setup`, `worktree.teardown`,
 `worktree.terminals`, and `worktree.servicePorts.portScript`. Any can execute
-repository-controlled commands during workspace lifecycle. ADR-0008 therefore
-remains authoritative: path validation and worktree separation are not an OS
-authority boundary. `dir-m0.14` separately owns containment of Task Agents,
-Reviewer Agents, helper subagents, and repository code.
+repository-controlled commands during workspace lifecycle. ADR-0008's retained
+maximal threat analysis shows why path validation and worktree separation are
+not an OS authority boundary; Accepted ADR-0014 is the normative containment
+decision for Task Agents, Reviewer Agents, helper subagents, and repository
+code.
 
 Integrated ADR-0005 admits exact Linux tuples for session-scoped MCP and tool
 preapproval only. It explicitly preserves ADR-0008, makes no host-containment
@@ -303,13 +304,16 @@ Needs you.
 
 ## Decision
 
-**Inconclusive.** The human-authorized unified pre-destructive evidence gate,
+**Go.** Require the human-authorized unified pre-destructive evidence gate,
 exact-command token, local-origin refusal, secret-safe recovery, and
-reconciliation contract is the sole candidate mechanism. Linux evidence
-supports it on the recorded tuple. The separate Linux large-tree policy
-evidence in `dir-m0.17` is also open. M0/M1 remain blocked until the remaining
-gates pass and the evidence-changing Candidate receives a fresh independent
-top-level Reviewer Agent verdict.
+reconciliation contract on the recorded Linux tuple. Exact `dir-m0.6`
+Candidate `af489d04d4f84bd60d39e575718884e0b645ee36` received an
+independent `approve_candidate` verdict and was integrated as
+`2eb0b692ca027cff2f5e2d9d1de364165e6cafa3`. ADR-0013 then supplied the
+required measured large-tree policy in independently approved Candidate
+`18c0bbfaa58c09600eb01ae68fe4b39d916c92e2`, integrated as
+`1d93c7744d006da78dff54e3f1dbbb95fc833eb8`. Together they satisfy this
+worktree-ownership and cleanup gate without a new experiment.
 
 The engine stops rather than deletes when dirty work and ignored/
 unsnapshotable material coexist, non-Git preservation cannot be proved,
@@ -320,12 +324,13 @@ selected private non-Git recovery lifecycle and are removed automatically. No
 recursive-force fallback, Git secret snapshot, or silent platform fallback is
 selected.
 
-Repository `paseo.json` worktree commands remain a separate launch gate.
-Configured top-level `scripts` are not automatically executed by workspace
-creation in the installed schema, but any later request to run one still
-requires explicit authority and containment. If Paseo cannot create a managed
-worktree without an unapproved automatic surface, Director must obtain a public
-skip mechanism or keep launch blocked.
+Repository `paseo.json` worktree commands remain a separate launch gate under
+Accepted ADR-0014. Its four-surface admission contract parks every non-empty
+automatic surface before workspace creation unless an exact server-derived
+human approval binds the fixed scope and lifecycle digest. Configured top-level
+`scripts` are not automatically executed by workspace creation in the installed
+schema; any later request to run one still requires explicit authority and the
+accepted rootless-OCI boundary.
 
 ## Consequences
 
@@ -337,22 +342,19 @@ skip mechanism or keep launch blocked.
   prospective-tree-clean worktrees still clean automatically, bounded private preservation protects
   ignored value/secrets, disk thresholds stop unsafe copying, and Needs you is
   reserved for a preservation/removal contract the engine cannot prove.
-- The bounded evidence recovery envelope is 2 GiB aggregate and per file,
-  10,000 recovery entries, 100,000 inspected entries, a 64 KiB streaming
-  buffer, seven days, and 10% free space. Task policy may tighten but cannot
-  expand either byte cap or the other evidence ceilings, and cannot weaken the
-  10% floor or exceed seven-day retention, until `dir-m0.17` resolves the
-  release policy. Oversized
-  sparse files stop from `lstat` before reads; hashing, copying, verification,
-  and restoration share bounded buffers. Each retry charges only bytes still
-  to be written while rechecking the 10% floor.
+- ADR-0013 supplies the final supported recovery envelope: 10,000 recovery
+  entries, 25,000 inspected entries, 512 MiB aggregate content, 256 MiB per
+  file, a 64 KiB sequential buffer, bounded phase/lifecycle/supervisor times,
+  192 MiB measured worker RSS growth, seven-day retention, and a 10% projected
+  free-space floor. Policy may tighten but cannot expand these limits without
+  new Linux evidence and a superseding ADR. Oversized sparse files stop from
+  `lstat` before reads; each retry charges only bytes still to be written while
+  rechecking the floor.
 - Review measurements for the former default were about 17.77 seconds at 5,006
   entries, 93.24 seconds at 20,021, and 245 seconds at 30,031. The corrected
   contract deliberately revalidates payload bytes at all five destructive
-  gates; `dir-m0.17` owns representative Linux benchmarks and the release
-  policy for larger generated trees. `dir-m0.17` is
-  a P0 sibling under `dir-m0`, discovered from this Task, so the broader M0
-  cleanup claim remains blocked without expanding `dir-m0.6`.
+  gates; the integrated ADR-0013 evidence supplies the representative Linux
+  benchmarks and release policy for larger generated trees.
 - Registration comparison must retain its positive pre-removal assertion;
   negative-only tests are insufficient for canonical-path aliases.
 - Local-repository hook and fsmonitor suppression claims do not extend to a
@@ -416,7 +418,13 @@ skip mechanism or keep launch blocked.
 
 ## Independent verification
 
-The previous Candidate received `changes_requested`; all P0/P1/P2/P3 findings
-are addressed by the changed harness and evidence but require a completely
-fresh review of the final exact Candidate/base. Publication, PR, merge, Task
-closure, and final branch/workspace cleanup remain post-review gates.
+Exact `dir-m0.6` Candidate
+`af489d04d4f84bd60d39e575718884e0b645ee36` received an independent
+`approve_candidate` verdict and was integrated with its reviewed base as merge
+`2eb0b692ca027cff2f5e2d9d1de364165e6cafa3`. The required ADR-0013
+companion Candidate `18c0bbfaa58c09600eb01ae68fe4b39d916c92e2` was also
+independently approved and integrated as
+`1d93c7744d006da78dff54e3f1dbbb95fc833eb8`. `dir-m0.6` and
+`dir-m0.17` record the checks, reviews, integration, cleanup, and residual
+Linux bounds. This resolution uses those exact integrated records and does not
+rerun either technical experiment.

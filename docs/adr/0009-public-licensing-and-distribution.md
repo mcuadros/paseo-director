@@ -1,6 +1,6 @@
 # ADR-0009: Distribute Director under Apache-2.0 through reviewed Git channels
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-06
 - **Beads Task:** `dir-m0.9`
 - **Plan gate:** M0 public licensing and distribution compatibility
@@ -13,7 +13,7 @@ Director is intended to be a public Paseo plugin. Before product code begins, M0
 
 The distribution unit considered here is Director's Git source checkout as installed by Paseo. Director does not redistribute Paseo, external agent providers, Git, GitHub CLI, Beads, Dolt, or other system executables.
 
-The current repository base also contains accepted [ADR-0002](0002-paseo-0.7.2-public-surface.md), which limits the first scaffold to the exact published `0.7.2` API, and [ADR-0008](0008-director-threat-model.md), whose independently reviewed No-go keeps M1 blocked on authority separation. Those decisions reinforce exact-version and trusted-update requirements but do not change this licensing result.
+The current repository base also contains accepted [ADR-0002](0002-paseo-0.7.2-public-surface.md), which limits the first scaffold to the exact published `0.7.2` API, and the maximal threat analysis retained in superseded [ADR-0008](0008-director-threat-model.md). Accepted [ADR-0014](0014-practical-linux-agent-boundary.md) replaces ADR-0008's M1-blocking No-go with the practical trusted-provider Linux boundary. Those decisions reinforce exact-version and trusted-update requirements but do not change this licensing result.
 
 ## Question or hypothesis
 
@@ -87,9 +87,9 @@ The missing license metadata/file in the published `@getpaseo/plugin@0.7.2` tarb
 - Public installation remains native to Paseo and does not require a Director npm package or bespoke updater.
 - A moving release channel is a trust boundary: users opt into future commits when they run update, and every promotion must satisfy release gates.
 - The initial root license/package metadata is part of `dir-m1.2`; dependency-license automation and final notices remain release work owned by `dir-m6.4`. The empty scaffold is not treated as a future dependency audit.
-- This licensing Go does not override ADR-0008, authorize M1, or approve the same-user execution topology.
+- This licensing Go does not override ADR-0014's practical runtime boundary or authorize M1 by itself.
 - A new Paseo trademark/plugin naming policy, a requested naming change, a bundled SDK/executable, or an incompatible production dependency requires re-evaluation before release.
 
 ## Independent verification
 
-Pending. The reviewer must reproduce or inspect the raw evidence against the exact Candidate SHA and return one structured verdict. The Task remains open until that verdict is recorded.
+Exact Candidate `b4d69bd3c05b11ae5a5d93e29cef0bcbd583851a` received an independent `approve_candidate` verdict and was integrated with its reviewed base as merge `3b15f1a11b9c334addc0451223a0d72885f5570e`. `dir-m0.9` records the licensing and distribution checks, review, integration, cleanup, and compatibility bounds. This status reconciliation uses that integrated evidence and does not repeat the legal/distribution experiment.

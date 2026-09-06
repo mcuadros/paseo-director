@@ -1,6 +1,6 @@
 # ADR-0012: Approve direct Dolt operations on the supported Linux topology
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-06
 - **Beads Task:** `dir-m0.5`
 - **Plan gate:** M0 TaskStore synchronization, backup, restore, and migration
@@ -209,6 +209,10 @@ The public supported mechanism meets every in-scope acceptance criterion.
 
 ## Independent verification
 
-Pending Fable 5.1 xhigh review of the exact successor Candidate SHA. No author
-self-review, publication, merge, Task closure, or Execution Workspace cleanup
-is part of this handoff.
+Exact Candidate `d55f7dbccad902bab15261ef98d22f8dcea2e2e3` received an
+independent `approve_candidate` verdict and was integrated with its reviewed
+base as merge `212dcbab176ac0ebbb84eec37610fdf23d9efe45`. `dir-m0.5`
+records the synchronization, backup/restore, migration, telemetry, review,
+integration, cleanup, and residual topology bounds. This status
+reconciliation uses that integrated evidence and does not rerun the
+operational experiment.
