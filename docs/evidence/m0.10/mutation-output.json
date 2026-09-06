@@ -1,0 +1,49 @@
+{
+  "task": "dir-m0.10",
+  "outcome": "pass",
+  "mutationKind": "delete_guard",
+  "killed": [
+    {
+      "id": "observation-epoch",
+      "exitStatus": 1,
+      "expectedCode": "OBSERVATION_EPOCH_MISMATCH"
+    },
+    {
+      "id": "observation-holder",
+      "exitStatus": 1,
+      "expectedCode": "OBSERVATION_HOLDER_MISMATCH"
+    },
+    {
+      "id": "observation-single-use",
+      "exitStatus": 1,
+      "expectedCode": "OBSERVATION_ALREADY_CONSUMED"
+    },
+    {
+      "id": "observation-max-age",
+      "exitStatus": 1,
+      "expectedCode": "OBSERVATION_EXPIRED"
+    },
+    {
+      "id": "observation-attempt-binding",
+      "exitStatus": 1,
+      "expectedCode": "OBSERVATION_ATTEMPT_MISMATCH"
+    },
+    {
+      "id": "session-commit-mode",
+      "exitStatus": 1,
+      "expectedCode": "UNSAFE_SESSION_COMMIT_MODE"
+    },
+    {
+      "id": "workspace-lifecycle-admission",
+      "exitStatus": 1,
+      "expectedCode": "WORKTREE_LIFECYCLE_ADMISSION_MISSING"
+    },
+    {
+      "id": "operational-limits",
+      "exitStatus": 1,
+      "expectedCode": "OPERATIONAL_LIMIT_EXCEEDED"
+    }
+  ],
+  "survivors": 0,
+  "temporaryRootAbsent": true
+}

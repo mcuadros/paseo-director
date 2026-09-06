@@ -1,0 +1,168 @@
+{
+  "task": "dir-m0.10",
+  "outcome": "go",
+  "scope": "deterministic contract model; Linux-only Director 1.0",
+  "modelVersion": 1,
+  "results": {
+    "commandIdentity": {
+      "acceptedEffects": 1,
+      "aggregateVersion": 8,
+      "atomicFaultLeftNoRows": true,
+      "durableReplay": true,
+      "payloadMismatchRejected": true,
+      "nonJsonPayloadRejected": true,
+      "staleVersionOutcomeDurable": true,
+      "restartStableIngressReplay": true,
+      "actorAttribution": {
+        "kind": "system",
+        "instanceId": "scheduler"
+      },
+      "firstSubmissionAttribution": {
+        "executorInstanceId": "engine-a"
+      },
+      "replaySubmissionAttribution": {
+        "executorInstanceId": "engine-b"
+      },
+      "ingressActorMismatch": "INGRESS_ACTOR_MISMATCH"
+    },
+    "crashBoundaries": {
+      "durableBoundariesChecked": 6,
+      "beforeIntentPartials": 0,
+      "intentWithoutAttemptHandoffs": 0,
+      "staleAuthorizationTokensAccepted": 0,
+      "handoffMarkerWithoutVisibleEffect": "retryable_only_by_class",
+      "effectBeforeResultAdopted": true,
+      "repeatedTerminalProjectionEvents": 0
+    },
+    "leaseFencing": {
+      "epochs": [
+        1,
+        2,
+        3
+      ],
+      "livePriorExecutorWasObserveOnly": true,
+      "livenessObservations": 3,
+      "consumedAbsenceProofs": 2,
+      "staleDispatchRejected": true,
+      "staleFinalizeRejected": true,
+      "externalHandoffs": 1
+    },
+    "observationGuards": {
+      "freshnessWindowModelMs": 10,
+      "acceptedBoundaryAgeModelMs": 10,
+      "rejectedCodes": [
+        "OBSERVATION_EPOCH_MISMATCH",
+        "OBSERVATION_HOLDER_MISMATCH",
+        "OBSERVATION_EXPIRED",
+        "OBSERVATION_ALREADY_CONSUMED",
+        "OBSERVATION_ATTEMPT_MISMATCH",
+        "OBSERVATION_ALREADY_CONSUMED"
+      ],
+      "negativeCases": 6,
+      "postUnknownRetryRequiredNewObservation": "reconcile"
+    },
+    "adr0014Gates": {
+      "denialCodes": [
+        "WORKTREE_LIFECYCLE_ADMISSION_MISSING",
+        "WORKTREE_LIFECYCLE_APPROVAL_REQUIRED",
+        "OPERATIONAL_LIMIT_EXCEEDED",
+        "OPERATIONAL_LIMITS_MISSING",
+        "OPERATIONAL_FACTS_MISSING"
+      ],
+      "approvedWorkspaceHandoffs": 1,
+      "periodicLimitPhase": "needs_you",
+      "externallyMutatingKindsRequiringFiniteLimits": 28
+    },
+    "unknownOutcomes": {
+      "uniqueCreateAdoptedAfterLostResponse": true,
+      "nonrepeatableProgressParked": "UNKNOWN_EFFECT_NOT_SAFE_TO_REPEAT",
+      "destructiveAbsenceAdopted": true,
+      "destructivePresentParked": "UNKNOWN_EFFECT_NOT_SAFE_TO_REPEAT",
+      "idempotentCloseHandoffs": 2,
+      "exhaustedRetryBudget": "EFFECT_BUDGET_EXHAUSTED",
+      "nonrepeatableProgressHandoffs": 1,
+      "destructivePresentHandoffs": 1
+    },
+    "externalEvidence": {
+      "candidateBaseChangeInvalidatedOldEvidence": true,
+      "repositoryIdentityBound": true,
+      "terminalSuccessNotReexecutedAfterDrift": true,
+      "terminalDrift": "TERMINAL_EXTERNAL_DRIFT",
+      "outageWasNotAbsence": true
+    },
+    "taskStoreHealth": {
+      "rejectedHealthCodes": [
+        "TASKSTORE_CONNECTION_RESET",
+        "TASKSTORE_DUPLICATE_INITIALIZATION",
+        "TASKSTORE_IDENTITY_MISMATCH",
+        "UNSAFE_GLOBAL_COMMIT_MODE",
+        "UNSAFE_SESSION_COMMIT_MODE"
+      ],
+      "commandsPersistedUnderUnsafeHealth": 0,
+      "provenPreDispatchFailureHandoffs": 0,
+      "storeOnly": {
+        "class": "store_only",
+        "phase": "complete",
+        "terminal": true,
+        "attempts": 0
+      }
+    },
+    "mcpIngress": {
+      "callerSelectedScopeRejected": true,
+      "engineDurableReplay": true,
+      "payloadConflictRejected": true,
+      "revokedCapabilityRejected": true,
+      "directEffectDelta": 0
+    },
+    "compensation": {
+      "model": "forward_effect",
+      "originalEvidencePreserved": true,
+      "compensationEvidencePreserved": true,
+      "foreignTargetHandoffs": 0,
+      "originalAuditEntriesBefore": 3,
+      "originalAuditEntriesAfter": 3
+    },
+    "compositeSync": {
+      "atomicAcrossGitAndDolt": false,
+      "partialSuccessStayedDurable": true,
+      "successfulHalfRedispatched": false,
+      "gitHandoffs": 1,
+      "doltHandoffs": 1,
+      "combinedProjectionAfterBothEvidence": true
+    },
+    "cleanupRecovery": {
+      "policy": {
+        "recoveryEntries": 10000,
+        "inspectedEntries": 25000,
+        "aggregateMiB": 512,
+        "perFileMiB": 256,
+        "bufferKiB": 64,
+        "phaseSeconds": 180,
+        "lifecycleSeconds": 480,
+        "supervisorSeconds": 540,
+        "rssGrowthMiB": 192,
+        "retentionDays": 7,
+        "freeSpaceFloorPercent": 10,
+        "fullRevalidations": 5
+      },
+      "exactLimitsAccepted": true,
+      "expansionsRejected": true,
+      "oneUseDestructiveGate": true,
+      "lostDeleteAdoptedFromAbsence": true,
+      "temporaryRootAbsent": true
+    },
+    "catalog": {
+      "effectClasses": 6,
+      "effectKinds": 32,
+      "duplicateKinds": 0,
+      "requiredPlanEffectsCovered": 14,
+      "absentRefLeaseCovered": true
+    }
+  },
+  "totals": {
+    "testGroups": 13,
+    "failedAssertions": 0,
+    "liveExternalEffects": 0,
+    "productImplementationFiles": 0
+  }
+}
