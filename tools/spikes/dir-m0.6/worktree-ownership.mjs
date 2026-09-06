@@ -86,6 +86,7 @@ const SPECIAL_MATERIAL_ASSERTION = platform() === "win32"
   : "linux_symlink_fifo_and_socket_material_needs_you";
 const EXPECTED_ASSERTIONS = [
   "all_installed_lifecycle_surfaces_refused",
+  "state_file_fsync_platform_access_and_failure",
   "local_origin_effects_require_approval_and_containment",
   "file_url_origin_refused_consistently",
   "destructive_commands_require_fresh_gate_token",
@@ -1160,12 +1161,7 @@ function writeState(manifest, state) {
   assert(sameIdentity(manifest.stateDirIdentity, identity(manifest.stateDir)), "state directory identity changed");
   const serialized = `${JSON.stringify(state, null, 2)}\n`;
   writeRestrictedFile(manifest.intentTempPath, serialized);
-  const descriptor = openSync(manifest.intentTempPath, "r");
-  try {
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
+  fsyncStateFile(manifest.intentTempPath);
   renameSync(manifest.intentTempPath, manifest.intentPath);
   if (platform() !== "win32") {
     const directory = openSync(manifest.stateDir, "r");
@@ -1175,6 +1171,52 @@ function writeState(manifest, state) {
       closeSync(directory);
     }
   }
+}
+
+function fsyncStateFile(path, hostPlatform = platform(), operations = { openSync, fsyncSync, closeSync }) {
+  const descriptor = operations.openSync(path, hostPlatform === "win32" ? "r+" : "r");
+  try {
+    operations.fsyncSync(descriptor);
+  } finally {
+    operations.closeSync(descriptor);
+  }
+}
+
+function verifyStateFileFsyncContract() {
+  for (const [hostPlatform, expectedFlag] of [["win32", "r+"], ["linux", "r"]]) {
+    const calls = [];
+    fsyncStateFile("cleanup-intent.next", hostPlatform, {
+      openSync: (path, flag) => {
+        calls.push(["open", path, flag]);
+        return 17;
+      },
+      fsyncSync: (descriptor) => calls.push(["fsync", descriptor]),
+      closeSync: (descriptor) => calls.push(["close", descriptor]),
+    });
+    assert.deepEqual(calls, [
+      ["open", "cleanup-intent.next", expectedFlag],
+      ["fsync", 17],
+      ["close", 17],
+    ]);
+  }
+  const fsyncFailure = Object.assign(new Error("simulated fsync failure"), { code: "EPERM" });
+  let closedAfterFsyncFailure = false;
+  assert.throws(
+    () => fsyncStateFile("cleanup-intent.next", "win32", {
+      openSync: (_path, flag) => {
+        assert.equal(flag, "r+");
+        return 19;
+      },
+      fsyncSync: () => { throw fsyncFailure; },
+      closeSync: (descriptor) => {
+        assert.equal(descriptor, 19);
+        closedAfterFsyncFailure = true;
+      },
+    }),
+    (error) => error === fsyncFailure,
+  );
+  assert(closedAfterFsyncFailure);
+  return "state_file_fsync_platform_access_and_failure";
 }
 
 function readState(manifest) {
@@ -2209,6 +2251,7 @@ async function run() {
       );
     }
     assertions.push("all_installed_lifecycle_surfaces_refused");
+    assertions.push(verifyStateFileFsyncContract());
     writeFileSync(join(source, "paseo.json"), `${JSON.stringify({
       worktree: { setup: [], teardown: [], terminals: [], servicePorts: { range: "41000-41010" } },
     })}\n`);
@@ -3738,6 +3781,11 @@ async function run() {
 
 if (process.argv[2] === "--auth-fixture") {
   await runAuthFixture(process.argv[3]);
+} else if (process.argv[2] === "--state-fsync-fixture") {
+  process.stdout.write(`${JSON.stringify({
+    result: "pass",
+    assertion: verifyStateFileFsyncContract(),
+  }, null, 2)}\n`);
 } else {
   await run();
 }

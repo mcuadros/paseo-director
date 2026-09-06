@@ -125,6 +125,10 @@ locked-file failures on real Linux and Windows hosts?
 - `complete` is terminal for destructive effects. Repeated reconciliation may
   observe confirmed absence, but any later local or remote Task-ref appearance,
   including the same Candidate SHA, is preserved and parks in Needs you.
+- Atomic state persistence flushes the written next file before rename. Windows
+  opens that file with read/write access required by `FlushFileBuffers`; Linux
+  retains its read-only file-flush handle and the subsequent POSIX directory
+  `fsync`. File or directory flush failures remain fatal and are never ignored.
 - Every plain clean path proves the Candidate is contained by the live fetched
   base before persisting removal-ready and again immediately before move.
 - Filesystem scanning is independent of Git visibility and ignored-path
@@ -214,6 +218,9 @@ original case plus these review-derived cases:
   human approval or containment is absent; the hook sentinel and every owned
   worktree/ref remain intact, and the `file://` spelling returns the same policy
   refusal rather than an outage;
+- injected durability operations prove Windows selects a non-truncating `r+`
+  state-file handle, Linux selects `r`, both flush before close, and a file
+  flush error propagates after closing the descriptor;
 - clean and dirty paths persist removal-ready evidence, reconcile missing
   paths only after Git registration is also absent, and preserve the same
   recovery SHA across effect-before-state interruptions;
@@ -223,7 +230,15 @@ original case plus these review-derived cases:
 - the complete temporary root and loopback fault process are absent after each
   run.
 
-Real Windows evidence does not yet exist. The scoped post-review
+No successful Windows contract evidence exists yet. The first scoped run,
+[`34037393562`](https://github.com/mcuadros/paseo-director/actions/runs/34037393562),
+checked out approved Candidate `d0530622bafcbdd342bc2fa4d572ab2fa964653d`
+on base `ae06c376002b079f55f9fdbd92b9b0e70466f422`, then failed during its first
+harness setup on image `win25-vs2026` `20260824.214.3`, Node.js `v22.23.2`,
+and Git `2.55.0.windows.5`. The failed call was file `fsync` on a read-only
+handle; the POSIX-only directory `fsync` branch was not reached. The bounded
+correction selects read/write access only for the Windows file handle and is
+pending fresh exact-SHA review before another Windows run. The scoped
 `windows-2025` workflow is limited to PRs targeting `main` that change one of
 the four exact `dir-m0.6` artifacts. It has a 10-minute limit, read-only
 contents permission, exact event head/base validation, no secrets or matrix,
@@ -412,8 +427,11 @@ skip mechanism or keep launch blocked.
 - Retention-before-expiry is scheduled `retained` state, not Needs you. Foreign
   owner/path/permission/content facts map to path-free Needs you.
 - State writes use a permission-restricted next file, file `fsync`, atomic
-  rename, and POSIX directory `fsync`. A partial next file leaves the prior
-  intent readable; an invalid primary intent fails closed before effects.
+  rename, and POSIX directory `fsync`. Windows opens the next file as `r+`
+  because `FlushFileBuffers` requires write access; other platforms retain
+  `r`. Neither file nor directory flush failure is swallowed. A partial next
+  file leaves the prior intent readable; an invalid primary intent fails closed
+  before effects.
 - Local and remote deletion intents make a same-SHA branch recreation after an
   unknown delete result explicitly ambiguous. Confirmed completion is terminal:
   a later local or remote ref is observed and parked, never deleted again. The

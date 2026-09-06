@@ -13,7 +13,8 @@
 - Scope: disposable repositories, explicitly approved/contained path remotes,
   loopback fault endpoint, refs, and paths only; product path/file origin
   effects otherwise refuse
-- Windows status: Inconclusive pending the exact post-review job
+- Windows status: Inconclusive after failed run `34037393562`; bounded file-
+  flush correction pending fresh review before any new run
 
 ## Result and boundary
 
@@ -40,7 +41,7 @@ Artifacts:
 Final tracked executable hashes:
 
 ```text
-387de53808f6e9333388d797f55dd862645812b2966db9750cc5add17d184f43  tools/spikes/dir-m0.6/worktree-ownership.mjs
+bb951dfd87fa4bfeee940deeb4b504bdb149d2d11ac7ed16f577e5d8ffad3b0c  tools/spikes/dir-m0.6/worktree-ownership.mjs
 458822760e3cbe3f7a2121c446eedd812ee83cdc0797d0f3b2d776fccfdfc16b  .github/workflows/dir-m0.6-windows-post-review.yml
 ```
 
@@ -48,6 +49,7 @@ Local reproduction:
 
 ```text
 node --check tools/spikes/dir-m0.6/worktree-ownership.mjs
+node tools/spikes/dir-m0.6/worktree-ownership.mjs --state-fsync-fixture
 node tools/spikes/dir-m0.6/worktree-ownership.mjs
 node tools/spikes/dir-m0.6/worktree-ownership.mjs
 ```
@@ -379,10 +381,16 @@ accepted on retry only from removal-ready-or-later state and only after both
 original/quarantine paths and Git worktree registrations are absent.
 
 State writes use a mode-`0600` next file, file `fsync`, atomic rename, and a
-POSIX state-directory `fsync`. A partial next file leaves the previous intent
-readable. An explicitly truncated primary intent returns path-free Needs you
-before any effect; the fixture restores it through the same atomic writer and
-proves worktree/ref survival.
+POSIX state-directory `fsync`. The failed Windows run proved that the file
+descriptor—not the already-skipped directory branch—was opened without the
+write access required by `FlushFileBuffers`. The corrected helper uses
+non-truncating `r+` only on Windows and retains `r` plus the later directory
+flush on Linux. Injected operations assert both access branches, flush-before-
+close ordering, descriptor closure after error, and unmodified error
+propagation. A partial next file leaves the previous intent readable. An
+explicitly truncated primary intent returns path-free Needs you before any
+effect; the fixture restores it through the same atomic writer and proves
+worktree/ref survival.
 
 Fault injection covers:
 
@@ -428,7 +436,7 @@ untracked, and nested untracked content is reproduced byte-for-byte.
 
 ## Corrected Linux result
 
-Repeated executions return `result: pass` with 89 real assertions: 86 common
+Repeated executions return `result: pass` with 90 real assertions: 87 common
 facts plus three Linux-specific facts. The report emits those counts
 and names separately so no platform receives a no-op assertion.
 
@@ -436,6 +444,7 @@ Common assertions:
 
 ```text
 all_installed_lifecycle_surfaces_refused
+state_file_fsync_platform_access_and_failure
 local_origin_effects_require_approval_and_containment
 file_url_origin_refused_consistently
 destructive_commands_require_fresh_gate_token
@@ -545,9 +554,27 @@ check also finds zero `director-m0.6-*` roots.
 
 ## Windows post-review gate
 
-Windows is not simulated and is not claimed by this Candidate. Repository
-policy permits the committed job only after fresh exact-SHA approval and PR
-publication. It is scoped to:
+Successful Windows behavior is not claimed by this correction. Historical PR
+[#11](https://github.com/mcuadros/paseo-director/pull/11) remains at approved
+Candidate `d0530622bafcbdd342bc2fa4d572ab2fa964653d`. Its one opened-event run,
+[`34037393562`](https://github.com/mcuadros/paseo-director/actions/runs/34037393562),
+failed on `ImageOS=win25-vs2026`, `ImageVersion=20260824.214.3`, Windows
+`10.0.26100.0` X64, Node.js `v22.23.2`, and Git `2.55.0.windows.5`. Exact
+Candidate/base checkout and ancestry passed; the first harness stopped in
+`writeState` with `EPERM: operation not permitted, fsync` on the next-file
+descriptor opened `r`, the second run never started, and
+`temporary_root_removed` was not emitted. The run was not retried and remains
+failure evidence rather than a Windows pass.
+
+Microsoft documents that `FlushFileBuffers` requires a handle with
+`GENERIC_WRITE` access. The bounded correction opens the already-written next
+file as non-truncating `r+` on Windows, continues to propagate any flush error,
+and leaves the Linux file and directory durability sequence unchanged. A new
+Windows run is forbidden until the correction Candidate receives fresh exact-
+SHA approval.
+
+Repository policy permits the committed job only after fresh exact-SHA
+approval and PR publication. It is scoped to:
 
 - event: `pull_request` opened/reopened, never synchronize;
 - target: `main` only;
@@ -640,6 +667,7 @@ Consulted on 2026-09-06:
 - <https://git-scm.com/docs/gitattributes>
 - <https://git-scm.com/docs/githooks>
 - <https://nodejs.org/download/release/v22.22.0/docs/api/fs.html>
+- <https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers>
 - <https://learn.microsoft.com/en-us/dotnet/api/system.io.fileshare?view=net-9.0>
 - <https://learn.microsoft.com/en-us/dotnet/api/system.security.accesscontrol.objectsecurity.setaccessruleprotection?view=net-10.0>
 - <https://learn.microsoft.com/en-us/dotnet/api/system.security.accesscontrol.filesystemaccessrule?view=net-10.0>
