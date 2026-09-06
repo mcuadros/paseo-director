@@ -76,7 +76,9 @@ locked-file failures on real Linux and Windows hosts?
   empty directories can use the private artifact alongside a Git snapshot. For a successfully integrated
   prospective-tree-clean worktree, ignored files/directories are preserved in
   a bounded owner-verified non-Git artifact before automatic removal, never
-  force-added to Git.
+  force-added to Git. Task policy cannot exceed the 2 GiB aggregate/per-file,
+  10,000 recovery-entry, 100,000 inspected-entry, or 64 KiB buffer evidence
+  ceilings and cannot reduce the 10% free-space floor.
 - Snapshot inspection allows declared filter attributes only when no clean or
   process command is configured, refuses executable clean filters, overrides
   repository hooks and `core.fsmonitor`, and records the residual same-user race boundary.
@@ -88,10 +90,18 @@ locked-file failures on real Linux and Windows hosts?
   Candidate ancestry and local/remote deletion postconditions are verified.
 - Local Task-ref deletion stops in Needs you if any registered worktree other
   than the owned original/quarantine path still reports that branch. The
-  consumer's checkout, files, branch, and HEAD remain intact.
+  consumer's checkout, files, branch, and HEAD remain intact. Local deletion
+  persists exact ref/SHA/nonce intent before `update-ref`, and retry accepts
+  absence but parks on any present ref after an unknown result.
 - A clean or snapshotted worktree receives durable removal-ready evidence
   before its quarantine/removal effect. Recovery handles crashes after
-  quarantine, after removal, and after remote deletion without blind retry.
+  quarantine, after removal, and after local or remote deletion without blind
+  retry. Every removal-ready resume and immediate pre-removal boundary streams
+  and verifies every preserved non-Git payload byte against the bound private
+  manifest before the worktree can move.
+- `complete` is terminal for destructive effects. Repeated reconciliation may
+  observe confirmed absence, but any later local or remote Task-ref appearance,
+  including the same Candidate SHA, is preserved and parks in Needs you.
 - Every plain clean path proves the Candidate is contained by the live fetched
   base before persisting removal-ready and again immediately before move.
 - Filesystem scanning is independent of Git visibility and ignored-path
@@ -143,6 +153,9 @@ original case plus these review-derived cases:
 - every removal-ready retry recomputes the real index and prospective worktree
   trees and byte fidelity; a same-size edit with restored mtime is refused with
   original path, registration, refs, and edited bytes intact;
+- corrupting only a manifest-listed recovery payload byte is detected both on
+  removal-ready resume and at the immediate pre-move boundary; the original
+  worktree, registration, local/remote Task refs, and source bytes remain;
 - an unintegrated prospective-tree-clean worktree remains registered with both
   Task refs and no removal-ready evidence;
 - dirty-plus-ignored files/directories and an uncommitted unignored nested
@@ -162,6 +175,11 @@ original case plus these review-derived cases:
   again;
 - same-SHA remote recreation after an interrupted delete is explicitly
   ambiguous and parks without deleting; forge resolution remains `dir-m0.7`;
+- local deletion intent reconciles a crash after `update-ref`; after both ref
+  absences become confirmed and cleanup completes, same-SHA local and remote
+  recreations are observed, preserved, and parked without another delete;
+- exact 2 GiB aggregate/per-file ceilings accept their boundary and reject one
+  byte more, while exactly 10% free space is accepted and 9% is rejected;
 - clean and dirty paths persist removal-ready evidence, reconcile missing
   paths only after Git registration is also absent, and preserve the same
   recovery SHA across effect-before-state interruptions;
@@ -296,14 +314,16 @@ skip mechanism or keep launch blocked.
 - The bounded evidence recovery envelope is 2 GiB aggregate and per file,
   10,000 recovery entries, 100,000 inspected entries, a 64 KiB streaming
   buffer, seven days, and 10% free space. Task policy may tighten but cannot
-  expand these evidence bounds until `dir-m0.17` resolves the release policy. Oversized
+  expand either byte cap or the other evidence ceilings, and cannot weaken the
+  10% floor, until `dir-m0.17` resolves the release policy. Oversized
   sparse files stop from `lstat` before reads; hashing, copying, verification,
   and restoration share bounded buffers. Each retry charges only bytes still
   to be written while rechecking the 10% floor.
 - Review measurements for the former default were about 17.77 seconds at 5,006
   entries, 93.24 seconds at 20,021, and 245 seconds at 30,031. The corrected
-  pass structure is smaller, but `dir-m0.17` owns representative Linux/real-
-  Windows benchmarks and the release policy for larger generated trees. It is
+  contract deliberately revalidates payload bytes at both destructive
+  boundaries; `dir-m0.17` owns representative Linux/real-Windows benchmarks
+  and the release policy for larger generated trees. It is
   a P0 sibling under `dir-m0`, discovered from this Task, so the broader M0
   cleanup claim remains blocked without expanding `dir-m0.6`.
 - Registration comparison must retain its positive pre-removal assertion;
@@ -331,9 +351,11 @@ skip mechanism or keep launch blocked.
 - State writes use a permission-restricted next file, file `fsync`, atomic
   rename, and POSIX directory `fsync`. A partial next file leaves the prior
   intent readable; an invalid primary intent fails closed before effects.
-- Remote deletion intent makes a same-SHA branch recreation after an unknown
-  delete result explicitly ambiguous. It remains intact in Needs you pending
-  the forge-aware ownership decision in `dir-m0.7`.
+- Local and remote deletion intents make a same-SHA branch recreation after an
+  unknown delete result explicitly ambiguous. Confirmed completion is terminal:
+  a later local or remote ref is observed and parked, never deleted again. The
+  ref remains intact in Needs you pending the forge-aware ownership decision in
+  `dir-m0.7`.
 - `dir-m0.7` still owns forge integration races; `dir-m0.10` owns the general
   effect/reconciliation contract; `dir-m0.14` owns OS authority; and
   `dir-m0.17` owns large ignored-tree policy/benchmarks. This spike does not

@@ -38,7 +38,7 @@ Artifacts:
 Final tracked executable hashes:
 
 ```text
-a0fa0f29a4f436003cee64415e342ee84a387caec526b9e37712017b2ed40dbd  tools/spikes/dir-m0.6/worktree-ownership.mjs
+ffa930901c6292fa01b7fa31708acf11ec5ad4d6f120788e71b0d97cca82a7aa  tools/spikes/dir-m0.6/worktree-ownership.mjs
 458822760e3cbe3f7a2121c446eedd812ee83cdc0797d0f3b2d776fccfdfc16b  .github/workflows/dir-m0.6-windows-post-review.yml
 ```
 
@@ -97,6 +97,13 @@ harness revalidates:
 6. Git-valid full ref names; and
 7. where present, exact worktree/quarantine filesystem identity, root
    descendancy, shared common dir, origin, symbolic branch, and Candidate.
+
+Local and remote Task-ref deletion each persist exact ref/Candidate/nonce
+intent before their effect. An absent ref after an unknown result is adopted;
+any present ref is ambiguous and preserved. Once both absences are confirmed
+and cleanup reaches `complete`, reconciliation is observation-only: a later
+local or remote ref, even at the same Candidate, parks in Needs you and is
+never deleted by the completed operation.
 
 Git `worktree --porcelain -z` paths and Node paths share one comparison
 function: resolve on the host, apply native realpath while present (expanding
@@ -201,10 +208,11 @@ artifact before removal. The artifact lifecycle is:
 5. Atomically rename staging to its final random-scope path, verify every byte,
    manifest hash, permission, owner and filesystem identity, then bind that
    hash into `removal_ready`. No ignored content is added to Git.
-6. Immediately before move, re-enumerate metadata, stream-hash source content,
-   recheck disk, and compare it with the already verified artifact aggregate.
-   Artifact owner/identity/manifest are rechecked without a redundant full
-   payload pass; path-free aggregate digests remain bound in `removal_ready`.
+6. On every removal-ready resume and again immediately before move,
+   re-enumerate metadata, stream-hash source content, recheck disk, and stream
+   every artifact payload file against its bound private-manifest hash. A
+   changed payload parks with the original worktree and refs intact; path-free
+   aggregate digests remain bound in `removal_ready`.
 7. After worktree removal, restore into a disposable destination and verify
    exact bytes, mtimes, POSIX modes, and empty directories. Before expiry the
    result is ordinary scheduled `retained` state, not Needs you; at expiry an
@@ -223,12 +231,19 @@ therefore preserves PLAN §§9.2, 15.5, and 25 without losing or Git-persisting 
 possible secret. Foreign owner/path/permission/content or recovery squatting
 maps to one path-free Needs-you domain error with unknown data intact.
 
+The policy validator accepts the exact 2 GiB aggregate/per-file ceilings and
+10% free-space floor, rejects either cap plus one byte, and rejects a 9% floor.
+It also retains the existing non-expansion checks for recovery entries,
+inspected entries, and stream-buffer size. Broader policy remains exclusively
+owned by `dir-m0.17`.
+
 The superseded 250,000-entry default was not evidence-backed: the independent
 review measured roughly 17.77 seconds for 5,006 entries, 93.24 seconds for
 20,021 entries, and about 245 seconds for 30,031 entries on its Linux probe.
-This correction shares one buffer across each pass and removes redundant
-source/payload passes, but does not turn those measurements into a product
-policy claim. Discovered sibling `dir-m0.17` owns representative Linux/real-
+The contract shares one buffer across each pass but intentionally revalidates
+source and artifact payload bytes at both destructive boundaries; it does not
+turn the earlier measurements into a product policy claim. Discovered sibling
+`dir-m0.17` owns representative Linux/real-
 Windows benchmarking and the release policy for large `node_modules`, `target`,
 and `.venv` trees; as an open P0 child of `dir-m0`, it keeps that broader M0
 cleanup gate blocked without expanding `dir-m0.6`.
@@ -269,7 +284,9 @@ Before local and remote Task-branch deletion—and again just before mutation—
 engine reads the live `refs/heads/main`, fetches that exact advertised object
 with `--no-write-fetch-head`, confirms it is a commit, and proves the Candidate
 is its ancestor. A live base rewind preserves both Task refs. Local deletion
-uses `update-ref -d <ref> <expected>` and confirms explicit local absence.
+persists intent, uses `update-ref -d <ref> <expected>`, and confirms explicit
+local absence. A crash after the effect adopts only absence; a present same-SHA
+ref after intent is ambiguous and survives.
 Immediately before it, every normalized Git worktree registration is
 inspected. If another path reports the Task branch, cleanup returns Needs you.
 The real fixture verifies that the unknown consumer's ref, symbolic branch,
@@ -290,6 +307,11 @@ It returns path-free Needs you and preserves the ref. The fixture recreates the
 same SHA and proves refusal; forge-aware resolution remains explicitly owned by
 `dir-m0.7`.
 
+After local and remote absence are both durably confirmed, `complete` is a
+terminal destructive state. The fixture recreates both refs at the Candidate,
+reconciles, and proves both survive the path-free Needs-you result. Test-only
+cleanup then removes those fixture refs with exact expected-head operations.
+
 ## Worktree removal and interruption
 
 Clean and snapshotted paths persist a `removal_ready` phase before mutation. It
@@ -297,7 +319,8 @@ binds Candidate, original filesystem identity, prospective worktree tree, real
 index tree, path-free filesystem-metadata digest, clean/dirty classification,
 and both recovery SHAs. Every removal-ready resume and the immediate pre-move
 boundary recompute both trees and byte-exact worktree fidelity; stored tree
-claims are never accepted as a substitute. Git
+claims are never accepted as a substitute. Every bound non-Git recovery
+payload byte is also streamed and reverified at both boundaries. Git
 first moves the linked worktree to the pre-recorded
 quarantine path, then removes that exact registered worktree. Missing paths are
 accepted on retry only from removal-ready-or-later state and only after both
@@ -323,6 +346,8 @@ Fault injection covers:
 - quarantine moved before result persistence: retry finds the one positive
   quarantine registration; a late file produces an exact recovery-tree
   mismatch and remains intact before cleanup continues;
+- local ref deleted before result persistence: durable intent plus exact
+  absence reconciles without another delete;
 - remote ref deleted before result persistence: status-2 absence reconciles;
 - Git administrative worktree lock: one force is refused and double-force is
   never attempted; and
@@ -330,9 +355,14 @@ Fault injection covers:
   `removal_ready`, recomputes both trees on resume, and acquires the handle only
   at the immediate move boundary; Windows must observe exact
   move failure with all facts retained, while Linux proves move/removal and
-  open-descriptor reads, followed by effect-before-result retry; and
-- completed cleanup invoked repeatedly: identities/live base/postconditions are
-  checked again, with no duplicate external effect.
+  open-descriptor reads, followed by effect-before-result retry;
+- corrupt recovery payload bytes before a removal-ready resume and between its
+  first verification and the immediate pre-move verification: each boundary
+  returns path-free Needs you with the original worktree, registration, refs,
+  and source bytes intact; and
+- completed cleanup invoked repeatedly: confirmed absence is observed with no
+  duplicate external effect, while any later same-SHA local/remote recreation
+  is preserved and parked.
 
 The hidden recovery ref is checked out detached after the original dirty
 worktree and Task branch are gone. Modified tracked, staged, top-level
@@ -340,7 +370,7 @@ untracked, and nested untracked content is reproduced byte-for-byte.
 
 ## Corrected Linux result
 
-Repeated executions return `result: pass` with 66 real assertions: 63 common
+Repeated executions return `result: pass` with 72 real assertions: 69 common
 facts plus three Linux-specific facts. The report emits those counts
 and names separately so no platform receives a no-op assertion.
 
@@ -373,6 +403,9 @@ eol_normalization_needs_you_without_false_recovery
 ls_remote_statuses_distinguished
 offline_and_auth_errors_refused
 unproven_recovery_policy_expansion_blocked
+ignored_recovery_max_bytes_boundary_enforced
+ignored_recovery_max_file_bytes_boundary_enforced
+ignored_recovery_minimum_free_percent_boundary_enforced
 ignored_recovery_disk_pressure_refused
 oversized_sparse_ignored_needs_you_before_read
 foreign_owner_recovery_squat_needs_you
@@ -380,6 +413,7 @@ ignored_recovery_artifact_effect_crash_reconciled
 ignored_recovery_replacement_refused
 ignored_content_change_path_free_needs_you
 ignored_recovery_retry_charges_only_remaining_bytes
+removal_ready_artifact_payload_corruption_needs_you
 clean_removal_ready_crash_reconciled
 clean_ignored_material_preserved_removed_and_restored
 active_task_ref_consumer_refused
@@ -388,8 +422,10 @@ common_dir_replacement_after_removal_refused
 origin_unavailable_classified
 origin_replacement_after_removal_refused
 live_base_rewrite_refused
+local_delete_effect_retry_reconciled
 remote_same_sha_recreation_needs_you
 remote_delete_effect_retry_reconciled
+completed_ref_recreation_needs_you
 ignored_recovery_retention_cleanup_idempotent
 clean_lock_removal_ready_persisted
 removal_ready_same_metadata_edit_refused
