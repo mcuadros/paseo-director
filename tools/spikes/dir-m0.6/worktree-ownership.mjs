@@ -44,6 +44,9 @@ const SKIP_REF = "refs/heads/director/task-dir-m0.6-skip-hidden";
 const SPARSE_REF = "refs/heads/director/task-dir-m0.6-sparse-missing";
 const NORMALIZATION_REF = "refs/heads/director/task-dir-m0.6-normalization";
 const STAGED_ONLY_REF = "refs/heads/director/task-dir-m0.6-staged-only";
+const STAGED_ADDITION_REF = "refs/heads/director/task-dir-m0.6-staged-addition";
+const STAGED_DELETION_REF = "refs/heads/director/task-dir-m0.6-staged-deletion";
+const TOKEN_GUARD_REF = "refs/heads/director/task-dir-m0.6-token-guard";
 const IGNORED_RECOVERY_FIXED_OVERHEAD_BYTES = 64 * 1024;
 const IGNORED_RECOVERY_ENTRY_OVERHEAD_BYTES = 4096;
 const DEFAULT_IGNORED_RECOVERY_POLICY = Object.freeze({
@@ -54,6 +57,10 @@ const DEFAULT_IGNORED_RECOVERY_POLICY = Object.freeze({
   streamChunkBytes: 64 * 1024,
   retentionMs: 7 * 24 * 60 * 60 * 1000,
   minimumFreePercent: 10,
+});
+const DISPOSABLE_LOCAL_ORIGIN_AUTHORITY = Object.freeze({
+  humanApproved: true,
+  contained: true,
 });
 const PASEO_SCHEMA = {
   package: "@getpaseo/protocol",
@@ -78,6 +85,8 @@ const SPECIAL_MATERIAL_ASSERTION = platform() === "win32"
   : "linux_symlink_fifo_and_socket_material_needs_you";
 const EXPECTED_ASSERTIONS = [
   "all_installed_lifecycle_surfaces_refused",
+  "local_origin_effects_require_approval_and_containment",
+  "destructive_commands_require_fresh_gate_token",
   "task_branch_and_worktree_owned",
   "worktree_registration_identity_verified",
   "committed_symlink_and_inactive_filter_supported",
@@ -94,10 +103,11 @@ const EXPECTED_ASSERTIONS = [
   "unintegrated_refs_refused",
   "unintegrated_clean_worktree_preserved",
   "remote_compare_delete_race_refused",
-  "force_with_lease_race_refused",
   "assume_unchanged_edit_recovered",
   "skip_worktree_edit_recovered",
   "staged_index_only_edit_recovered",
+  "staged_index_only_addition_recovered",
+  "staged_index_only_deletion_recovered",
   "sparse_missing_material_needs_you_then_recovers",
   "eol_normalization_needs_you_without_false_recovery",
   "ls_remote_statuses_distinguished",
@@ -106,6 +116,7 @@ const EXPECTED_ASSERTIONS = [
   "ignored_recovery_max_bytes_boundary_enforced",
   "ignored_recovery_max_file_bytes_boundary_enforced",
   "ignored_recovery_minimum_free_percent_boundary_enforced",
+  "ignored_recovery_retention_boundary_enforced",
   "ignored_recovery_disk_pressure_refused",
   "oversized_sparse_ignored_needs_you_before_read",
   "foreign_owner_recovery_squat_needs_you",
@@ -113,8 +124,11 @@ const EXPECTED_ASSERTIONS = [
   "ignored_recovery_replacement_refused",
   "ignored_content_change_path_free_needs_you",
   "ignored_recovery_retry_charges_only_remaining_bytes",
-  "removal_ready_artifact_payload_corruption_needs_you",
+  "destructive_gate_token_binds_exact_command_once",
+  "stored_evidence_gate_artifact_before_move_table",
+  "stored_evidence_gate_artifact_before_remove_table",
   "clean_removal_ready_crash_reconciled",
+  "stored_evidence_gate_artifact_before_local_delete_table",
   "clean_ignored_material_preserved_removed_and_restored",
   "active_task_ref_consumer_refused",
   "source_replacement_after_removal_refused",
@@ -123,6 +137,8 @@ const EXPECTED_ASSERTIONS = [
   "origin_replacement_after_removal_refused",
   "live_base_rewrite_refused",
   "local_delete_effect_retry_reconciled",
+  "stored_evidence_gate_artifact_before_remote_delete_table",
+  "force_with_lease_race_refused",
   "remote_same_sha_recreation_needs_you",
   "remote_delete_effect_retry_reconciled",
   "completed_ref_recreation_needs_you",
@@ -140,9 +156,13 @@ const EXPECTED_ASSERTIONS = [
   "dirty_snapshot_verified",
   "dirty_empty_directory_preserved",
   ...(platform() === "win32" ? [DIRTY_LOCK_ASSERTION] : []),
+  "stored_evidence_gate_before_move_table",
   "quarantine_move_effect_crash_reconciled",
+  "stored_evidence_gate_before_remove_table",
   "worktree_removal_effect_crash_reconciled",
+  "stored_evidence_gate_before_local_delete_table",
   ...(platform() === "win32" ? [] : [DIRTY_LOCK_ASSERTION]),
+  "stored_evidence_gate_before_remote_delete_table",
   "owned_worktree_removed",
   "exact_local_ref_removed",
   "exact_remote_ref_removed",
@@ -264,12 +284,19 @@ function remoteFacts(cwd) {
   try {
     const leaf = lstatSync(path);
     assert(!leaf.isSymbolicLink(), "origin became a symlink or junction");
-    return { url, identity: identity(path) };
+    return { url, identity: identity(path), transport: "path" };
   } catch (error) {
     if (["ENOENT", "EACCES", "EPERM", "ENOTDIR"].includes(error?.code)) {
       throw new ExternalUnavailableError("origin filesystem identity unavailable");
     }
     throw error;
+  }
+}
+
+function assertRemoteExecutionPolicy(manifest) {
+  assert.equal(manifest.remoteTransport, "path", "fixture remote transport changed");
+  if (!manifest.localOriginAuthority?.humanApproved || !manifest.localOriginAuthority?.contained) {
+    throw new NeedsYouError("local-path origin effects require human approval and containment");
   }
 }
 
@@ -290,6 +317,7 @@ function assertStateOwnership(manifest, state) {
   assert.equal(state.baseRef, manifest.baseRef, "cleanup base ref changed");
   assert.equal(state.recoveryRef, manifest.recoveryRef, "cleanup recovery ref changed");
   assert.equal(state.indexRecoveryRef, manifest.indexRecoveryRef, "cleanup index recovery ref changed");
+  assert.deepEqual(state.localOriginAuthority, manifest.localOriginAuthority, "local-origin authority changed");
   if (state.snapshotSha !== null) assert.match(state.snapshotSha, /^[0-9a-f]{40}$/, "cleanup snapshot identity is invalid");
   if (state.indexSnapshotSha !== null) assert.match(state.indexSnapshotSha, /^[0-9a-f]{40}$/, "cleanup index snapshot identity is invalid");
   if (state.removalReady) {
@@ -328,7 +356,10 @@ function assertRepositoryOwnership(manifest, state) {
   assert(sameIdentity(manifest.commonDirIdentity, identity(commonDir(manifest.sourcePath))), "Git common-directory identity changed");
   const currentRemote = remoteFacts(manifest.sourcePath);
   assert.equal(currentRemote.url, manifest.remoteUrl, "origin URL changed");
+  assert.equal(currentRemote.transport, manifest.remoteTransport, "origin transport changed");
   assert(sameIdentity(manifest.remoteIdentity, currentRemote.identity), "origin identity changed");
+  assert.equal(typeof manifest.localOriginAuthority?.humanApproved, "boolean", "local-origin approval fact changed");
+  assert.equal(typeof manifest.localOriginAuthority?.contained, "boolean", "local-origin containment fact changed");
   for (const ref of [manifest.taskRef, manifest.remoteTaskRef, manifest.baseRef, manifest.recoveryRef, manifest.indexRecoveryRef]) {
     validateRef(manifest.sourcePath, ref);
   }
@@ -1035,8 +1066,14 @@ function cleanupIgnoredRecovery(manifest, state, nowMs, options = {}) {
     }
     recovery.cleanupPhase = "removal_ready";
     writeState(manifest, state);
-    assert(sameIdentity(recovery.artifactIdentity, identity(recovery.artifactPath)), "ignored recovery cleanup identity changed");
-    rmSync(recovery.artifactPath, { recursive: true });
+    const pass = beginDestructivePass();
+    const removeEffect = {
+      kind: "ignored_artifact_remove",
+      activePath: null,
+      target: recovery.artifactPath,
+    };
+    const removeToken = issueDestructiveGateToken(manifest, state, pass, removeEffect);
+    runGuardedArtifactRemoval(pass, removeToken, recovery.artifactPath);
     if (options.interruptAfterArtifactRemoval) {
       throw new ExpectedInterruption("simulated crash after ignored artifact removal before result persistence");
     }
@@ -1076,11 +1113,13 @@ function queryRemoteRef(cwd, remote, ref) {
 
 function queryOwnedRemoteRef(manifest, state, ref) {
   assertRepositoryOwnership(manifest, state);
+  assertRemoteExecutionPolicy(manifest);
   return queryRemoteRef(manifest.sourcePath, "origin", ref);
 }
 
 function verifyLiveIntegration(manifest, state) {
   assertRepositoryOwnership(manifest, state);
+  assertRemoteExecutionPolicy(manifest);
   const live = queryOwnedRemoteRef(manifest, state, manifest.baseRef);
   if (live.kind !== "present") throw new ExternalUnavailableError("live base is absent");
   assertRepositoryOwnership(manifest, state);
@@ -1406,7 +1445,219 @@ function persistRemovalReady(manifest, state, clean, prospectiveTreeSha, indexTr
   writeState(manifest, state);
 }
 
-function reconcileWorktreeRemoval(manifest, state, options) {
+function storedEvidenceFailure() {
+  throw new NeedsYouError("pre-destructive recovery evidence is unverified");
+}
+
+function verifyBoundRecoveryRef(manifest, state, ref, expectedSha, expectedTree, label) {
+  if (!expectedSha) return;
+  const observed = observeLocalRef(manifest, state, ref);
+  if (observed.kind !== "present" || observed.sha !== expectedSha) storedEvidenceFailure();
+  const tree = git(manifest.sourcePath, ["rev-parse", `${expectedSha}^{tree}`], { allowFailure: true });
+  const parent = git(manifest.sourcePath, ["rev-parse", `${expectedSha}^`], { allowFailure: true });
+  const body = git(manifest.sourcePath, ["show", "-s", "--format=%B", expectedSha], { allowFailure: true });
+  if (tree.status !== 0 || tree.stdout.trim() !== expectedTree
+      || parent.status !== 0 || parent.stdout.trim() !== manifest.candidateSha
+      || body.status !== 0) {
+    storedEvidenceFailure();
+  }
+  const provenance = body.stdout.split(/\r?\n/);
+  for (const expected of [
+    `Task: ${manifest.taskId}`,
+    `Run: ${manifest.runId}`,
+    `Candidate: ${manifest.candidateSha}`,
+    `Ownership-Nonce: ${manifest.nonce}`,
+  ]) {
+    if (!provenance.includes(expected)) storedEvidenceFailure();
+  }
+  assert.equal(label === "worktree" || label === "index", true, "unknown recovery evidence kind");
+}
+
+function verifyBoundIgnoredRecovery(manifest, state, activePath, safety) {
+  const recovery = state.ignoredRecovery;
+  const readyManifest = state.removalReady.ignoredRecoveryManifestSha256;
+  if (!recovery) {
+    if (readyManifest !== null || (safety?.ignoredPaths.length ?? 0) > 0) storedEvidenceFailure();
+    return;
+  }
+  if (recovery.status !== "artifact_verified"
+      || recovery.manifestSha256 !== readyManifest
+      || !recovery.artifactIdentity) {
+    storedEvidenceFailure();
+  }
+  const verified = verifyIgnoredArtifact(manifest, state);
+  if (verified.manifestSha256 !== readyManifest
+      || verified.metadataDigest !== recovery.metadataDigest
+      || verified.contentDigest !== recovery.contentDigest) {
+    storedEvidenceFailure();
+  }
+  if (!activePath) return;
+  if (!safety || safety.ignoredPaths.length === 0) storedEvidenceFailure();
+  const plan = secretSafeFilesystemOperation(
+    () => enumerateIgnoredRecovery(activePath, safety.ignoredPaths, manifest.ignoredRecoveryPolicy),
+    "pre-destructive recovery evidence is unverified",
+  );
+  if (plan.totalBytes !== recovery.totalBytes
+      || plan.entries.length !== recovery.entryCount
+      || plan.metadataDigest !== recovery.metadataDigest) {
+    storedEvidenceFailure();
+  }
+  const sourceContentDigest = secretSafeFilesystemOperation(
+    () => sourceRecoveryContentDigest(activePath, plan.entries, recovery.streamChunkBytes),
+    "pre-destructive recovery evidence is unverified",
+  );
+  if (sourceContentDigest !== recovery.sourceContentDigest
+      || sourceContentDigest !== verified.contentDigest) {
+    storedEvidenceFailure();
+  }
+  const disk = statfsSync(manifest.ignoredRecoveryRoot, { bigint: true });
+  const availableBytes = disk.bavail * disk.bsize;
+  const minimumFreeBytes = (disk.blocks * disk.bsize * BigInt(recovery.minimumFreePercent)) / 100n;
+  assertIgnoredRecoveryDiskBudget(plan, availableBytes, minimumFreeBytes, 0n);
+}
+
+function verifyPreDestructiveGate(manifest, state, effect) {
+  try {
+    assertRepositoryOwnership(manifest, state);
+    if (!state.removalReady) storedEvidenceFailure();
+    const ready = state.removalReady;
+    if (ready.candidateSha !== manifest.candidateSha
+        || ready.snapshotSha !== state.snapshotSha
+        || ready.indexSnapshotSha !== state.indexSnapshotSha) {
+      storedEvidenceFailure();
+    }
+    const candidateTree = git(manifest.sourcePath, ["rev-parse", `${manifest.candidateSha}^{tree}`]);
+    if ((ready.prospectiveTreeSha !== candidateTree) !== Boolean(state.snapshotSha)
+        || (ready.indexTreeSha !== candidateTree) !== Boolean(state.indexSnapshotSha)) {
+      storedEvidenceFailure();
+    }
+    let safety = null;
+    if (effect.activePath) {
+      inspectOwnedWorktree(manifest, effect.activePath, state);
+      assertOwnedRegistration(manifest, state, effect.activePath);
+      safety = inspectMaterialSafety(effect.activePath, manifest.ignoredRecoveryPolicy);
+      assertIndexFlagsRecoverable(effect.activePath);
+      if (safety.metadataDigest !== ready.materialMetadataDigest) storedEvidenceFailure();
+      const indexTree = currentIndexTree(manifest, state, effect.activePath);
+      const currentTree = prospectiveTree(manifest, state, effect.activePath);
+      if (indexTree !== ready.indexTreeSha || currentTree !== ready.prospectiveTreeSha) storedEvidenceFailure();
+      assertByteExactTree(effect.activePath, currentTree);
+      if (ready.clean !== (currentTree === candidateTree && indexTree === candidateTree)) storedEvidenceFailure();
+    } else {
+      assertOwnedRegistrationsAbsent(manifest, state);
+    }
+    verifyBoundRecoveryRef(
+      manifest, state, state.recoveryRef, state.snapshotSha,
+      ready.prospectiveTreeSha, "worktree",
+    );
+    verifyBoundRecoveryRef(
+      manifest, state, state.indexRecoveryRef, state.indexSnapshotSha,
+      ready.indexTreeSha, "index",
+    );
+    verifyBoundIgnoredRecovery(manifest, state, effect.activePath, safety);
+    if (["worktree_move", "worktree_remove"].includes(effect.kind)) {
+      if (!effect.activePath) storedEvidenceFailure();
+      if (effect.kind === "worktree_move" && effect.activePath !== manifest.worktreePath) storedEvidenceFailure();
+      if (ready.clean) verifyLiveIntegration(manifest, state);
+    } else if (effect.kind === "local_ref_delete") {
+      if (effect.activePath || state.localDelete?.status !== "intent_recorded") storedEvidenceFailure();
+      verifyLiveIntegration(manifest, state);
+      assertNoOtherTaskRefConsumer(manifest, state);
+      const observed = observeLocalRef(manifest, state, manifest.taskRef);
+      if (effect.ref !== manifest.taskRef || effect.expectedOid !== manifest.candidateSha
+          || observed.kind !== "present" || observed.sha !== effect.expectedOid) {
+        storedEvidenceFailure();
+      }
+    } else if (effect.kind === "remote_ref_delete") {
+      if (effect.activePath || state.remoteDelete?.status !== "intent_recorded") storedEvidenceFailure();
+      verifyLiveIntegration(manifest, state);
+      const observed = queryOwnedRemoteRef(manifest, state, manifest.remoteTaskRef);
+      if (effect.ref !== manifest.remoteTaskRef || effect.expectedOid !== manifest.candidateSha
+          || observed.kind !== "present" || observed.sha !== effect.expectedOid) {
+        storedEvidenceFailure();
+      }
+    } else if (effect.kind === "ignored_artifact_remove") {
+      if (effect.activePath || state.phase !== "complete"
+          || effect.target !== state.ignoredRecovery?.artifactPath) {
+        storedEvidenceFailure();
+      }
+      assertCompletedCleanupTerminal(manifest, state);
+    } else {
+      storedEvidenceFailure();
+    }
+  } catch (error) {
+    if (error instanceof NeedsYouError
+        || error instanceof ExternalUnavailableError
+        || error instanceof GitCommandError) {
+      throw error;
+    }
+    throw new NeedsYouError("pre-destructive ownership or recovery evidence is unverified");
+  }
+}
+
+function beginDestructivePass() {
+  return { id: Symbol("destructive-pass"), nextSequence: 1, latestSequence: null };
+}
+
+function expectedDestructiveGitArgs(manifest, effect) {
+  if (effect.kind === "worktree_move") {
+    return ["worktree", "move", "--", manifest.worktreePath, manifest.quarantinePath];
+  }
+  if (effect.kind === "worktree_remove") {
+    return ["worktree", "remove", "--force", "--", effect.activePath];
+  }
+  if (effect.kind === "local_ref_delete") {
+    return ["update-ref", "-d", manifest.taskRef, manifest.candidateSha];
+  }
+  if (effect.kind === "remote_ref_delete") {
+    return [
+      "push", `--force-with-lease=${manifest.remoteTaskRef}:${manifest.candidateSha}`,
+      "origin", `:${manifest.remoteTaskRef}`,
+    ];
+  }
+  return null;
+}
+
+function issueDestructiveGateToken(manifest, state, pass, effect) {
+  assert(pass?.id, "destructive pass is absent");
+  verifyPreDestructiveGate(manifest, state, effect);
+  const sequence = pass.nextSequence++;
+  pass.latestSequence = sequence;
+  return {
+    passId: pass.id,
+    sequence,
+    effect,
+    expectedCwd: manifest.sourcePath,
+    expectedArgs: expectedDestructiveGitArgs(manifest, effect),
+    consumed: false,
+  };
+}
+
+function consumeDestructiveGateToken(pass, token, effectKind) {
+  if (!token || token.passId !== pass?.id || token.consumed
+      || token.sequence !== pass.latestSequence || token.effect.kind !== effectKind) {
+    throw new NeedsYouError("destructive command lacks a fresh recovery-evidence gate");
+  }
+  token.consumed = true;
+  pass.latestSequence = null;
+}
+
+function runGuardedDestructiveGit(pass, token, cwd, args, options = {}) {
+  consumeDestructiveGateToken(pass, token, token?.effect?.kind);
+  if (cwd !== token.expectedCwd || !token.expectedArgs
+      || JSON.stringify(args) !== JSON.stringify(token.expectedArgs)) {
+    throw new NeedsYouError("destructive command differs from its recovery-evidence gate");
+  }
+  return git(cwd, args, options);
+}
+
+function runGuardedArtifactRemoval(pass, token, path) {
+  consumeDestructiveGateToken(pass, token, "ignored_artifact_remove");
+  assert.equal(path, token.effect.target, "guarded artifact target changed");
+  rmSync(path, { recursive: true });
+}
+
+function reconcileWorktreeRemoval(manifest, state, options, pass = beginDestructivePass()) {
   const originalExists = existsSync(manifest.worktreePath);
   const quarantineExists = existsSync(manifest.quarantinePath);
   if (originalExists && quarantineExists) {
@@ -1414,44 +1665,23 @@ function reconcileWorktreeRemoval(manifest, state, options) {
   }
   let activePath = originalExists ? manifest.worktreePath : quarantineExists ? manifest.quarantinePath : null;
   if (activePath) {
-    inspectOwnedWorktree(manifest, activePath, state);
-    assertOwnedRegistration(manifest, state, activePath);
-    const safety = inspectMaterialSafety(activePath, manifest.ignoredRecoveryPolicy);
-    assertIndexFlagsRecoverable(activePath);
-    const candidateTree = git(manifest.sourcePath, ["rev-parse", `${manifest.candidateSha}^{tree}`]);
-    let currentTree;
-    let indexTree;
-    let clean;
-    if (state.phase === "removal_ready" && state.removalReady) {
-      if (safety.metadataDigest !== state.removalReady.materialMetadataDigest) {
-        throw new NeedsYouError("worktree metadata changed after removal-ready persistence");
+    if (state.phase !== "removal_ready") {
+      if (!["intent_recorded", "snapshot_verified"].includes(state.phase) || state.removalReady) {
+        throw new NeedsYouError("cleanup phase conflicts with a present worktree");
       }
-      indexTree = currentIndexTree(manifest, state, activePath);
-      if (indexTree !== state.removalReady.indexTreeSha) {
-        throw new NeedsYouError("worktree index changed after removal-ready persistence");
-      }
-      if (state.indexSnapshotSha) createIndexSnapshot(manifest, state, indexTree, options);
-      currentTree = prospectiveTree(manifest, state, activePath);
-      if (currentTree !== state.removalReady.prospectiveTreeSha) {
-        throw new NeedsYouError("worktree tree changed after removal-ready persistence");
-      }
-      assertByteExactTree(activePath, currentTree);
-      clean = state.removalReady.clean;
-      if (clean !== (currentTree === candidateTree && indexTree === candidateTree)) {
-        throw new NeedsYouError("worktree clean classification changed after removal-ready persistence");
-      }
-      if (safety.ignoredPaths.length > 0) {
-        ensureIgnoredRecovery(manifest, state, activePath, safety.ignoredPaths, options);
-      }
-    } else {
-      indexTree = currentIndexTree(manifest, state, activePath);
-      currentTree = prospectiveTree(manifest, state, activePath);
+      inspectOwnedWorktree(manifest, activePath, state);
+      assertOwnedRegistration(manifest, state, activePath);
+      const safety = inspectMaterialSafety(activePath, manifest.ignoredRecoveryPolicy);
+      assertIndexFlagsRecoverable(activePath);
+      const candidateTree = git(manifest.sourcePath, ["rev-parse", `${manifest.candidateSha}^{tree}`]);
+      const indexTree = currentIndexTree(manifest, state, activePath);
+      const currentTree = prospectiveTree(manifest, state, activePath);
       const worktreeClean = currentTree === candidateTree;
       const indexDirty = indexTree !== candidateTree;
-      clean = worktreeClean && !indexDirty;
+      const clean = worktreeClean && !indexDirty;
       assertByteExactTree(activePath, currentTree);
       if (safety.gitIgnoredPaths.length > 0 && !clean) {
-          throw new NeedsYouError("ignored material with other dirty work requires human recovery");
+        throw new NeedsYouError("ignored material with other dirty work requires human recovery");
       }
       if (safety.ignoredPaths.length > 0) {
         if (clean) verifyLiveIntegration(manifest, state);
@@ -1464,43 +1694,32 @@ function reconcileWorktreeRemoval(manifest, state, options) {
       if (options.interruptAfterSnapshot) throw new ExpectedInterruption("simulated crash after durable snapshot");
       if (clean) verifyLiveIntegration(manifest, state);
       persistRemovalReady(manifest, state, clean, currentTree, indexTree, safety.metadataDigest);
+    } else if (!state.removalReady) {
+      storedEvidenceFailure();
     }
     if (options.interruptAfterRemovalReady) {
       throw new ExpectedInterruption("simulated crash after removal-ready persistence");
     }
     if (activePath === manifest.worktreePath) {
-      if (state.removalReady.clean) verifyLiveIntegration(manifest, state);
-      const immediateSafety = inspectMaterialSafety(activePath, manifest.ignoredRecoveryPolicy);
-      if (immediateSafety.metadataDigest !== state.removalReady.materialMetadataDigest) {
-        throw new NeedsYouError("worktree metadata changed immediately before removal");
-      }
-      const immediateIndexTree = currentIndexTree(manifest, state, activePath);
-      if (immediateIndexTree !== state.removalReady.indexTreeSha) {
-        throw new NeedsYouError("worktree index changed immediately before removal");
-      }
-      const immediateTree = prospectiveTree(manifest, state, activePath);
-      if (immediateTree !== state.removalReady.prospectiveTreeSha) {
-        throw new NeedsYouError("worktree tree changed immediately before removal");
-      }
-      assertByteExactTree(activePath, immediateTree);
-      if (immediateSafety.ignoredPaths.length > 0) {
-        if (options.beforeImmediateArtifactVerification) options.beforeImmediateArtifactVerification();
-        ensureIgnoredRecovery(manifest, state, activePath, immediateSafety.ignoredPaths, options);
-      }
-      inspectOwnedWorktree(manifest, activePath, state);
+      const moveEffect = { kind: "worktree_move", activePath };
+      const moveToken = issueDestructiveGateToken(manifest, state, pass, moveEffect);
       if (options.beforeWorktreeMove) options.beforeWorktreeMove();
-      inspectOwnedWorktree(manifest, activePath, state);
-      assertOwnedRegistration(manifest, state, activePath);
-      git(manifest.sourcePath, ["worktree", "move", "--", manifest.worktreePath, manifest.quarantinePath]);
+      runGuardedDestructiveGit(
+        pass, moveToken, manifest.sourcePath,
+        ["worktree", "move", "--", manifest.worktreePath, manifest.quarantinePath],
+      );
       activePath = manifest.quarantinePath;
       assertOwnedRegistration(manifest, state, activePath);
       if (options.interruptAfterQuarantineMove) {
         throw new ExpectedInterruption("simulated crash after quarantine move");
       }
     }
-    inspectOwnedWorktree(manifest, activePath, state);
-    assertOwnedRegistration(manifest, state, activePath);
-    git(manifest.sourcePath, ["worktree", "remove", "--force", "--", activePath]);
+    const removeEffect = { kind: "worktree_remove", activePath };
+    const removeToken = issueDestructiveGateToken(manifest, state, pass, removeEffect);
+    runGuardedDestructiveGit(
+      pass, removeToken, manifest.sourcePath,
+      ["worktree", "remove", "--force", "--", activePath],
+    );
     assert(!existsSync(manifest.worktreePath));
     assert(!existsSync(manifest.quarantinePath));
     assertOwnedRegistrationsAbsent(manifest, state);
@@ -1531,7 +1750,7 @@ function refDeletionRecord(manifest, ref, status) {
   };
 }
 
-function removeLocalRefExactly(manifest, state, options = {}) {
+function removeLocalRefExactly(manifest, state, options = {}, pass = beginDestructivePass()) {
   verifyLiveIntegration(manifest, state);
   assertNoOtherTaskRefConsumer(manifest, state);
   const observed = observeLocalRef(manifest, state, manifest.taskRef);
@@ -1568,7 +1787,17 @@ function removeLocalRefExactly(manifest, state, options = {}) {
   state.localDelete = refDeletionRecord(manifest, manifest.taskRef, "intent_recorded");
   state.phase = "local_delete_ready";
   writeState(manifest, state);
-  git(manifest.sourcePath, ["update-ref", "-d", manifest.taskRef, manifest.candidateSha]);
+  const deleteEffect = {
+    kind: "local_ref_delete",
+    activePath: null,
+    ref: manifest.taskRef,
+    expectedOid: manifest.candidateSha,
+  };
+  const deleteToken = issueDestructiveGateToken(manifest, state, pass, deleteEffect);
+  runGuardedDestructiveGit(
+    pass, deleteToken, manifest.sourcePath,
+    ["update-ref", "-d", manifest.taskRef, manifest.candidateSha],
+  );
   if (options.interruptAfterLocalDelete) {
     throw new ExpectedInterruption("simulated crash after local deletion but before result persistence");
   }
@@ -1579,7 +1808,7 @@ function removeLocalRefExactly(manifest, state, options = {}) {
   writeState(manifest, state);
 }
 
-function removeRemoteRefExactly(manifest, state, options = {}) {
+function removeRemoteRefExactly(manifest, state, options = {}, pass = beginDestructivePass()) {
   verifyLiveIntegration(manifest, state);
   const observed = queryOwnedRemoteRef(manifest, state, manifest.remoteTaskRef);
   if (state.remoteDelete?.status === "intent_recorded") {
@@ -1615,11 +1844,22 @@ function removeRemoteRefExactly(manifest, state, options = {}) {
   state.remoteDelete = refDeletionRecord(manifest, manifest.remoteTaskRef, "intent_recorded");
   state.phase = "remote_delete_ready";
   writeState(manifest, state);
+  const deleteEffect = {
+    kind: "remote_ref_delete",
+    activePath: null,
+    ref: manifest.remoteTaskRef,
+    expectedOid: manifest.candidateSha,
+  };
+  const deleteToken = issueDestructiveGateToken(manifest, state, pass, deleteEffect);
   if (options.beforeLeasePush) options.beforeLeasePush();
-  const deletion = git(manifest.sourcePath, [
-    "push", `--force-with-lease=${manifest.remoteTaskRef}:${manifest.candidateSha}`,
-    "origin", `:${manifest.remoteTaskRef}`,
-  ], { allowFailure: true });
+  const deletion = runGuardedDestructiveGit(
+    pass, deleteToken, manifest.sourcePath,
+    [
+      "push", `--force-with-lease=${manifest.remoteTaskRef}:${manifest.candidateSha}`,
+      "origin", `:${manifest.remoteTaskRef}`,
+    ],
+    { allowFailure: true },
+  );
   assert.equal(deletion.status, 0, "remote expected-head deletion failed");
   if (options.interruptAfterRemoteDelete) {
     throw new ExpectedInterruption("simulated crash after remote deletion but before result persistence");
@@ -1643,14 +1883,15 @@ function assertCompletedCleanupTerminal(manifest, state) {
 
 function reconcileCleanup(manifest, options = {}) {
   const state = readState(manifest);
+  const pass = beginDestructivePass();
   assertRepositoryOwnership(manifest, state);
   if (state.phase === "complete") {
     assertCompletedCleanupTerminal(manifest, state);
     return state;
   }
-  reconcileWorktreeRemoval(manifest, state, options);
-  removeLocalRefExactly(manifest, state, options);
-  removeRemoteRefExactly(manifest, state, options);
+  reconcileWorktreeRemoval(manifest, state, options, pass);
+  removeLocalRefExactly(manifest, state, options, pass);
+  removeRemoteRefExactly(manifest, state, options, pass);
   assert.equal(state.localDelete?.status, "confirmed_absent", "local Task ref absence is unconfirmed");
   assert.equal(state.remoteDelete?.status, "confirmed_absent", "remote Task ref absence is unconfirmed");
   state.phase = "complete";
@@ -1675,6 +1916,7 @@ function makeIntent(manifest) {
     snapshotSha: null,
     indexSnapshotSha: null,
     ignoredRecovery: null,
+    localOriginAuthority: manifest.localOriginAuthority,
     localDelete: null,
     remoteDelete: null,
     removalReady: null,
@@ -1693,6 +1935,7 @@ function validatedIgnoredRecoveryPolicy(overrides) {
   assert(policy.maxEntries <= DEFAULT_IGNORED_RECOVERY_POLICY.maxEntries, "unproven ignored recovery expansion is blocked");
   assert(policy.maxScanEntries <= DEFAULT_IGNORED_RECOVERY_POLICY.maxScanEntries, "unproven worktree scan expansion is blocked");
   assert(policy.streamChunkBytes <= DEFAULT_IGNORED_RECOVERY_POLICY.streamChunkBytes, "unproven recovery buffer expansion is blocked");
+  assert(policy.retentionMs <= DEFAULT_IGNORED_RECOVERY_POLICY.retentionMs, "unproven recovery retention expansion is blocked");
   assert(policy.minimumFreePercent >= DEFAULT_IGNORED_RECOVERY_POLICY.minimumFreePercent, "ignored recovery free-space floor cannot be weakened");
   assert(policy.minimumFreePercent <= 100, "ignored recovery free-space percentage is invalid");
   return policy;
@@ -1715,6 +1958,11 @@ function makeManifest(input) {
     worktreeIdentity: identity(input.worktreePath),
     remoteUrl: remote.url,
     remoteIdentity: remote.identity,
+    remoteTransport: remote.transport,
+    localOriginAuthority: {
+      humanApproved: input.localOriginAuthority?.humanApproved === true,
+      contained: input.localOriginAuthority?.contained === true,
+    },
     taskRef: input.taskRef,
     remoteTaskRef: input.taskRef,
     baseRef: MAIN_REF,
@@ -1875,6 +2123,7 @@ async function run() {
     const cleanLockStateDir = join(root, "state", "clean-lock-run");
     const ignoredRecoveryRoot = join(root, "ignored-recovery");
     const hookSentinel = join(root, "hook-must-not-run");
+    const originHookSentinel = join(root, "origin-hook-must-not-run");
     disabledHooksPath = join(root, "disabled-hooks");
     gitConfigPath = join(root, "empty.gitconfig");
     mkdirSync(worktreeRoot, { recursive: true });
@@ -1949,8 +2198,180 @@ async function run() {
       taskId: "dir-m0.6", runId: "run-1", nonce: "contract-nonce", sourcePath: source,
       worktreeRoot, worktreePath: taskPath, taskRef: TASK_REF, baseSha, candidateSha,
       recoveryRef: RECOVERY_REF, ignoredRecoveryRoot, stateDir: taskStateDir,
+      localOriginAuthority: DISPOSABLE_LOCAL_ORIGIN_AUTHORITY,
     });
     let state = JSON.parse(readFileSync(manifest.intentPath, "utf8"));
+    const originHooks = join(root, "origin-hooks");
+    mkdirSync(originHooks);
+    const preReceiveHook = join(originHooks, "pre-receive");
+    writeFileSync(preReceiveHook, `#!/bin/sh\ntouch '${originHookSentinel.replaceAll("'", "'\\''")}'\n`);
+    chmodSync(preReceiveHook, 0o755);
+    git(remote, ["config", "core.hooksPath", originHooks]);
+    for (const localOriginAuthority of [
+      { humanApproved: false, contained: false },
+      { humanApproved: true, contained: false },
+      { humanApproved: false, contained: true },
+    ]) {
+      const refusedLocalOriginManifest = { ...manifest, localOriginAuthority };
+      const refusedLocalOriginState = { ...structuredClone(state), localOriginAuthority };
+      assert.throws(
+        () => removeRemoteRefExactly(refusedLocalOriginManifest, refusedLocalOriginState),
+        (error) => error instanceof NeedsYouError
+          && error.message === "local-path origin effects require human approval and containment",
+      );
+    }
+    assert(!existsSync(originHookSentinel));
+    assert(existsSync(manifest.worktreePath));
+    assert.equal(git(source, ["rev-parse", TASK_REF]), candidateSha);
+    assert.equal(git(remote, ["rev-parse", TASK_REF]), candidateSha);
+    git(remote, ["config", "--unset", "core.hooksPath"]);
+    rmSync(originHooks, { recursive: true });
+    assertions.push("local_origin_effects_require_approval_and_containment");
+
+    git(source, ["update-ref", TOKEN_GUARD_REF, candidateSha, ZERO_SHA]);
+    assert.throws(
+      () => runGuardedDestructiveGit(
+        beginDestructivePass(), null, source,
+        ["update-ref", "-d", TOKEN_GUARD_REF, candidateSha],
+      ),
+      (error) => error instanceof NeedsYouError
+        && error.message === "destructive command lacks a fresh recovery-evidence gate",
+    );
+    assert.equal(git(source, ["rev-parse", TOKEN_GUARD_REF]), candidateSha);
+    git(source, ["update-ref", "-d", TOKEN_GUARD_REF, candidateSha]);
+    assertions.push("destructive_commands_require_fresh_gate_token");
+
+    const exerciseStoredEvidenceMutationTable = (assertionName, targetManifest, cases, assertNoDeletion) => {
+      for (const evidenceCase of cases) {
+        const before = readState(targetManifest);
+        const mutation = evidenceCase.mutate(before);
+        try {
+          let error;
+          try {
+            reconcileCleanup(targetManifest);
+            assert.fail(`stored evidence case ${evidenceCase.name} reached a destructive command`);
+          } catch (caught) {
+            error = caught;
+          }
+          assert(error instanceof NeedsYouError, `stored evidence case ${evidenceCase.name} did not park`);
+          assertNoDeletion(readState(targetManifest));
+          mutation.assertPreserved?.();
+        } finally {
+          mutation.restore();
+          writeState(targetManifest, before);
+        }
+      }
+      assertions.push(assertionName);
+    };
+
+    const gitRecoveryEvidenceCases = (targetManifest, stage) => [
+      {
+        name: "worktree recovery ref missing",
+        mutate: (current) => {
+          git(source, ["update-ref", "-d", current.recoveryRef, current.snapshotSha]);
+          return {
+            assertPreserved: () => assert.equal(observeLocalRef(targetManifest, current, current.recoveryRef).kind, "absent"),
+            restore: () => git(source, ["update-ref", current.recoveryRef, current.snapshotSha, ZERO_SHA]),
+          };
+        },
+      },
+      {
+        name: "worktree recovery ref expected OID changed",
+        mutate: (current) => {
+          git(source, ["update-ref", current.recoveryRef, baseSha, current.snapshotSha]);
+          return {
+            assertPreserved: () => assert.equal(git(source, ["rev-parse", current.recoveryRef]), baseSha),
+            restore: () => git(source, ["update-ref", current.recoveryRef, current.snapshotSha, baseSha]),
+          };
+        },
+      },
+      {
+        name: "index recovery ref missing",
+        mutate: (current) => {
+          git(source, ["update-ref", "-d", current.indexRecoveryRef, current.indexSnapshotSha]);
+          return {
+            assertPreserved: () => assert.equal(observeLocalRef(targetManifest, current, current.indexRecoveryRef).kind, "absent"),
+            restore: () => git(source, ["update-ref", current.indexRecoveryRef, current.indexSnapshotSha, ZERO_SHA]),
+          };
+        },
+      },
+      {
+        name: "index recovery ref expected OID changed",
+        mutate: (current) => {
+          git(source, ["update-ref", current.indexRecoveryRef, baseSha, current.indexSnapshotSha]);
+          return {
+            assertPreserved: () => assert.equal(git(source, ["rev-parse", current.indexRecoveryRef]), baseSha),
+            restore: () => git(source, ["update-ref", current.indexRecoveryRef, current.indexSnapshotSha, baseSha]),
+          };
+        },
+      },
+      ...artifactEnvelopeEvidenceCases(targetManifest, stage),
+    ];
+
+    function artifactEnvelopeEvidenceCases(targetManifest, stage, payloadPath = null) {
+      const artifactPath = targetManifest.ignoredArtifactPath;
+      const manifestPath = join(artifactPath, "manifest.json");
+      const ownerPath = join(artifactPath, "owner.json");
+      const cases = [
+        {
+          name: "private artifact manifest changed",
+          mutate: () => {
+            const original = readFileSync(manifestPath);
+            writeFileSync(manifestPath, Buffer.concat([original, Buffer.from(" ")]));
+            return {
+              assertPreserved: () => assert(existsSync(manifestPath)),
+              restore: () => writeFileSync(manifestPath, original),
+            };
+          },
+        },
+        {
+          name: "private artifact owner changed",
+          mutate: () => {
+            const original = readFileSync(ownerPath);
+            writeFileSync(ownerPath, `${JSON.stringify({ foreign: true })}\n`);
+            return {
+              assertPreserved: () => assert(existsSync(ownerPath)),
+              restore: () => writeFileSync(ownerPath, original),
+            };
+          },
+        },
+        {
+          name: "private artifact identity recreated",
+          mutate: () => {
+            const parked = `${artifactPath}.${stage}.parked`;
+            renameSync(artifactPath, parked);
+            mkdirSync(artifactPath, { mode: 0o700 });
+            writeFileSync(join(artifactPath, "unknown-sentinel"), "preserve unknown artifact\n");
+            return {
+              assertPreserved: () => assert.equal(
+                readFileSync(join(artifactPath, "unknown-sentinel"), "utf8"),
+                "preserve unknown artifact\n",
+              ),
+              restore: () => {
+                rmSync(artifactPath, { recursive: true });
+                renameSync(parked, artifactPath);
+              },
+            };
+          },
+        },
+      ];
+      if (payloadPath) {
+        cases.unshift({
+          name: "private artifact payload changed",
+          mutate: () => {
+            const original = readFileSync(payloadPath);
+            const changed = Buffer.from(original);
+            changed[0] ^= 1;
+            writeFileSync(payloadPath, changed);
+            return {
+              assertPreserved: () => assert.deepEqual(readFileSync(payloadPath), changed),
+              restore: () => writeFileSync(payloadPath, original),
+            };
+          },
+        });
+      }
+      return cases;
+    }
     inspectOwnedWorktree(manifest, taskPath, state);
     assertions.push("task_branch_and_worktree_owned");
     assertOwnedRegistration(manifest, state, taskPath);
@@ -2066,16 +2487,6 @@ async function run() {
     assert.equal(git(remote, ["rev-parse", TASK_REF]), racedSha);
     assertions.push("remote_compare_delete_race_refused");
     git(source, ["push", "--force", "origin", `${candidateSha}:${TASK_REF}`]);
-    const stateBeforeLeaseFault = structuredClone(state);
-    assert.throws(() => removeRemoteRefExactly(manifest, state, {
-      beforeLeasePush: () => git(source, ["push", "--force", "origin", `${racedSha}:${TASK_REF}`]),
-    }), /remote expected-head deletion failed/);
-    assert.equal(git(remote, ["rev-parse", TASK_REF]), racedSha);
-    assert.equal(readState(manifest).remoteDelete.status, "intent_recorded");
-    assertions.push("force_with_lease_race_refused");
-    git(source, ["push", "--force", "origin", `${candidateSha}:${TASK_REF}`]);
-    state = stateBeforeLeaseFault;
-    writeState(manifest, state);
 
     const exerciseHiddenIndexEdit = (ref, slug, flag, editedBytes, assertionName) => {
       const hiddenPath = join(worktreeRoot, `hidden-${slug}`);
@@ -2088,6 +2499,7 @@ async function run() {
         worktreeRoot, worktreePath: hiddenPath, taskRef: ref, baseSha, candidateSha,
         recoveryRef: `refs/director/recovery/dir-m0.6/hidden-${slug}/hidden-${slug}-nonce`,
         ignoredRecoveryRoot, stateDir: hiddenStateDir,
+        localOriginAuthority: DISPOSABLE_LOCAL_ORIGIN_AUTHORITY,
       });
       git(hiddenPath, ["update-index", flag, "--", "tracked.txt"]);
       writeFileSync(join(hiddenPath, "tracked.txt"), editedBytes);
@@ -2122,6 +2534,7 @@ async function run() {
       worktreeRoot, worktreePath: stagedOnlyPath, taskRef: STAGED_ONLY_REF, baseSha, candidateSha,
       recoveryRef: "refs/director/recovery/dir-m0.6/staged-only/staged-only-nonce",
       ignoredRecoveryRoot, stateDir: stagedOnlyStateDir,
+      localOriginAuthority: DISPOSABLE_LOCAL_ORIGIN_AUTHORITY,
     });
     writeFileSync(join(stagedOnlyPath, "tracked.txt"), "staged index exact bytes\n");
     git(stagedOnlyPath, ["add", "--", "tracked.txt"]);
@@ -2158,6 +2571,72 @@ async function run() {
     git(source, ["worktree", "remove", "--force", "--", stagedRestorePath]);
     assertions.push("staged_index_only_edit_recovered");
 
+    const stagedIndexCases = [
+      {
+        slug: "addition",
+        ref: STAGED_ADDITION_REF,
+        assertionName: "staged_index_only_addition_recovered",
+        prepare: (path) => {
+          writeFileSync(join(path, "index-only-added.txt"), "index-only addition bytes\n");
+          git(path, ["add", "--", "index-only-added.txt"]);
+          rmSync(join(path, "index-only-added.txt"));
+        },
+        assertSnapshot: (snapshotSha) => assert.equal(
+          git(source, ["show", `${snapshotSha}:index-only-added.txt`]),
+          "index-only addition bytes",
+        ),
+        assertRestored: (path) => assert.equal(
+          readFileSync(join(path, "index-only-added.txt"), "utf8"),
+          "index-only addition bytes\n",
+        ),
+      },
+      {
+        slug: "deletion",
+        ref: STAGED_DELETION_REF,
+        assertionName: "staged_index_only_deletion_recovered",
+        prepare: (path) => git(path, ["rm", "--cached", "--", "tracked.txt"]),
+        assertSnapshot: (snapshotSha) => assert(!snapshotContains(manifest, snapshotSha, "tracked.txt")),
+        assertRestored: (path) => assert(!existsSync(join(path, "tracked.txt"))),
+      },
+    ];
+    for (const stagedCase of stagedIndexCases) {
+      const stagedPath = join(worktreeRoot, `staged-${stagedCase.slug}`);
+      const stagedStateDir = join(root, "state", `staged-${stagedCase.slug}`);
+      mkdirSync(stagedStateDir, { recursive: true });
+      git(source, ["worktree", "add", "-b", stagedCase.ref.slice("refs/heads/".length), "--", stagedPath, candidateSha]);
+      git(stagedPath, ["push", "-u", "origin", stagedCase.ref.slice("refs/heads/".length)]);
+      const stagedManifest = makeManifest({
+        taskId: "dir-m0.6", runId: `staged-${stagedCase.slug}`, nonce: `staged-${stagedCase.slug}-nonce`,
+        sourcePath: source, worktreeRoot, worktreePath: stagedPath, taskRef: stagedCase.ref,
+        baseSha, candidateSha,
+        recoveryRef: `refs/director/recovery/dir-m0.6/staged-${stagedCase.slug}/staged-${stagedCase.slug}-nonce`,
+        ignoredRecoveryRoot, stateDir: stagedStateDir,
+        localOriginAuthority: DISPOSABLE_LOCAL_ORIGIN_AUTHORITY,
+      });
+      stagedCase.prepare(stagedPath);
+      assert.notEqual(git(stagedPath, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
+      const currentState = readState(stagedManifest);
+      assert.notEqual(currentIndexTree(stagedManifest, currentState, stagedPath), candidateTree);
+      assert.throws(
+        () => reconcileCleanup(stagedManifest, { interruptAfterIndexRecoveryRef: true }),
+        ExpectedInterruption,
+      );
+      const effectState = readState(stagedManifest);
+      const snapshotSha = observeLocalRef(stagedManifest, effectState, stagedManifest.indexRecoveryRef).sha;
+      stagedCase.assertSnapshot(snapshotSha);
+      assert(existsSync(stagedManifest.worktreePath));
+      assert.equal(observeLocalRef(stagedManifest, effectState, stagedCase.ref).sha, candidateSha);
+      assert.equal(queryOwnedRemoteRef(stagedManifest, effectState, stagedCase.ref).sha, candidateSha);
+      const stagedCompleted = reconcileCleanup(stagedManifest);
+      assert.equal(stagedCompleted.phase, "complete");
+      assert.equal(stagedCompleted.indexSnapshotSha, snapshotSha);
+      const restoredPath = join(worktreeRoot, `staged-${stagedCase.slug}-restored`);
+      git(source, ["worktree", "add", "--detach", "--", restoredPath, snapshotSha]);
+      stagedCase.assertRestored(restoredPath);
+      git(source, ["worktree", "remove", "--force", "--", restoredPath]);
+      assertions.push(stagedCase.assertionName);
+    }
+
     const sparsePath = join(worktreeRoot, "sparse-missing");
     const sparseStateDir = join(root, "state", "sparse-missing");
     mkdirSync(sparseStateDir, { recursive: true });
@@ -2168,6 +2647,7 @@ async function run() {
       worktreeRoot, worktreePath: sparsePath, taskRef: SPARSE_REF, baseSha, candidateSha,
       recoveryRef: "refs/director/recovery/dir-m0.6/sparse-missing/sparse-missing-nonce",
       ignoredRecoveryRoot, stateDir: sparseStateDir,
+      localOriginAuthority: DISPOSABLE_LOCAL_ORIGIN_AUTHORITY,
     });
     git(sparsePath, ["update-index", "--skip-worktree", "--", "tracked.txt"]);
     rmSync(join(sparsePath, "tracked.txt"));
@@ -2193,6 +2673,7 @@ async function run() {
       worktreeRoot, worktreePath: normalizationPath, taskRef: NORMALIZATION_REF, baseSha, candidateSha,
       recoveryRef: "refs/director/recovery/dir-m0.6/normalization/normalization-nonce",
       ignoredRecoveryRoot, stateDir: normalizationStateDir,
+      localOriginAuthority: DISPOSABLE_LOCAL_ORIGIN_AUTHORITY,
     });
     writeFileSync(join(normalizationPath, ".gitattributes"), "*.payload filter=evil\ntracked.txt text eol=lf\n");
     writeFileSync(join(normalizationPath, "tracked.txt"), "base\r\n");
@@ -2228,6 +2709,7 @@ async function run() {
       taskId: "dir-m0.6", runId: "clean-run", nonce: "clean-nonce", sourcePath: source,
       worktreeRoot, worktreePath: cleanPath, taskRef: CLEAN_REF, baseSha, candidateSha,
       recoveryRef: CLEAN_RECOVERY_REF, ignoredRecoveryRoot, stateDir: cleanStateDir,
+      localOriginAuthority: DISPOSABLE_LOCAL_ORIGIN_AUTHORITY,
     });
     const cleanIgnoredFile = join(cleanPath, "private-token.txt");
     const cleanIgnoredDirectory = join(cleanPath, "ignored-dir");
@@ -2297,6 +2779,15 @@ async function run() {
       /ignored recovery free-space floor cannot be weakened/,
     );
     assertions.push("ignored_recovery_minimum_free_percent_boundary_enforced");
+    assert.equal(
+      validatedIgnoredRecoveryPolicy({ retentionMs: DEFAULT_IGNORED_RECOVERY_POLICY.retentionMs }).retentionMs,
+      DEFAULT_IGNORED_RECOVERY_POLICY.retentionMs,
+    );
+    assert.throws(
+      () => validatedIgnoredRecoveryPolicy({ retentionMs: DEFAULT_IGNORED_RECOVERY_POLICY.retentionMs + 1 }),
+      /unproven recovery retention expansion is blocked/,
+    );
+    assertions.push("ignored_recovery_retention_boundary_enforced");
     assertions.push("ignored_recovery_disk_pressure_refused");
     assert.equal(git(cleanPath, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
     const oversizedIgnoredFile = join(cleanIgnoredDirectory, "oversized.bin");
@@ -2404,44 +2895,60 @@ async function run() {
     cleanState = readState(cleanManifest);
     assert.equal(cleanState.phase, "removal_ready");
     const ignoredPayloadPath = join(cleanManifest.ignoredArtifactPath, "payload", "private-token.txt");
-    const originalPayloadBytes = readFileSync(ignoredPayloadPath);
-    const corruptedPayloadBytes = Buffer.from(originalPayloadBytes);
-    corruptedPayloadBytes[0] ^= 1;
-    writeFileSync(ignoredPayloadPath, corruptedPayloadBytes);
+    const tokenBindingPass = beginDestructivePass();
+    const tokenBindingEffect = { kind: "worktree_move", activePath: cleanManifest.worktreePath };
+    const tokenBinding = issueDestructiveGateToken(cleanManifest, cleanState, tokenBindingPass, tokenBindingEffect);
     assert.throws(
-      () => reconcileCleanup(cleanManifest),
+      () => runGuardedDestructiveGit(
+        tokenBindingPass, tokenBinding, cleanManifest.sourcePath,
+        ["worktree", "remove", "--force", "--", cleanManifest.worktreePath],
+      ),
       (error) => error instanceof NeedsYouError
-        && error.message === "ignored recovery artifact ownership or content is unverified",
+        && error.message === "destructive command differs from its recovery-evidence gate",
+    );
+    assert.throws(
+      () => runGuardedDestructiveGit(
+        tokenBindingPass, tokenBinding, cleanManifest.sourcePath,
+        ["worktree", "move", "--", cleanManifest.worktreePath, cleanManifest.quarantinePath],
+      ),
+      (error) => error instanceof NeedsYouError
+        && error.message === "destructive command lacks a fresh recovery-evidence gate",
     );
     assert(existsSync(cleanManifest.worktreePath));
     assert(!existsSync(cleanManifest.quarantinePath));
-    assert.equal(readFileSync(cleanIgnoredFile, "utf8"), "ignored secret-like fixture bytes\n");
-    assertOwnedRegistration(cleanManifest, cleanState, cleanManifest.worktreePath);
-    assert.equal(observeLocalRef(cleanManifest, cleanState, CLEAN_REF).sha, candidateSha);
-    assert.equal(queryOwnedRemoteRef(cleanManifest, cleanState, CLEAN_REF).sha, candidateSha);
-    writeFileSync(ignoredPayloadPath, originalPayloadBytes);
-    verifyIgnoredArtifact(cleanManifest, cleanState);
-    let immediateArtifactBoundaryReached = false;
-    assert.throws(
-      () => reconcileCleanup(cleanManifest, {
-        beforeImmediateArtifactVerification: () => {
-          immediateArtifactBoundaryReached = true;
-          writeFileSync(ignoredPayloadPath, corruptedPayloadBytes);
-        },
-      }),
-      (error) => error instanceof NeedsYouError
-        && error.message === "ignored recovery artifact ownership or content is unverified",
+    assertions.push("destructive_gate_token_binds_exact_command_once");
+    exerciseStoredEvidenceMutationTable(
+      "stored_evidence_gate_artifact_before_move_table",
+      cleanManifest,
+      artifactEnvelopeEvidenceCases(cleanManifest, "clean-before-move", ignoredPayloadPath),
+      (current) => {
+        assert.equal(current.phase, "removal_ready");
+        assert(existsSync(cleanManifest.worktreePath));
+        assert(!existsSync(cleanManifest.quarantinePath));
+        assert.equal(readFileSync(cleanIgnoredFile, "utf8"), "ignored secret-like fixture bytes\n");
+        assertOwnedRegistration(cleanManifest, current, cleanManifest.worktreePath);
+        assert.equal(observeLocalRef(cleanManifest, current, CLEAN_REF).sha, candidateSha);
+        assert.equal(queryOwnedRemoteRef(cleanManifest, current, CLEAN_REF).sha, candidateSha);
+      },
     );
-    assert(immediateArtifactBoundaryReached);
-    assert(existsSync(cleanManifest.worktreePath));
-    assert(!existsSync(cleanManifest.quarantinePath));
-    assert.equal(readFileSync(cleanIgnoredFile, "utf8"), "ignored secret-like fixture bytes\n");
-    assertOwnedRegistration(cleanManifest, cleanState, cleanManifest.worktreePath);
-    assert.equal(observeLocalRef(cleanManifest, cleanState, CLEAN_REF).sha, candidateSha);
-    assert.equal(queryOwnedRemoteRef(cleanManifest, cleanState, CLEAN_REF).sha, candidateSha);
-    writeFileSync(ignoredPayloadPath, originalPayloadBytes);
+    cleanState = readState(cleanManifest);
     verifyIgnoredArtifact(cleanManifest, cleanState);
-    assertions.push("removal_ready_artifact_payload_corruption_needs_you");
+
+    assert.throws(() => reconcileCleanup(cleanManifest, { interruptAfterQuarantineMove: true }), ExpectedInterruption);
+    cleanState = readState(cleanManifest);
+    exerciseStoredEvidenceMutationTable(
+      "stored_evidence_gate_artifact_before_remove_table",
+      cleanManifest,
+      artifactEnvelopeEvidenceCases(cleanManifest, "clean-before-remove", ignoredPayloadPath),
+      (current) => {
+        assert.equal(current.phase, "removal_ready");
+        assert(!existsSync(cleanManifest.worktreePath));
+        assert(existsSync(cleanManifest.quarantinePath));
+        assertOwnedRegistration(cleanManifest, current, cleanManifest.quarantinePath);
+        assert.equal(observeLocalRef(cleanManifest, current, CLEAN_REF).sha, candidateSha);
+        assert.equal(queryOwnedRemoteRef(cleanManifest, current, CLEAN_REF).sha, candidateSha);
+      },
+    );
 
     assert.throws(() => reconcileCleanup(cleanManifest, { interruptAfterWorktreeRemoval: true }), ExpectedInterruption);
     cleanState = JSON.parse(readFileSync(cleanManifest.intentPath, "utf8"));
@@ -2452,6 +2959,19 @@ async function run() {
     assert(!existsSync(cleanManifest.worktreePath));
     assert(!existsSync(cleanManifest.quarantinePath));
     assertions.push("clean_removal_ready_crash_reconciled");
+
+    exerciseStoredEvidenceMutationTable(
+      "stored_evidence_gate_artifact_before_local_delete_table",
+      cleanManifest,
+      artifactEnvelopeEvidenceCases(cleanManifest, "clean-before-local-delete", ignoredPayloadPath),
+      (current) => {
+        assert(!existsSync(cleanManifest.worktreePath));
+        assert(!existsSync(cleanManifest.quarantinePath));
+        assertOwnedRegistrationsAbsent(cleanManifest, current);
+        assert.equal(observeLocalRef(cleanManifest, current, CLEAN_REF).sha, candidateSha);
+        assert.equal(queryOwnedRemoteRef(cleanManifest, current, CLEAN_REF).sha, candidateSha);
+      },
+    );
 
     const ignoredRestorePath = join(root, "ignored-restored");
     restoreIgnoredRecovery(cleanManifest, cleanState, ignoredRestorePath);
@@ -2561,6 +3081,30 @@ async function run() {
     assert.equal(queryOwnedRemoteRef(cleanManifest, cleanState, CLEAN_REF).sha, candidateSha);
     assertions.push("local_delete_effect_retry_reconciled");
 
+    exerciseStoredEvidenceMutationTable(
+      "stored_evidence_gate_artifact_before_remote_delete_table",
+      cleanManifest,
+      artifactEnvelopeEvidenceCases(cleanManifest, "clean-before-remote-delete", ignoredPayloadPath),
+      (current) => {
+        assert(!existsSync(cleanManifest.worktreePath));
+        assert(!existsSync(cleanManifest.quarantinePath));
+        assertOwnedRegistrationsAbsent(cleanManifest, current);
+        assert.equal(observeLocalRef(cleanManifest, current, CLEAN_REF).kind, "absent");
+        assert.equal(queryOwnedRemoteRef(cleanManifest, current, CLEAN_REF).sha, candidateSha);
+      },
+    );
+
+    const stateBeforeLeaseFault = structuredClone(cleanState);
+    assert.throws(() => removeRemoteRefExactly(cleanManifest, cleanState, {
+      beforeLeasePush: () => git(source, ["push", "--force", "origin", `${racedSha}:${CLEAN_REF}`]),
+    }), /remote expected-head deletion failed/);
+    assert.equal(git(remote, ["rev-parse", CLEAN_REF]), racedSha);
+    assert.equal(readState(cleanManifest).remoteDelete.status, "intent_recorded");
+    assertions.push("force_with_lease_race_refused");
+    git(source, ["push", "--force", "origin", `${candidateSha}:${CLEAN_REF}`]);
+    cleanState = stateBeforeLeaseFault;
+    writeState(cleanManifest, cleanState);
+
     assert.throws(() => reconcileCleanup(cleanManifest, { interruptAfterRemoteDelete: true }), ExpectedInterruption);
     cleanState = JSON.parse(readFileSync(cleanManifest.intentPath, "utf8"));
     assert.equal(cleanState.phase, "remote_delete_ready");
@@ -2625,6 +3169,7 @@ async function run() {
       taskId: "dir-m0.6", runId: "clean-lock-run", nonce: "clean-lock-nonce", sourcePath: source,
       worktreeRoot, worktreePath: cleanLockPath, taskRef: CLEAN_LOCK_REF, baseSha, candidateSha,
       recoveryRef: CLEAN_LOCK_RECOVERY_REF, ignoredRecoveryRoot, stateDir: cleanLockStateDir,
+      localOriginAuthority: DISPOSABLE_LOCAL_ORIGIN_AUTHORITY,
     });
     assert.throws(() => reconcileCleanup(cleanLockManifest, { interruptAfterRemovalReady: true }), ExpectedInterruption);
     let cleanLockState = JSON.parse(readFileSync(cleanLockManifest.intentPath, "utf8"));
@@ -2649,7 +3194,7 @@ async function run() {
       sameMetadataError = error;
     }
     assert(sameMetadataError instanceof NeedsYouError);
-    assert.equal(sameMetadataError.message, "worktree tree changed after removal-ready persistence");
+    assert.equal(sameMetadataError.message, "pre-destructive recovery evidence is unverified");
     assert.equal(readFileSync(join(cleanLockPath, "tracked.txt"), "utf8"), "edit\n");
     cleanLockState = readState(cleanLockManifest);
     assert.equal(cleanLockState.phase, "removal_ready");
@@ -2904,6 +3449,26 @@ async function run() {
       heldFd = openSync(join(taskPath, "tracked.txt"), "r");
     }
 
+    assert.throws(() => reconcileCleanup(manifest, { interruptAfterRemovalReady: true }), ExpectedInterruption);
+    state = readState(manifest);
+    assert.equal(state.phase, "removal_ready");
+    assert(state.snapshotSha);
+    assert(state.indexSnapshotSha);
+    assert.equal(state.ignoredRecovery.status, "artifact_verified");
+    exerciseStoredEvidenceMutationTable(
+      "stored_evidence_gate_before_move_table",
+      manifest,
+      gitRecoveryEvidenceCases(manifest, "before-move"),
+      (current) => {
+        assert.equal(current.phase, "removal_ready");
+        assert(existsSync(manifest.worktreePath));
+        assert(!existsSync(manifest.quarantinePath));
+        assertOwnedRegistration(manifest, current, manifest.worktreePath);
+        assert.equal(observeLocalRef(manifest, current, TASK_REF).sha, candidateSha);
+        assert.equal(queryOwnedRemoteRef(manifest, current, TASK_REF).sha, candidateSha);
+      },
+    );
+
     assert.throws(() => reconcileCleanup(manifest, { interruptAfterQuarantineMove: true }), ExpectedInterruption);
     state = JSON.parse(readFileSync(manifest.intentPath, "utf8"));
     assert.equal(state.phase, "removal_ready");
@@ -2911,11 +3476,25 @@ async function run() {
     assert(existsSync(manifest.quarantinePath));
     assertOwnedRegistration(manifest, state, manifest.quarantinePath);
     writeFileSync(join(manifest.quarantinePath, "late-quarantine-change.txt"), "must survive refusal\n");
-    assert.throws(() => reconcileCleanup(manifest), /worktree metadata changed after removal-ready persistence/);
+    assert.throws(() => reconcileCleanup(manifest), /pre-destructive recovery evidence is unverified/);
     assert.equal(readFileSync(join(manifest.quarantinePath, "late-quarantine-change.txt"), "utf8"), "must survive refusal\n");
     assert.equal(observeLocalRef(manifest, state, RECOVERY_REF).sha, effectOnlySnapshotSha);
     rmSync(join(manifest.quarantinePath, "late-quarantine-change.txt"));
     assertions.push("quarantine_move_effect_crash_reconciled");
+
+    exerciseStoredEvidenceMutationTable(
+      "stored_evidence_gate_before_remove_table",
+      manifest,
+      gitRecoveryEvidenceCases(manifest, "before-remove"),
+      (current) => {
+        assert.equal(current.phase, "removal_ready");
+        assert(!existsSync(manifest.worktreePath));
+        assert(existsSync(manifest.quarantinePath));
+        assertOwnedRegistration(manifest, current, manifest.quarantinePath);
+        assert.equal(observeLocalRef(manifest, current, TASK_REF).sha, candidateSha);
+        assert.equal(queryOwnedRemoteRef(manifest, current, TASK_REF).sha, candidateSha);
+      },
+    );
 
     assert.throws(() => reconcileCleanup(manifest, { interruptAfterWorktreeRemoval: true }), ExpectedInterruption);
     state = JSON.parse(readFileSync(manifest.intentPath, "utf8"));
@@ -2924,6 +3503,19 @@ async function run() {
     assert(!existsSync(manifest.quarantinePath));
     assert.equal(observeLocalRef(manifest, state, RECOVERY_REF).sha, effectOnlySnapshotSha);
     assertions.push("worktree_removal_effect_crash_reconciled");
+
+    exerciseStoredEvidenceMutationTable(
+      "stored_evidence_gate_before_local_delete_table",
+      manifest,
+      gitRecoveryEvidenceCases(manifest, "before-local-delete"),
+      (current) => {
+        assert(!existsSync(manifest.worktreePath));
+        assert(!existsSync(manifest.quarantinePath));
+        assertOwnedRegistrationsAbsent(manifest, current);
+        assert.equal(observeLocalRef(manifest, current, TASK_REF).sha, candidateSha);
+        assert.equal(queryOwnedRemoteRef(manifest, current, TASK_REF).sha, candidateSha);
+      },
+    );
     if (heldFd !== undefined) {
       const buffer = Buffer.alloc(13);
       const bytes = readSync(heldFd, buffer, 0, buffer.length, 0);
@@ -2932,6 +3524,24 @@ async function run() {
       heldFd = undefined;
       assertions.push("linux_dirty_open_handle_recovery");
     }
+
+    state = readState(manifest);
+    removeLocalRefExactly(manifest, state);
+    assert.equal(state.localDelete.status, "confirmed_absent");
+    assert.equal(observeLocalRef(manifest, state, TASK_REF).kind, "absent");
+    assert.equal(queryOwnedRemoteRef(manifest, state, TASK_REF).sha, candidateSha);
+    exerciseStoredEvidenceMutationTable(
+      "stored_evidence_gate_before_remote_delete_table",
+      manifest,
+      gitRecoveryEvidenceCases(manifest, "before-remote-delete"),
+      (current) => {
+        assert(!existsSync(manifest.worktreePath));
+        assert(!existsSync(manifest.quarantinePath));
+        assertOwnedRegistrationsAbsent(manifest, current);
+        assert.equal(observeLocalRef(manifest, current, TASK_REF).kind, "absent");
+        assert.equal(queryOwnedRemoteRef(manifest, current, TASK_REF).sha, candidateSha);
+      },
+    );
 
     const completed = reconcileCleanup(manifest);
     assert.equal(completed.phase, "complete");

@@ -43,6 +43,12 @@ Task refs, recovery/snapshot artifacts and `removal_ready` evidence must be
 durable before that archive; afterward this contract reconciles path/
 registration absence and owns only exact residual Git/ref cleanup.
 
+Client-side `core.hooksPath` overrides cover the enrolled source repository,
+not the other repository process used by a path or `file://` transport. Git
+receive hooks configured by such an origin can execute during an engine push.
+Path/file origins are therefore repository-code execution under ADR-0008
+REP-1, not an inert substitute for a network forge.
+
 ## Question or hypothesis
 
 Using supported Git CLI behavior and cross-platform Node.js 22-or-newer APIs,
@@ -53,10 +59,16 @@ locked-file failures on real Linux and Windows hosts?
 
 ## Acceptance criteria
 
-- Every worktree, local-ref, recovery-ref, and remote-ref mutation revalidates
-  the exact lexical/canonical source path, filesystem identity, Git common-dir
-  identity, origin URL/filesystem identity, and durable Task/Run/nonce/ref/SHA
-  ownership. Retry performs the same checks.
+- One fail-closed pre-destructive gate is the sole authority for worktree move/
+  removal, local/remote Task-ref deletion, and retained-artifact removal. On
+  every command it freshly enumerates durable recovery evidence and re-proves
+  source/common-dir/origin/worktree identity, registration, Candidate and
+  expected OIDs, recovery commit parent/tree/provenance, index recovery,
+  private-artifact identity/owner/manifest/payload bytes, and current worktree
+  trees where present. It issues one exact-command, one-use token for that
+  reconciliation pass; the destructive wrapper refuses a missing, stale,
+  consumed, wrong-target, or wrong-argv token. Any absent, moved, recreated, or
+  changed evidence parks before command dispatch.
 - Git worktree registration paths are converted to the same native realpath,
   separator, drive-letter, and case comparison form as Node paths. A positive
   owned path/branch/HEAD registration must match before removal and exact owned
@@ -78,12 +90,17 @@ locked-file failures on real Linux and Windows hosts?
   a bounded owner-verified non-Git artifact before automatic removal, never
   force-added to Git. Task policy cannot exceed the 2 GiB aggregate/per-file,
   10,000 recovery-entry, 100,000 inspected-entry, or 64 KiB buffer evidence
-  ceilings and cannot reduce the 10% free-space floor.
+  ceilings, cannot exceed seven-day retention, and cannot reduce the 10%
+  free-space floor.
 - Snapshot inspection allows declared filter attributes only when no clean or
   process command is configured, refuses executable clean filters, overrides
   repository hooks and `core.fsmonitor`, and records the residual same-user race boundary.
 - All automatic executable fields in the exact installed Paseo schema are
   refused without separate human approval and `dir-m0.14` containment.
+- Engine observation/fetch/push against a path or file origin is refused unless
+  the exact operation is separately human-approved and runs inside proven
+  `dir-m0.14` containment. The disposable harness records both facts explicitly;
+  absence of either parks before origin execution.
 - Remote absence is accepted only from `ls-remote --exit-code` status 2.
   Transport/authentication failures stop; the exact live base is inspected and
   fetched without a tracking-ref update immediately before branch deletion;
@@ -96,9 +113,8 @@ locked-file failures on real Linux and Windows hosts?
 - A clean or snapshotted worktree receives durable removal-ready evidence
   before its quarantine/removal effect. Recovery handles crashes after
   quarantine, after removal, and after local or remote deletion without blind
-  retry. Every removal-ready resume and immediate pre-removal boundary streams
-  and verifies every preserved non-Git payload byte against the bound private
-  manifest before the worktree can move.
+  retry; the unified gate, rather than artifact-specific resume branches,
+  re-proves the complete stored-evidence set at each later destructive command.
 - `complete` is terminal for destructive effects. Repeated reconciliation may
   observe confirmed absence, but any later local or remote Task-ref appearance,
   including the same Candidate SHA, is preserved and parks in Needs you.
@@ -149,13 +165,15 @@ original case plus these review-derived cases:
 - a staged-only index version that differs from both Candidate and worktree is
   captured in a separate exact recovery commit/ref before any cleanup effect;
   an effect-before-state interruption leaves index/worktree/Task refs intact,
-  and detached restoration reproduces the staged bytes;
-- every removal-ready retry recomputes the real index and prospective worktree
-  trees and byte fidelity; a same-size edit with restored mtime is refused with
-  original path, registration, refs, and edited bytes intact;
-- corrupting only a manifest-listed recovery payload byte is detected both on
-  removal-ready resume and at the immediate pre-move boundary; the original
-  worktree, registration, local/remote Task refs, and source bytes remain;
+  detached restoration reproduces modified and added staged bytes, and a
+  staged index-only deletion restores as the exact missing path;
+- one table-driven stored-evidence family mutates missing and moved worktree/
+  index recovery refs and their expected OIDs plus private-artifact payload,
+  manifest, owner, and path identity before move, before remove, before local
+  ref deletion, and before remote ref deletion; every case parks with all
+  not-yet-completed paths/refs intact and then restores the fixture evidence;
+- the same gate rejects a same-size worktree edit with restored mtime, and a
+  wrapper invoked without a current one-use gate token cannot dispatch;
 - an unintegrated prospective-tree-clean worktree remains registered with both
   Task refs and no removal-ready evidence;
 - dirty-plus-ignored files/directories and an uncommitted unignored nested
@@ -179,7 +197,11 @@ original case plus these review-derived cases:
   absences become confirmed and cleanup completes, same-SHA local and remote
   recreations are observed, preserved, and parked without another delete;
 - exact 2 GiB aggregate/per-file ceilings accept their boundary and reject one
-  byte more, while exactly 10% free space is accepted and 9% is rejected;
+  byte more, exactly 10% free space is accepted and 9% is rejected, and seven
+  days is accepted while seven days plus one millisecond is rejected;
+- a bare origin with an executable receive hook is not contacted when either
+  human approval or containment is absent; the hook sentinel and every owned
+  worktree/ref remain intact;
 - clean and dirty paths persist removal-ready evidence, reconcile missing
   paths only after Git registration is also absent, and preserve the same
   recovery SHA across effect-before-state interruptions;
@@ -264,6 +286,22 @@ digest, real index tree, clean/snapshot status, and both recovery SHAs before a
 Git move/remove. Resume and immediate pre-move checks recompute both trees;
 unexplained disappearance remains an error.
 
+### Revalidate each recovery artifact in a separate resume branch
+
+Rejected. Three review cycles found the same structural defect in different
+stored evidence: worktree trees, private payload bytes, then the Git recovery
+ref itself. A new artifact can be added or a later phase can bypass one branch.
+The selected design enumerates the entire durable evidence set in one gate and
+requires its one-use exact-command token at every destructive dispatcher.
+
+### Treat a path/file origin as inert because client hooks are disabled
+
+Rejected. The origin-side receive process loads the origin repository's hook
+configuration; the client's `-c core.hooksPath` does not disable it. Director
+refuses local origin execution unless the human separately approves it and
+`dir-m0.14` containment is proven. The disposable contract fixture carries
+both facts only to exercise bounded local Git behavior.
+
 ### Delete a Task ref while another worktree consumes it
 
 Rejected. Exact SHA ownership does not make it safe to invalidate an unknown
@@ -279,13 +317,13 @@ can resolve that platform gate.
 
 ## Decision
 
-**Inconclusive.** The corrected exact-ownership, live-base,
-secret-safe-recovery, executable-surface, removal-ready, and reconciliation
-contract is the sole candidate mechanism. Linux evidence supports it on the
-recorded tuple, but the mandatory real Windows result is pending. The separate
-large-tree policy evidence in `dir-m0.17` is also open. M0/M1 remain blocked
-until those gates pass and the evidence-changing Candidate receives a fresh
-independent top-level Reviewer Agent verdict.
+**Inconclusive.** The human-authorized unified pre-destructive evidence gate,
+exact-command token, local-origin refusal, secret-safe recovery, and
+reconciliation contract is the sole candidate mechanism. Linux evidence
+supports it on the recorded tuple, but the mandatory real Windows result is
+pending. The separate large-tree policy evidence in `dir-m0.17` is also open.
+M0/M1 remain blocked until those gates pass and the evidence-changing Candidate
+receives a fresh independent top-level Reviewer Agent verdict.
 
 The engine stops rather than deletes when dirty work and ignored/
 unsnapshotable material coexist, non-Git preservation cannot be proved,
@@ -306,7 +344,9 @@ skip mechanism or keep launch blocked.
 ## Consequences
 
 - Future Git adapter commands must use the same durable ownership envelope and
-  fresh repository/base checks; cached success never authorizes a later retry.
+  unified pre-destructive gate; cached or artifact-specific success never
+  authorizes a later retry. Every destructive dispatcher consumes a fresh
+  token bound to one pass, operation, target, expected OID, cwd, and argv.
 - This preserves PLAN §§9.2, 15.5, and 25: successfully integrated
   prospective-tree-clean worktrees still clean automatically, bounded private preservation protects
   ignored value/secrets, disk thresholds stop unsafe copying, and Needs you is
@@ -315,7 +355,8 @@ skip mechanism or keep launch blocked.
   10,000 recovery entries, 100,000 inspected entries, a 64 KiB streaming
   buffer, seven days, and 10% free space. Task policy may tighten but cannot
   expand either byte cap or the other evidence ceilings, and cannot weaken the
-  10% floor, until `dir-m0.17` resolves the release policy. Oversized
+  10% floor or exceed seven-day retention, until `dir-m0.17` resolves the
+  release policy. Oversized
   sparse files stop from `lstat` before reads; hashing, copying, verification,
   and restoration share bounded buffers. Each retry charges only bytes still
   to be written while rechecking the 10% floor.
@@ -328,10 +369,16 @@ skip mechanism or keep launch blocked.
   cleanup claim remains blocked without expanding `dir-m0.6`.
 - Registration comparison must retain its positive pre-removal assertion;
   negative-only tests are insufficient for Windows separators and 8.3 aliases.
+- Local-repository hook and fsmonitor suppression claims do not extend to a
+  path/file origin's receive process. Without separate human approval plus
+  `dir-m0.14` containment, remote observation/fetch/push parks before executing
+  that repository. Generic network-forge behavior remains `dir-m0.7`.
 - Recovery-ref expiry is a separate guarded local-ref effect with identical
   identity, expected-SHA, active-consumer, and secret policy checks.
-- A dirty worktree remains ineligible for review. Exact worktree and staged-
-  index recovery snapshots authorize cleanup only while recomputed trees still match.
+- A dirty worktree remains ineligible for review. No individual snapshot or
+  prior `removal_ready` check authorizes cleanup: the unified gate must freshly
+  prove all recovery refs, OIDs, commit provenance/trees, artifact bytes and
+  exact identities immediately before each destructive command.
 - Ignored data never enters Git recovery. Integrated prospective-tree-clean
   work uses the private non-Git artifact and default seven-day retention;
   Git-invisible empty directories may accompany a dirty Git snapshot, while
