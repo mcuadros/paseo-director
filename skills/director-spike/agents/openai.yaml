@@ -1,0 +1,4 @@
+interface:
+  display_name: "Director Technical Spike"
+  short_description: "Run an evidence-driven technical spike"
+  default_prompt: "Use $director-spike to answer the selected technical risk with reproducible evidence."

@@ -68,3 +68,9 @@
 sync.remote: "git+https://github.com/mcuadros/paseo-director.git"
 dolt:
     shared-server: true
+hierarchy:
+    max-depth: 2
+create:
+    require-description: true
+sync:
+    require_confirmation_on_mass_delete: true

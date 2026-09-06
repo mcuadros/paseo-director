@@ -1,0 +1,4 @@
+interface:
+  display_name: "Director Commit"
+  short_description: "Create a focused auditable project commit"
+  default_prompt: "Use $director-commit to prepare and create the current Task's commit."

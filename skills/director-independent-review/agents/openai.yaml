@@ -1,0 +1,4 @@
+interface:
+  display_name: "Director Independent Review"
+  short_description: "Review one exact commit independently"
+  default_prompt: "Use $director-independent-review to review the exact candidate commit."
