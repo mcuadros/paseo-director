@@ -4,7 +4,7 @@
 - **Plan version:** 0.3
 - **Last updated:** 2026-09-06
 - **Approved:** 2026-09-06
-- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope; [ADR-0014](adr/0014-practical-linux-agent-boundary.md) for the human-approved practical trusted-provider Linux boundary
+- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope; [ADR-0014](adr/0014-practical-linux-agent-boundary.md) for the human-approved practical trusted-provider Linux boundary; [ADR-0016](adr/0016-defer-taskstore-scale-proof-to-m5.md) for deferring TaskStore agreed-scale proof to `dir-m5.10`
 - **Plugin repository:** <https://github.com/mcuadros/paseo-director>
 - **Public name:** Director for Paseo
 - **Short UI name:** Director
@@ -438,8 +438,13 @@ M0 must prove that the mapping safely supports:
 - optimistic concurrency;
 - multiwriter access through the selected server mode;
 - backup, restore, migration, and remote synchronization;
-- Linux;
-- the agreed scale.
+- Linux.
+
+[ADR-0016](adr/0016-defer-taskstore-scale-proof-to-m5.md) defers the
+agreed-scale proof to `dir-m5.10`. M1 may use only the exact direct-Dolt
+contract and bounded Linux topology approved by ADR-0004 and ADR-0012. The
+deferral makes no production-scale claim and changes no correctness or
+security invariant.
 
 If Beads cannot meet the contract cleanly, an alternative is selected before M1. One possible fallback is a single direct Dolt schema behind the same port. `1.0` ships one runtime TaskStore, not two interchangeable engines.
 
@@ -1074,6 +1079,9 @@ This is a test target, not an artificial product hard cap:
 - eight concurrent execution agents;
 - paginated or virtualized Board/List.
 
+`dir-m5.10` is the mandatory owner of this validation. These targets are not
+an M0 evidence result or an M1 production-scale support claim.
+
 ### 21.5 Mandatory release blockers
 
 No release may ship with a known defect that can:
@@ -1118,7 +1126,8 @@ Prove before building product functionality:
 - plugin lifecycle and target stable Paseo version;
 - agent/workspace creation, observation, interruption, reload, and recovery;
 - per-session MCP for every admitted provider;
-- TaskStore model, concurrency, sync, backups, migrations, and scale;
+- TaskStore model, concurrency, sync, backups, and migrations on the approved
+  bounded Linux topology;
 - exact-SHA GitHub PR/CI/review behavior;
 - Linux headless and worktree lifecycle;
 - idempotent effect and reconciliation design;
@@ -1181,9 +1190,11 @@ Includes scaffold, modular architecture, configuration schema, Create/Adopt Orga
 - Needs-you routing.
 - Doctor, Repair, Sync, health, audit, and diagnostics.
 - Backups, migrations, retention, disk-pressure behavior, and security hardening.
-- Performance and platform validation.
+- Performance and platform validation, including the TaskStore agreed-scale
+  proof owned by `dir-m5.10`.
 
-**Exit gate:** complete Linux suite and every agreed acceptance scenario.
+**Exit gate:** complete Linux suite, the `dir-m5.10` scale proof, and every
+agreed acceptance scenario.
 
 ### M6 — Public release
 

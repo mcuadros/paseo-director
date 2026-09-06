@@ -6,6 +6,11 @@
 - **Plan gate:** M0 / other
 - **Decision owners:**
 
+Use only `Proposed`, `Accepted`, or `Superseded` as defined by the normative
+[ADR lifecycle](../../CONTRIBUTING.md#adr-lifecycle). A new decision starts as
+Proposed; its owning Beads Task carries the exact review and integration
+evidence required for acceptance.
+
 ## Context
 
 Describe the single decision, the affected plan invariant or milestone gate, and the constraints that make it necessary.
@@ -43,4 +48,5 @@ Describe compatibility bounds, new constraints, migrations, operational effects,
 
 ## Independent verification
 
-Record who reproduced the evidence, the exact Candidate/evidence revision, and the verdict.
+Record who reproduced the evidence, the exact Candidate/evidence revision,
+reviewed base, verdict, integration commit, checks, and residual risks.

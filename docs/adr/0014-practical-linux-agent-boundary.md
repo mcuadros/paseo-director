@@ -5,7 +5,8 @@
 - **Beads Task:** `dir-m0.14`
 - **Plan gate:** M0 operating-system authority separation
 - **Decision owner:** Human project owner
-- **Amends:** PLAN §§4, 11–15, 18, 21, 23, and 25; [ADR-0008](0008-director-threat-model.md)
+- **Amends normative runtime-boundary decisions in:** PLAN §§4, 11–15, 18, 21, 23, and 25
+- **Supersedes:** the M1-blocking No-go Decision in [ADR-0008](0008-director-threat-model.md), while retaining its maximal threat analysis
 - **Preserves:** [ADR-0005](0005-session-scoped-mcp-provider-matrix.md),
   [ADR-0007](0007-git-worktree-ownership-and-cleanup.md), and
   [ADR-0011](0011-linux-only-platform-scope.md)
@@ -221,6 +222,8 @@ integrated and the M0 exit gate confirms all remaining Tasks.
   delivery operations, prompts, worktrees, TaskStore, or support output.
 - Repository lifecycle refusal and operational-limit parking become mandatory
   preflight/reconciliation contract tests in M1 and later release suites.
+  `dir-m1.8` owns their implementation together with the mandatory rootless-OCI
+  execution boundary in the walking-skeleton path.
 - Rootless OCI remains mandatory even though its protections are defense in
   depth rather than the sole trust boundary.
 - The corrected Git Candidate-transfer mechanism remains valid and no longer
@@ -229,10 +232,8 @@ integrated and the M0 exit gate confirms all remaining Tasks.
 
 ## Independent verification
 
-Pending fresh review of the exact changed Candidate by a normal top-level Opus
-5 Reviewer Agent at xhigh effort in a detached clean checkout. The reviewer must
-verify the explicit human scope decision, reproduce the focused policy and Git
-contracts, confirm the former verdict language is gone, and verify that no
-unrequested trust expansion or non-Linux scope was introduced. This Task Agent
-has not self-reviewed. Publication, merge, Task closure, and workspace removal
-remain pending.
+Exact Candidate `a8f4822210037a0bac24aa2d6a79cb93a949dda3` received an
+independent `approve_candidate` verdict and was integrated with its reviewed
+base as merge `13e399ad6b0c837ef503f80e3aa29e145675679f`. `dir-m0.14`
+records the human scope decision, focused policy and Git checks, review,
+integration, cleanup, and excluded-compromise bounds.

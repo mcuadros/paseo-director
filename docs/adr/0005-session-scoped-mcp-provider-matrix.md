@@ -1,6 +1,6 @@
 # ADR-0005: Admit the three proven native providers and exclude generic ACP from governed runs
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-06
 - **Beads Task:** `dir-m0.3`
 - **Plan gate:** M0 per-session MCP provider matrix
@@ -235,9 +235,10 @@ this evidence establishes host containment.
 
 ## Independent verification
 
-An independent reviewer must reproduce the matrix in a clean, detached
-checkout at one exact Candidate SHA, verify the immutable fixture hashes,
-inspect the complete Candidate/base diff, and return the repository's required
-exact-SHA verdict. Candidate, base, verdict, validation, risks, and cleanup are
-recorded in `dir-m0.3`; they are not embedded here because changing this file
-after review would create a different unreviewed Candidate.
+Exact Candidate `b40b9829a25edbd650dccdef2e60b389e662d164` received an
+independent `approve_candidate` verdict and was integrated with its reviewed
+base as merge `58dba422562c820b60fd1a214b66577b9dbbb83e`. `dir-m0.3`
+records the clean-environment matrix reproduction, exact tuple bounds,
+review, integration, cleanup, and residual defense-in-depth limits. This
+status reconciliation uses that integrated evidence and does not rerun paid
+provider sessions.

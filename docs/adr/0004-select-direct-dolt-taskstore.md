@@ -1,11 +1,11 @@
 # ADR-0004: Select direct Dolt 2.3.2 behind the trusted TaskStore engine
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-06
 - **Beads Task:** `dir-m0.4`
 - **Plan gate:** M0 TaskStore mapping
 - **Decision owner:** Human project owner and Director maintainers
-- **Supersedes:** Unreviewed No-go Candidate
+- **Replaces unreviewed Candidate:**
   `681c2e2113fe63b5aad6e963f78f55b5832ac1f0`
 
 ## Context
@@ -58,11 +58,11 @@ matches ADR-0008's actor model, which places the exact trusted plugin revision
 and a process already running as the engine identity inside or beyond the
 plugin trusted computing base.
 
-This decision does not weaken ADR-0008's separate M0 stop condition. Director
-must still prove that agents and repository-controlled processes cannot obtain
-engine credentials, reach its raw TaskStore endpoint, or execute as the engine
-principal. If that containment cannot be proven, this ADR's precondition fails
-and M1 remains blocked.
+This decision did not by itself resolve ADR-0008's separate M0 stop condition.
+Director still had to prove or explicitly reduce the boundary governing agent
+and repository access to engine credentials, the raw TaskStore endpoint, and
+the engine principal. Accepted ADR-0014 later selected the practical trusted-
+provider Linux boundary without changing this TaskStore decision.
 
 ## Question or hypothesis
 
@@ -300,8 +300,8 @@ verify session and global safe values before writes and fail closed on drift.
   partial-failure recovery, safe-value verification, and coverage of the
   `aggregates.id` migration gap against this schema.
 - ADR-0008's agent/engine credential and authority-separation stop condition
-  remains unresolved until independently proven. This ADR does not authorize
-  M1 by itself.
+  remained separate from this decision and was later resolved for Linux `1.0`
+  by Accepted ADR-0014. This ADR does not authorize M1 by itself.
 - `dir-m0.10` must include the fail-closed variable check in interruption and
   reconciliation boundaries.
 - `dir-m0.16` is conditional and blocked. Do not close it until this Candidate
@@ -312,10 +312,9 @@ verify session and global safe values before writes and fail closed on drift.
 
 ## Independent verification
 
-Pending fresh independent review of the exact changed Candidate SHA. The
-Reviewer must verify the human boundary is stated consistently with ADR-0008,
-run the minimal force-variable reproduction, confirm the six accumulated
-evidence artifacts are unchanged and parseable, inspect both P3 constraints,
-and confirm `dir-m0.16` remains conditional and blocked. Publication,
-integration, Task closure, contingency closure, and workspace cleanup remain
-post-review gates.
+Exact Candidate `15914ef50b5a7b280153d3ba04296881830dd3c3` received an
+independent `approve_candidate` verdict and was integrated with its reviewed
+base as merge `ae06c376002b079f55f9fdbd92b9b0e70466f422`. `dir-m0.4`
+records the contract checks, review, integration, cleanup, and residual
+trusted-engine boundary. This status reconciliation uses that integrated
+evidence and does not rerun the technical experiment.

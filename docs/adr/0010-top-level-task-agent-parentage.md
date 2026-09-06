@@ -82,9 +82,9 @@ Rejected. Parentage would weaken visible and lifecycle independence even if the 
 - Scheduler tests must reject any Task launch request carrying a parent or using agent-scoped subagent orchestration.
 - Lifecycle tests must cover concurrent Task Agents in separate worktrees, replacement without overlap, independent top-level Reviewers, helper accounting/containment, interruption, reconciliation, and cleanup.
 - ADR-0002's observation that the public `0.7.2` creation input accepts a parent remains historical evidence; Director deliberately omits that optional field for Task Agents and Reviewers.
-- ADR-0008's engine-effect and authority-separation requirements remain in force, with Task-Agent-created helpers as the narrow governed launcher distinction defined here.
+- ADR-0008's retained threat controls remain security inputs under ADR-0014's normative practical Linux boundary, with Task-Agent-created helpers as the narrow governed launcher distinction defined here.
 - All unresolved M0 stop conditions remain unresolved. This decision does not authorize product implementation or relax exact-SHA/security gates.
 
 ## Independent verification
 
-Pending. Review must evaluate the exact Candidate SHA in a detached disposable checkout and verify that PLAN, every amended ADR, and every affected repository workflow use this model consistently. Publication, merge, Task closure, and cleanup remain post-review gates.
+Exact Candidate `5545f7507535882c63ccd85d611625d3ca7e7430` received an independent `approve_candidate` verdict and was integrated with its reviewed base as merge `0fba01cbecedd76c9ffc0710265896afbda3dc51`. `dir-m0.15` records the cross-document checks, review, integration, cleanup, and residual lifecycle bounds.

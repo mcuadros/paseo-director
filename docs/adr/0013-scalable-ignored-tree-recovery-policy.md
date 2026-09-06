@@ -1,11 +1,13 @@
 # ADR-0013: Bound automatic ignored-tree recovery by measured Linux resources
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-06
 - **Beads Task:** `dir-m0.17`
 - **Plan gate:** M0 scalable ignored-tree recovery on the supported Linux topology
 - **Decision owner:** `dir-m0.17` Task Agent; expanding a limit requires new
   evidence and the human project owner
+- **Amends:** [ADR-0007](0007-git-worktree-ownership-and-cleanup.md), replacing
+  its provisional recovery ceilings with this measured supported Linux policy
 - **Scope dependency:** Accepted
   [ADR-0011](0011-linux-only-platform-scope.md) defines Linux-only support for
   Director `1.0`; this ADR sets ignored-tree policy within that scope.
@@ -13,7 +15,7 @@
 ## Context
 
 ADR-0007 defines the unified pre-destructive gate for exact owned worktree
-cleanup. Its provisional `dir-m0.6` Candidate
+cleanup. Its `dir-m0.6` Candidate
 `af489d04d4f84bd60d39e575718884e0b645ee36` admits an owner-verified private
 artifact for ignored and Git-invisible material in an integrated,
 prospective-tree-clean worktree. Ignored bytes never enter Git. Dirty work plus
@@ -27,9 +29,9 @@ defaults. It records the former 250,000-entry assumption as unproven and
 delegates representative `node_modules`, `target`, and `.venv` measurements to
 this Task. This ADR does not modify or publish `dir-m0.6`.
 
-The `af489d04...` base remains provisional until `dir-m0.6` closes. A changed
-Candidate before closure invalidates this evidence and requires the Task Agent
-to stop, rebase, and rerun the complete Linux contract.
+The `dir-m0.6` Candidate was independently approved unchanged and integrated
+as `2eb0b692ca027cff2f5e2d9d1de364165e6cafa3`. This ADR's measured policy
+therefore finalizes, rather than forks, that cleanup contract.
 
 Large ignored trees are both a recoverability asset and a denial-of-service
 input. An automatic policy that is too broad can exhaust memory, disk, or
@@ -187,8 +189,8 @@ an exact verified artifact, and otherwise preserves every unknown path.
 ## Consequences
 
 - The ignored-tree policy stop condition is resolved for the supported Linux
-  topology once this exact Candidate receives independent approval. Other M0
-  stop conditions remain independent.
+  topology by the independently approved and integrated Candidate recorded
+  below. Other M0 stop conditions remain independent.
 - The release policy uses the ADR-0007 normalized ignored-root discovery,
   exact owner envelope, private manifest/payload, atomic rename, unified gate,
   and guarded expiry. This Task adds policy/supervision evidence; it does not
@@ -212,13 +214,16 @@ an exact verified artifact, and otherwise preserves every unknown path.
   artifact is scheduled `retained`, not Needs you. At expiry, exact root,
   artifact identity, owner, permissions, manifest, and payload are reverified
   before a removal-ready intent. Unknown replacements survive.
-- The provisional `dir-m0.6` Candidate remains binding until that Task closes.
-  A changed Candidate before closure requires rebase and complete Linux
-  revalidation. A changed `dir-m0.17` Candidate invalidates previous review and
-  validation for readiness.
+- The integrated `dir-m0.6` Candidate and this integrated policy Candidate are
+  the binding evidence pair. A later change to either contract requires fresh
+  Linux evidence and a superseding ADR.
 
 ## Independent verification
 
-Pending independent review of the exact committed `dir-m0.17` Candidate.
-Publication, PR creation, merge, Task closure, and workspace removal remain
-pending post-review and provisional-base gates.
+Exact Candidate `18c0bbfaa58c09600eb01ae68fe4b39d916c92e2` received an
+independent `approve_candidate` verdict and was integrated with its reviewed
+base as merge `1d93c7744d006da78dff54e3f1dbbb95fc833eb8`. `dir-m0.17`
+records the representative Linux measurements, limit checks, review,
+integration, cleanup, and residual filesystem bounds. This status
+reconciliation uses that integrated evidence and does not rerun the expensive
+large-tree benchmark.

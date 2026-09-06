@@ -1,6 +1,6 @@
 # ADR-0015: Use durable commands, fenced attempts, and observed evidence for every effect
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-06
 - **Beads Task:** `dir-m0.10`
 - **Plan gate:** M0 idempotent effect and reconciliation design
@@ -62,12 +62,13 @@ claiming exactly-once external execution. It must also stop a stale engine
 from updating durable state and must not assume that a TaskStore lease can
 fence an external system which does not accept its fencing token.
 
-ADR-0008 remains the maximal threat analysis as amended by Accepted ADR-0014.
-The fully hostile engine/provider cases are outside the human-approved Linux
-`1.0` guarantee; the trusted-provider boundary and all ADR-0014 admission,
-rootless OCI, credential, lifecycle, and operational-limit controls remain
-normative. This decision neither expands nor re-proves that boundary and does
-not independently authorize M1 product implementation.
+Superseded ADR-0008 remains the maximal threat analysis, while Accepted
+ADR-0014 replaces its Decision with the human-approved Linux `1.0` runtime
+boundary. The fully hostile engine/provider cases are outside that guarantee;
+the trusted-provider boundary and all ADR-0014 admission, rootless OCI,
+credential, lifecycle, and operational-limit controls remain normative. This
+decision neither expands nor re-proves that boundary and does not independently
+authorize M1 product implementation.
 
 ## Question or hypothesis
 
@@ -561,10 +562,10 @@ terminal drift, unsafe cleanup, or exhausted budget becomes Needs you.
 Observed secret exposure, wrong integration, unowned deletion, or dirty-work
 loss is a P0 incident, not a compensatable warning.
 
-Accepted ADR-0014 amends ADR-0008 by selecting the practical trusted-provider
-Linux boundary and excluding fully hostile engine/provider cases from the
-`1.0` guarantee. This contract enforces that decision; it does not reopen or
-expand it. It still fails closed if the admitted trusted-provider/rootless-OCI
+Accepted ADR-0014 supersedes ADR-0008's No-go Decision by selecting the
+practical trusted-provider Linux boundary and excluding fully hostile engine/
+provider cases from the `1.0` guarantee. This contract enforces that decision;
+it does not reopen or expand it. It still fails closed if the admitted trusted-provider/rootless-OCI
 boundary, repository lifecycle admission, credentials, raw control endpoints,
 Workspace scope, delivery authority, or finite operational observations do not
 match ADR-0014. Durable idempotency cannot make an out-of-contract mutation
@@ -712,10 +713,10 @@ non-Linux support, or silent fallback.
 - Adapters remain thin and effect-specific. Each documents its authoritative
   observation, exact identity/freshness rules, compare primitive, handoff
   point, retry class, bounded error codes, and cleanup predicate.
-- Paseo workspace creation cannot be implemented before the ADR-0014 four-
-  surface lifecycle admission and finite operational-limit gates. Applicable
-  active Effects repeat operational observations periodically and park in
-  Needs you on missing/exceeded facts.
+- `dir-m1.8` owns the ADR-0014 rootless-OCI execution boundary, four-surface
+  lifecycle admission before Paseo workspace creation, and finite operational-
+  limit gates. Applicable active Effects repeat operational observations
+  periodically and park in Needs you on missing/exceeded facts.
 - Reconciliation is a first-class engine loop. Events only wake it. Terminal
   drift creates an anomaly and never silently replays a completed Effect.
 - Cross-system workflows are sagas with explicit projections and forward
@@ -736,8 +737,10 @@ non-Linux support, or silent fallback.
 
 ## Independent verification
 
-Pending a fresh independent Opus xhigh review of the exact Candidate SHA in a
-detached disposable checkout. Candidate, base, verdict, reproduction, risks,
-and cleanup will be recorded in `dir-m0.10`; editing this ADR after review
-would create a new unreviewed Candidate. Publication, merge, Task closure, and
-Execution Workspace removal are explicitly outside this handoff.
+Exact Candidate `2b838a1c3599f847eae3f35d8be8f37e0fbe8c2f` received an
+independent `approve_candidate` verdict and was integrated with its reviewed
+base as merge `6c4d4cbde94401e1850adfa8470c53a37070367b`. `dir-m0.10`
+records the byte-identical deterministic checks, mutation suite, review,
+integration, cleanup, and residual topology bounds. This status
+reconciliation uses that integrated evidence and does not rerun the effect
+experiments.
