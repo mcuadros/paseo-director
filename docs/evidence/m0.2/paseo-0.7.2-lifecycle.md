@@ -23,18 +23,20 @@ The checked-in [fixture](./fixture/) is copied over an official `paseo plugin in
 
 - a mixed v0.7 entry with one generated-style client surface and one Zod-validated server RPC;
 - a server lifecycle marker used only to distinguish process starts, returned cleanup callbacks, and the deliberate crash;
+- a unique long-running Node child that writes its exact PID before waiting indefinitely;
 - an incompatible entry that checks a missing method before starting the marker;
 - a public `@getpaseo/client` harness for structural checks, subscriptions, create/list/ref/refresh, send/wait, and archive.
 
-The process marker is test instrumentation, not Director product state. Product conclusions below come from documented CLI or SDK results. Daemon output was used only to debug the fixture and is not an authority.
+The process marker, `/proc`, `ps`, and `ss` are Linux-only test instrumentation used to validate lifecycle claims; they are not Director product state or production dependencies. Product recovery conclusions come from documented CLI or SDK results. Daemon output was used only to debug the fixture and is not an authority.
 
 Final fixture SHA-256 values:
 
 | File | SHA-256 |
 |---|---|
+| `archive-child.mjs` | `ccaef84a16f42f9b956272de7406eb092e194648872b51037b2f906fc5d7233e` |
 | `incompatible-index.ts` | `921857d1114e41bb956473e4ac60e8643aa8c6351a7697e347c445580f05f35e` |
 | `index.ts` | `1a8009ed1d00ed3554a7ceb18a5cfb6aa89195e1fc600bb4cb72c782cc10c52c` |
-| `lifecycle-client.mjs` | `77f3e85323f8c1f0415e3cdfc7399dc3b0c46c06ec64d9a71c642112fc48fe02` |
+| `lifecycle-client.mjs` | `7f43ba54c04c4c79df112559e8b71f9f7cb9a48189cab3cac1c6b040e943a085` |
 | `main.client.tsx` | `bf234c037be01c75b5a0fe2329c0d09ee39ebe47a216daf90916b0e3b109c8a0` |
 | `probe.server.ts` | `4cb67ba49003ea7fb28d4d9aedfc571635ff470eddb03949207833607b1f65aa` |
 | `probe.shared.ts` | `20405f579f488b1a2adf73d764810ab5d08cafe1d54e23f5075e1fddaa6cbd21` |
@@ -43,11 +45,15 @@ Final fixture SHA-256 values:
 
 An unauthenticated documented CLI request failed with `Password required`. The same request and every subsequent operation succeeded only with the ephemeral password. The password is not retained in this repository.
 
-The official scaffold and fixture typechecked against exact `@getpaseo/plugin@0.7.2`. A fake SDK object missing `config.patch` produced:
+The official scaffold and fixture typechecked against exact `@getpaseo/plugin@0.7.2`. Before connecting, the real client now checks client lifecycle, every SDK root, and effect-free `ref()`-derived Workspace, scoped-agent, Agent, and timeline handles. The same checks repeat after connection and before any create.
+
+The offline negative suite removes each required method in turn. All 43 cases failed with the precise missing path, two baseline `ref()` calls, and no create, archive, send, plugin, marker, or state-write effect:
 
 ~~~json
-{"error":"Missing required public method: config.patch","sideEffects":0}
+{"checkedSurfaces":43,"failures":43,"sideEffects":0,"baselineRefCalls":2}
 ~~~
+
+The checked methods include `connect`/`close`; all five roots; Workspace `current`, `refresh`, `setTitle`, `archive`, `subscribe`, and scoped `agents.create`; Agent `current`, `refresh`, `send`, `run`, `waitForFinish`, `commands`, `archive`, `detach`, and `subscribe`; and timeline `refetch`/`subscribe`.
 
 Installing the incompatible plugin produced public status `failed` with:
 
@@ -77,8 +83,8 @@ All IDs below were stable exact values in the raw local run. They are represente
 | Plugin subprocess exit 23 | Public status became `failed` with `Plugin process exited`; no cleanup marker | Same workspace/agent remained recoverable | Do not expect automatic restart; explicit reload after reconciliation |
 | Explicit reload after crash | Public status returned to `running` | Same workspace/agent remained | Treat crash as an interrupted engine attempt |
 | Daemon restart, idle initialized agent | Enabled plugin automatically returned to `running`; native records reloaded | Same IDs, labels, and provider session; a later send completed on the same session | Reconnect and reconcile from durable references |
-| Daemon restart, active turn | Agent and workspace returned as `running`, but `activeTurn` was absent and did not self-resolve after five seconds | A new public `send` resumed the same provider session and completed; no duplicate agent appeared | Previous turn outcome is ambiguous: reconcile durable effects first; never blindly retry; enter `Needs you` if ambiguity remains |
-| Active agent archive | First archive returned an `archivedAt`; public state immediately became `closed` | Second archive succeeded with the identical timestamp; workspace remained active | Archive is the supported close/interrupt operation |
+| Daemon restart, active turn | A unique child and two provider PIDs were live before shutdown; after restart the agent/workspace returned as `running`, but `activeTurn` was absent and did not self-resolve after five seconds | All old PIDs were absent; a new public `send` resumed the same provider session and completed without a duplicate agent | Previous turn outcome is ambiguous: reconcile durable effects first; never blindly retry; enter `Needs you` if ambiguity remains |
+| Active agent archive | Public `running` plus non-null `activeTurn`, a durable child start marker, and exact `/proc` ancestry proved one child and two provider processes live beneath the isolated daemon | Final exact-fixture archive returned in 428 ms with all three PIDs gone; they stayed absent after two seconds, repeated archive returned the identical timestamp, public state was `closed`, and the workspace remained active | Archive is the supported close/interrupt operation |
 | Workspace archive | First archive returned no error; ref/active-list no longer returned the workspace | Second archive succeeded with the identical timestamp; archived closed agent remained recoverable by ref and label-filtered include-archived list | Archive agents first, then workspace; keep durable audit references |
 
 The returned plugin cleanup callback ran on reload, disable, and explicit plugin removal. It did not write its marker during any of three graceful daemon shutdown/restart cycles. A daemon stop must therefore be treated like abrupt engine loss: cleanup callbacks are best effort, not a correctness boundary.
@@ -87,13 +93,22 @@ The returned plugin cleanup callback ran on reload, disable, and explicit plugin
 
 The initial no-prompt agent became public `idle` state and exposed a provider session ID. After daemon restart, its first send failed explicitly:
 
+~~~console
+$ DIRECTOR_PASEO_URL=ws://127.0.0.1:17684/ws \
+  DIRECTOR_PASEO_PASSWORD='<ephemeral-password>' \
+  DIRECTOR_LIFECYCLE_STATE=/tmp/director-m0.2/state.json \
+  DIRECTOR_INITIAL_PROMPT='Reply with exactly SHOULD_NOT_RUN.' \
+  node lifecycle-client.mjs resume
+exit 1
+~~~
+
 ~~~text
 Failed to resume Codex thread <session>: no rollout found for thread id <session>
 ~~~
 
 Archiving that record twice was idempotent. A replacement created with its initial prompt in the same public create request completed `READY`, survived another daemon restart, and later resumed on the same provider session. Director must include the initial task prompt atomically in agent creation. If the host still fails before the first provider rollout becomes durable, the explicit resume error is recoverable only by archiving the unusable record and applying the plan's one-replacement limit after label/ID reconciliation.
 
-For the active-restart case, the first prompt was a bounded `sleep 90`. The daemon was stopped while the public agent showed `running` with a non-null active turn. After restart, list/ref/refresh preserved the record as `running` but omitted `activeTurn`. Sending `Reply with exactly AFTER_RESTART.` through the same handle resumed the same session and ended in `idle` with `AFTER_RESTART`.
+For the active-restart case, the first prompt launched the fixture-owned long-running child. Its durable marker identified child PID `1670450`; `/proc` ancestry identified provider PIDs `1665674` and `1665665` under daemon PID `1379987`. All four were absent after daemon shutdown. After restart, list/ref/refresh preserved the record as `running` but omitted `activeTurn`. Sending `Reply with exactly AFTER_RESTART.` through the same handle resumed the same agent and provider-session IDs and ended in `idle` with `AFTER_RESTART`.
 
 This demonstrates transport recovery, not proof that the interrupted turn had no external effect. Director must compare TaskStore, Git, GitHub, and workspace facts before deciding whether a recovery message, archive/replacement, or `Needs you` is safe.
 
@@ -103,7 +118,7 @@ SDK subscriptions emitted nonzero events during all exercised mutations:
 
 - initial create: one workspace event and three agent events;
 - active-restart create: two workspace events and four agent events;
-- active archive: nine agent events.
+- final exact-fixture active archive: eight agent events.
 
 Counts are timing-dependent and are not used as state. After every interruption, the fixture discarded in-memory events and reconstructed state with persisted IDs/labels plus `list`, `ref`, and `refresh`. Subscriptions are suitable only to wake reconciliation.
 
@@ -133,9 +148,20 @@ Active archive:
 
 ~~~json
 {
-  "before":{"status":"running","activeTurn":{"turnId":"<turn>"}},
-  "after":{"status":"closed","archivedAt":"<timestamp>"},
-  "secondArchive":{"ok":true,"archivedAt":"<same-timestamp>"}
+  "before":{"status":"running","activeTurn":{"turnId":"codex-turn-0"}},
+  "processEvidence":{
+    "daemonPid":2078493,
+    "childPid":2119342,
+    "providerPids":[2115939,2115932],
+    "aliveBeforeArchive":true,
+    "archiveResponseMs":428,
+    "postResponseTerminationMs":0,
+    "absentAfterArchive":true,
+    "stillAbsentAfterDelay":true
+  },
+  "after":{"status":"closed","archivedAt":"2026-09-06T04:12:29.306Z"},
+  "secondArchive":{"ok":true,"archivedAt":"2026-09-06T04:12:29.306Z"},
+  "workspaceAfterArchive":{"status":"done","archivedAt":null}
 }
 ~~~
 
@@ -143,6 +169,8 @@ Active daemon-restart recovery:
 
 ~~~json
 {
+  "beforeStop":{"daemonPid":1379987,"childPid":1670450,"providerPids":[1665674,1665665]},
+  "afterStop":{"allRecordedPidsAbsent":true},
   "afterRestart":{"status":"running","activeTurn":"<absent>"},
   "afterPublicSend":{"status":"idle","activeTurn":null,"lastMessage":"AFTER_RESTART"},
   "sameAgentId":true,
@@ -161,12 +189,15 @@ uname -a
 mkdir -p /tmp/director-m0.2/runtime /tmp/director-m0.2/agent-work
 
 paseo plugin init /tmp/director-m0.2/plugin --id director-lifecycle-probe --json
-# Copy docs/evidence/m0.2/fixture/index.ts, main.client.tsx,
-# probe.server.ts, probe.shared.ts, and lifecycle-client.mjs into the scaffold.
+# Copy index.ts, main.client.tsx, probe.server.ts, probe.shared.ts,
+# lifecycle-client.mjs, and archive-child.mjs from the checked-in fixture.
 cd /tmp/director-m0.2/plugin
 npm install --ignore-scripts
 npm run typecheck
 node --check lifecycle-client.mjs
+node --check archive-child.mjs
+node lifecycle-client.mjs negative-structural
+# Expected: checkedSurfaces=43, failures=43, sideEffects=0, baselineRefCalls=2.
 
 paseo plugin init /tmp/director-m0.2/incompatible --id director-lifecycle-incompatible --json
 # Copy incompatible-index.ts to incompatible/index.ts, then copy
@@ -184,11 +215,11 @@ paseo plugin ls --host 127.0.0.1:17682 --json
 export DIRECTOR_PASEO_URL='ws://127.0.0.1:17682/ws'
 export DIRECTOR_PASEO_PASSWORD='<ephemeral-password>'
 export DIRECTOR_LIFECYCLE_STATE=/tmp/director-m0.2/state.json
+export DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime
 export DIRECTOR_WORKSPACE_PATH=/tmp/director-m0.2/agent-work
 export DIRECTOR_TEST_PROVIDER=codex/gpt-5.4-mini
 
 cd /tmp/director-m0.2/plugin
-node lifecycle-client.mjs negative-structural
 node lifecycle-client.mjs enable-plugins
 PASEO_PASSWORD='<ephemeral-password>' paseo plugin install /tmp/director-m0.2/incompatible --host 127.0.0.1:17682 --json
 test ! -e /tmp/director-m0.2/runtime/director-lifecycle-incompatible.events.jsonl
@@ -209,26 +240,105 @@ PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17682 --j
 node lifecycle-client.mjs recover
 PASEO_PASSWORD='<ephemeral-password>' paseo plugin reload director-lifecycle-probe --host 127.0.0.1:17682 --json
 
-# Stop the foreground daemon with SIGINT and restart the identical command/home.
+# Stop the foreground daemon with SIGINT, then rerun this in its dedicated terminal.
+PASEO_PASSWORD='<ephemeral-password>' DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime paseo daemon start --home /tmp/director-m0.2/home --listen 127.0.0.1:17682 --foreground --no-relay --no-mcp --no-web-ui
 node lifecycle-client.mjs recover
+# This exact command must exit 1 with "no rollout found".
+DIRECTOR_INITIAL_PROMPT='Reply with exactly SHOULD_NOT_RUN.' node lifecycle-client.mjs resume
 DIRECTOR_INITIAL_PROMPT='Reply with exactly READY.' node lifecycle-client.mjs replace-started
 
-# Restart again, then verify active archive.
+# Stop and restart the identical foreground daemon command again. Read the new
+# worker PID from this exact listener probe.
+PASEO_PASSWORD='<ephemeral-password>' DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime paseo daemon start --home /tmp/director-m0.2/home --listen 127.0.0.1:17682 --foreground --no-relay --no-mcp --no-web-ui
+ss -ltnp 'sport = :17682'
+export DIRECTOR_DAEMON_PID='<exact-live-daemon-pid>'
 node lifecycle-client.mjs archive-active
+# Substitute the PIDs printed by archive-active. Only the daemon row may remain.
+export DIRECTOR_CHILD_PID='<child-pid>'
+export DIRECTOR_PROVIDER_PIDS='<provider-pid-1>,<provider-pid-2>'
+ps -p "${DIRECTOR_CHILD_PID},${DIRECTOR_PROVIDER_PIDS},${DIRECTOR_DAEMON_PID}" -o pid=,ppid=,stat=,args=
 node lifecycle-client.mjs archive-workspace
 
-# Create an atomically prompted active turn, restart during it, and reconcile.
-DIRECTOR_INITIAL_PROMPT='Run the shell command sleep 90 and wait for it to finish. Do nothing else.' node lifecycle-client.mjs create-active
-# Stop/restart daemon here.
+# Create another atomically prompted long-running child, then record its marker
+# and exact process ancestry before stopping the daemon.
+export DIRECTOR_RESTART_TOKEN='<new-uuid>'
+export DIRECTOR_INITIAL_PROMPT="Run this exact command and wait for it to finish: '/usr/bin/node' '/tmp/director-m0.2/plugin/archive-child.mjs' '/tmp/director-m0.2/runtime/restart-${DIRECTOR_RESTART_TOKEN}.started.json' '${DIRECTOR_RESTART_TOKEN}'"
+node lifecycle-client.mjs create-active
+sed -n '1,20p' "/tmp/director-m0.2/runtime/restart-${DIRECTOR_RESTART_TOKEN}.started.json"
+export DIRECTOR_CHILD_PID='<child-pid-from-marker>'
+export DIRECTOR_PROVIDER_PIDS='<provider-pid-1>,<provider-pid-2>'
+ps -p "${DIRECTOR_CHILD_PID},${DIRECTOR_PROVIDER_PIDS},${DIRECTOR_DAEMON_PID}" -o pid=,ppid=,stat=,args=
+
+# Stop the daemon with SIGINT. The exact child/provider/daemon PID probe must
+# return no rows. Restart the identical daemon command/home.
+ps -p "${DIRECTOR_CHILD_PID},${DIRECTOR_PROVIDER_PIDS},${DIRECTOR_DAEMON_PID}" -o pid=,ppid=,stat=,args=
+PASEO_PASSWORD='<ephemeral-password>' DIRECTOR_LIFECYCLE_ROOT=/tmp/director-m0.2/runtime paseo daemon start --home /tmp/director-m0.2/home --listen 127.0.0.1:17682 --foreground --no-relay --no-mcp --no-web-ui
+node lifecycle-client.mjs recover
+sleep 5
 node lifecycle-client.mjs recover
 DIRECTOR_INITIAL_PROMPT='Reply with exactly AFTER_RESTART.' node lifecycle-client.mjs resume
 node lifecycle-client.mjs archive-current
 node lifecycle-client.mjs archive-workspace
+
+# Exact final public and process cleanup probes.
+PASEO_PASSWORD='<ephemeral-password>' paseo ls --host 127.0.0.1:17682 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo workspace ls --host 127.0.0.1:17682 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17682 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin remove director-lifecycle-probe --host 127.0.0.1:17682 --json
+PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17682 --json
+ss -ltnp 'sport = :17682'
+# Stop the foreground daemon with SIGINT.
+ss -ltnp 'sport = :17682'
+ps -p '<comma-separated-recorded-owned-pids>' -o pid=,ppid=,stat=,args=
+rm -rf /tmp/director-m0.2
+test ! -e /tmp/director-m0.2
 ~~~
 
 ## Cleanup evidence
 
-Before shutdown, public active lists for plugins, agents, and workspaces were each `[]`. All three test agents were archived, both test workspaces were archived, and the plugin/control fixtures were removed from daemon configuration. The foreground daemon was stopped. A host listener check returned only the header for port 17682, and exact-path process checks found no fixture or `sleep 90` process. Finally, the 1.2 GiB isolated experiment tree containing the daemon home, generated plugins, provider state, downloaded models, workspace, and marker was deleted. Every process carrying the ephemeral password environment had exited. No public Beads/Dolt ref or primary workspace was touched.
+The final correction run used port 17684. Before shutdown, the exact public active agent and workspace commands each returned `[]`; plugin listing contained only the owned running probe. Plugin removal returned `disabled`, and the next plugin list returned `[]`.
+
+Selected exact results, with only the owned root/plugin path shortened:
+
+~~~console
+$ PASEO_PASSWORD='<ephemeral-password>' paseo ls --host 127.0.0.1:17684 --json
+[]
+$ PASEO_PASSWORD='<ephemeral-password>' paseo workspace ls --host 127.0.0.1:17684 --json
+[]
+$ PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17684 --json
+[{"id":"director-lifecycle-probe","path":"<owned-plugin>","enabled":true,"status":"running"}]
+$ PASEO_PASSWORD='<ephemeral-password>' paseo plugin remove director-lifecycle-probe --host 127.0.0.1:17684 --json
+{"id":"director-lifecycle-probe","path":"<owned-plugin>","enabled":false,"status":"disabled"}
+$ PASEO_PASSWORD='<ephemeral-password>' paseo plugin ls --host 127.0.0.1:17684 --json
+[]
+~~~
+
+Immediately before final shutdown, the exact PID probe returned only daemon PID `1711582`, while every recorded child/provider PID was absent. The listener probe bound `127.0.0.1:17684` to that PID. After SIGINT, the listener command returned only its header and the exact PID command returned no rows. The 1.5 GiB owned experiment root was then deleted, and `test ! -e` succeeded.
+
+~~~console
+$ ps -p 1613583,1612157,1612149,1670450,1665674,1665665,1711582 -o pid=,ppid=,stat=,args=
+1711582 1710699 Sl+ Paseo Daemon
+$ ss -ltnp 'sport = :17684'
+LISTEN 0 511 127.0.0.1:17684 0.0.0.0:* users:(("Paseo Daemon",pid=1711582,fd=29))
+# After SIGINT:
+$ ss -ltnp 'sport = :17684'
+State Recv-Q Send-Q Local Address:Port Peer Address:Port Process
+$ ps -p 1711582,1613583,1612157,1612149,1670450,1665674,1665665 -o pid=,ppid=,stat=,args=
+exit 1; no rows
+$ rm -rf /tmp/director-m0.2
+$ test ! -e /tmp/director-m0.2
+exit 0
+~~~
+
+Across the correction matrix, six owned agents and five owned workspaces (including stopped proof attempts) were archived before deletion. Both plugin fixtures were removed. No public Beads/Dolt ref or primary workspace was touched.
+
+A final smoke copied the exact final fixture into a fresh root on port 17685. It repeated typecheck, all 43 structural negatives, plugin install, initialized-agent creation, the 428 ms live-process archive proof, workspace archive, plugin removal, PID/listener absence, and owned-root deletion successfully.
+
+## Independent-review corrections
+
+- **Structural preflight P1:** resolved by checking 43 client/root/ref-handle methods before connection/create and by independently removing every method in an offline suite that reported 43 precise failures and zero effects.
+- **Active archive P1:** resolved by the durable unique child marker, exact child/provider/daemon ancestry, public active-turn observation, 428 ms final exact-fixture archive result, exact-PID absence at response and after delay, idempotent retry/reconciliation, and independently usable workspace.
+- **Reproduction P2:** resolved by the exact no-prompt failure command/output and the explicit active-list, plugin-removal, PID, listener, daemon-stop, owned-root deletion, and absence commands/results above.
 
 ## Result
 
