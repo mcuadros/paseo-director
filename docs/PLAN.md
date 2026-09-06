@@ -4,7 +4,7 @@
 - **Plan version:** 0.3
 - **Last updated:** 2026-09-06
 - **Approved:** 2026-09-06
-- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope
+- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope; [ADR-0014](adr/0014-practical-linux-agent-boundary.md) for the human-approved practical trusted-provider Linux boundary
 - **Plugin repository:** <https://github.com/mcuadros/paseo-director>
 - **Public name:** Director for Paseo
 - **Short UI name:** Director

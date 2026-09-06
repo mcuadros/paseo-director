@@ -1182,7 +1182,7 @@ async function execute() {
   const cleanup = await completeRuntimeCleanup(true);
   return {
     procedure: "dir-m0.14-linux-authority-contract-v1",
-    result: "no-go",
+    result: "observations-recorded",
     versions,
     podmanTopology,
     image: {
@@ -1198,11 +1198,11 @@ async function execute() {
     gitCandidateBundle,
     interruptionRecovery,
     lifecycle,
-    blockers: [
-      "paseo_worktree_lifecycle_executes_before_provider_boundary",
-      "authenticated_network_requires_an_unapproved_egress_broker",
-      "provider_bearer_credentials_remain_readable_to_the_provider_process",
-      "bind_mounted_worktree_has_no_per_run_aggregate_disk_quota",
+    practicalBoundaryInputs: [
+      "automatic_lifecycle_configuration_requires_preflight_refusal_or_human_approval",
+      "provider_authentication_is_available_only_to_the_trusted_provider_cli",
+      "provider_network_is_defense_in_depth_under_the_trusted_cli_assumption",
+      "aggregate_disk_and_resource_ceilings_are_operational_fail_closed_limits",
     ],
     cleanup,
   };

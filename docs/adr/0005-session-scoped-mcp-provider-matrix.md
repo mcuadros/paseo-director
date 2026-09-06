@@ -5,7 +5,7 @@
 - **Beads Task:** `dir-m0.3`
 - **Plan gate:** M0 per-session MCP provider matrix
 - **Decision owner:** `dir-m0.3` Task owner
-- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform
+- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform; [ADR-0014](0014-practical-linux-agent-boundary.md), which admits the exact proven native-provider tuples only under the practical trusted-provider boundary and mandatory rootless-OCI defense in depth
 
 ## Context
 
@@ -222,8 +222,10 @@ approve a production credential topology.
 - Fallback chains remain empty by default. Explicit chains must be ordered and
   may reference only independently admitted rows; retries cannot change the
   frozen provider, model, mode, or permission policy.
-- MCP scope remains defense in depth. Product work remains blocked until the
-  separate OS/credential authority stop condition is resolved.
+- MCP scope remains defense in depth. ADR-0014 resolves the separate authority
+  decision only for its explicit trusted-engine/trusted-provider Linux boundary
+  and mandatory rootless-OCI profile; this MCP result alone still grants no
+  host authority claim.
 
 P0 stop conditions for this gate are: an ignored MCP or policy setting; an
 unexpected custom MCP server or advertised tool; a missing or mismatched nonce;
