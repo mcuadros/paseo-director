@@ -1,0 +1,515 @@
+{
+  "schema_version": 1,
+  "task": "dir-m0.5",
+  "environment": {
+    "dolt": "dolt version 2.3.2",
+    "git": "git version 2.47.3",
+    "node": "v26.7.0",
+    "operating_system": "Linux 6.12.107+deb13-amd64 x64"
+  },
+  "execution_contract": "one fresh disposable process and owned data root per property",
+  "properties": [
+    {
+      "property": "remote-layout",
+      "contract_result": "PASS",
+      "checks": [
+        "normal Git main and Dolt refs coexist in one initialized Git remote",
+        "refs/dolt/data is the selected data ref",
+        "refs/heads/__dolt_remote_info__ is required Dolt metadata",
+        "ordinary Git and Dolt clones recover only their respective content"
+      ],
+      "evidence": {
+        "remote_refs": [
+          "refs/dolt/data commit",
+          "refs/heads/__dolt_remote_info__ commit",
+          "refs/heads/main commit"
+        ],
+        "organizer_main_preserved": true,
+        "independent_clone_fingerprints_match": true
+      },
+      "cleanup": {
+        "owned_processes_stopped": true,
+        "task_owned_dolt_roots_configured": 1,
+        "dolt_cli_calls": 8,
+        "metrics_disabled_preflight_checks": 8,
+        "event_flush_disabled_preflight_checks": 8,
+        "owned_metrics_processes_observed": 0,
+        "credential_markers_in_surviving_process_environments": 0,
+        "process_environment_scans": 16,
+        "same_user_process_environments_read": 3490,
+        "owned_surviving_process_environments_read": 16,
+        "unreadable_unrelated_same_user_process_environments": 80,
+        "root_reappearance_checkpoints_ms": [
+          0,
+          10,
+          25,
+          50,
+          100,
+          250,
+          500
+        ],
+        "owned_directory_removed": true,
+        "owned_directory_reappeared": false
+      }
+    },
+    {
+      "property": "partial-git-failure",
+      "contract_result": "PASS",
+      "checks": [
+        "Git failure and Dolt success are reported independently",
+        "a blind Git retry refuses to overwrite a newer remote head",
+        "fetch/rebase reconciliation preserves local and remote Organizer changes",
+        "the already-successful Dolt state remains unchanged"
+      ],
+      "evidence": {
+        "first_attempt": {
+          "git": "REMOTE_UNREACHABLE",
+          "dolt": "SUCCESS",
+          "combined": "PARTIAL_FAILURE"
+        },
+        "blind_retry": "NON_FAST_FORWARD",
+        "reconciled": true,
+        "no_force_used": true
+      },
+      "cleanup": {
+        "owned_processes_stopped": true,
+        "task_owned_dolt_roots_configured": 1,
+        "dolt_cli_calls": 14,
+        "metrics_disabled_preflight_checks": 14,
+        "event_flush_disabled_preflight_checks": 14,
+        "owned_metrics_processes_observed": 0,
+        "credential_markers_in_surviving_process_environments": 0,
+        "process_environment_scans": 22,
+        "same_user_process_environments_read": 4741,
+        "owned_surviving_process_environments_read": 22,
+        "unreadable_unrelated_same_user_process_environments": 111,
+        "root_reappearance_checkpoints_ms": [
+          0,
+          10,
+          25,
+          50,
+          100,
+          250,
+          500
+        ],
+        "owned_directory_removed": true,
+        "owned_directory_reappeared": false
+      }
+    },
+    {
+      "property": "partial-dolt-failure",
+      "contract_result": "PASS",
+      "checks": [
+        "Git success and Dolt failure are reported independently",
+        "a blind Dolt retry refuses to overwrite a newer remote commit",
+        "pull/merge reconciliation preserves local and remote TaskStore rows",
+        "the already-successful Git state remains unchanged"
+      ],
+      "evidence": {
+        "first_attempt": {
+          "git": "SUCCESS",
+          "dolt": "REMOTE_UNREACHABLE",
+          "combined": "PARTIAL_FAILURE"
+        },
+        "blind_retry": "NON_FAST_FORWARD",
+        "reconciled_row_ids": [
+          "external-dolt",
+          "local-dolt",
+          "seed"
+        ],
+        "no_force_used": true
+      },
+      "cleanup": {
+        "owned_processes_stopped": true,
+        "task_owned_dolt_roots_configured": 1,
+        "dolt_cli_calls": 28,
+        "metrics_disabled_preflight_checks": 28,
+        "event_flush_disabled_preflight_checks": 28,
+        "owned_metrics_processes_observed": 0,
+        "credential_markers_in_surviving_process_environments": 0,
+        "process_environment_scans": 36,
+        "same_user_process_environments_read": 7668,
+        "owned_surviving_process_environments_read": 36,
+        "unreadable_unrelated_same_user_process_environments": 180,
+        "root_reappearance_checkpoints_ms": [
+          0,
+          10,
+          25,
+          50,
+          100,
+          250,
+          500
+        ],
+        "owned_directory_removed": true,
+        "owned_directory_reappeared": false
+      }
+    },
+    {
+      "property": "shared-server-recovery",
+      "contract_result": "PASS",
+      "checks": [
+        "two independent clients commit to two databases on one server",
+        "SIGKILL restart preserves both committed databases",
+        "the uncommitted transaction is absent after restart",
+        "retry creates exactly one durable row",
+        "offline fsck passes after graceful shutdown"
+      ],
+      "evidence": {
+        "crash": {
+          "requested_signal": "SIGKILL",
+          "exit_observed": true,
+          "termination": "SIGKILL"
+        },
+        "graceful": {
+          "requested_signal": "SIGTERM",
+          "exit_observed": true,
+          "termination": 0
+        },
+        "committed_databases_after_restart": 2,
+        "uncommitted_rows_after_restart": 0,
+        "retry_rows": 1,
+        "credential_check": {
+          "phase": "after restart and retry",
+          "regular_files_scanned": 23,
+          "plaintext_credentials": 0,
+          "config_mode": "0600",
+          "linux_process_scan_asserted": true,
+          "readable_same_user_process_environments": 217,
+          "scanned_owned_surviving_process_environments": 2,
+          "unreadable_unrelated_same_user_process_environments": 5,
+          "owned_metrics_processes": 0,
+          "credential_markers_in_surviving_process_environments": 0
+        }
+      },
+      "cleanup": {
+        "owned_processes_stopped": true,
+        "task_owned_dolt_roots_configured": 1,
+        "dolt_cli_calls": 20,
+        "metrics_disabled_preflight_checks": 20,
+        "event_flush_disabled_preflight_checks": 20,
+        "owned_metrics_processes_observed": 0,
+        "credential_markers_in_surviving_process_environments": 0,
+        "process_environment_scans": 26,
+        "same_user_process_environments_read": 5555,
+        "owned_surviving_process_environments_read": 39,
+        "unreadable_unrelated_same_user_process_environments": 130,
+        "root_reappearance_checkpoints_ms": [
+          0,
+          10,
+          25,
+          50,
+          100,
+          250,
+          500
+        ],
+        "owned_directory_removed": true,
+        "owned_directory_reappeared": false
+      }
+    },
+    {
+      "property": "backup-restore",
+      "contract_result": "PASS",
+      "checks": [
+        "online DOLT_BACKUP snapshot completes against a running server",
+        "restore targets a fresh database without force",
+        "schema, branches, rows, and working-set status have one matching digest",
+        "both source and restored stores pass offline fsck"
+      ],
+      "evidence": {
+        "source_and_restore_digest_match": true,
+        "restored_committed_rows": 1,
+        "restored_working_set_rows": 1,
+        "restored_to_fresh_database": true,
+        "force_restore_used": false,
+        "measured_backup_control_exclusions": {
+          "backup_regular_files_scanned": 3,
+          "source_control_files_measured": 5,
+          "matching_source_control_file_digests": 0,
+          "matching_source_control_filenames": 0,
+          "plaintext_credential_files": 0
+        },
+        "credential_check": {
+          "phase": "after online backup and restore",
+          "regular_files_scanned": 27,
+          "plaintext_credentials": 0,
+          "config_mode": "0600",
+          "linux_process_scan_asserted": true,
+          "readable_same_user_process_environments": 215,
+          "scanned_owned_surviving_process_environments": 2,
+          "unreadable_unrelated_same_user_process_environments": 5,
+          "owned_metrics_processes": 0,
+          "credential_markers_in_surviving_process_environments": 0
+        },
+        "graceful": {
+          "requested_signal": "SIGTERM",
+          "exit_observed": true,
+          "termination": 0
+        }
+      },
+      "cleanup": {
+        "owned_processes_stopped": true,
+        "task_owned_dolt_roots_configured": 1,
+        "dolt_cli_calls": 20,
+        "metrics_disabled_preflight_checks": 20,
+        "event_flush_disabled_preflight_checks": 20,
+        "owned_metrics_processes_observed": 0,
+        "credential_markers_in_surviving_process_environments": 0,
+        "process_environment_scans": 29,
+        "same_user_process_environments_read": 6227,
+        "owned_surviving_process_environments_read": 46,
+        "unreadable_unrelated_same_user_process_environments": 145,
+        "root_reappearance_checkpoints_ms": [
+          0,
+          10,
+          25,
+          50,
+          100,
+          250,
+          500
+        ],
+        "owned_directory_removed": true,
+        "owned_directory_reappeared": false
+      }
+    },
+    {
+      "property": "schema-migration",
+      "contract_result": "PASS",
+      "checks": [
+        "project is paused and current store constraints/configuration are valid before migration",
+        "live information_schema facts satisfy the aggregates.id validator baseline",
+        "fact-model mutations cover non-binary and empty collation, width, nullability, prefix, and expression semantics",
+        "every fact-model mutation prevents migration execution",
+        "pre-migration backup is restored and fingerprinted before schema SQL",
+        "injected migration failure is recoverable to exact paused version-one state",
+        "successful migration advances schema and aggregate versions once before resume"
+      ],
+      "evidence": {
+        "baseline_schema_violations": [],
+        "baseline_live_schema_facts": {
+          "collation": "utf8mb4_0900_bin",
+          "octet_width": 512,
+          "nullable": "NO",
+          "index_nullable": "",
+          "index_prefix": null,
+          "index_expression": null
+        },
+        "fact_model_drift_violations": {
+          "collation": [
+            "non_binary_collation"
+          ],
+          "empty_collation": [
+            "missing_collation"
+          ],
+          "width": [
+            "identity_width_overflow"
+          ],
+          "nullability": [
+            "nullable_column",
+            "nullable_index_column"
+          ],
+          "prefix": [
+            "prefix_index"
+          ],
+          "expression": [
+            "expression_index"
+          ]
+        },
+        "blocked_fact_model_drift_migration_starts": 0,
+        "total_valid_migration_starts": 1,
+        "backup_validated_before_migration": true,
+        "failed_migration_exit": 1,
+        "failure_recovery_digest_match": true,
+        "failure_recovery_state": "paused",
+        "final_schema_version": 2,
+        "final_aggregate_version": 1,
+        "expected_version_update_used": true,
+        "aggregate_odku_used": false,
+        "credential_check": {
+          "phase": "after migration",
+          "regular_files_scanned": 41,
+          "plaintext_credentials": 0,
+          "config_mode": "0600",
+          "linux_process_scan_asserted": true,
+          "readable_same_user_process_environments": 215,
+          "scanned_owned_surviving_process_environments": 2,
+          "unreadable_unrelated_same_user_process_environments": 5,
+          "owned_metrics_processes": 0,
+          "credential_markers_in_surviving_process_environments": 0
+        },
+        "graceful": {
+          "requested_signal": "SIGTERM",
+          "exit_observed": true,
+          "termination": 0
+        }
+      },
+      "cleanup": {
+        "owned_processes_stopped": true,
+        "task_owned_dolt_roots_configured": 1,
+        "dolt_cli_calls": 51,
+        "metrics_disabled_preflight_checks": 51,
+        "event_flush_disabled_preflight_checks": 51,
+        "owned_metrics_processes_observed": 0,
+        "credential_markers_in_surviving_process_environments": 0,
+        "process_environment_scans": 60,
+        "same_user_process_environments_read": 12892,
+        "owned_surviving_process_environments_read": 107,
+        "unreadable_unrelated_same_user_process_environments": 300,
+        "root_reappearance_checkpoints_ms": [
+          0,
+          10,
+          25,
+          50,
+          100,
+          250,
+          500
+        ],
+        "owned_directory_removed": true,
+        "owned_directory_reappeared": false
+      }
+    },
+    {
+      "property": "configuration-drift",
+      "contract_result": "PASS",
+      "checks": [
+        "startup control connection sets and reads global safe mode",
+        "the exact write connection resets and reads session/global mode before SQL",
+        "global drift and duplicate initialization prevent writes",
+        "connection loss and listener identity mismatch prevent writes without fallback",
+        "set/read errors and unexpected values fail closed in the adapter decision matrix",
+        "only the two safe writes are durable and health output is bounded"
+      ],
+      "evidence": {
+        "safe_write": {
+          "written": true,
+          "health_code": "TASKSTORE_HEALTHY",
+          "exact_connection_checked": true
+        },
+        "corrected_session_write": {
+          "written": true,
+          "health_code": "TASKSTORE_HEALTHY",
+          "exact_connection_checked": true
+        },
+        "denied_health_codes": [
+          "COMMIT_MODE_READ_FAILED",
+          "CONNECTION_UNAVAILABLE",
+          "DUPLICATE_INITIALIZATION",
+          "SESSION_SET_FAILED",
+          "TASKSTORE_IDENTITY_MISMATCH",
+          "TASKSTORE_IDENTITY_MISMATCH",
+          "UNSAFE_GLOBAL_COMMIT_MODE",
+          "UNSAFE_GLOBAL_COMMIT_MODE",
+          "UNSAFE_SESSION_COMMIT_MODE"
+        ],
+        "durable_row_ids": [
+          "safe",
+          "session-corrected"
+        ],
+        "fallback_connections_used": 0,
+        "raw_sql_or_credentials_exposed_to_caller": false,
+        "first_stop": {
+          "requested_signal": "SIGTERM",
+          "exit_observed": true,
+          "termination": 0
+        },
+        "credential_check": {
+          "phase": "after configuration drift matrix",
+          "regular_files_scanned": 17,
+          "plaintext_credentials": 0,
+          "config_mode": "0600",
+          "linux_process_scan_asserted": true,
+          "readable_same_user_process_environments": 215,
+          "scanned_owned_surviving_process_environments": 2,
+          "unreadable_unrelated_same_user_process_environments": 5,
+          "owned_metrics_processes": 0,
+          "credential_markers_in_surviving_process_environments": 0
+        },
+        "graceful": {
+          "requested_signal": "SIGTERM",
+          "exit_observed": true,
+          "termination": 0
+        }
+      },
+      "cleanup": {
+        "owned_processes_stopped": true,
+        "task_owned_dolt_roots_configured": 1,
+        "dolt_cli_calls": 19,
+        "metrics_disabled_preflight_checks": 19,
+        "event_flush_disabled_preflight_checks": 19,
+        "owned_metrics_processes_observed": 0,
+        "credential_markers_in_surviving_process_environments": 0,
+        "process_environment_scans": 22,
+        "same_user_process_environments_read": 4721,
+        "owned_surviving_process_environments_read": 34,
+        "unreadable_unrelated_same_user_process_environments": 111,
+        "root_reappearance_checkpoints_ms": [
+          0,
+          10,
+          25,
+          50,
+          100,
+          250,
+          500
+        ],
+        "owned_directory_removed": true,
+        "owned_directory_reappeared": false
+      }
+    },
+    {
+      "property": "supported-topology",
+      "contract_result": "PASS",
+      "checks": [
+        "installed Dolt is the exact selected 2.3.2 release",
+        "installed CLI documents refs/dolt/data Git remotes and working-set backups",
+        "fixture uses direct argv spawning and Node path/file-URL APIs",
+        "the process is running on the supported Linux topology"
+      ],
+      "evidence": {
+        "dolt": "dolt version 2.3.2",
+        "git": "git version 2.47.3",
+        "node": "v26.7.0",
+        "host": "Linux 6.12.107+deb13-amd64 x64",
+        "process_platform": "linux",
+        "supported_runtime_executed": true,
+        "common_process_contract": "direct argv; no shell",
+        "common_path_contract": "Node path and pathToFileURL; no hard-coded separator or temporary directory"
+      },
+      "cleanup": {
+        "owned_processes_stopped": true,
+        "task_owned_dolt_roots_configured": 1,
+        "dolt_cli_calls": 3,
+        "metrics_disabled_preflight_checks": 3,
+        "event_flush_disabled_preflight_checks": 3,
+        "owned_metrics_processes_observed": 0,
+        "credential_markers_in_surviving_process_environments": 0,
+        "process_environment_scans": 11,
+        "same_user_process_environments_read": 2387,
+        "owned_surviving_process_environments_read": 11,
+        "unreadable_unrelated_same_user_process_environments": 56,
+        "root_reappearance_checkpoints_ms": [
+          0,
+          10,
+          25,
+          50,
+          100,
+          250,
+          500
+        ],
+        "owned_directory_removed": true,
+        "owned_directory_reappeared": false
+      }
+    }
+  ],
+  "summary": {
+    "focused_properties": 8,
+    "pass": 8,
+    "failed": 0,
+    "credentials_or_raw_sql_exposed_to_callers": false,
+    "shared_development_beads_server_touched": false,
+    "unrelated_repositories_touched": false
+  },
+  "decision_evidence": {
+    "supported_linux_operations": "GO",
+    "overall": "GO",
+    "blocker": null
+  }
+}
