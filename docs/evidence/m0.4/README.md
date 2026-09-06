@@ -202,8 +202,8 @@ For this Candidate, validate instead:
 ## Compatibility, cleanup, and follow-up
 
 Compatibility is bounded to the exact Beads, Dolt, Node, and Debian/Linux
-versions recorded above. Windows, synchronization, backup, restore, migration,
-partial-failure recovery, the aggregate-validator extension, and safe-variable
+versions recorded above. Synchronization, backup, restore, migration, partial-
+failure recovery, the aggregate-validator extension, and safe-variable
 reconciliation remain gates for `dir-m0.5` and `dir-m0.10`.
 
 The minimal reproduction stops its owned server, restores the global variable,

@@ -30,7 +30,6 @@ are omitted. No credential values were read or recorded.
 | Node.js | 26.7.0 |
 | Git | 2.47.3 |
 | GitHub CLI | 2.97.0 |
-| Windows execution | Not available in this spike; no Windows behavior is claimed |
 
 The local status command reported a stale daemon PID and an unreachable
 daemon. That failure state was preserved rather than starting, restarting, or
@@ -54,9 +53,6 @@ All web sources were read on 2026-09-06.
 | [Git worktrees](https://paseo.sh/docs/worktrees) | `getpaseo/paseo@a39959219fc5f4e7f06d4f13f57f9fc55641bdb8`, 2026-08-11 | Committed `paseo.json` setup and teardown values are shell scripts run in the worktree, and receive the source-checkout path. Repository-controlled lifecycle commands therefore cross the worktree boundary unless independently constrained. |
 | [systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html) | Page last modified 2026-07-23 | Linux service processes can use a distinct user plus mount, home, privilege, and network restrictions. |
 | [Docker Engine security](https://docs.docker.com/engine/security/) | Page served 2026-09-06; page metadata updated 2025-07-25 | Linux containers use kernel namespaces/cgroups, and access to the Docker daemon is itself privileged authority that must not be exposed inside an agent container. |
-| [Windows restricted tokens](https://learn.microsoft.com/en-us/windows/win32/secauthz/restricted-tokens) | Page last modified 2025-03-12 | A restricted token can reduce access to securable objects and privileged operations; it is not sufficient without appropriate ACL, desktop, process, and network isolation. |
-| [Windows AppContainer isolation](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) | Source revision `804c358a9c4bce679f7de9c1ef714669cb168959` | AppContainer provides capability-based credential, file, network, process, and window isolation. |
-| [Windows container isolation modes](https://learn.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/hyperv-container) | Page last modified 2025-09-17 | Hyper-V-isolated containers use a dedicated kernel and hardware-level VM boundary; process-isolated containers share the host kernel. |
 
 ## Reproducible local commands and selected output
 
@@ -242,9 +238,9 @@ meaning are preserved.
    outside the Director MCP. Schema-valid custom MCP does not remove those
    ambient paths.
 5. The installed stable API exposes a potential wrapper integration point and
-   session-scoped MCP, but this read-only inspection does not prove Linux or
-   Windows authority separation. The exact public mechanism must be exercised
-   before relying on it.
+   session-scoped MCP, but this read-only inspection does not prove Linux
+   authority separation. The exact public mechanism must be exercised before
+   relying on it.
 6. Current web documentation can be newer than the immutable 0.7.2 artifact.
    Capability detection must inspect the installed runtime and fail closed.
 

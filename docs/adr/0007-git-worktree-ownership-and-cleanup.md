@@ -3,8 +3,12 @@
 - **Status:** Proposed
 - **Date:** 2026-09-06
 - **Beads Task:** `dir-m0.6`
-- **Plan gate:** M0 Git worktree ownership and Windows/Linux cleanup
+- **Plan gate:** M0 Git worktree ownership and Linux cleanup
 - **Decision owner:** `dir-m0.6` Task Agent; platform reduction requires the human project owner
+- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform
+
+All clauses in this ADR apply to the recorded Linux scope only. ADR-0011 does
+not weaken the cleanup contract or any unrelated M0 gate.
 
 ## Context
 
@@ -31,9 +35,9 @@ authority boundary. `dir-m0.14` separately owns containment of Task Agents,
 Reviewer Agents, helper subagents, and repository code.
 
 Integrated ADR-0005 admits exact Linux tuples for session-scoped MCP and tool
-preapproval only. It explicitly preserves ADR-0008, makes no Windows or host-
-containment claim, and does not authorize Git cleanup by an agent. Engine-owned
-cleanup and the Windows gate here remain independent M0 requirements.
+preapproval only. It explicitly preserves ADR-0008, makes no host-containment
+claim, and does not authorize Git cleanup by an agent. Engine-owned cleanup
+remains an independent M0 requirement.
 
 Integrated ADR-0003 proves that exact Paseo 0.7.2 archive and restart state
 must be reconciled before cleanup. Every Task Agent, Reviewer Agent, and helper
@@ -51,11 +55,11 @@ REP-1, not an inert substitute for a network forge.
 
 ## Question or hypothesis
 
-Using supported Git CLI behavior and cross-platform Node.js 22-or-newer APIs,
+Using supported Git CLI behavior and Node.js 22-or-newer APIs on Linux,
 can the engine revalidate exact durable ownership before every cleanup effect
 and retry, protect all uncommitted material without blindly committing possible
 secrets, bind deletion to the live fetched base, and reconcile interruption and
-locked-file failures on real Linux and Windows hosts?
+locked-file failures?
 
 ## Acceptance criteria
 
@@ -76,7 +80,7 @@ locked-file failures on real Linux and Windows hosts?
   attempted, `intent_recorded` retains the existing present-ref ambiguity and
   is never cleared automatically.
 - Git worktree registration paths are converted to the same native realpath,
-  separator, drive-letter, and case comparison form as Node paths. A positive
+  separator, and case comparison form as Node paths. A positive
   owned path/branch/HEAD registration must match before removal and exact owned
   registrations must be absent afterward.
 - Source, common-directory, and origin replacement after worktree removal is
@@ -125,33 +129,21 @@ locked-file failures on real Linux and Windows hosts?
 - `complete` is terminal for destructive effects. Repeated reconciliation may
   observe confirmed absence, but any later local or remote Task-ref appearance,
   including the same Candidate SHA, is preserved and parks in Needs you.
-- Atomic state persistence flushes the written next file before rename. Windows
-  opens that file with read/write access required by `FlushFileBuffers`; Linux
-  retains its read-only file-flush handle and the subsequent POSIX directory
-  `fsync`. File or directory flush failures remain fatal and are never ignored.
+- Atomic state persistence flushes the written next file before rename, then
+  flushes the containing directory. File or directory flush failures remain
+  fatal and are never ignored.
 - Every plain clean path proves the Candidate is contained by the live fetched
   base before persisting removal-ready and again immediately before move.
 - Filesystem scanning is independent of Git visibility and ignored-path
-  presence. Nested `.git` files/directories, submodules, untracked symlinks/
-  reparse points, FIFOs, sockets, and other special types stop path-free; a
+  presence. Nested `.git` files/directories, submodules, untracked symlinks,
+  FIFOs, sockets, and other special types stop path-free; a
   tracked mode-`120000` symlink is byte-verified and admitted, and empty
   directories enter non-Git recovery.
-- Windows exercises two real `FileShare.None` boundaries in one run. A dirty
-  worktree must fail snapshot recomputation with the exact error
-  `GitCommandError: git add exited 128`, leaving unchanged
-  `snapshot_verified` intent and recovery data. A separate clean integrated
-  worktree first persists `removal_ready`, recomputes its real index and
-  prospective tree on resume, then acquires the held handle immediately before
-  and must fail the quarantine move with exact error
-  `GitCommandError: git worktree move exited 128`, retaining original
-  path/registration/ref/data.
-  Each releases the handle and retries through removal and completion. The
-  remote job must observe every fact rather than infer it.
 
 ## Evidence
 
 The self-cleaning harness, installed-schema hashes, complete reviewer-fault
-matrix, Linux transcript, Windows procedure, and cleanup proof are in
+matrix, Linux transcript, and cleanup proof are in
 [`docs/evidence/m0.6/README.md`](../evidence/m0.6/README.md).
 
 On Debian 13 / Linux `6.12.107+deb13-amd64` x86-64 with Node.js
@@ -194,7 +186,7 @@ original case plus these review-derived cases:
 - dirty-plus-ignored files/directories and an uncommitted unignored nested
   repository remain on disk and return path-free Needs-you diagnostics;
 - a committed mode-`120000` symlink and declared inactive filter are admitted,
-  while untracked links/reparse points and executable clean filters still stop;
+  while untracked symlinks and executable clean filters still stop;
 - an empty untracked directory coexists with dirty Git recovery through the
   verified non-Git artifact and restores as an empty directory;
 - all four installed Paseo worktree execution surfaces are individually
@@ -218,9 +210,8 @@ original case plus these review-derived cases:
   human approval or containment is absent; the hook sentinel and every owned
   worktree/ref remain intact, and the `file://` spelling returns the same policy
   refusal rather than an outage;
-- injected durability operations prove Windows selects a non-truncating `r+`
-  state-file handle, Linux selects `r`, both flush before close, and a file
-  flush error propagates after closing the descriptor;
+- injected durability operations prove the state file flushes before close and
+  a file-flush error propagates after closing the descriptor;
 - clean and dirty paths persist removal-ready evidence, reconcile missing
   paths only after Git registration is also absent, and preserve the same
   recovery SHA across effect-before-state interruptions;
@@ -229,32 +220,6 @@ original case plus these review-derived cases:
   cleanup resumes idempotently after the fixture removes it; and
 - the complete temporary root and loopback fault process are absent after each
   run.
-
-No successful Windows contract evidence exists yet. The first scoped run,
-[`34037393562`](https://github.com/mcuadros/paseo-director/actions/runs/34037393562),
-checked out approved Candidate `d0530622bafcbdd342bc2fa4d572ab2fa964653d`
-on base `ae06c376002b079f55f9fdbd92b9b0e70466f422`, then failed during its first
-harness setup on image `win25-vs2026` `20260824.214.3`, Node.js `v22.23.2`,
-and Git `2.55.0.windows.5`. The failed call was file `fsync` on a read-only
-handle; the POSIX-only directory `fsync` branch was not reached. The bounded
-correction selects read/write access only for the Windows file handle and is
-pending fresh exact-SHA review before another Windows run. The scoped
-`windows-2025` workflow is limited to PRs targeting `main` that change one of
-the four exact `dir-m0.6` artifacts. It has a 10-minute limit, read-only
-contents permission, exact event head/base validation, no secrets or matrix,
-and two identical harness runs whose exit codes are checked independently. It
-records `ImageOS`, `ImageVersion`, runner OS/architecture, OS build, Node, and
-Git. The checkout uses current official `actions/checkout@v7.0.1`, pinned to
-exact commit `3d3c42e5aac5ba805825da76410c181273ba90b1`; its immutable
-`action.yml` declares Node.js 24. The dirty and clean held-handle cases above
-must both pass in this same job before any Windows claim.
-
-The Windows ACL helpers carry the path only in the dedicated child environment
-field `DIRECTOR_RECOVERY_ACL_PATH`; no path is appended to or interpolated into
-the PowerShell `-Command` string. One invocation sets an inheritance-protected
-current-SID-only rule and another verifies SID, allow type, full-control rights,
-and both inheritance flags. PowerShell is absent on the Linux evidence host,
-so the real Windows run remains the authority for this plumbing and ACL result.
 
 ## Alternatives considered
 
@@ -336,21 +301,15 @@ checkout's symbolic branch. The local delete guard enumerates normalized Git
 registrations immediately before mutation and routes any other consumer to
 Needs you.
 
-### Infer Windows behavior from Linux
-
-Rejected. POSIX permits rename/unlink with an open descriptor, while Windows
-sharing rules may block move or removal. Only the real bounded post-review job
-can resolve that platform gate.
-
 ## Decision
 
 **Inconclusive.** The human-authorized unified pre-destructive evidence gate,
 exact-command token, local-origin refusal, secret-safe recovery, and
 reconciliation contract is the sole candidate mechanism. Linux evidence
-supports it on the recorded tuple, but the mandatory real Windows result is
-pending. The separate large-tree policy evidence in `dir-m0.17` is also open.
-M0/M1 remain blocked until those gates pass and the evidence-changing Candidate
-receives a fresh independent top-level Reviewer Agent verdict.
+supports it on the recorded tuple. The separate Linux large-tree policy
+evidence in `dir-m0.17` is also open. M0/M1 remain blocked until the remaining
+gates pass and the evidence-changing Candidate receives a fresh independent
+top-level Reviewer Agent verdict.
 
 The engine stops rather than deletes when dirty work and ignored/
 unsnapshotable material coexist, non-Git preservation cannot be proved,
@@ -358,8 +317,8 @@ filters or locks fail, ref/identity facts are ambiguous, transport/auth fails,
 the live base changes, or the filesystem is unsupported. Prospective-tree-clean
 integrated worktrees with policy-bounded ignored files/directories use the
 selected private non-Git recovery lifecycle and are removed automatically. No
-recursive-force fallback, Git secret snapshot, Linux-only fallback, or platform
-reduction is selected.
+recursive-force fallback, Git secret snapshot, or silent platform fallback is
+selected.
 
 Repository `paseo.json` worktree commands remain a separate launch gate.
 Configured top-level `scripts` are not automatically executed by workspace
@@ -390,12 +349,12 @@ skip mechanism or keep launch blocked.
 - Review measurements for the former default were about 17.77 seconds at 5,006
   entries, 93.24 seconds at 20,021, and 245 seconds at 30,031. The corrected
   contract deliberately revalidates payload bytes at all five destructive
-  gates; `dir-m0.17` owns representative Linux/real-Windows benchmarks
-  and the release policy for larger generated trees. It is
+  gates; `dir-m0.17` owns representative Linux benchmarks and the release
+  policy for larger generated trees. `dir-m0.17` is
   a P0 sibling under `dir-m0`, discovered from this Task, so the broader M0
   cleanup claim remains blocked without expanding `dir-m0.6`.
 - Registration comparison must retain its positive pre-removal assertion;
-  negative-only tests are insufficient for Windows separators and 8.3 aliases.
+  negative-only tests are insufficient for canonical-path aliases.
 - Local-repository hook and fsmonitor suppression claims do not extend to a
   path/file origin's receive process. Without separate human approval plus
   `dir-m0.14` containment, remote observation/fetch/push parks before executing
@@ -413,8 +372,8 @@ skip mechanism or keep launch blocked.
 - Ignored data never enters Git recovery. Integrated prospective-tree-clean
   work uses the private non-Git artifact and default seven-day retention;
   Git-invisible empty directories may accompany a dirty Git snapshot, while
-  dirty-plus-ignored, unignored nested repositories, untracked links/reparse
-  points or other special files, ownership or
+  dirty-plus-ignored, unignored nested repositories, untracked symlinks or
+  other special files, ownership or
   permission uncertainty, and exhausted preservation/disk bounds enter Needs
   you without names or contents in durable output.
 - The ignored-artifact manifest is private recovery data, not TaskStore/audit/
@@ -427,11 +386,9 @@ skip mechanism or keep launch blocked.
 - Retention-before-expiry is scheduled `retained` state, not Needs you. Foreign
   owner/path/permission/content facts map to path-free Needs you.
 - State writes use a permission-restricted next file, file `fsync`, atomic
-  rename, and POSIX directory `fsync`. Windows opens the next file as `r+`
-  because `FlushFileBuffers` requires write access; other platforms retain
-  `r`. Neither file nor directory flush failure is swallowed. A partial next
-  file leaves the prior intent readable; an invalid primary intent fails closed
-  before effects.
+  rename, and directory `fsync`. Neither file nor directory flush failure is
+  swallowed. A partial next file leaves the prior intent readable; an invalid
+  primary intent fails closed before effects.
 - Local and remote deletion intents make a same-SHA branch recreation after an
   unknown delete result explicitly ambiguous. Confirmed completion is terminal:
   a later local or remote ref is observed and parked, never deleted again. The
@@ -455,12 +412,11 @@ skip mechanism or keep launch blocked.
   branch/Candidate owner and a fresh Reviewer Agent to be independent and
   top-level. No helper can supply the required verdict.
 - ADR-0005 changes no cleanup authority: admitted MCP tuples remain defense in
-  depth and Linux-only until their separate gates expand.
+  depth on the admitted Linux scope.
 
 ## Independent verification
 
 The previous Candidate received `changes_requested`; all P0/P1/P2/P3 findings
 are addressed by the changed harness and evidence but require a completely
-fresh review of the final exact Candidate/base. Windows CI, publication, PR,
-merge, Task closure, and final branch/workspace cleanup remain post-review
-gates.
+fresh review of the final exact Candidate/base. Publication, PR, merge, Task
+closure, and final branch/workspace cleanup remain post-review gates.

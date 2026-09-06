@@ -13,8 +13,6 @@
 - Scope: disposable repositories, explicitly approved/contained path remotes,
   loopback fault endpoint, refs, and paths only; product path/file origin
   effects otherwise refuse
-- Windows status: Inconclusive after failed run `34037393562`; bounded file-
-  flush correction pending fresh review before any new run
 
 ## Result and boundary
 
@@ -35,14 +33,12 @@ fault/lock processes and removes the root after success or failure.
 Artifacts:
 
 - [`tools/spikes/dir-m0.6/worktree-ownership.mjs`](../../../tools/spikes/dir-m0.6/worktree-ownership.mjs)
-- [`.github/workflows/dir-m0.6-windows-post-review.yml`](../../../.github/workflows/dir-m0.6-windows-post-review.yml)
 - [`docs/adr/0007-git-worktree-ownership-and-cleanup.md`](../../adr/0007-git-worktree-ownership-and-cleanup.md)
 
-Final tracked executable hashes:
+Final tracked executable hash:
 
 ```text
 bb951dfd87fa4bfeee940deeb4b504bdb149d2d11ac7ed16f577e5d8ffad3b0c  tools/spikes/dir-m0.6/worktree-ownership.mjs
-458822760e3cbe3f7a2121c446eedd812ee83cdc0797d0f3b2d776fccfdfc16b  .github/workflows/dir-m0.6-windows-post-review.yml
 ```
 
 Local reproduction:
@@ -138,15 +134,13 @@ Only then can dispatch occur. A genuine post-dispatch `intent_recorded` result
 keeps the stricter present-ref ambiguity and is never auto-cleared.
 
 Git `worktree --porcelain -z` paths and Node paths share one comparison
-function: resolve on the host, apply native realpath while present (expanding
-Windows 8.3 aliases), normalize separators, and fold case on Windows. Before
-removal, exactly one registration must positively match the owned canonical
-path, branch, and HEAD. After removal, neither the original canonical key nor
-the pre-recorded quarantine key may remain. A separator/8.3 mismatch therefore
-fails the positive assertion instead of vacuously passing negative checks.
-After deletion, any non-existent registered path that still reports the Task
-branch is also treated as stale/ambiguous and refused, even if its former 8.3
-alias can no longer be expanded.
+function: resolve on the host, apply native realpath while present, and
+normalize separators. Before removal, exactly one registration must positively
+match the owned canonical path, branch, and HEAD. After removal, neither the
+original canonical key nor the pre-recorded quarantine key may remain. A path
+mismatch therefore fails the positive assertion instead of vacuously passing
+negative checks. After deletion, any non-existent registered path that still
+reports the Task branch is also treated as stale/ambiguous and refused.
 
 These checks run before recovery-ref creation, local Task-ref deletion, remote
 Task-ref deletion, every retry, and postcondition observations. Replacement
@@ -202,12 +196,11 @@ while an independent no-follow filesystem walk catches Git-invisible state.
 Nested `.git` directories/files and submodule markers are rejected regardless
 of ignored coexistence. A tracked Git symlink is admitted only when its index
 mode is `120000` and its raw target bytes match the prospective tree; the common
-fixture proves that path. Untracked symlinks, junctions/reparse points, FIFOs,
-sockets, and other special types stop path-free before artifact/removal effects.
-Empty directories are recoverable non-Git material, including alongside a Git
-snapshot of other dirty content. Linux exercises a FIFO and Unix socket;
-pending Windows exercises a junction/reparse point. A dirty ignored file
-coexists with both nested marker forms in the committed fixture.
+fixture proves that path. Untracked symlinks, FIFOs, sockets, and other special
+types stop path-free before artifact/removal effects. Empty directories are
+recoverable non-Git material, including alongside a Git snapshot of other dirty
+content. Linux exercises a FIFO and Unix socket. A dirty ignored file coexists
+with both nested marker forms in the committed fixture.
 
 Dirty work combined with Git-ignored files/directories returns a path-free
 Needs-you error; neither filenames nor contents enter durable state/output or a
@@ -237,10 +230,9 @@ artifact before removal. The artifact lifecycle is:
    you rather than raw `RangeError`/filesystem output. Durable state contains
    aggregate metadata/content digests and counts, never entry names or hashes.
 4. Create a same-filesystem staging artifact beneath an exact engine-owned
-   recovery root. POSIX directories/files use `0700`/`0600`; Windows applies
-   an inheritance-protected ACL granting only the current SID. A private owner
-   record and manifest bind Task, Run, nonce, Candidate, entries, metadata,
-   hashes, and seven-day retention.
+   recovery root. Directories/files use owner-only `0700`/`0600` permissions. A
+   private owner record and manifest bind Task, Run, nonce, Candidate, entries,
+   metadata, hashes, and seven-day retention.
 5. Atomically rename staging to its final random-scope path, verify every byte,
    manifest hash, permission, owner and filesystem identity, then bind that
    hash into `removal_ready`. No ignored content is added to Git.
@@ -283,12 +275,11 @@ review measured roughly 17.77 seconds for 5,006 entries, 93.24 seconds for
 20,021 entries, and about 245 seconds for 30,031 entries on its Linux probe.
 The contract shares one buffer across each pass and revalidates artifact
 payload bytes at all five destructive gates, plus source bytes while a
-worktree exists; it does not
-turn the earlier measurements into a product policy claim. Discovered sibling
-`dir-m0.17` owns representative Linux/real-
-Windows benchmarking and the release policy for large `node_modules`, `target`,
-and `.venv` trees; as an open P0 child of `dir-m0`, it keeps that broader M0
-cleanup gate blocked without expanding `dir-m0.6`.
+worktree exists; it does not turn the earlier measurements into a product
+policy claim. Discovered sibling `dir-m0.17` owns representative Linux
+benchmarking and the release policy for large `node_modules`, `target`, and
+`.venv` trees. That Linux policy evidence stays in M0 without expanding
+`dir-m0.6`.
 
 For ordinary tracked/untracked worktree recovery, a temporary index reads the
 Candidate, adds all material, writes a tree, creates a provenance-bearing
@@ -381,16 +372,11 @@ accepted on retry only from removal-ready-or-later state and only after both
 original/quarantine paths and Git worktree registrations are absent.
 
 State writes use a mode-`0600` next file, file `fsync`, atomic rename, and a
-POSIX state-directory `fsync`. The failed Windows run proved that the file
-descriptor—not the already-skipped directory branch—was opened without the
-write access required by `FlushFileBuffers`. The corrected helper uses
-non-truncating `r+` only on Windows and retains `r` plus the later directory
-flush on Linux. Injected operations assert both access branches, flush-before-
-close ordering, descriptor closure after error, and unmodified error
-propagation. A partial next file leaves the previous intent readable. An
-explicitly truncated primary intent returns path-free Needs you before any
-effect; the fixture restores it through the same atomic writer and proves
-worktree/ref survival.
+directory `fsync`. Injected operations assert flush-before-close ordering,
+descriptor closure after error, and unmodified error propagation. A partial
+next file leaves the previous intent readable. An explicitly truncated primary
+intent returns path-free Needs you before any effect; the fixture restores it
+through the same atomic writer and proves worktree/ref survival.
 
 Fault injection covers:
 
@@ -413,9 +399,8 @@ Fault injection covers:
   never attempted; and
 - clean held-handle removal: a clean integrated worktree persists and verifies
   `removal_ready`, recomputes both trees on resume, and acquires the handle only
-  at the immediate move boundary; Windows must observe exact
-  move failure with all facts retained, while Linux proves move/removal and
-  open-descriptor reads, followed by effect-before-result retry;
+  at the immediate move boundary; Linux proves move/removal and open-descriptor
+  reads, followed by effect-before-result retry;
 - one table-driven family deleting/moving both Git recovery refs and changing
   private artifact payload/manifest/owner/path identity before worktree move,
   worktree remove, local ref deletion, and remote ref deletion: every case
@@ -540,116 +525,18 @@ linux_symlink_fifo_and_socket_material_needs_you
 linux_dirty_open_handle_recovery
 ```
 
-The future Windows report must replace only those three with real, non-vacuous:
-
-```text
-windows_clean_removal_lock_fail_closed
-windows_reparse_material_needs_you
-windows_dirty_snapshot_lock_fail_closed
-```
-
 Each successful execution reports the exact OS, architecture, Node, Git, Paseo
 schema version/hashes/surfaces, and `temporary_root_removed`. The final external
 check also finds zero `director-m0.6-*` roots.
 
-## Windows post-review gate
-
-Successful Windows behavior is not claimed by this correction. Historical PR
-[#11](https://github.com/mcuadros/paseo-director/pull/11) remains at approved
-Candidate `d0530622bafcbdd342bc2fa4d572ab2fa964653d`. Its one opened-event run,
-[`34037393562`](https://github.com/mcuadros/paseo-director/actions/runs/34037393562),
-failed on `ImageOS=win25-vs2026`, `ImageVersion=20260824.214.3`, Windows
-`10.0.26100.0` X64, Node.js `v22.23.2`, and Git `2.55.0.windows.5`. Exact
-Candidate/base checkout and ancestry passed; the first harness stopped in
-`writeState` with `EPERM: operation not permitted, fsync` on the next-file
-descriptor opened `r`, the second run never started, and
-`temporary_root_removed` was not emitted. The run was not retried and remains
-failure evidence rather than a Windows pass.
-
-Microsoft documents that `FlushFileBuffers` requires a handle with
-`GENERIC_WRITE` access. The bounded correction opens the already-written next
-file as non-truncating `r+` on Windows, continues to propagate any flush error,
-and leaves the Linux file and directory durability sequence unchanged. A new
-Windows run is forbidden until the correction Candidate receives fresh exact-
-SHA approval.
-
-Repository policy permits the committed job only after fresh exact-SHA
-approval and PR publication. It is scoped to:
-
-- event: `pull_request` opened/reopened, never synchronize;
-- target: `main` only;
-- paths: this workflow, ADR-0007, `docs/evidence/m0.6/**`, and the harness;
-- runner/budget: fixed `windows-2025`, one x86-64 VM, 10 minutes, no matrix;
-- authority: `contents: read`, no secrets, checkout credentials disabled;
-- source/base: full event head/base SHAs with exact checkout and ancestry;
-- facts: `ImageOS`, `ImageVersion`, runner OS/architecture, OS build, Node.js
-  22-or-newer, and Git versions; and
-- execution: the identical complete harness twice, with `$LASTEXITCODE`
-  captured and required to be zero after each invocation independently.
-
-The checkout step is current official `actions/checkout@v7.0.1`, pinned to
-immutable commit `3d3c42e5aac5ba805825da76410c181273ba90b1`. On 2026-09-06 the
-official release page identified that commit as v7.0.1, `git ls-remote`
-returned the same tag SHA, and the exact-commit `action.yml` declared
-`runs.using: node24`.
-The downloaded immutable `action.yml` SHA-256 was
-`d59219cb79590abdb877deaa14e3b65a00c05318bf5a6f3b989b9162b5d08c35`.
-`persist-credentials: false` and repository `contents: read` remain unchanged.
-
-The ACL setter/verifier carry the recovery path only through the dedicated
-child environment field `DIRECTOR_RECOVERY_ACL_PATH`; the `-Command` string
-contains no user path and has no trailing pseudo-argument. It rejects a missing
-field, sets inheritance protection with only the current SID, and verifies one
-allow/full-control rule with container/object inheritance. No `pwsh` or
-`powershell.exe` is installed on the Linux host, so local empirical execution
-is unavailable and the Windows job remains authoritative. That job also checks
-`$LASTEXITCODE` after `rev-parse`, `cat-file`, and `merge-base` individually,
-not only after the final native Git command.
-
-On Windows, the alias test creates a real junction and the same run exercises
-two separate exclusive-handle boundaries:
-
-1. Dirty/snapshot: PowerShell holds the dirty tracked file with
-   `FileShare.None`. The real reconciler must produce exact error
-   `GitCommandError: git add exited 128`; intent remains byte-identical at `snapshot_verified`,
-   the original positive registration remains, quarantine is absent, metadata
-   and unaffected bytes match, and every recovery-ref byte verifies. After
-   release, original tracked bytes match and quarantine/removal retries finish.
-2. Clean/removal: a separate integrated clean worktree first interrupts after
-   persisting and positively verifying `removal_ready`. On resume the reconciler
-   recomputes the real index and prospective tree; immediately before the actual
-   move, the bounded fault seam makes PowerShell take `FileShare.None`. The real
-   reconciler must produce exact error
-   `GitCommandError: git worktree move exited 128`, keep the intent byte-
-   identical, retain original path/registration/local and remote refs plus
-   committed data, and leave quarantine absent. After release, retry performs
-   the actual move/removal, reconciles an effect-before-result interruption,
-   deletes exact refs, and completes idempotently.
-
-A different error, status, message, phase, path, registration, byte, or ref
-fact fails the job. This Candidate records only the required observations; it
-does not claim Windows has produced them. Each harness run must remove its
-temporary root, and both independently checked exits must be zero.
-
-A changed PR head cannot generate evidence; it requires fresh review and a
-close/reopen. After Windows passes, the immutable run URL, event head/base,
-runner image, tools, output, and cleanup result must be recorded in a changed
-Candidate that receives another fresh review.
-
 ## Platform constraints
 
 - Linux evidence is limited to the exact local tuple and filesystem above.
-- Windows evidence will be limited to the recorded `windows-2025` image/tool
-  tuple; no other tuple is inferred compatible.
-- Canonical comparison normalizes separators, drive-letter case, and realpath/
-  8.3 aliases while filesystem identity prevents target substitution; the
-  Windows job exercises a junction. UNC/network filesystems, other reparse-point classes,
-  case-sensitive Windows directories, unstable file IDs, and submodule
+- Canonical comparison uses realpath and filesystem identity to prevent target
+  substitution. Network filesystems, unstable file IDs, and submodule
   worktrees remain fail-closed and unadmitted.
-- POSIX coverage is named explicitly and proves both clean move/removal and
-  dirty snapshot/recovery while descriptors remain readable. Windows coverage
-  uses two distinct names and must prove both snapshot-open and clean-move
-  sharing violations through the real reconciler.
+- Linux coverage is named explicitly and proves clean move/removal and dirty
+  snapshot/recovery while descriptors remain readable.
 - The recovery ref remains until its separately guarded retention cleanup.
 - No result here weakens ADR-0008, expands ADR-0005, or satisfies
   `dir-m0.7`, `dir-m0.10`, or `dir-m0.14`.
@@ -667,13 +554,3 @@ Consulted on 2026-09-06:
 - <https://git-scm.com/docs/gitattributes>
 - <https://git-scm.com/docs/githooks>
 - <https://nodejs.org/download/release/v22.22.0/docs/api/fs.html>
-- <https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers>
-- <https://learn.microsoft.com/en-us/dotnet/api/system.io.fileshare?view=net-9.0>
-- <https://learn.microsoft.com/en-us/dotnet/api/system.security.accesscontrol.objectsecurity.setaccessruleprotection?view=net-10.0>
-- <https://learn.microsoft.com/en-us/dotnet/api/system.security.accesscontrol.filesystemaccessrule?view=net-10.0>
-- <https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe?view=powershell-5.1>
-- <https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_preference_variables?view=powershell-7.5>
-- <https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows>
-- <https://docs.github.com/en/actions/reference/runners/github-hosted-runners>
-- <https://github.com/actions/checkout/releases/tag/v7.0.1>
-- <https://raw.githubusercontent.com/actions/checkout/3d3c42e5aac5ba805825da76410c181273ba90b1/action.yml>

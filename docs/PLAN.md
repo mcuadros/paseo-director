@@ -4,7 +4,7 @@
 - **Plan version:** 0.3
 - **Last updated:** 2026-09-06
 - **Approved:** 2026-09-06
-- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage
+- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope
 - **Plugin repository:** <https://github.com/mcuadros/paseo-director>
 - **Public name:** Director for Paseo
 - **Short UI name:** Director
@@ -100,7 +100,7 @@ The Task Agent remains the sole Task owner even when helpers contribute. Several
 - Recovery, cleanup, budgets, audit, backups, and diagnostics.
 - Desktop, web, and mobile plugin UI.
 - Headless Paseo daemon operation.
-- Capability-based host support on any operating system supported by Paseo and the required external tools.
+- Linux host support where Paseo and the required external tools are available.
 
 ### 3.2 Explicitly outside `1.0`
 
@@ -438,7 +438,7 @@ M0 must prove that the mapping safely supports:
 - optimistic concurrency;
 - multiwriter access through the selected server mode;
 - backup, restore, migration, and remote synchronization;
-- Windows and Linux;
+- Linux;
 - the agreed scale.
 
 If Beads cannot meet the contract cleanly, an alternative is selected before M1. One possible fallback is a single direct Dolt schema behind the same port. `1.0` ships one runtime TaskStore, not two interchangeable engines.
@@ -946,24 +946,25 @@ Director does not publish production builds against a preview API. Source mainta
 
 The plugin entry must follow Paseo's TypeScript/Node contract. A Go engine is postponed unless later evidence demonstrates a concrete reliability, performance, or standalone-headless benefit.
 
-### 19.3 Operating systems
+### 19.3 Operating system
 
-Director has no hardcoded OS allowlist. It works on any host where:
+Director `1.0` supports Linux only. Other host operating systems are outside
+the `1.0` scope and require a new explicit plan decision before they can be
+claimed, implemented as supported targets, or added to release gates.
+
+Director works on a Linux host where:
 
 - Paseo supports the daemon/plugin runtime;
 - required Git, GitHub, TaskStore, and provider executables are available;
 - Doctor/preflight proves the capabilities.
 
-Windows and Linux are continuous CI/release gates. Other Paseo-supported hosts are not artificially blocked; release candidates can receive smoke coverage without making them blockers for every PR.
+Linux platform rules:
 
-Cross-platform rules:
-
-- no Bash assumption in Director-owned process execution;
-- no dependency on Unix-only sockets, paths, symlinks, permissions, or `/tmp`;
+- do not interpolate untrusted values into shell commands;
 - Node path/temp/process APIs and direct argv execution;
-- correct drive-letter, case, UNC, junction, and locked-file handling;
+- correct canonical-path, symlink, permission, and locked-file handling;
 - MCP over `stdio`;
-- Windows and Linux worktree-cleanup tests.
+- Linux worktree-cleanup tests.
 
 ### 19.4 Public distribution
 
@@ -1034,7 +1035,7 @@ A diagnostic bundle is generated only through a human action, is redacted, and i
 - Scheduler, budgets, and idempotency.
 - Zod contracts across UI/server/MCP.
 - Responsive components.
-- Windows/Linux portability coverage.
+- Linux path, process, and filesystem coverage.
 - Deterministic fake provider with no paid model calls.
 
 ### 21.2 Main-branch integration
@@ -1119,7 +1120,7 @@ Prove before building product functionality:
 - per-session MCP for every admitted provider;
 - TaskStore model, concurrency, sync, backups, migrations, and scale;
 - exact-SHA GitHub PR/CI/review behavior;
-- Windows/Linux headless and worktree lifecycle;
+- Linux headless and worktree lifecycle;
 - idempotent effect and reconciliation design;
 - public licensing and distribution compatibility.
 
@@ -1182,7 +1183,7 @@ Includes scaffold, modular architecture, configuration schema, Create/Adopt Orga
 - Backups, migrations, retention, disk-pressure behavior, and security hardening.
 - Performance and platform validation.
 
-**Exit gate:** complete Windows/Linux suite and every agreed acceptance scenario.
+**Exit gate:** complete Linux suite and every agreed acceptance scenario.
 
 ### M6 — Public release
 
@@ -1244,7 +1245,7 @@ No P0 is accepted as ordinary technical debt.
 
 - `1.0` scope is feature-complete.
 - Backups and migrations are operational.
-- Windows/Linux gates are green.
+- Linux gates are green.
 - Installation, upgrade, and diagnostics are documented.
 - No known P0/P1; P2 only when explicit and documented.
 
@@ -1333,7 +1334,7 @@ These facts were true when the plan was written and are not permanent assumption
 - Plugin UI uses React Native surfaces on desktop/web/mobile.
 - Plugin storage and general native navigation, hierarchy, and notification contributions are limited or absent.
 - The current SDK exposes Project/Workspace/Agent/provider operations and per-session MCP.
-- GitHub CLI, Beads, and Dolt publish builds for the primary host platforms.
+- GitHub CLI, Beads, and Dolt publish builds for the supported Linux topology.
 
 M0 must reread the deployed official documentation and test the installed stable release before creating Director's scaffold.
 

@@ -38,7 +38,7 @@ Evaluate:
 - exact-SHA and Git ownership safety;
 - recovery, cleanup, and data-loss behavior;
 - security, secrets, path traversal, and permission boundaries;
-- Windows/Linux portability where relevant;
+- Linux portability where relevant;
 - tests, fixtures, schemas, migrations, and documentation;
 - scope discipline and compatibility with the active milestone.
 

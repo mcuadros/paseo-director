@@ -76,9 +76,9 @@ $ git -C <paseo-v0.7.2-checkout> tag --points-at HEAD
 v0.7.2
 ```
 
-Windows was not available and no Windows behavior is claimed. The online docs
-were read on 2026-09-06, but the exact installed 0.7.2 artifact and observed
-runtime behavior control this decision when the moving docs differ.
+The online docs were read on 2026-09-06, but the exact installed 0.7.2 artifact
+and observed Linux runtime behavior control this decision when the moving docs
+differ.
 
 ## Primary sources
 

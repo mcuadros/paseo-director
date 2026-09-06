@@ -5,6 +5,7 @@
 - **Beads Task:** `dir-m0.9`
 - **Plan gate:** M0 public licensing and distribution compatibility
 - **Decision owner:** Project owner
+- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform
 
 ## Context
 
@@ -74,7 +75,7 @@ This avoids nominative use but makes compatibility less clear. The selected name
 6. Release-time moving branches named `stable` and `beta` are the supported update channels. They are protected, fast-forward-only refs. Each promotion points to an independently reviewed Candidate that also has an immutable semantic-version tag. No channel ref is created by this M0 spike.
 7. Stable installation is documented as `paseo plugin add mcuadros/paseo-director --ref stable`; updates are explicit through `paseo plugin update director`. Tags and exact commits are documented as pinned installations that do not advance through update.
 8. **Director for Paseo** is described as an independent community plugin, not affiliated with, endorsed by, or maintained by Paseo. Public materials use no Paseo logo, copied trade dress, `official`, `certified`, or partnership claim without separate permission.
-9. Compatibility is declared from exact tested releases, not inferred from a major or minor line. This spike validates only `0.7.2` on Linux; every later stable release requires revalidation before entering the declared range. It does not authorize a production build against preview `0.8` or waive the separate Windows/Linux release gates.
+9. Compatibility is declared from exact tested releases, not inferred from a major or minor line. This spike validates only `0.7.2` on Linux; every later stable release requires revalidation before entering the declared range. It does not authorize a production build against preview `0.8` or waive the Linux release gate.
 10. `dir-m6.4` revalidates the license file and implements the final dependency inventory/notices, prerequisite disclosures, compatibility statement, naming disclaimer, and channel instructions before public beta.
 
 The missing license metadata/file in the published `@getpaseo/plugin@0.7.2` tarball is a documented upstream packaging caveat, not a Director blocker under the no-vendoring and host-provided-module rules. If Director later redistributes any part of that artifact, this decision no longer covers the distribution until the applicable upstream license and notices are restored and reviewed.
