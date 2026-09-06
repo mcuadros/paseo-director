@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "daemon": {
+    "mcp": {
+      "enabled": false,
+      "injectIntoAgents": false
+    },
+    "browserTools": {
+      "enabled": false
+    },
+    "relay": {
+      "enabled": false
+    }
+  },
+  "agents": {
+    "providers": {
+      "probe-acp": {
+        "extends": "acp",
+        "label": "Director compatible ACP probe",
+        "command": [
+          "/usr/bin/node",
+          "/absolute/path/to/checkout/docs/evidence/m0.3/probe-acp.mjs"
+        ],
+        "params": {
+          "supportsMcpServers": true
+        },
+        "models": [
+          {
+            "id": "fixture",
+            "label": "Fixture",
+            "isDefault": true
+          }
+        ]
+      },
+      "probe-acp-no-mcp": {
+        "extends": "acp",
+        "label": "Director unsupported-MCP ACP probe",
+        "command": [
+          "/usr/bin/node",
+          "/absolute/path/to/checkout/docs/evidence/m0.3/probe-acp.mjs",
+          "--unsupported-mcp"
+        ],
+        "params": {
+          "supportsMcpServers": false
+        },
+        "models": [
+          {
+            "id": "fixture",
+            "label": "Fixture",
+            "isDefault": true
+          }
+        ]
+      }
+    },
+    "metadataGeneration": {
+      "providers": []
+    }
+  },
+  "features": {
+    "dictation": {
+      "enabled": false
+    },
+    "voiceMode": {
+      "enabled": false
+    },
+    "webUi": {
+      "enabled": false
+    }
+  },
+  "pluginsEnabled": false
+}
