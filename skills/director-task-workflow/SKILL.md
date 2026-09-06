@@ -1,6 +1,6 @@
 ---
 name: director-task-workflow
-description: Execute one implementation, documentation, or maintenance Task in paseo-director through Beads, isolated Git work, validation, independent review, and pull-request handoff. Use whenever an agent is asked to claim, implement, continue, hand off, or complete a Beads Task in this repository.
+description: Execute one implementation, documentation, or maintenance Task as its top-level Paseo Task Agent through Beads, isolated Git work, validation, independent review, and pull-request handoff. Use whenever a Task Agent is asked to claim, implement, continue, hand off, or complete a Beads Task in this repository.
 ---
 
 # Director Task Workflow
@@ -17,11 +17,12 @@ Deliver exactly one Beads Task without crossing its approved milestone gate.
 
 ## Isolate the work
 
-1. Use one branch and worktree for the Task.
+1. Operate as the Task's one normal top-level Paseo Task Agent in its isolated Execution Workspace/worktree. The Task Agent has no parent agent and its visible title is the exact Task title.
 2. Name the branch `task/<beads-id>-<short-slug>` unless an approved ADR or Task says otherwise.
 3. Start from the current remote base recorded by the Task.
 4. Preserve user changes and unrelated work. Never repurpose another Task's worktree.
 5. Keep Beads connected to the repository's shared-server database.
+6. Treat internal helper subagents as optional assistance only; do not let them become Task records or owners, claim sibling work, or change the Task Agent's accountability.
 
 ## Execute the scope
 
@@ -39,9 +40,9 @@ When new work is discovered, create a sibling Task under the same milestone Epic
 1. Run focused checks while iterating and the full Task-required checks before handoff.
 2. Use `$director-commit` to create focused commits.
 3. Require `$director-independent-review` to approve the exact final Candidate SHA.
-4. Address every blocking finding through the same primary Task owner and obtain a fresh review for a changed SHA.
+4. Address every blocking finding through the same Task Agent and obtain a fresh review for a changed SHA.
 5. Use `$director-pull-request` only after independent approval.
-6. After `approve_candidate`, publish and integrate automatically when the exact remote head, relevant base, configured/required checks, mergeability, and feedback gates remain valid, the merge operation atomically matches the approved head SHA, and the Task is not explicitly manual.
+6. After `approve_candidate`, the Task Agent publishes and integrates automatically when the exact remote head, relevant base, configured/required checks, mergeability, and feedback gates remain valid, the merge operation atomically matches the approved head SHA, and the Task is not explicitly manual.
 7. Update Beads with commit SHA, validation evidence, review verdict, PR link, integration evidence, and residual risks.
 8. Close the Task only after integration is verified and owned temporary resources are clean.
 

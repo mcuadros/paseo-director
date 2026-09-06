@@ -36,7 +36,9 @@ Beads remains in `no-git-ops` mode: `bd` must not stage, commit, or push reposit
 
 ## Safety and delivery
 
-- One Task, branch, and worktree per primary agent.
+- Each Task is owned by one normal top-level Paseo Task Agent in its isolated Execution Workspace/worktree. Its agent-creation parent is omitted and its visible title is the exact Task title.
+- A Task Agent may use internal helper subagents, but they are not Task records or Task owners and must not claim separate Beads work. The Task Agent remains solely accountable for the Task, branch, Candidate, evidence, and cleanup.
+- Independent Reviewer Agents are normal top-level agents in detached disposable checkouts, never children or helpers of the Task Agent or Organizer.
 - Never review a dirty worktree or a moving branch instead of an exact SHA.
 - Never self-review or treat author assertions as review evidence.
 - Never push directly to `main` for Task implementation.
@@ -48,7 +50,7 @@ Beads remains in `no-git-ops` mode: `bd` must not stage, commit, or push reposit
 
 ## Integration policy
 
-An `approve_candidate` verdict authorizes the primary agent to publish and integrate that exact SHA automatically when all of these remain true immediately before merge:
+An `approve_candidate` verdict authorizes the Task Agent to publish and integrate that exact SHA automatically when all of these remain true immediately before merge:
 
 - the remote head is the independently reviewed Candidate;
 - the merge operation atomically asserts that exact head SHA, for example with `gh pr merge --match-head-commit <approved-sha>`;

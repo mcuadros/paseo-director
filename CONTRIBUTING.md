@@ -2,13 +2,15 @@
 
 Director is developed through dependency-ordered Beads Tasks and exact-commit independent review. The approved scope and architecture live in [docs/PLAN.md](docs/PLAN.md).
 
+Each development Task is owned by one normal top-level Paseo Task Agent whose parent field is omitted and whose visible title exactly matches the Task title. It runs in the Task's isolated Execution Workspace/worktree. The Task Agent may create internal helper subagents, but helpers are not Beads Tasks or Task owners. Independent Reviewer Agents are also top-level agents and never children of the Task Agent or Organizer.
+
 ## Before starting
 
 1. Run `bd prime` and `bd ready --json`.
 2. Select one unblocked Task from the active milestone.
 3. Read the complete issue, acceptance criteria, blockers, plan sections, and ADRs.
 4. Claim it atomically with `bd update <id> --claim --json`.
-5. Create an isolated worktree and branch named `task/<beads-id>-<short-slug>`.
+5. Work only in the Task's isolated Execution Workspace/worktree and branch named `task/<beads-id>-<short-slug>`.
 
 Do not implement work from a later milestone or expand a Task silently. Record discovered work as a separate sibling Task.
 
@@ -34,7 +36,7 @@ Every implementation commit requires review under `skills/director-independent-r
 
 - Review the exact SHA in a detached disposable checkout.
 - Do not give the reviewer the author's hidden conclusions or conversation.
-- Route corrections back to the same primary Task owner.
+- Route corrections back to the same Task Agent.
 - Review a changed SHA again from the beginning.
 - Treat `approve_candidate` as permission to publish the reviewed SHA, not permission to close the Task.
 - Keep push, PR, CI, integration, synchronization, and cleanup as explicit post-review gates.
@@ -49,7 +51,7 @@ Follow `skills/director-pull-request/SKILL.md` and the repository template.
 - Do not use PR comments for agent-to-agent conversation.
 - Do not merge while CI, review, base, or acceptance evidence is stale.
 
-After `approve_candidate`, the primary agent publishes and merges automatically when the reviewed head, relevant base, configured/required checks, mergeability, and human-feedback gates remain valid. The merge command must atomically match the approved head SHA; a pre-merge refetch is not enough. A separate human merge confirmation is not required unless the Task is explicitly manual or one of the risk, policy, ambiguity, history-rewrite, or unauthorized-destructive exceptions in `AGENTS.md` applies.
+After `approve_candidate`, the Task Agent publishes and merges automatically when the reviewed head, relevant base, configured/required checks, mergeability, and human-feedback gates remain valid. The merge command must atomically match the approved head SHA; a pre-merge refetch is not enough. A separate human merge confirmation is not required unless the Task is explicitly manual or one of the risk, policy, ambiguity, history-rewrite, or unauthorized-destructive exceptions in `AGENTS.md` applies.
 
 ## M0 spikes
 

@@ -44,7 +44,7 @@ Describe observable behavior and evidence. Do not paste full agent transcripts, 
 
 1. Record the PR URL/number and Candidate SHA in Beads.
 2. Observe CI without rerunning the same failed commit automatically.
-3. Route human review feedback back to the primary Task owner.
+3. Route human review feedback back to the same top-level Task Agent.
 4. Do not have agents converse in PR threads or automatically resolve human threads.
 5. Immediately before integration, refetch the PR and prove that its remote head is the approved Candidate, its relevant base is still valid, every configured and Task-required check passes, it is mergeable, and no human feedback remains unresolved.
 6. Merge automatically when those facts hold unless the Task explicitly requires manual integration, and atomically bind the operation to the approved head with `gh pr merge --match-head-commit <approved-sha>` or an equivalent expected-head precondition.
