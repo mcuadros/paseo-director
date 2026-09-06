@@ -5,6 +5,7 @@
 - **Beads Task:** `dir-m0.13`
 - **Plan gate:** M0 governance
 - **Decision owner:** Human project owner
+- **Amended by:** [ADR-0010](0010-top-level-task-agent-parentage.md), which defines the repository's Task owner as an independent top-level Paseo Task Agent
 
 ## Context
 
@@ -14,7 +15,7 @@ This decision governs development of Director itself. It does not change the Dir
 
 ## Decision
 
-After an independent reviewer returns `approve_candidate`, the primary agent may publish and integrate that exact Candidate without another human confirmation when, immediately before merge:
+After an independent reviewer returns `approve_candidate`, the Task Agent may publish and integrate that exact Candidate without another human confirmation when, immediately before merge:
 
 - the remote head equals the reviewed SHA;
 - the merge operation atomically asserts that exact SHA, using `gh pr merge --match-head-commit <approved-sha>` or an equivalent expected-head precondition;
@@ -49,7 +50,7 @@ Rejected because the branch, base, CI, mergeability, or feedback state may chang
 ## Consequences
 
 - Routine reviewed work can complete without waiting for another human message.
-- The primary remains responsible for refetching and proving all remote facts immediately before integration.
+- The Task Agent remains responsible for refetching and proving all remote facts immediately before integration.
 - Any Candidate or relevant base change invalidates the previous approval.
 - Missing or ambiguous evidence stops integration rather than assuming success.
 - Task closure still waits for post-merge verification and cleanup.

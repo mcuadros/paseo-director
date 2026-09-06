@@ -5,14 +5,16 @@
 - **Beads Task:** `dir-m0.8`
 - **Plan gate:** M0 security and isolation
 - **Decision owner:** M0 evidence owner; any plan or trust-scope change requires the human project owner
+- **Amended by:** [ADR-0010](0010-top-level-task-agent-parentage.md), which distinguishes top-level Task/Reviewer creation from Task-Agent-created helpers without weakening this ADR's containment requirements
 
 ## Context
 
 Director is a trusted Paseo plugin that coordinates source repositories,
 provider agents, scoped MCP commands, Git and GitHub delivery, durable state,
-cleanup, diagnostics, and support bundles. The approved plan requires the
-engine to own every external side effect and requires the system to stop when
-it cannot prove repository ownership, exact Candidate/base identity,
+cleanup, diagnostics, and support bundles. The approved plan, as amended by
+ADR-0010, requires the engine to own every Director lifecycle effect while a
+Task Agent may create only its scoped helper subagents. The system must stop
+when it cannot prove repository ownership, exact Candidate/base identity,
 recoverability, or secret safety.
 
 Paseo's stable topology puts the plugin backend and provider agents on one
@@ -34,10 +36,11 @@ can the planned architecture protect untrusted repository, Task, agent,
 provider, and remote inputs without treating provider sandboxes as a host
 boundary?
 
-Specifically, can it enforce engine-only external effects, fixed
-Project/Task/Run/role MCP scopes, canonical repository/path ownership,
-argv-only command execution, host-owned credential isolation, redacted
-logs/support bundles, and fail-closed P0 stops on Linux and Windows?
+Specifically, can it enforce engine-only Director lifecycle effects, the
+scoped helper-creation exception in ADR-0010, fixed Project/Task/Run/role MCP
+scopes, canonical repository/path ownership, argv-only command execution,
+host-owned credential isolation, redacted logs/support bundles, and
+fail-closed P0 stops on Linux and Windows?
 
 ## Acceptance criteria
 
@@ -54,8 +57,9 @@ logs/support bundles, and fail-closed P0 stops on Linux and Windows?
 
 Failure is established if a credible path remains for cross-scope repository
 mutation or deletion, incorrect integration, secret exposure, shell
-injection, agent bypass of engine effect ownership, unowned cleanup, or if a
-required boundary cannot be enforced through a public supported mechanism.
+injection, agent bypass of engine ownership for a Director lifecycle effect,
+unowned cleanup, or if a required boundary cannot be enforced through a
+public supported mechanism.
 
 ## Evidence
 
@@ -109,7 +113,7 @@ is intentionally insufficient to approve any isolation contingency.
 |---|---|
 | Authenticated single user | Trusted to approve the security envelope and explicit overrides, but can make mistakes; destructive previews and exact targets remain mandatory. |
 | Director plugin revision and locked runtime dependencies | Trusted computing base. Compromise is total daemon-user compromise, so provenance and update controls are release gates. |
-| Organizer, Worker, Reviewer, and subagent model output | Untrusted data and requests. Textual claims never prove external facts. |
+| Organizer, Task Agent, Reviewer Agent, and helper-subagent model output | Untrusted data and requests. Textual claims never prove external facts. |
 | Repository content, Git metadata, dependencies, generated files, hooks, filters, and `paseo.json` | Untrusted until a specific executable action is separately approved and contained. Enrolling a remote does not authorize arbitrary code execution. |
 | Provider, MCP, TaskStore, Git, GitHub, clock, filesystem, and process output | Untrusted external facts that require schema, identity, freshness, size, and state validation. |
 | Paired or password-authenticated Paseo client | Equivalent to the single human in 1.0. Untrusted clients or multi-user authorization are outside the supported topology. |
@@ -199,16 +203,21 @@ Forbidden from the agent boundary:
 - An admitted unattended provider must prove that its exact version applies
   the frozen filesystem, network, tool, and approval options without fallback.
   A warning, ignored field, or unsandboxed fallback fails preflight.
-- Workers and Reviewers receive no GitHub credential, Git credential helper,
-  raw daemon/Director control endpoint, host home, source checkout, sibling
-  Workspace, or container-runtime socket.
-- Reviewer checkout is detached and read-only. Candidate content is untrusted
-  and cannot change the review target, invoke effects, or supply the verdict
-  schema. The engine binds a verdict to the Candidate SHA and reviewer/run ID.
-- Writer subagents need separate owned checkouts. A read-only shared checkout
+- Task Agents and Reviewer Agents receive no GitHub credential, Git credential
+  helper, raw daemon/Director control endpoint, host home, source checkout,
+  sibling Workspace, or container-runtime socket.
+- The Reviewer Agent is an independent top-level agent with no Organizer or
+  Task Agent parent. Its checkout is detached and read-only. Candidate content
+  is untrusted and cannot change the review target, invoke effects, or supply
+  the verdict schema. The engine binds a verdict to the Candidate SHA and
+  reviewer/run ID.
+- Writer helpers need separate owned checkouts. A read-only shared checkout
   is allowed only after the provider and OS boundary prove it cannot write or
-  escape. Agent-created subagents must go through Director; mutable built-in
-  Paseo agent/workspace tools are not applicable to governed sessions.
+  escape. The Task Agent may create helpers only through the narrowly scoped,
+  policy-admitted orchestration mechanism defined by ADR-0010. Director does
+  not launch them, but it authorizes and reconciles capacity, scope,
+  containment, interruption, and cleanup. General mutable built-in Paseo
+  agent/workspace tools remain unavailable to governed sessions.
 
 #### Repository and path ownership
 
@@ -310,7 +319,7 @@ Forbidden from the agent boundary:
 | AGT-3 | Adversarial same-user process reads credentials or mutates another repository/worktree. | Separate OS identity/container/VM, ACL/mount confinement, process isolation, egress policy, no host/runtime socket, separate credential broker. | **Unresolved P0; default topology fails.** |
 | REP-1 | `paseo.json`, Git hook/filter, package script, test, dependency, or setup/teardown executes host code. | Disable implicit lifecycle code or require exact human approval; run only inside authority boundary with resource/network limits. | **Unresolved P0; `dir-m0.6` must include this path.** |
 | AGT-4 | Candidate text prompt-injects Reviewer or forges a verdict. | Detached read-only checkout, trusted reviewer instructions/schema, no effects, engine-bound SHA/identity, deterministic validation, fresh review after change. | Residual model-quality risk remains. |
-| AGT-5 | Primary creates a writer subagent in a sibling Workspace or mutates shared checkout. | Director-owned fixed-scope creation only; separate writer checkout; enforce global/Task limits; reject caller-selected workspace. | MCP/provider proof pending `dir-m0.3`. |
+| AGT-5 | A Task Agent creates a writer helper in a sibling Workspace, exceeds its Run envelope, or mutates a shared checkout. | Task-Agent-created helper mechanism fixed to the current Run; separate writer checkout; Director-authorized and reconciled global/Task limits; reject caller-selected workspace. | MCP/provider proof pending `dir-m0.3`. |
 | FS-1 | Traversal, symlink, junction, case, Unicode, UNC, nested-Git, or TOCTOU alias escapes an approved root. | Platform-native canonical identity, Git common-dir proof, descendant check, no-follow deletion, just-in-time revalidation, quarantine on mismatch. | Linux/Windows proof pending `dir-m0.6`. |
 | FS-2 | Remote rewrite, stale base, branch-name injection, or repository swap targets the wrong remote/ref. | Canonical remote identity, no URL credentials, Git ref validation, exact base/Candidate, controlled Git config/env, refetch and compare before effect. | Delivery proof pending `dir-m0.7`. |
 | FS-3 | Cleanup removes dirty, unintegrated, shared, or unowned state. | Ownership ledger, verified snapshot ref, integration reachability, no active consumer, retention, preview/quarantine, idempotent cleanup. | P0 proof pending `dir-m0.6`. |
@@ -333,8 +342,10 @@ The same-user evidence does not merely leave implementation details open. It
 prevents the following approved invariants from being security guarantees
 against prompt-injected or adversarial agent/repository execution:
 
-- **Invariant 7:** an agent with raw Git/GitHub/Paseo/host access can perform an
-  external effect without the engine.
+- **Invariant 7 as amended by ADR-0010:** an agent with raw
+  Git/GitHub/Paseo/host access can perform a Director lifecycle effect without
+  the engine. The narrow Task-Agent-created helper path grants no such effect
+  authority.
 - **Invariants 8 and 9:** an out-of-band effect bypasses the engine's durable
   intent, idempotency key, and recovery reconciliation and can duplicate an
   agent, branch, PR, push, or integration.
@@ -366,9 +377,10 @@ all releases whenever it cannot prove the corresponding condition:
 
 1. **Trusted code:** the exact Director revision, dependencies, or preparation
    commands are unknown, mutable, or not the reviewed release.
-2. **Agent authority:** a Worker/Reviewer/subagent can reach a host credential,
-   another Workspace, raw Paseo/Director control endpoint, container-runtime
-   socket, or Git/GitHub delivery route outside its fixed capability scope.
+2. **Agent authority:** a Task Agent, Reviewer Agent, or helper subagent can
+   reach a host credential, another Workspace, raw Paseo/Director control
+   endpoint, container-runtime socket, or Git/GitHub delivery route outside
+   its fixed capability scope.
 3. **Fail-closed provider:** the exact provider/version cannot prove its frozen
    mode/options/MCP configuration was accepted and applied, or can silently
    fall back to an unsandboxed mode.
@@ -413,7 +425,7 @@ approved by this ADR.
 | Linux separate service identity | A root-managed systemd unit or equivalent starts each provider under a dedicated static/dynamic user with `NoNewPrivileges`, protected home/system mounts, only the worktree writable, restricted address families/egress, no daemon/control/runtime socket, and a narrow MCP capability. | Uses public Linux primitives but requires a privileged launcher not documented in Paseo's per-session API. A custom provider wrapper might integrate it, subject to M0 proof and host policy. It is not portable to every Paseo-supported host. |
 | Windows AppContainer/restricted-token wrapper | A trusted wrapper launches the provider with a distinct restricted identity/AppContainer; ACLs grant only the owned worktree and fixed-scope IPC; credential stores, other profiles, named pipes, daemon endpoints, and process handles are denied; network capabilities/firewall allow only provider/broker traffic. | Public Windows primitives exist, and Paseo's custom command array is a possible entrypoint. No installed stable Paseo contract proves token/AppContainer creation, stdio, provider CLI behavior, path mapping, or teardown. Restricted tokens alone are insufficient where the same user ACL still grants access. |
 | Windows Hyper-V-isolated provider container | The provider runs in a per-Run Hyper-V container/VM with only the owned worktree and scoped IPC mounted, no host/container control socket, no Git/GitHub credentials, bounded egress/resources, and verified teardown. | Provides a stronger Windows boundary than process isolation but requires supported Windows editions/features, container images, and path/stdio/MCP/provider tests. It is not a universal Windows baseline and adds an external runtime. |
-| Credentialless worker host plus separate effect broker | Agents run on a dedicated VM/host that has only provider access and Task worktrees; a separately authenticated least-privilege engine/broker holds GitHub, Git delivery, and daemon administration authority. | Strongest cross-platform concept and limits fully adversarial worker processes. It changes the approved single-daemon monolith/no-sidecar architecture and path topology, so it requires a human-approved plan ADR and new M0 validation before implementation. A dedicated host without separating effect credentials is insufficient. |
+| Credentialless agent host plus separate effect broker | Agents run on a dedicated VM/host that has only provider access and Task worktrees; a separately authenticated least-privilege engine/broker holds GitHub, Git delivery, and daemon administration authority. | Strongest cross-platform concept and limits fully adversarial Task Agent processes. It changes the approved single-daemon monolith/no-sidecar architecture and path topology, so it requires a human-approved plan ADR and new M0 validation before implementation. A dedicated host without separating effect credentials is insufficient. |
 
 Every viable option must also address provider authentication. A fully
 adversarial provider process can steal any credential it directly consumes.
@@ -441,8 +453,9 @@ shell can reach ambient executables and credentials.
 
 This would make the same-user topology internally consistent but would remove
 protection against prompt injection and malicious dependency/repository code.
-It would weaken the human-owned security envelope and engine-only-effect
-invariant. This Task is not authorized to make that product-scope change.
+It would weaken the human-owned security envelope and the requirement that
+the engine own every Director lifecycle effect. This Task is not authorized
+to make that product-scope change.
 
 ### Run the entire Paseo daemon in one container or dedicated machine
 
@@ -462,16 +475,16 @@ would turn a hypothesis into architecture without the required experiment.
 ### Add a privileged external-effect broker
 
 This best separates source-code execution from GitHub and daemon authority,
-including against a compromised same-user worker. It conflicts with the
+including against a compromised same-user Task Agent. It conflicts with the
 approved monolith/no-sidecar and single-daemon path assumptions. It may be
 selected only through a human-approved plan ADR after a bounded M0 spike.
 
 ## Decision
 
 **No-go.** The default stable Paseo same-user topology does not meet the
-falsifiable criteria for engine-only effects or credential/control-plane
-isolation against prompt-injected repository instructions or a fully
-adversarial same-user process.
+falsifiable criteria for engine-only Director lifecycle effects or
+credential/control-plane isolation against prompt-injected repository
+instructions or a fully adversarial same-user process.
 
 The selected contingency is to keep the M1 security gate blocked. Director
 must not claim, implement against, or test away the affected plan invariants

@@ -5,7 +5,7 @@ description: Independently review one exact paseo-director candidate commit agai
 
 # Director Independent Review
 
-Review evidence, not the primary agent's confidence or conversation.
+Review evidence, not the Task Agent's confidence or conversation.
 
 ## Establish the review target
 
@@ -21,11 +21,12 @@ Stop if the Candidate is missing, the checkout is dirty, the SHA moved, or the T
 
 ## Isolate the review
 
-1. Use a detached disposable checkout of the exact Candidate.
-2. Do not reuse or mutate the primary worker's checkout.
-3. Do not receive hidden conclusions or conversational context from the primary worker.
-4. Read the diff, surrounding code, tests, Task, `docs/PLAN.md`, and applicable ADRs directly.
-5. Leave implementation changes to the primary Task owner.
+1. Run as a normal top-level Reviewer Agent with no Organizer or Task Agent parent; never run as the Task Agent's helper or child.
+2. Use a detached disposable checkout of the exact Candidate.
+3. Do not reuse or mutate the Task Agent's checkout.
+4. Do not receive hidden conclusions or conversational context from the Task Agent.
+5. Read the diff, surrounding code, tests, Task, `docs/PLAN.md`, and applicable ADRs directly.
+6. Leave implementation changes to the Task Agent.
 
 ## Review dimensions
 

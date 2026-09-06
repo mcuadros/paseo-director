@@ -1,9 +1,10 @@
 # Director for Paseo — Product and Engineering Plan
 
 - **Status:** Approved
-- **Plan version:** 0.2
+- **Plan version:** 0.3
 - **Last updated:** 2026-09-06
 - **Approved:** 2026-09-06
+- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage
 - **Plugin repository:** <https://github.com/mcuadros/paseo-director>
 - **Public name:** Director for Paseo
 - **Short UI name:** Director
@@ -22,7 +23,7 @@ It adds a durable project-management and execution layer around Paseo:
 - One Project can coordinate several repositories.
 - A persistent Organizer Agent can discuss the complete Project, administer Tasks, launch work, and report progress.
 - A Board/List surface exposes planning and execution state together.
-- Each Task launches one primary agent in an isolated Paseo workspace and may use subagents.
+- Director launches exactly one normal top-level Paseo Task Agent for each launched Task—one for its active Run—in an isolated Execution Workspace. That Task Agent may create optional helper subagents.
 - Project policy governs models, effort, permissions, review, delivery, CI correction, cleanup, budgets, and concurrency.
 - Every execution is tied to exact Git commits and is recoverable after a plugin or daemon interruption.
 - Configuration, skills, templates, decisions, and dynamic task state are durable and auditable.
@@ -71,6 +72,14 @@ The Organizer:
 
 A correction that changes the commit creates a new Candidate in the same Run. A true relaunch or retry creates a new Run.
 
+### 2.6 Task Agent, helper subagent, and Reviewer Agent
+
+- **Task Agent:** the one normal top-level Paseo agent Director launches to own a Task Run. It has no parent agent, its visible title is the exact Task title, and it runs in that Task's isolated Execution Workspace.
+- **Helper subagent:** an optional internal orchestration agent that the Task Agent may create for complex work. It is not a Task, Task owner, Run, or Candidate producer of record and is never launched by the Director scheduler as Task work.
+- **Reviewer Agent:** a normal top-level Paseo agent Director launches independently for exact-SHA review in a detached disposable checkout. It is never a child or helper of an Organizer or Task Agent.
+
+The Task Agent remains the sole Task owner even when helpers contribute. Several Task Agents may run concurrently against the same Director Workspace/repository only through distinct Execution Workspaces.
+
 ## 3. Scope and non-goals
 
 ### 3.1 Scope for `1.0`
@@ -83,7 +92,7 @@ A correction that changes the commit creates a new Candidate in the same Run. A 
 - Epic and Task planning with dependencies.
 - Board and List views over the same data.
 - Manual and automatic scheduling.
-- Worktree-isolated agents and controlled subagents.
+- Worktree-isolated top-level Task Agents and controlled helper subagents.
 - Independent commit-based review.
 - GitHub pull-request, checks, CI feedback, and human-review integration.
 - Direct Git delivery without a pull request.
@@ -113,14 +122,14 @@ Generic Git remotes remain valid for direct delivery where the required authenti
 The implementation must make the following states impossible or stop safely when it cannot prove them:
 
 1. A Task targets exactly one Workspace.
-2. One active Run owns at most one primary agent, one Task branch, and one active pull request.
+2. One active Run owns at most one top-level Task Agent, one Task branch, and one active pull request.
 3. A review always evaluates an exact committed Candidate SHA.
 4. A dirty worktree can never enter review or Ready.
 5. Any commit change invalidates previous review and validation for readiness purposes.
 6. A relevant base-branch change invalidates Ready and forces revalidation.
-7. Only the engine performs external side effects such as agent creation, push, PR creation, merge, integration, and cleanup.
+7. Only the engine performs Director lifecycle side effects such as top-level Task Agent and Reviewer Agent creation, push, PR creation, merge, integration, and cleanup. A Task Agent may create only optional helper subagents within its frozen Run policy; helpers cannot perform Director lifecycle effects or become Task owners.
 8. Every side effect is idempotent and reconciled against external facts before retry.
-9. No agent, PR, merge, prompt, or workspace is duplicated after recovery.
+9. No Task Agent, Reviewer Agent, helper subagent, PR, merge, prompt, or workspace is duplicated after recovery.
 10. Unknown or unowned branches, worktrees, refs, and directories are never deleted.
 11. Dirty or unintegrated work is never destroyed without the configured recovery action.
 12. A model, delivery, permission, or provider fallback is never chosen silently.
@@ -224,14 +233,14 @@ A Run contains:
 - frozen effective configuration;
 - the Organizer commit and hashes of every skill/template used;
 - the base ref and resolved base SHA;
-- primary-agent and Execution Workspace identity;
+- Task Agent and Execution Workspace identity;
 - configured budgets and current consumption;
 - the current Candidate;
 - correction-cycle counters;
 - delivery state;
 - timestamps and terminal outcome.
 
-Corrections requested by review, CI, or pre-Ready human feedback remain in the same Run and are performed by the original primary agent while it remains usable.
+Corrections requested by review, CI, or pre-Ready human feedback remain in the same Run and are performed by the original Task Agent while it remains usable.
 
 A manual Retry, restart after terminal failure, or explicit new execution creates a new Run.
 
@@ -290,13 +299,13 @@ There is no additional public HTTP server and no Go sidecar in `1.0`.
 - **Plugin server:** Paseo RPC handlers, lifecycle, reconciliation, and adapter wiring.
 - **Shared contracts:** Zod schemas and JSON-safe values shared across client/server/MCP boundaries.
 - **Adapters:** Paseo SDK, Git processes, GitHub CLI/API, TaskStore, filesystem, clock, disk, and process execution.
-- **MCP bridge:** a scoped façade for Organizer, Worker, and Reviewer agents.
+- **MCP bridge:** a scoped façade for Organizer, Task Agent, helper-subagent, and Reviewer Agent roles.
 
 Dependencies point inward. Domain code cannot import Paseo, React, GitHub, Beads, Dolt, Node process APIs, or filesystem APIs.
 
 ### 6.3 Effect ownership
 
-The UI and MCP endpoints submit commands. The engine is the sole executor of sensitive effects.
+The UI and MCP endpoints submit commands. The engine is the sole executor of Director lifecycle effects. A Task Agent's optional creation of helper subagents is the only agent-creation exception: Director authorizes the frozen Run envelope, reserves and reconciles capacity, observes the helper identities, and owns containment and cleanup, but the scheduler and engine do not launch those helpers as Tasks.
 
 Each effect follows an intent/evidence pattern:
 
@@ -307,7 +316,7 @@ Each effect follows an intent/evidence pattern:
 5. Persist the observed result.
 6. Project the new state.
 
-This applies to agent creation, prompting, workspace creation, branch creation, push, PR creation, merge/integration, remote-branch deletion, and local cleanup.
+This applies to top-level Task Agent and Reviewer Agent creation, prompting, workspace creation, branch creation, push, PR creation, merge/integration, remote-branch deletion, and local cleanup. Helper creation must use an admitted agent-scoped mechanism that binds every helper to the creating Task Agent's fixed Project/Task/Run scope, reserves capacity under a per-Run idempotency key, and records the observed helper identity before helper work so accounting and recovery never rely on a blind retry.
 
 ### 6.4 MCP architecture
 
@@ -538,6 +547,8 @@ The scheduler only launches when:
 - concurrency capacity is available;
 - time, cost, and CI budgets permit launch.
 
+For each eligible Task, the scheduler asks the engine to create the Task Agent through the top-level Paseo client API. It never launches Task work from the Organizer Agent or another agent's subagent API, and it never supplies a parent agent.
+
 ### 10.2 Ordering
 
 Scheduler order is:
@@ -558,7 +569,7 @@ There is no manual rank or queue drag-and-drop in `1.0`.
 - `maxConcurrentAgents`: 8.
 - `maxSubagentsPerTask`: 3.
 
-The agent limit includes primary agents, Reviewers, and Director-owned subagents. The persistent Organizer Agent does not count and remains available to administer the Project.
+The agent limit includes top-level Task Agents, top-level Reviewer Agents, and helper subagents created by Task Agents. The persistent Organizer Agent does not count and remains available to administer the Project. Helper subagents also consume the creating Task's helper quota, time/cost budget, and any applicable Workspace or provider capacity.
 
 ## 11. Preflight
 
@@ -586,8 +597,8 @@ A failed preflight does not launch partially. It returns a specific cause and on
 Each Project defines separate profiles for:
 
 - Organizer;
-- Worker;
-- Reviewer.
+- Task Agent (`Worker` role);
+- Reviewer Agent (`Reviewer` role).
 
 A profile includes provider/model, effort or thinking option, operating/permission mode, provider-native options, MCP policy, budgets, and an optional ordered fallback chain.
 
@@ -605,20 +616,20 @@ The Organizer Agent can:
 
 It cannot activate configuration or change its own model, effort, permissions, repositories, delivery, or security authority. It can only propose those changes for human Preview/Apply.
 
-The Organizer receives broad Project-administration tools within the approved envelope. Workers receive least-privilege Task/Run tools. Reviewers receive read-only Candidate/review access plus one operation for submitting a structured verdict.
+The Organizer receives broad Project-administration tools within the approved envelope. Task Agents receive least-privilege Task/Run tools. Reviewer Agents receive read-only Candidate/review access plus one operation for submitting a structured verdict.
 
-### 12.3 Worker and subagents
+### 12.3 Task Agent and helper subagents
 
-- One primary Worker corresponds to one Task Run.
-- The primary may create subagents when it considers them useful.
-- Writer subagents always use isolated checkouts and return commits to the primary.
-- Read-only subagents may share the checkout when provider and permissions make it safe.
-- The default maximum is three voluntary subagents per Task.
-- The mandatory engine-created Reviewer does not consume that voluntary quota, but it does consume global agent capacity.
+- Exactly one normal top-level Task Agent corresponds to one active Task Run. The Director engine creates it as a top-level client, omits the parent field, sets its visible title to the exact Task title, and places it in the Task's isolated Execution Workspace.
+- The Organizer and scheduler never create a Task Agent as a child or subagent. Concurrent Tasks against one Director Workspace/repository use distinct Execution Workspaces.
+- The Task Agent may create helper subagents when it considers them useful. Those helpers are internal to its Run and never become Task records, Task owners, separate Runs, or Director-launched work.
+- Writer helpers always use isolated checkouts and return commits to the Task Agent. Read-only helpers may share the checkout only when provider and permissions make it safe.
+- The default maximum is three helper subagents per Task. Director reserves and reconciles their capacity, identities, and budgets, requires fixed Project/Task/Run scope and containment, and includes them in interruption, recovery, and cleanup without becoming their launcher. An unknown helper-creation result parks rather than being retried blindly.
+- The mandatory top-level Reviewer Agent does not consume the helper quota, but it does consume global agent capacity.
 
 ### 12.4 Reviewer profile
 
-The Reviewer may use the same model as the Worker, with a warning. `requireDifferentReviewerModel` is optional and disabled by default.
+The Reviewer Agent may use the same model as the Task Agent, with a warning. `requireDifferentReviewerModel` is optional and disabled by default.
 
 ## 13. Execution workflow
 
@@ -628,15 +639,15 @@ For every Run, Director:
 
 1. resolves and records the exact base SHA;
 2. creates or adopts one owned Task branch;
-3. creates an isolated Paseo-managed Execution Workspace/worktree;
-4. launches the primary agent with the frozen profile, policy, skills, templates, and MCP;
-5. records Paseo agent and workspace IDs before further effects.
+3. persists a uniquely keyed workspace-creation intent, creates an isolated Paseo-managed Execution Workspace/worktree, and records the returned workspace ID before another effect;
+4. acting as a top-level Paseo SDK client, persists a uniquely keyed Task Agent creation intent and creates exactly one normal top-level Task Agent in that workspace with the frozen profile, policy, skills, templates, and MCP;
+5. omits the parent field from the agent-creation request, sets the visible agent title to the exact Task title without prefixes or suffixes, and records the returned Paseo agent ID before prompting or any later effect.
 
 One Task has at most one active branch and one active pull request.
 
 ### 13.2 Candidate production
 
-The primary agent must produce a commit. Director independently inspects the worktree and Git graph.
+The Task Agent must produce a commit. Director independently inspects the worktree and Git graph.
 
 - A dirty worktree cannot be reviewed.
 - An absent or unreachable commit cannot be reviewed.
@@ -645,14 +656,14 @@ The primary agent must produce a commit. Director independently inspects the wor
 
 ### 13.3 Independent review
 
-The engine always creates the Reviewer; this is not left to the Worker.
+The engine always creates the Reviewer Agent as a normal top-level Paseo agent with the parent field omitted; this is not left to the Task Agent. The Reviewer Agent is independent of the Organizer and Task Agent, and its identity is persisted before it receives a prompt or performs review work.
 
-The Reviewer:
+The Reviewer Agent:
 
 - receives the objective, acceptance criteria, relevant policy, and Candidate/base facts;
-- does not receive the primary agent's conversation history;
+- does not receive the Task Agent's conversation history;
 - uses a detached, disposable checkout of the exact Candidate;
-- cannot mutate the primary worktree;
+- cannot mutate the Task Agent's worktree;
 - returns a structured verdict and findings.
 
 Independent review occurs before opening a public pull request by default. An explicit Project/Task setting may publish first and review afterward.
@@ -669,7 +680,7 @@ Defaults:
 - four total CI cycles: the initial cycle plus three corrections;
 - never automatically rerun the same failed commit;
 - batch related findings and comments before requesting a correction;
-- corrections are performed by the primary agent;
+- corrections are performed by the Task Agent;
 - every new commit requires fresh review and validation.
 
 Every Run has a mandatory time limit, an optional cost limit, and an explicit CI budget. Exhaustion sends the Task to `Needs you` instead of continuing indefinitely.
@@ -681,7 +692,7 @@ Human feedback can arrive through:
 - a direct Paseo message/action associated with the Task;
 - a GitHub PR review or comment.
 
-Direct Paseo feedback reopens the Task. GitHub feedback also reopens current work when it is not Done and is routed to the same primary agent when automatic correction is enabled.
+Direct Paseo feedback reopens the Task. GitHub feedback also reopens current work when it is not Done and is routed to the same Task Agent when automatic correction is enabled.
 
 Agents do not converse through GitHub, publish agent-authored review discussions, or automatically resolve human threads.
 
@@ -746,7 +757,7 @@ An active agent may finish its current turn. The Task parks at the next safe bou
 
 - requires human confirmation;
 - pauses the Project;
-- terminates all active Director-owned agents;
+- terminates all active Task Agents and Reviewer Agents plus every observed helper subagent in their Runs;
 - marks their Runs cancelled;
 - applies snapshot/cleanup policy to unintegrated work;
 - returns Tasks to `Queued`;
@@ -758,13 +769,14 @@ An active agent may finish its current turn. The Task parks at the next safe bou
 
 ### 15.4 Agent failure recovery
 
-Director automatically attempts at most one replacement primary agent after a recoverable failure. The replacement receives durable Task/Run/Candidate facts, not an assumed conversation transcript.
+Director automatically attempts at most one replacement top-level Task Agent after a recoverable failure and only after the previous Task Agent is no longer active. The engine uses the same no-parent creation contract and exact Task title, persists the replacement ID before further effects, and supplies durable Task/Run/Candidate facts rather than an assumed conversation transcript.
 
 If the replacement fails or recovery is ambiguous, the Task enters `Needs you`.
 
 ### 15.5 Cleanup defaults
 
 - `terminateOnCompletion`: `true`.
+- Task completion, cancellation, and replacement reconcile and terminate helper subagents before removing an owned Execution Workspace.
 - Successfully integrated worktrees are removed automatically.
 - Dirty work from failed/cancelled Runs uses `snapshot_then_delete` by default.
 - The snapshot creates a hidden local Git ref tied to Task/Run/Candidate metadata.
@@ -792,7 +804,7 @@ The interaction model is inspired by the supplied AO screenshots—a dense dark 
 
 The persistent Organizer Agent remains a normal Paseo agent tab.
 
-Director hierarchy lives in its own UI. Technical Paseo workspaces and agents remain visible and receive clear names linking them to Project/Task/Run.
+Director hierarchy lives in its own UI. Technical Paseo workspaces and agents remain visible. A Task Agent's visible title is exactly its Task title; other resources receive clear names linking them to Project/Task/Run.
 
 ### 16.2 Director Home
 
@@ -1082,7 +1094,8 @@ After this plan is approved, development begins by initializing a new, clean Bea
 - One Beads Epic per roadmap milestone.
 - Development hierarchy remains `Epic → Task`.
 - Every Task has explicit acceptance criteria, dependencies, risk, and evidence requirements.
-- One primary development agent owns one Task.
+- One normal top-level Paseo Task Agent owns one development Task and runs in that Task's isolated Execution Workspace/worktree. Director does not launch it through Organizer or agent-scoped subagent orchestration.
+- A development Task Agent may use internal helper subagents, but they do not claim Tasks, own Beads records, replace the Task Agent, or become development Task owners.
 - Every result is committed and independently reviewed at the exact SHA.
 - The repository is clean before handoff.
 - Beads records outcome, tests, review, and links.
@@ -1091,7 +1104,7 @@ After this plan is approved, development begins by initializing a new, clean Bea
 
 Initial development skills define commit, branch, PR, review, testing, and documentation rules before parallel implementation begins.
 
-For Director's own repository, integration is automatic after an independent `approve_candidate` verdict when the remote head still equals the reviewed SHA, the merge operation atomically asserts that exact head, the relevant base remains valid, every configured and Task-required check passes, the PR is mergeable, no human feedback is unresolved, and the Task is not explicitly manual. A pre-merge refetch without an expected-head condition is insufficient. This repository workflow does not change Director's product default of manual merge described in section 14.
+For Director's own repository, the Task Agent integrates automatically after an independent `approve_candidate` verdict when the remote head still equals the reviewed SHA, the merge operation atomically asserts that exact head, the relevant base remains valid, every configured and Task-required check passes, the PR is mergeable, no human feedback is unresolved, and the Task is not explicitly manual. A pre-merge refetch without an expected-head condition is insufficient. This repository workflow does not change Director's product default of manual merge described in section 14.
 
 Additional human confirmation is reserved for accepting P2 residual risk, expanding policy or permissions, resolving an ambiguous/manual gate, rewriting public history, or performing a destructive action outside the Task's approved cleanup scope.
 
@@ -1138,12 +1151,12 @@ Includes scaffold, modular architecture, configuration schema, Create/Adopt Orga
 
 ### M3 — Agent execution
 
-- Organizer/Worker/Reviewer profiles.
+- Organizer/Task Agent/Reviewer Agent profiles.
 - Scoped MCP.
-- Primary-agent and subagent lifecycle.
+- Top-level Task Agent and helper-subagent lifecycle.
 - Frozen Run configuration and budgets.
 - Pause/Resume/Cancel/Emergency stop.
-- One primary replacement and recovery.
+- One top-level Task Agent replacement and recovery.
 
 **Exit gate:** concurrent Runs and fault injection without duplicate or orphaned execution.
 
@@ -1271,7 +1284,7 @@ Director follows Semantic Versioning. `0.x` may change contracts; `1.x` guarante
 
 M0 stops and M1 cannot begin until public, supported mechanisms prove that Director can:
 
-- create, observe, recover, and terminate agents;
+- create, observe, recover, and terminate top-level Task Agents and Reviewer Agents, and observe, account for, contain, and clean Task-Agent-created helpers;
 - create, own, and clean worktrees;
 - inject per-session MCP into admitted providers;
 - correlate Project/Task/Run/Workspace/agent identities;

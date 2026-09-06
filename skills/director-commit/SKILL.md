@@ -9,7 +9,7 @@ Create one reviewable commit that represents one logical change for one Beads Ta
 
 ## Preconditions
 
-1. Read the Beads Task and confirm it is claimed by the current worker.
+1. Read the Beads Task and confirm it is claimed by the current top-level Task Agent.
 2. Inspect `git status`, the unstaged diff, and the staged diff.
 3. Separate unrelated or user-owned changes; never include them for convenience.
 4. Run the checks required by the Task and changed area.
@@ -49,6 +49,6 @@ Allowed types are `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `c
 2. Re-run `git status --short`.
 3. Confirm no intended file was left behind and no unrelated file was committed.
 4. Record the SHA and validation evidence in Beads.
-5. Hand the exact SHA to an independent reviewer.
+5. Hand the exact SHA to an independent top-level Reviewer Agent.
 
 Do not amend another author's commit, rewrite shared history, bypass hooks, or call a dirty worktree review-ready.
