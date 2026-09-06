@@ -41,7 +41,7 @@ When new work is discovered, create a sibling Task under the same milestone Epic
 3. Require `$director-independent-review` to approve the exact final Candidate SHA.
 4. Address every blocking finding through the same primary Task owner and obtain a fresh review for a changed SHA.
 5. Use `$director-pull-request` only after independent approval.
-6. After `approve_candidate`, publish and integrate automatically when the exact remote head, relevant base, configured/required checks, mergeability, and feedback gates remain valid and the Task is not explicitly manual.
+6. After `approve_candidate`, publish and integrate automatically when the exact remote head, relevant base, configured/required checks, mergeability, and feedback gates remain valid, the merge operation atomically matches the approved head SHA, and the Task is not explicitly manual.
 7. Update Beads with commit SHA, validation evidence, review verdict, PR link, integration evidence, and residual risks.
 8. Close the Task only after integration is verified and owned temporary resources are clean.
 

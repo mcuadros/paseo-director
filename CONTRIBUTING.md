@@ -49,7 +49,7 @@ Follow `skills/director-pull-request/SKILL.md` and the repository template.
 - Do not use PR comments for agent-to-agent conversation.
 - Do not merge while CI, review, base, or acceptance evidence is stale.
 
-After `approve_candidate`, the primary agent publishes and merges automatically when the reviewed head, relevant base, configured/required checks, mergeability, and human-feedback gates remain valid. A separate human merge confirmation is not required unless the Task is explicitly manual or one of the risk, policy, ambiguity, history-rewrite, or unauthorized-destructive exceptions in `AGENTS.md` applies.
+After `approve_candidate`, the primary agent publishes and merges automatically when the reviewed head, relevant base, configured/required checks, mergeability, and human-feedback gates remain valid. The merge command must atomically match the approved head SHA; a pre-merge refetch is not enough. A separate human merge confirmation is not required unless the Task is explicitly manual or one of the risk, policy, ambiguity, history-rewrite, or unauthorized-destructive exceptions in `AGENTS.md` applies.
 
 ## M0 spikes
 

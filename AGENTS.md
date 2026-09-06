@@ -51,12 +51,15 @@ Beads remains in `no-git-ops` mode: `bd` must not stage, commit, or push reposit
 An `approve_candidate` verdict authorizes the primary agent to publish and integrate that exact SHA automatically when all of these remain true immediately before merge:
 
 - the remote head is the independently reviewed Candidate;
+- the merge operation atomically asserts that exact head SHA, for example with `gh pr merge --match-head-commit <approved-sha>`;
 - the relevant base has not changed, or the Candidate has been revalidated and reviewed against it;
 - every configured and Task-required check passes;
 - the PR is mergeable and no human feedback remains unresolved;
 - the Task does not explicitly require manual integration.
 
 The absence of remote checks is acceptable only when the Task does not require them and the repository has not configured them yet. Reconfirm every gate from GitHub rather than relying on cached output.
+
+A pre-merge refetch alone is insufficient because the head can change afterward. If the forge cannot atomically reject a changed head, stop rather than merge.
 
 Ask for human input only to accept P2 residual risk, expand policy/permissions, resolve an ambiguous or explicitly manual gate, rewrite public history, or perform a destructive action not already authorized by the Task and cleanup policy.
 

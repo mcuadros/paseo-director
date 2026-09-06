@@ -47,7 +47,9 @@ Describe observable behavior and evidence. Do not paste full agent transcripts, 
 3. Route human review feedback back to the primary Task owner.
 4. Do not have agents converse in PR threads or automatically resolve human threads.
 5. Immediately before integration, refetch the PR and prove that its remote head is the approved Candidate, its relevant base is still valid, every configured and Task-required check passes, it is mergeable, and no human feedback remains unresolved.
-6. Merge automatically when those facts hold unless the Task explicitly requires manual integration.
+6. Merge automatically when those facts hold unless the Task explicitly requires manual integration, and atomically bind the operation to the approved head with `gh pr merge --match-head-commit <approved-sha>` or an equivalent expected-head precondition.
 7. Treat no remote checks as valid only when the Task does not require them and the repository has not configured them yet.
 8. Ask for human input only for accepted P2 risk, policy/permission expansion, an ambiguous or manual gate, public-history rewrite, or a destructive action outside approved Task cleanup.
 9. Close the Beads Task only after integration and cleanup are verified.
+
+A refetch followed by an unguarded merge has a race window and is forbidden. If the forge cannot atomically reject a changed head, stop without merging.

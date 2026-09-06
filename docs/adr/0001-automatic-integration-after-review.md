@@ -17,6 +17,7 @@ This decision governs development of Director itself. It does not change the Dir
 After an independent reviewer returns `approve_candidate`, the primary agent may publish and integrate that exact Candidate without another human confirmation when, immediately before merge:
 
 - the remote head equals the reviewed SHA;
+- the merge operation atomically asserts that exact SHA, using `gh pr merge --match-head-commit <approved-sha>` or an equivalent expected-head precondition;
 - the relevant base is unchanged or the Candidate was freshly revalidated and reviewed;
 - every configured and Task-required check passes;
 - the PR is mergeable;
@@ -24,6 +25,8 @@ After an independent reviewer returns `approve_candidate`, the primary agent may
 - the Task does not explicitly require manual integration.
 
 No configured remote checks is acceptable only before the repository defines them and only when the Task does not require remote CI.
+
+A pre-merge refetch alone is not sufficient because the head may change between observation and integration. If the forge cannot atomically reject a different head, automatic integration stops.
 
 Human input remains mandatory for:
 
