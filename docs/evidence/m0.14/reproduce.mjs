@@ -5,9 +5,11 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   access,
   copyFile,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
+  readlink,
   realpath,
   readdir,
   rm,
@@ -18,8 +20,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-if (process.argv.length !== 2) {
-  throw new Error("Usage: node docs/evidence/m0.14/reproduce.mjs");
+const mode = process.argv[2] ?? "--full";
+if (process.argv.length > 3 || !new Set(["--full", "--git-only"]).has(mode)) {
+  throw new Error("Usage: node docs/evidence/m0.14/reproduce.mjs [--full | --git-only]");
 }
 if (process.platform !== "linux" || process.arch !== "x64") {
   throw new Error("This evidence contract supports Linux x86_64 only");
@@ -323,14 +326,50 @@ async function runtimeProcessIds() {
   return matches.sort((left, right) => left - right);
 }
 
-async function prepareRuntime() {
+async function directoryDigest(root, excludedPath) {
+  const digest = createHash("sha256");
+  const excluded = path.resolve(excludedPath);
+  async function visit(current, relative) {
+    const absolute = path.resolve(current);
+    if (absolute === excluded || absolute.startsWith(`${excluded}${path.sep}`)) return;
+    const stat = await lstat(current);
+    const type = stat.isDirectory()
+      ? "directory"
+      : stat.isFile()
+        ? "file"
+        : stat.isSymbolicLink()
+          ? "symlink"
+          : "other";
+    digest.update(`${type}\0${relative}\0${stat.mode & 0o7777}\0`);
+    if (stat.isDirectory()) {
+      const entries = await readdir(current);
+      entries.sort();
+      for (const entry of entries) {
+        await visit(path.join(current, entry), path.posix.join(relative, entry));
+      }
+    } else if (stat.isFile()) {
+      digest.update(await readFile(current));
+    } else if (stat.isSymbolicLink()) {
+      digest.update(await readlink(current));
+    } else {
+      throw new Error("Shared Git common directory contains an unsupported file type");
+    }
+  }
+  await visit(root, ".");
+  return digest.digest("hex");
+}
+
+async function prepareRuntime({ withPodman = true } = {}) {
   runtimeRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), "director-m0.14-")));
   paseoHome = path.join(runtimeRoot, "paseo-home");
   podmanRoot = path.join(runtimeRoot, "podman-root");
   podmanRunRoot = path.join(runtimeRoot, "podman-runroot");
   podmanRuntime = path.join(runtimeRoot, "podman-runtime");
   podmanHome = path.join(runtimeRoot, "podman-home");
-  for (const directory of [paseoHome, podmanRoot, podmanRunRoot, podmanRuntime, podmanHome]) {
+  const runtimeDirectories = withPodman
+    ? [paseoHome, podmanRoot, podmanRunRoot, podmanRuntime, podmanHome]
+    : [];
+  for (const directory of runtimeDirectories) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
   }
   await writeFile(path.join(runtimeRoot, markerName), `${JSON.stringify({ ownerNonce })}\n`, {
@@ -544,90 +583,177 @@ async function stdioMcpProbe() {
   };
 }
 
-async function gitWorktreeMappingProbe() {
+async function gitCandidateBundleProbe() {
   const source = path.join(runtimeRoot, "git-source");
   const linked = path.join(runtimeRoot, "git-linked-worktree");
+  const privateRoot = path.join(runtimeRoot, "git-agent-private");
+  const privateObjects = path.join(privateRoot, "objects");
+  const agentHome = path.join(privateRoot, "home");
+  const hooks = path.join(privateRoot, "hooks");
+  const engineTransferRoot = path.join(runtimeRoot, "git-engine-transfer");
+  const bundle = path.join(engineTransferRoot, "candidate.bundle");
+  const receiver = path.join(runtimeRoot, "git-engine-receiver");
   const gitEnv = await initGitRepository(source, { "README.md": "# disposable\n" });
-  await run(executables.git, ["-C", source, "worktree", "add", "-b", "task-probe", linked, "main"], {
+  await run(executables.git, ["-C", source, "worktree", "add", "--detach", linked, "main"], {
     env: gitEnv,
   });
+  for (const directory of [privateObjects, agentHome, hooks]) {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+  }
+  for (const directory of [path.join(privateObjects, "info"), path.join(privateObjects, "pack")]) {
+    await mkdir(directory, { mode: 0o700 });
+  }
+  const agentScript = path.join(privateRoot, "git-candidate-agent.mjs");
+  const namespaceScript = path.join(privateRoot, "git-candidate-namespace.mjs");
+  await copyFile(path.join(evidenceRoot, "git-candidate-agent.mjs"), agentScript);
+  await copyFile(path.join(evidenceRoot, "git-candidate-namespace.mjs"), namespaceScript);
   const dotGitText = (await readFile(path.join(linked, ".git"), "utf8")).trim();
-  const gitDir = dotGitText.replace(/^gitdir:\s*/u, "");
+  const gitDir = await realpath(dotGitText.replace(/^gitdir:\s*/u, ""));
   const commonDir = await realpath(
     path.resolve(gitDir, (await readFile(path.join(gitDir, "commondir"), "utf8")).trim()),
   );
-  const head = (await run(executables.git, ["-C", source, "rev-parse", "HEAD"], { env: gitEnv })).stdout.trim();
-  const escapeRef = path.join(commonDir, "refs", "heads", "escape-probe");
-  const onlyWorktree = JSON.parse(
+  const base = (
+    await run(executables.git, ["-C", source, "rev-parse", "HEAD"], { env: gitEnv })
+  ).stdout.trim();
+  const sharedHeadsBefore = (
+    await run(
+      executables.git,
+      ["-C", source, "for-each-ref", "--format=%(refname)%00%(objectname)", "refs/heads"],
+      { env: gitEnv },
+    )
+  ).stdout;
+  const sharedDigestBefore = await directoryDigest(commonDir, gitDir);
+  const sharedWriteProbe = path.join(commonDir, "refs", "heads", "forbidden-agent-write");
+  const agentResult = JSON.parse(
     (
-      await podman([
-        "run",
-        "--rm",
-        ...boundaryArgs(),
-        `--workdir=${linked}`,
-        `--mount=type=bind,src=${linked},dst=${linked},rw`,
-        image,
-        "node",
-        "-e",
-        "const fs=require('fs');const p=fs.readFileSync('.git','utf8').trim().replace(/^gitdir:\\s*/, '');let ok=true;try{fs.accessSync(p)}catch{ok=false}process.stdout.write(JSON.stringify({gitdirReachable:ok}))",
-      ])
-    ).stdout,
-  );
-  const readOnlyCommon = JSON.parse(
-    (
-      await podman([
-        "run",
-        "--rm",
-        ...boundaryArgs(),
-        `--workdir=${linked}`,
-        `--mount=type=bind,src=${linked},dst=${linked},rw`,
-        `--mount=type=bind,src=${commonDir},dst=${commonDir},ro`,
-        `--env=TARGET=${escapeRef}`,
-        `--env=HEAD=${head}`,
-        `--env=COMMON=${commonDir}`,
-        image,
-        "node",
-        "-e",
-        "const fs=require('fs');let write='allowed';try{fs.writeFileSync(process.env.TARGET,process.env.HEAD+'\\n')}catch(e){write=e.code||'denied'}process.stdout.write(JSON.stringify({commonReadable:fs.existsSync(process.env.COMMON),refWrite:write}))",
-        ],
+      await run(
+        executables.unshare,
+        ["--user", "--map-root-user", "--mount", "--fork", process.execPath, namespaceScript],
+        {
+          cwd: linked,
+          env: {
+            PATH: "/usr/bin:/bin",
+            HOME: agentHome,
+            LANG: "C.UTF-8",
+            DIRECTOR_M014_COMMON_DIR: commonDir,
+            DIRECTOR_M014_WORKTREE_GIT_DIR: gitDir,
+            DIRECTOR_M014_GIT_AGENT_SCRIPT: agentScript,
+            DIRECTOR_M014_WORKTREE: linked,
+            DIRECTOR_M014_PRIVATE_OBJECTS: privateObjects,
+            DIRECTOR_M014_SHARED_OBJECTS: path.join(commonDir, "objects"),
+            DIRECTOR_M014_HOOKS: hooks,
+            DIRECTOR_M014_BASE: base,
+            DIRECTOR_M014_NONCE: ownerNonce,
+            DIRECTOR_M014_SHARED_WRITE_PROBE: sharedWriteProbe,
+          },
+          label: "isolated Git Candidate producer",
+          timeoutMs: 90_000,
+        },
       )
     ).stdout,
   );
-  if (readOnlyCommon.commonReadable !== true) {
-    throw new Error("The read-only common directory mapping was not visible");
-  }
-  const writableCommon = JSON.parse(
-    (
-      await podman([
-        "run",
-        "--rm",
-        ...boundaryArgs(),
-        `--workdir=${linked}`,
-        `--mount=type=bind,src=${linked},dst=${linked},rw`,
-        `--mount=type=bind,src=${commonDir},dst=${commonDir},rw`,
-        `--env=TARGET=${escapeRef}`,
-        `--env=HEAD=${head}`,
-        image,
-        "node",
-        "-e",
-        "const fs=require('fs');fs.mkdirSync(require('path').dirname(process.env.TARGET),{recursive:true});fs.writeFileSync(process.env.TARGET,process.env.HEAD+'\\n');process.stdout.write(JSON.stringify({refWrite:'allowed'}))",
-      ])
-    ).stdout,
+  const candidate = agentResult.candidate;
+  const sharedHeadsAfter = (
+    await run(
+      executables.git,
+      ["-C", source, "for-each-ref", "--format=%(refname)%00%(objectname)", "refs/heads"],
+      { env: gitEnv },
+    )
+  ).stdout;
+  const sharedDigestAfter = await directoryDigest(commonDir, gitDir);
+  const privateCandidateObject = path.join(privateObjects, candidate.slice(0, 2), candidate.slice(2));
+  const sharedCandidateObject = path.join(commonDir, "objects", candidate.slice(0, 2), candidate.slice(2));
+  const privateGitEnv = {
+    ...gitEnv,
+    GIT_DIR: gitDir,
+    GIT_WORK_TREE: linked,
+    GIT_OBJECT_DIRECTORY: privateObjects,
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(commonDir, "objects"),
+  };
+  await mkdir(engineTransferRoot, { mode: 0o700 });
+  await run(
+    executables.git,
+    [
+      "-C",
+      linked,
+      "-c",
+      `core.hooksPath=${hooks}`,
+      "-c",
+      "core.fsmonitor=false",
+      "bundle",
+      "create",
+      bundle,
+      "refs/worktree/director-candidate",
+    ],
+    { env: privateGitEnv },
   );
-  const rawMutationVisible =
-    (await run(executables.git, ["-C", source, "show-ref", "--verify", "refs/heads/escape-probe"], {
-      env: gitEnv,
-    })).stdout.trim() === `${head} refs/heads/escape-probe`;
-  await run(executables.git, ["-C", source, "update-ref", "-d", "refs/heads/escape-probe", head], {
+  await run(executables.git, ["clone", "--bare", "--no-local", source, receiver], {
     env: gitEnv,
   });
-  if (onlyWorktree.gitdirReachable || readOnlyCommon.refWrite === "allowed" || !rawMutationVisible) {
-    throw new Error("The linked-worktree authority tradeoff was not reproduced");
+  await run(executables.git, ["-C", receiver, "bundle", "verify", bundle], { env: gitEnv });
+  const advertised = (
+    await run(
+      executables.git,
+      ["-C", receiver, "bundle", "list-heads", bundle, "refs/worktree/director-candidate"],
+      { env: gitEnv },
+    )
+  ).stdout.trim();
+  const importedRef = `refs/director/candidates/m014-${ownerNonce}`;
+  await run(
+    executables.git,
+    [
+      "-C",
+      receiver,
+      "fetch",
+      "--no-write-fetch-head",
+      bundle,
+      `refs/worktree/director-candidate:${importedRef}`,
+    ],
+    { env: gitEnv },
+  );
+  const importedCandidate = (
+    await run(executables.git, ["-C", receiver, "rev-parse", importedRef], { env: gitEnv })
+  ).stdout.trim();
+  const importedContent = (
+    await run(executables.git, ["-C", receiver, "show", `${candidate}:candidate.txt`], {
+      env: gitEnv,
+    })
+  ).stdout;
+  await run(executables.git, ["-C", receiver, "fsck", "--strict", "--no-reflogs", candidate], {
+    env: gitEnv,
+  });
+  if (
+    agentResult.gitVersion !== "git version 2.47.3" ||
+    agentResult.parent !== base ||
+    agentResult.worktreeRef !== candidate ||
+    agentResult.sharedWriteDenied !== true ||
+    agentResult.worktreeClean !== true ||
+    sharedHeadsAfter !== sharedHeadsBefore ||
+    sharedDigestAfter !== sharedDigestBefore ||
+    !(await exists(privateCandidateObject)) ||
+    (await exists(sharedCandidateObject)) ||
+    advertised !== `${candidate} refs/worktree/director-candidate` ||
+    importedCandidate !== candidate ||
+    importedContent !== `candidate ${ownerNonce}\n`
+  ) {
+    throw new Error("Private-object Candidate bundle/import contract did not pass");
   }
   return {
-    onlyWorktree,
-    readOnlyCommon: { commonReadable: true, legitimateGitWritesDenied: true },
-    writableCommon: { ...writableCommon, rawSiblingRefMutationVisible: rawMutationVisible },
+    gitVersion: agentResult.gitVersion,
+    candidateProducedWithCommonReadOnly: true,
+    candidateParentMatched: true,
+    perWorktreeRefMatched: true,
+    privateCandidateObjectPresent: true,
+    sharedCandidateObjectAbsent: true,
+    sharedHeadsUnchangedDuringAgentPhase: true,
+    sharedCommonUnchangedOutsideOwnedGitdir: true,
+    directSharedWriteDenied: true,
+    bundleVerified: true,
+    bundleHeadMatched: true,
+    engineImported: true,
+    importedExactCandidate: true,
+    importedContentMatched: true,
+    agentWorktreeClean: true,
   };
 }
 
@@ -820,7 +946,11 @@ async function stopDaemon() {
     ["daemon", "stop", "--json", "--home", paseoHome, "--timeout", "30"],
     { timeoutMs: 45_000 },
   );
-  await waitFor(() => loopbackReachable(daemonPort).then((value) => !value), 15_000, "Paseo listener remained open");
+  await waitFor(
+    () => loopbackReachable(daemonPort).then((value) => !value),
+    15_000,
+    "Paseo listener remained open",
+  );
   daemonStarted = false;
 }
 
@@ -866,6 +996,14 @@ async function removeRuntime() {
 async function cleanupAfterFailure() {
   const failures = [];
   if (!runtimeRoot || runtimeRemoved || !(await exists(runtimeRoot))) return failures;
+  if (mode === "--git-only") {
+    try {
+      await completeFocusedGitCleanup();
+    } catch (cause) {
+      failures.push(cause);
+    }
+    return failures;
+  }
   if (workspaceHandle) {
     try {
       await workspaceHandle.archive();
@@ -900,29 +1038,96 @@ async function cleanupAfterFailure() {
   return failures;
 }
 
+async function completeRuntimeCleanup(daemonStopped) {
+  const cleanup = {
+    daemonStopped,
+    ownedContainerCount: Number(
+      (
+        await podman(["ps", "-a", "--filter", `label=${ownerLabel}`, "--format", "{{.ID}}"])
+      ).stdout
+        .trim()
+        .split("\n")
+        .filter(Boolean).length,
+    ),
+  };
+  const removal = await removeRuntime();
+  cleanup.runtimeProcessCount = removal.runtimeProcessCount;
+  cleanup.runtimeReset = removal.runtimeReset;
+  cleanup.temporaryRuntimeRemoved = true;
+  return cleanup;
+}
+
+async function completeFocusedGitCleanup() {
+  const residualProcesses = await runtimeProcessIds();
+  if (residualProcesses.length !== 0) {
+    throw new Error(`Refusing cleanup with ${residualProcesses.length} owned processes present`);
+  }
+  const canonicalRoot = await realpath(runtimeRoot);
+  const canonicalTmp = await realpath(os.tmpdir());
+  const marker = JSON.parse(await readFile(path.join(canonicalRoot, markerName), "utf8"));
+  if (
+    canonicalRoot !== runtimeRoot ||
+    path.dirname(canonicalRoot) !== canonicalTmp ||
+    !path.basename(canonicalRoot).startsWith("director-m0.14-") ||
+    marker.ownerNonce !== ownerNonce
+  ) {
+    throw new Error("Refusing to remove a focused runtime without exact ownership proof");
+  }
+  await rm(canonicalRoot, { recursive: true, force: false });
+  if (await exists(canonicalRoot)) throw new Error("Owned focused runtime remains");
+  runtimeRemoved = true;
+  return { runtimeProcessCount: 0, temporaryRuntimeRemoved: true };
+}
+
 async function execute() {
   executables = {
-    paseo: await resolveExecutable(process.env.DIRECTOR_PASEO_BIN ?? "paseo"),
-    podman: await resolveExecutable(process.env.DIRECTOR_PODMAN_BIN ?? "podman"),
     git: await resolveExecutable(process.env.DIRECTOR_GIT_BIN ?? "git"),
-    codex: await resolveExecutable(process.env.DIRECTOR_CODEX_BIN ?? "codex"),
-    claude: await resolveExecutable(process.env.DIRECTOR_CLAUDE_BIN ?? "claude"),
-    opencode: await resolveExecutable(process.env.DIRECTOR_OPENCODE_BIN ?? "opencode"),
+    unshare: await resolveExecutable(process.env.DIRECTOR_UNSHARE_BIN ?? "unshare"),
   };
   const versions = {
-    paseo: await commandVersion(executables.paseo),
-    codex: await commandVersion(executables.codex),
-    claude: await commandVersion(executables.claude),
-    opencode: await commandVersion(executables.opencode),
     git: await commandVersion(executables.git),
     node: process.version,
     kernel: os.release(),
     platform: `${process.platform}-${process.arch}`,
   };
+  if (mode === "--git-only") {
+    await prepareRuntime({ withPodman: false });
+    const gitCandidateBundle = await gitCandidateBundleProbe();
+    const cleanup = await completeFocusedGitCleanup();
+    return {
+      procedure: "dir-m0.14-private-object-candidate-bundle-v1",
+      result: "pass",
+      versions: {
+        git: versions.git,
+        node: versions.node,
+        kernel: versions.kernel,
+        platform: versions.platform,
+        unshare: await commandVersion(executables.unshare),
+      },
+      gitCandidateBundle,
+      cleanup,
+    };
+  }
+  Object.assign(executables, {
+    paseo: await resolveExecutable(process.env.DIRECTOR_PASEO_BIN ?? "paseo"),
+    podman: await resolveExecutable(process.env.DIRECTOR_PODMAN_BIN ?? "podman"),
+    codex: await resolveExecutable(process.env.DIRECTOR_CODEX_BIN ?? "codex"),
+    claude: await resolveExecutable(process.env.DIRECTOR_CLAUDE_BIN ?? "claude"),
+    opencode: await resolveExecutable(process.env.DIRECTOR_OPENCODE_BIN ?? "opencode"),
+  });
+  Object.assign(versions, {
+    paseo: await commandVersion(executables.paseo),
+    codex: await commandVersion(executables.codex),
+    claude: await commandVersion(executables.claude),
+    opencode: await commandVersion(executables.opencode),
+  });
   await prepareRuntime();
   versions.podman = (
-    await podman(["version", "--format", "{{.Client.Version}}"])
-  ).stdout.trim();
+    await run(executables.podman, ["--version"], {
+      env: podmanEnv(),
+      label: "podman --version",
+    })
+  ).stdout.trim().replace(/^podman version\s+/u, "");
   const podmanTopology = {
     rootless:
       (await podman(["info", "--format", "{{.Host.Security.Rootless}}"])).stdout.trim() ===
@@ -970,25 +1175,11 @@ async function execute() {
   const providerVersions = await providerVersionsInBoundary();
   const authority = await containerAuthorityProbe();
   const stdioMcp = await stdioMcpProbe();
-  const worktreeMapping = await gitWorktreeMappingProbe();
+  const gitCandidateBundle = await gitCandidateBundleProbe();
   const interruptionRecovery = await interruptionRecoveryProbe();
   const lifecycle = await lifecycleProbe();
   await stopDaemon();
-  const cleanup = {
-    daemonStopped: true,
-    ownedContainerCount: Number(
-      (
-        await podman(["ps", "-a", "--filter", `label=${ownerLabel}`, "--format", "{{.ID}}"])
-      ).stdout
-        .trim()
-        .split("\n")
-        .filter(Boolean).length,
-    ),
-  };
-  const removal = await removeRuntime();
-  cleanup.runtimeProcessCount = removal.runtimeProcessCount;
-  cleanup.runtimeReset = removal.runtimeReset;
-  cleanup.temporaryRuntimeRemoved = true;
+  const cleanup = await completeRuntimeCleanup(true);
   return {
     procedure: "dir-m0.14-linux-authority-contract-v1",
     result: "no-go",
@@ -1004,12 +1195,11 @@ async function execute() {
     providerVersions,
     authority,
     stdioMcp,
-    worktreeMapping,
+    gitCandidateBundle,
     interruptionRecovery,
     lifecycle,
     blockers: [
       "paseo_worktree_lifecycle_executes_before_provider_boundary",
-      "linked_worktree_common_dir_is_unavailable_or_cross_scope_writable",
       "authenticated_network_requires_an_unapproved_egress_broker",
       "provider_bearer_credentials_remain_readable_to_the_provider_process",
       "bind_mounted_worktree_has_no_per_run_aggregate_disk_quota",

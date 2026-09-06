@@ -72,19 +72,29 @@ Those positive controls do not form an end-to-end Director boundary:
    dummy engine credential, wrote engine and source state, reached the raw
    daemon listener, and found the Paseo executable with the daemon user's
    authority.
-2. Mounting only a linked worktree hid its external Git directory. Mounting the
-   common directory read-only denied Candidate-producing writes. Mounting it
-   writable allowed a valid sibling-ref mutation that host Git immediately
-   observed.
-3. `--network=none` denied arbitrary egress but also denied authenticated
+2. `--network=none` denied arbitrary egress but also denied authenticated
    provider operation. Restoring an ordinary container network restores
    arbitrary egress. The tested public contract supplies no scoped network or
    authentication broker.
-4. A dummy read-only provider-auth file remained readable to the provider
+3. A dummy read-only provider-auth file remained readable to the provider
    identity, as any directly consumed bearer credential must be. No public
    short-lived scope or credential broker was available.
-5. Cgroups and per-file/tmpfs limits did not limit aggregate bytes in the host
+4. Cgroups and per-file/tmpfs limits did not limit aggregate bytes in the host
    bind-mounted worktree.
+
+Reviewer comment `01a077b9-82e8-70fc-86c8-4a2bbe72637f` invalidated the
+original Git rationale. A corrected public-Git fixture now positively proves
+that Git 2.47.3 can produce a legitimate Candidate while the shared common
+directory remains read-only: the owned per-worktree gitdir stores `HEAD`, index,
+and `refs/worktree/*`; `GIT_OBJECT_DIRECTORY` stores new objects privately;
+`GIT_ALTERNATE_OBJECT_DIRECTORIES` reads the shared base objects; and a verified
+bundle lets the engine import the exact Candidate. Shared heads and the complete
+content/structure/mode digest outside the owned per-worktree gitdir remain
+unchanged.
+
+This bounded path removes Git from the No-go rationale. It does not resolve the
+independent lifecycle-before-wrapper, provider credential/scoped-egress, or
+aggregate writable-storage blockers above, so the overall outcome is unchanged.
 
 The common failures occur before model behavior and apply equally to Codex CLI
 0.147.0, Claude Code 2.1.258, and OpenCode 1.18.18. No real credential or paid
@@ -97,25 +107,25 @@ execution authority from this experiment.
 ### Treat the positive container denials as sufficient
 
 Rejected. They do not cover the already-executed Paseo lifecycle process, do
-not provide a Candidate-capable isolated linked Git worktree, and make provider
-authentication unavailable. Counting only paths inside the container would
-hide the exact pre-provider and shared-Git effects the threat model requires.
+not provide provider authentication, scoped egress, or aggregate worktree
+quota. The corrected Git fixture means Candidate production is no longer part
+of this rejection.
 
-### Register an engine-created checkout as a directory workspace
+### Keep the original shared-Git impossibility conclusion
 
-This can avoid Paseo's automatic worktree lifecycle, and a private clone can
-avoid a shared writable Git common directory. It is not selected because the
-approved plan requires a Paseo-managed Execution Workspace/worktree and says
-the Task Agent produces the commit. Replacing that topology with private clones
-or engine-owned Candidate commits is an architecture/workflow change requiring
-explicit human approval and new Git/recovery/scale evidence.
+Rejected after review. A direct write to `refs/heads/*` does not establish that
+Git cannot create a Candidate. The focused fixture proves the Task-side commit
+and engine-side exact import with public Git mechanisms while the ordinary
+shared refs and object store remain protected. Production recovery and scale
+still require validation, but this ADR does not label the mechanism impossible
+or require a trust-scope change merely to use private objects and bundle import.
 
 ### Add a root-managed systemd identity around each provider
 
 A dedicated service identity can add mount, process, home, and address-family
 restrictions, but Paseo 0.7.2 has no public per-session privileged launcher.
-This option also leaves the shared-Git, lifecycle-before-provider, provider-
-credential, scoped-egress, and aggregate-worktree-quota questions. It is not a
+This option also leaves the lifecycle-before-provider, provider-credential,
+scoped-egress, and aggregate-worktree-quota questions. It is not a
 smaller supported end-to-end path on the tested host.
 
 ### Add an egress/authentication/effect broker or separate agent host
@@ -143,11 +153,11 @@ M1 remains blocked. Director must not admit Codex, Claude Code, OpenCode, or a
 future provider to governed unattended execution merely because its binary,
 provider-native sandbox, MCP policy, or container filesystem checks pass. No
 provider/model/permission/delivery fallback, provider exclusion, trusted-agent
-scope reduction, private Paseo interface, sidecar, private clone, engine-owned
-Candidate, or remote agent host is selected by this ADR.
+scope reduction, private Paseo interface, sidecar, or remote agent host is
+selected by this ADR.
 
 The rootless OCI controls may be reused inside a later human-approved topology,
-but they are defense in depth until the complete lifecycle, Git, authentication,
+but they are defense in depth until the complete lifecycle, authentication,
 network, disk, interruption, and cleanup contract passes together.
 
 ## Consequences
@@ -158,8 +168,13 @@ network, disk, interruption, and cleanup contract passes together.
 - Worktree creation with any repository executable surface remains refused for
   governed work. A provider wrapper is never evidence that setup or teardown
   was contained.
-- A Task Agent cannot receive writable shared Git-common-directory authority.
-  Read-only Git metadata that prevents Candidate creation is not a workaround.
+- A Task Agent does not need writable shared Git-common-directory authority to
+  produce a Candidate. The supported candidate path uses an owned writable
+  per-worktree gitdir, private new-object storage, read-only shared base objects,
+  a per-worktree ref, and exact bundle verification/import by the engine.
+- That focused Git path narrows this ADR; it does not independently approve its
+  production recovery/scale implementation and is not a substitute for the
+  remaining authority controls.
 - Provider authentication and approved network access need a short-lived,
   scope-bound public mechanism or an explicitly approved broker. Mounting a
   long-lived bearer credential is not acceptable against a compromised
