@@ -1,0 +1,4 @@
+interface:
+  display_name: "Director Pull Request"
+  short_description: "Publish a reviewed change as a clear PR"
+  default_prompt: "Use $director-pull-request to publish the reviewed Task as a pull request."
