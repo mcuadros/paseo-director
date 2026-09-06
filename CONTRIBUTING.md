@@ -36,6 +36,8 @@ Every implementation commit requires review under `skills/director-independent-r
 - Do not give the reviewer the author's hidden conclusions or conversation.
 - Route corrections back to the same primary Task owner.
 - Review a changed SHA again from the beginning.
+- Treat `approve_candidate` as permission to publish the reviewed SHA, not permission to close the Task.
+- Keep push, PR, CI, integration, synchronization, and cleanup as explicit post-review gates.
 
 ## Pull requests
 

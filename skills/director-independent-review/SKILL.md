@@ -48,7 +48,7 @@ Run independent focused tests when they materially increase confidence. Do not a
 Return this structure:
 
 ```text
-Verdict: approve | changes_requested
+Verdict: approve_candidate | changes_requested
 Candidate: <sha>
 Base: <sha>
 
@@ -63,8 +63,15 @@ Validation:
 
 Residual risks:
 - <risk or none>
+
+Post-review gates:
+- <push, PR, CI, integration, sync, or cleanup gate that must remain pending>
 ```
 
-Use P0–P3 exactly as defined in `docs/PLAN.md`. Approve only when there are no unresolved P0/P1 findings, every acceptance criterion is met, and any P2 acceptance has explicit human authority.
+Use P0–P3 exactly as defined in `docs/PLAN.md`.
+
+Distinguish Candidate approval from final Task completion. Some acceptance criteria necessarily occur after independent review, including branch publication, PR creation, remote CI, integration, synchronization, and final cleanup. Mark each such criterion as a pending post-review gate; never waive it or claim the Task is Done.
+
+Approve the Candidate only when there are no unresolved P0/P1 findings, every acceptance criterion that can be satisfied before publication is met, and any P2 acceptance has explicit human authority. Task closure remains forbidden until every post-review gate is verified.
 
 A changed commit requires a completely new review. Clean up the disposable checkout after reporting.

@@ -17,7 +17,7 @@
 ## Independent review
 
 - Candidate SHA:
-- Reviewer/verdict:
+- Reviewer/verdict (`approve_candidate` required):
 - Review evidence:
 
 ## Risks and rollback

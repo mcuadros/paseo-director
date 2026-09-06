@@ -38,11 +38,13 @@ When new work is discovered, create a sibling Task under the same milestone Epic
 
 1. Run focused checks while iterating and the full Task-required checks before handoff.
 2. Use `$director-commit` to create focused commits.
-3. Require `$director-independent-review` on the exact final SHA.
+3. Require `$director-independent-review` to approve the exact final Candidate SHA.
 4. Address every blocking finding through the same primary Task owner and obtain a fresh review for a changed SHA.
 5. Use `$director-pull-request` only after independent approval.
 6. Update Beads with commit SHA, validation evidence, review verdict, PR link, and residual risks.
 7. Close the Task only after integration is verified and owned temporary resources are clean.
+
+Candidate approval is not Task completion. Keep every reviewer-listed post-review gate pending until push, PR, CI, integration, synchronization, and cleanup evidence exists.
 
 ## Stop safely
 
