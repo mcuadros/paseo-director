@@ -5,7 +5,7 @@
 - **Beads Task:** `dir-m0.8`
 - **Plan gate:** M0 security and isolation
 - **Decision owner:** M0 evidence owner; any plan or trust-scope change requires the human project owner
-- **Amended by:** [ADR-0010](0010-top-level-task-agent-parentage.md), which distinguishes top-level Task/Reviewer creation from Task-Agent-created helpers without weakening this ADR's containment requirements; [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform
+- **Amended by:** [ADR-0010](0010-top-level-task-agent-parentage.md), which distinguishes top-level Task/Reviewer creation from Task-Agent-created helpers without weakening this ADR's containment requirements; [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform; [ADR-0014](0014-practical-linux-agent-boundary.md), which retains this maximal threat analysis but explicitly excludes compromised Director/Paseo/provider components from the practical Linux `1.0` guarantee
 
 ## Context
 
