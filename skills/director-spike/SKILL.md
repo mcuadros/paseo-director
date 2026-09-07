@@ -28,7 +28,7 @@ Stop and split the work when the spike contains more than one independently deci
 4. Record exact commands, inputs, versions, outputs, and failure states.
 5. Test interruption, retry, and cleanup when the question concerns lifecycle or side effects.
 6. Redact credentials, user code, and private paths from committed evidence.
-7. Clean all temporary processes, worktrees, branches, repositories, and data after the experiment.
+7. Record every owned temporary process, worktree, branch, repository, and data target plus its recoverability state; leave lifecycle cleanup execution and verification to the Director Engine or authorized coordinator.
 
 Do not rely on undocumented endpoints, internal Paseo databases, UI click automation, or log parsing as product infrastructure.
 
@@ -42,4 +42,4 @@ Produce an ADR using `docs/adr/0000-template.md` with exactly one outcome:
 
 Include alternatives considered, raw evidence locations, consequences, compatibility bounds, and follow-up Tasks.
 
-Update and close the Beads Task only when another agent can reproduce the evidence and the ADR resolves its gate. A negative result is successful spike output when it prevents a fragile implementation.
+Submit a structured Go, No-go, or Inconclusive outcome claim only when another agent can reproduce the evidence and the ADR resolves or explicitly leaves blocked its delegated gate. A negative result is successful spike output when it prevents a fragile implementation. Only the Director Engine or authorized coordinator may reconcile that claim, verify integration and cleanup, and close the Beads Task.

@@ -2,7 +2,7 @@
 
 Director is developed through dependency-ordered Beads Tasks and exact-commit independent review. The approved scope and architecture live in [docs/PLAN.md](docs/PLAN.md).
 
-Each development Task is owned by one normal top-level Paseo Task Agent whose parent field is omitted and whose visible title exactly matches the Task title. It runs in the Task's isolated Execution Workspace/worktree. The Task Agent may create internal helper subagents, but helpers are not Beads Tasks or Task owners. Independent Reviewer Agents are also top-level agents and never children of the Task Agent or Organizer.
+Each development Task is owned by one normal top-level Paseo Task Agent whose parent field is omitted and whose visible title exactly matches the Task title. It runs in the Task's isolated Execution Workspace/worktree. The Task Agent may create internal helper subagents, but helpers are not Beads Tasks or Task owners. Independent Reviewer Agents are also top-level agents and never children of the Task Agent or a planning context. Task Agents hand off structured Candidate/outcome claims and may perform only authorized correction turns; the Director Engine or authorized coordinator alone reconciles and executes publication, pull-request creation or update, integration, lifecycle cleanup, and Task closure.
 
 ## Before starting
 
@@ -36,14 +36,14 @@ Every implementation commit requires review under `skills/director-independent-r
 
 - Review the exact SHA in a detached disposable checkout.
 - Do not give the reviewer the author's hidden conclusions or conversation.
-- Route corrections back to the same Task Agent.
+- Route corrections back to the same Task Agent as an authorized correction turn.
 - Review a changed SHA again from the beginning.
-- Treat `approve_candidate` as permission to publish the reviewed SHA, not permission to close the Task.
+- Treat `approve_candidate` as permission for the Director Engine or authorized coordinator to publish the reviewed SHA, not permission for a Task Agent, model, connector, or reviewer to publish or close the Task.
 - Keep push, PR, CI, integration, synchronization, and cleanup as explicit post-review gates.
 
 ## Pull requests
 
-Follow `skills/director-pull-request/SKILL.md` and the repository template.
+The Director Engine or authorized coordinator follows `skills/director-pull-request/SKILL.md` and the repository template after exact-SHA approval. Task Agents do not invoke that skill or perform publication/integration effects.
 
 - Open at most one active PR per Task.
 - Publish only an independently approved Candidate.
@@ -51,7 +51,7 @@ Follow `skills/director-pull-request/SKILL.md` and the repository template.
 - Do not use PR comments for agent-to-agent conversation.
 - Do not merge while CI, review, base, or acceptance evidence is stale.
 
-After `approve_candidate`, the Task Agent publishes and merges automatically when the reviewed head, relevant base, configured/required checks, mergeability, and human-feedback gates remain valid. The merge command must atomically match the approved head SHA; a pre-merge refetch is not enough. A separate human merge confirmation is not required unless the Task is explicitly manual or one of the risk, policy, ambiguity, history-rewrite, or unauthorized-destructive exceptions in `AGENTS.md` applies.
+After `approve_candidate`, only the Director Engine or authorized coordinator publishes and merges automatically when the reviewed head, relevant base, configured/required checks, mergeability, and human-feedback gates remain valid. The merge command must atomically match the approved head SHA; a pre-merge refetch is not enough. A separate human merge confirmation is not required unless the Task is explicitly manual or one of the risk, policy, ambiguity, history-rewrite, or unauthorized-destructive exceptions in `AGENTS.md` applies.
 
 ## M0 spikes
 
@@ -107,4 +107,4 @@ an upgrade is an explicit reviewed workflow change.
 
 ## Definition of Done
 
-A Task is complete only after its acceptance criteria, tests, exact-SHA independent review, CI, integration, Beads evidence, and cleanup are all verified. See section 24 of the plan for the complete policy.
+A Task is complete only after its acceptance criteria, tests, exact-SHA independent review, CI, integration, Beads evidence, and cleanup are all verified. Only the Director Engine or authorized coordinator reconciles those facts, executes lifecycle cleanup, and closes the Task; the Task Agent hands off its structured claim. See section 24 of the plan for the complete policy.

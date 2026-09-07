@@ -1,4 +1,4 @@
 interface:
   display_name: "Director Task Workflow"
-  short_description: "Deliver one Beads task through review"
-  default_prompt: "Use $director-task-workflow to deliver the selected Beads task end to end."
+  short_description: "Produce and hand off one Task Candidate"
+  default_prompt: "Use $director-task-workflow to produce and hand off the selected Beads Task Candidate, including authorized correction turns."
