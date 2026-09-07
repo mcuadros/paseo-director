@@ -104,6 +104,10 @@ test("TypeScript boundaries reject host SDK escape, reverse imports, policy, and
       source: "export const mode = 'fixed';\n",
     },
     {
+      path: "connector/configuration-revision.server.ts",
+      source: "export interface OrganizerRevisionState {}\n",
+    },
+    {
       path: "rpc/status.server.ts",
       source: 'import "node:fs";\n',
     },
@@ -116,6 +120,7 @@ test("TypeScript boundaries reject host SDK escape, reverse imports, policy, and
   assert.ok(errors.some((error) => error.includes("ui boundary cannot import connector")));
   assert.ok(errors.some((error) => error.includes("policy-shaped symbol ClosurePolicy")));
   assert.ok(errors.some((error) => error.includes("connector path cannot own")));
+  assert.ok(errors.some((error) => error.includes("OrganizerRevisionState")));
   assert.ok(errors.some((error) => error.includes("rpc runtime filename")));
   assert.ok(errors.some((error) => error.includes("rpc boundary cannot import Node")));
   assert.ok(errors.some((error) => error.includes("policy-shaped symbol RetryPolicy")));
@@ -127,5 +132,7 @@ test("required reducer, outcome-schema, and split-host homes fail closed when ab
   assert.ok(errors.some((error) => error.includes("required pure reducer home")));
   assert.ok(errors.some((error) => error.includes("exactly seven closed schemas")));
   assert.ok(errors.some((error) => error.includes("one engine-owned versioned host interface")));
+  assert.ok(errors.some((error) => error.includes("engine-owned paseo-director.json schema")));
+  assert.ok(errors.some((error) => error.includes("required configuration boundary")));
   assert.ok(errors.some((error) => error.includes("generated engine client")));
 });

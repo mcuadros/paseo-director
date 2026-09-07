@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mcuadros/paseo-director/engine/domain/configuration/paseo-director.schema.json",
+  "title": "Director Organizer Configuration",
+  "description": "Closed M1 schema for the engine-owned paseo-director.json discovery marker.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "project",
+    "workspaces",
+    "agentProfiles",
+    "defaults",
+    "workspaceOverrides",
+    "skills",
+    "templates"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://github.com/mcuadros/paseo-director/engine/domain/configuration/paseo-director.schema.json"
+    },
+    "schemaVersion": { "const": 1 },
+    "project": { "$ref": "#/$defs/project" },
+    "workspaces": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/workspace" }
+    },
+    "agentProfiles": { "$ref": "#/$defs/agentProfiles" },
+    "defaults": { "$ref": "#/$defs/defaults" },
+    "workspaceOverrides": {
+      "type": "array",
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/workspaceOverride" }
+    },
+    "skills": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/fileReference" }
+    },
+    "templates": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/fileReference" }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "boundedToken": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "remote", "sourcePath", "defaultBaseBranch"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "remote": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "sourcePath": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 4096,
+          "pattern": "^/"
+        },
+        "defaultBaseBranch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      }
+    },
+    "agentProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model", "effort", "permissionMode"],
+      "properties": {
+        "provider": { "enum": ["codex", "claude-code", "opencode"] },
+        "model": { "$ref": "#/$defs/boundedToken" },
+        "effort": { "$ref": "#/$defs/boundedToken" },
+        "permissionMode": { "$ref": "#/$defs/boundedToken" }
+      }
+    },
+    "agentProfiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskAgent", "reviewerAgent"],
+      "properties": {
+        "taskAgent": { "$ref": "#/$defs/agentProfile" },
+        "reviewerAgent": { "$ref": "#/$defs/agentProfile" }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxActiveTasks",
+        "maxActiveTasksPerWorkspace",
+        "maxConcurrentAgents",
+        "maxSubagentsPerTask"
+      ],
+      "properties": {
+        "maxActiveTasks": { "type": "integer", "minimum": 1 },
+        "maxActiveTasksPerWorkspace": { "type": "integer", "minimum": 1 },
+        "maxConcurrentAgents": { "type": "integer", "minimum": 1 },
+        "maxSubagentsPerTask": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "runBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["elapsedSeconds", "tokens", "turns", "ciCycles"],
+      "properties": {
+        "elapsedSeconds": { "type": "integer", "minimum": 1 },
+        "tokens": { "type": "integer", "minimum": 1 },
+        "turns": { "type": "integer", "minimum": 1 },
+        "ciCycles": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["launchPolicy", "deliveryMode", "limits", "runBudget"],
+      "properties": {
+        "launchPolicy": { "enum": ["manual", "automatic"] },
+        "deliveryMode": { "enum": ["pull_request", "direct"] },
+        "limits": { "$ref": "#/$defs/limits" },
+        "runBudget": { "$ref": "#/$defs/runBudget" }
+      }
+    },
+    "workspaceOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspaceId", "launchPolicy", "deliveryMode"],
+      "properties": {
+        "workspaceId": { "$ref": "#/$defs/identifier" },
+        "launchPolicy": { "enum": ["inherit", "manual", "automatic"] },
+        "deliveryMode": { "enum": ["inherit", "pull_request", "direct"] }
+      }
+    },
+    "fileReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    }
+  }
+}

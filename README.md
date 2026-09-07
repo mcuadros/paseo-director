@@ -37,9 +37,9 @@ Engine.
 Director for Paseo is an independent community plugin. It is not affiliated
 with, endorsed by, maintained by, or sponsored by Paseo.
 
-This first runnable scaffold intentionally implements no product workflow. It
-establishes the process, package, UI, contract, credential, distribution, and CI
-boundaries on which later M1 Tasks can build.
+This walking skeleton intentionally implements no Task execution workflow. It
+establishes the process, package, UI, host contract, credential, distribution,
+configuration/revision, and CI boundaries on which later M1 Tasks can build.
 
 ## Development
 
@@ -98,6 +98,18 @@ daemon user's access during installation and update. Review the source,
 lockfile, dependencies, and future updates before installing. Host modules and
 external executables are neither vendored nor redistributed.
 
+## Organizer configuration
+
+Each Organizer repository is discovered through one strict
+`paseo-director.json`. Director Engine owns its version 1 schema, semantic
+validation, pending/active revision state, deterministic Preview/Apply boundary,
+and immutable Run configuration snapshots. Invalid or unapproved revisions
+never become Run inputs. Director for Paseo only renders the engine projection
+and submits typed commands; it owns no activation or snapshot policy.
+
+See [Organizer configuration and revisions](docs/configuration.md) for the
+complete minimal document and transition contract.
+
 ## Architecture
 
 The Go module is split into inward-pointing boundaries:
@@ -118,6 +130,11 @@ seven closed agent-outcome schemas live under `domain/agentoutcome`; claims are
 inputs, never lifecycle evidence. Infrastructure adapters and the fixed-scope
 agent runtime may translate or perform an authorized effect but cannot own a
 reducer, policy, TaskStore, projection, or lifecycle decision.
+
+The closed `paseo-director.json` contract lives under
+`domain/configuration`. Its optimistic pending/active revision aggregate and
+frozen Run snapshots live under `application/configuration`; no host package
+owns those transitions.
 
 The Paseo 0.7 host uses the stable mixed `index.ts` entry while separating
 runtime code by the official suffix contract: `ui/*.client.*`,
