@@ -41,6 +41,17 @@ function sameIdentity(left: Stats, right: Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
+function sameMutableCredentialMetadata(left: Stats, right: Stats): boolean {
+  return (
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs &&
+    left.mode === right.mode &&
+    left.uid === right.uid &&
+    left.nlink === right.nlink
+  );
+}
+
 function credentialAncestorIdentities(
   credentialDirectory: string,
   credentialStatus: Stats,
@@ -168,17 +179,18 @@ export function loadConnectorCredential(options: {
   );
   let credential: string;
   try {
-    if (!sameIdentity(credentialStatus, fstatSync(descriptor))) {
+    const openedStatus = fstatSync(descriptor);
+    if (!sameIdentity(credentialStatus, openedStatus)) {
       throw new ConnectorCredentialError(
         "CONNECTOR_CREDENTIAL_SUBSTITUTED",
         "the connector credential changed before it could be opened",
       );
     }
     credential = readFileSync(descriptor, "utf8").trim();
-    if (!sameIdentity(credentialStatus, fstatSync(descriptor))) {
+    if (!sameMutableCredentialMetadata(openedStatus, fstatSync(descriptor))) {
       throw new ConnectorCredentialError(
-        "CONNECTOR_CREDENTIAL_SUBSTITUTED",
-        "the connector credential changed while it was being read",
+        "CONNECTOR_CREDENTIAL_METADATA_CHANGED",
+        "the connector credential metadata changed between the pre-read and post-read checks",
       );
     }
     assertAncestorIdentitiesUnchanged(ancestorIdentities);

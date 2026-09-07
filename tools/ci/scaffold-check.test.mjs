@@ -2,14 +2,18 @@
 
 import assert from "node:assert/strict";
 import {
+  chmodSync,
+  copyFileSync,
+  lstatSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -22,6 +26,7 @@ import {
   lintRepository,
   repositoryFiles,
   releaseMetadataErrors,
+  run,
   workflowErrors,
 } from "./scaffold-check.mjs";
 
@@ -30,6 +35,38 @@ const workflowPath = ".github/workflows/ci.yml";
 const workflow = JSON.parse(
   readFileSync(resolve(repositoryRoot, workflowPath), "utf8"),
 );
+
+function trackedRepositoryCopy(prefix) {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), prefix));
+  const listed = spawnSync("git", ["ls-files", "-z"], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  });
+  assert.equal(listed.status, 0, listed.stderr);
+  for (const path of listed.stdout.split("\0").filter(Boolean)) {
+    const source = resolve(repositoryRoot, path);
+    const destination = resolve(temporaryRoot, path);
+    const status = lstatSync(source);
+    mkdirSync(dirname(destination), { recursive: true });
+    if (status.isSymbolicLink()) {
+      symlinkSync(readlinkSync(source), destination);
+    } else {
+      copyFileSync(source, destination);
+      chmodSync(destination, status.mode);
+    }
+  }
+  for (const args of [
+    ["init", "--quiet"],
+    ["add", "--all"],
+  ]) {
+    const result = spawnSync("git", args, {
+      cwd: temporaryRoot,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  }
+  return temporaryRoot;
+}
 
 test("the maintained scaffold and workflow satisfy their contracts", () => {
   assert.deepEqual(lintRepository(repositoryRoot).errors, []);
@@ -191,16 +228,89 @@ test("connector policy and Paseo SDK imports outside the adapter fail lint", () 
 });
 
 test("prohibited host policy vocabulary covers the entrypoint and every host directory", () => {
-  for (const [path, source] of [
-    ["index.ts", "const eligibility = 'forbidden';\n"],
-    ["ui/policy.client.tsx", "const retryPolicy = 'forbidden';\n"],
-    ["connector/policy.server.ts", "const scheduler = 'forbidden';\n"],
-    ["rpc/policy.shared.ts", "const closurePolicy = 'forbidden';\n"],
-    ["generated/policy.shared.ts", "const reconciliation = 'forbidden';\n"],
+  for (const [path, identifier] of [
+    ["index.ts", "ELIGIBILITY"],
+    ["ui/policy.client.tsx", "scheduler"],
+    ["connector/policy.server.ts", "ReTrYpOlIcY"],
+    ["rpc/policy.shared.ts", "taskstore"],
   ]) {
-    assert.deepEqual(hostSourceErrors(path, source), [
+    assert.deepEqual(hostSourceErrors(path, `const ${identifier} = true;\n`), [
       `${path}: host source contains prohibited workflow policy`,
     ]);
+  }
+
+  for (const [path, identifier] of [
+    ["generated/policy.shared.ts", "STATEtransition"],
+    ["index.ts", "Escalation"],
+    ["connector/policy.server.ts", "RECONCILIATION"],
+    ["generated/policy.shared.ts", "closurepolicy"],
+  ]) {
+    assert.deepEqual(hostSourceErrors(path, `class ${identifier} {}\n`), [
+      `${path}: host source contains prohibited workflow policy`,
+    ]);
+  }
+});
+
+test("legitimate UI, connector, RPC, and generated host sources remain policy-free", () => {
+  for (const path of [
+    "ui/shells.client.tsx",
+    "connector/paseo.server.ts",
+    "rpc/startup.shared.ts",
+    "generated/host-contract.shared.ts",
+  ]) {
+    assert.deepEqual(
+      hostSourceErrors(path, readFileSync(resolve(repositoryRoot, path), "utf8")),
+      [],
+      path,
+    );
+  }
+});
+
+test("standalone lint reports tracked dangling non-workflow symlinks without stacks", (context) => {
+  const temporaryRoot = trackedRepositoryCopy("director-ci-lint-dangling-");
+  const danglingPaths = [
+    "connector/gone.server.ts",
+    "docs/adr/0099-gone.md",
+    "tools/ci/gone.mjs",
+  ];
+  try {
+    for (const path of danglingPaths) {
+      mkdirSync(dirname(resolve(temporaryRoot, path)), { recursive: true });
+      symlinkSync("missing-target", resolve(temporaryRoot, path));
+    }
+    const tracked = spawnSync("git", ["add", "--", ...danglingPaths], {
+      cwd: temporaryRoot,
+      encoding: "utf8",
+    });
+    assert.equal(tracked.status, 0, tracked.stderr);
+
+    const expectedErrors = danglingPaths
+      .toSorted()
+      .map(
+        (path) =>
+          `${path}: tracked repository symlinks require an explicit policy`,
+      );
+    assert.deepEqual(lintRepository(temporaryRoot).errors, expectedErrors);
+
+    const output = [];
+    context.mock.method(console, "error", (message) => {
+      output.push(String(message));
+    });
+    assert.equal(run(temporaryRoot, "lint"), 1);
+    assert.deepEqual(output, [
+      "Scaffold lint failed:",
+      ...expectedErrors.map((error) => `- ${error}`),
+    ]);
+    assert.doesNotMatch(output.join("\n"), /ENOENT|node:fs|\n\s+at\s/);
+
+    output.length = 0;
+    assert.equal(run(temporaryRoot, "format"), 1);
+    assert.deepEqual(output, [
+      "Formatting checks failed:",
+      ...expectedErrors.map((error) => `- ${error}`),
+    ]);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
   }
 });
 
