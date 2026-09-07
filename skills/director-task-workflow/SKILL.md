@@ -40,13 +40,13 @@ When new work is discovered, create a sibling Task under the same milestone Epic
 1. Run focused checks while iterating and the full Task-required checks before handoff.
 2. Use `$director-commit` to create focused commits.
 3. Require `$director-independent-review` to approve the exact final Candidate SHA.
-4. Address every blocking finding through the same Task Agent and obtain a fresh review for a changed SHA.
-5. Use `$director-pull-request` only after independent approval.
-6. After `approve_candidate`, the Task Agent publishes and integrates automatically when the exact remote head, relevant base, configured/required checks, mergeability, and feedback gates remain valid, the merge operation atomically matches the approved head SHA, and the Task is not explicitly manual.
-7. Update Beads with commit SHA, validation evidence, review verdict, PR link, integration evidence, and residual risks.
-8. Close the Task only after integration is verified and owned temporary resources are clean.
+4. Address every blocking finding through the same Task Agent only in an authorized correction turn, and obtain a fresh review for a changed SHA.
+5. After each work or correction turn, submit a structured Candidate/outcome claim and hand the exact Candidate to the authorized coordinator; `$director-pull-request` is coordinator-only after independent approval.
+6. The Task Agent may produce Candidate/outcome claims and perform authorized correction turns, but it cannot decide or perform publication, pull-request creation or update, integration, lifecycle cleanup, or Task closure.
+7. Update Beads with the Candidate SHA, validation evidence, correction disposition, residual risks, and exact handoff. The Reviewer and authorized coordinator separately record review and post-handoff lifecycle evidence under their own identities.
+8. Only the Director Engine or authorized coordinator reconciles and executes publication, integration, cleanup, and Task closure. It preserves the exact remote-head, relevant-base, configured/required-check, mergeability, feedback, and atomic expected-head gates, and closes only after integration and owned-resource cleanup are verified.
 
-Candidate approval is not Task completion. Keep every reviewer-listed post-review gate pending until push, PR, CI, integration, synchronization, and cleanup evidence exists.
+Candidate approval is not Task completion. The Task Agent keeps every reviewer-listed post-review gate pending in its claim; only the Director Engine or authorized coordinator may verify and complete push, PR, CI, integration, synchronization, cleanup, and closure gates.
 
 ## Stop safely
 

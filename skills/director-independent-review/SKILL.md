@@ -73,6 +73,6 @@ Use P0–P3 exactly as defined in `docs/PLAN.md`.
 
 Distinguish Candidate approval from final Task completion. Some acceptance criteria necessarily occur after independent review, including branch publication, PR creation, remote CI, integration, synchronization, and final cleanup. Mark each such criterion as a pending post-review gate; never waive it or claim the Task is Done.
 
-Approve the Candidate only when there are no unresolved P0/P1 findings, every acceptance criterion that can be satisfied before publication is met, and any P2 acceptance has explicit human authority. Task closure remains forbidden until every post-review gate is verified.
+Approve the Candidate only when there are no unresolved P0/P1 findings, every acceptance criterion that can be satisfied before publication is met, and any P2 acceptance has explicit human authority. Task closure remains forbidden to the Reviewer and Task Agent; only the Director Engine or authorized coordinator may close after independently reconciling every post-review gate.
 
-A changed commit requires a completely new review. Clean up the disposable checkout after reporting.
+A changed commit requires a completely new review. Record the disposable checkout identity and ownership after reporting; leave lifecycle cleanup to the Director Engine or authorized coordinator.
