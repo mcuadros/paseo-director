@@ -2,65 +2,70 @@
 
 - **Captured:** 2026-09-07
 - **Task:** `dir-m1.12`
-- **Base:** `origin/main` at `77615884f2e0f5e177ee43c6f725739690f0b2c0`
-- **Result:** No-go for moving the Director 1.0 engine outside the Paseo 0.7.2
-  plugin subprocess; retain the modular TypeScript monolith
-- **Scope:** architecture evidence only; no Director product behavior
+- **Old base:** `77615884f2e0f5e177ee43c6f725739690f0b2c0`
+- **Superseded unreviewed Candidate:**
+  `80f5cf1a3344cf3ac9232ba5e10f1de07b5509a8`
+- **Current base:** `origin/main` at
+  `66f8b7127543305db0f560fc8106d2d2c0e5b15f`
+- **Superseded rebased carrier:**
+  `c44312a4846f7b9bdd2d54a0e931035e108f0dc2`
+- **Result:** Inconclusive only for the exact Paseo 0.7.2 connector-authority
+  compatibility gate
+- **Scope:** architecture evidence; no Director product behavior
 
-## Falsifiable question and boundary
+Neither superseded SHA may be reviewed, published, or treated as authority.
+The standalone Go engine and prohibition on the monolith are binding inputs,
+not outcome choices.
 
-Can one standalone Director engine process outside the Paseo Node plugin
-complete the ADR-0003 Task lifecycle through a policy-free connector while
-preserving ADR-0015 intent, evidence, fencing, idempotency, and fail-closed
-recovery across the extra hop, and remain installable through the audited Git
-plugin lifecycle without vendoring or silent downloads?
+## Falsifiable question and bounds
 
-The complete pre-experiment question, criteria, exact bounds, three allowed
-outcomes, and deadline were recorded in Beads comment
-`01a079da-0f75-7da4-bd8f-c285744d5415` before repository files changed.
-Comment `01a079db-803e-704b-8e70-292dda1b326d` preserves the correction that
-the claim and frame were performed by this Task Agent but inherited the human
-actor; every later Beads operation uses the Task Agent principal explicitly.
+Can the standalone Director Engine complete the proven Task lifecycle while
+Director for Paseo alone owns a public supported Paseo 0.7.2 connection and
+acceptably scoped credential, exposes only fixed host capabilities and
+normalized observations, keeps secrets and policy out of the engine, and
+starts the decided release/development engine artifact fail closed with
+attributable identity?
 
-The run stayed inside one disposable exact-0.7.2 daemon/plugin installation,
-one product repository/worktree family, one standalone-engine artifact build,
-and one complete injected-failure matrix. It used no relay, remote MCP,
-GitHub mutation, paid model, user-owned product repository, or non-Linux
-topology. The only product repository was the disposable fixture below. No
-new TaskStore database was needed: accepted ADR-0004/ADR-0012 evidence and
-the installed `dolt` public help decide that process-mode question without
-repeating their destructive and credential-sensitive experiment.
+The original pre-change frame is Beads comment
+`01a079da-0f75-7da4-bd8f-c285744d5415`. Its stale monolith outcome,
+install-hook premise, UI split, and distribution choice are superseded by the
+append-only amended frame
+`01a07a17-98f1-76f1-be52-1f7af7e560c3` and binding human comments listed in
+the decision-consistency matrix below. The initial frame and claim were
+performed by this Task Agent but misattributed through the inherited human
+actor; correction `01a079db-803e-704b-8e70-292dda1b326d` preserves that audit
+fact without rewriting prior rows.
+
+Success required a connector-owned public client and credential; no credential
+in the engine; fixed Director capabilities; fail-closed missing authority;
+preservation of the prior T0–T5, workspace, TaskStore, drift, projection,
+cursor, and reload results; and the fixed release-download/development-compile
+distribution. If exact 0.7.2 exposed only an over-broad credential and no
+accepted least-privilege capability, the allowed result was Inconclusive with
+an exact project-owner P2 choice. A monolith was not an allowed result.
+
+The amendment permitted exactly one disposable password-protected loopback
+Paseo home/daemon/plugin, one connector-authority probe, one local release
+server, one release build, and one development build. It prohibited repeating
+the passing interruption, workspace, TaskStore, cursor, or drift matrices.
+The deadline was 2026-09-07T11:30:00+02:00. The work completed inside that
+boundary.
 
 ## Exact environment
 
 ```text
 Debian GNU/Linux 13.6 (trixie), x86_64
 Linux 6.12.107+deb13-amd64
-Paseo CLI/server and installed public packages 0.7.2
-Node.js v26.7.0 (the decision retains the documented Node >=22 floor)
+Paseo CLI/server/plugin/client/protocol 0.7.2
+Node.js v26.7.0 (documented implementation floor remains Node >=22)
 npm 11.19.0
-Go 1.26.5 linux/amd64 (inventory only; no Go implementation was preferred)
+Go go1.26.5 linux/amd64
 Git 2.47.3
 Dolt 2.3.2
 Beads 1.2.2, commit 6c124203e771
 ```
 
-Inventory commands:
-
-```sh
-date --iso-8601=seconds
-uname -a
-sed -n '1,80p' /etc/os-release
-paseo --version
-node --version
-npm --version
-go version
-git --version
-dolt version
-bd version
-```
-
-Installed exact-package hashes:
+Installed exact-package hashes retained from the first evidence run:
 
 ```text
 17f99b5bacf0beab0de98f1b06aba5883d1ac2c061109f6f0c094692a938334d  @getpaseo/plugin/package.json
@@ -69,449 +74,275 @@ d709063eaff6708dfe3a0fd9a093ffb02635b0092ab0bc5e33ccdc4726efc65e  @getpaseo/clie
 8593bfb59e5ce49b4d337283738df00bdd718d477b3108cee72a6b9861731839  @getpaseo/client/dist/index.d.ts
 ```
 
-## Primary public sources
+## Public supported sources
 
-These sources were reread on 2026-09-07. The installed immutable 0.7.2
-declarations remain the compatibility authority where current website content
-has moved ahead of the published artifact, as ADR-0002 already requires.
+Sources were reread on 2026-09-07. Installed immutable 0.7.2 declarations are
+the compatibility authority where current documentation moves ahead.
 
-| Source | Relevant supported fact |
+| Source | Verified supported fact |
 |---|---|
-| <https://paseo.sh/docs/plugins> | v0.7 is current and v0.8 is preview; the plugin API is experimental. |
-| <https://paseo.sh/docs/plugins/v0.7/reference> | The top-level contribution receives `PluginContext`; backend RPC handlers receive `{ paseo }`; that API connection belongs to the plugin subprocess and closes when it stops. Git preparation commands are explicit direct-argv manifest entries and run before activation. |
-| <https://paseo.sh/docs/sdk/reference> | Standalone SDK clients need a URL plus password or authorization header; the injected plugin `PaseoApi` deliberately omits connection lifecycle. |
-| <https://paseo.sh/docs/sdk/workspaces> | `source.kind=directory` registers an existing directory; `source.kind=worktree` asks Paseo to create and own a worktree. |
-| <https://paseo.sh/docs/worktrees> | Paseo-owned creation runs repository `paseo.json` setup and archive runs teardown/removal. |
-| `dolt sql-server --help`, installed 2.3.2 | The approved store is a MySQL-compatible external server over a data directory; listener, privilege, branch-control, and system/session variable configuration are explicit. |
-| `dolt backup --help`, installed 2.3.2 | Backup is an external snapshot/sync/restore operation; interruption and destination-idle pruning have explicit semantics. |
+| [Paseo plugin v0.7 reference](https://paseo.sh/docs/plugins/v0.7/reference) | Git plugin installation clones the repository. A manifest build is an explicit argv preparation step. Top-level `PluginContext` and handler context differ; only handlers receive the injected host API. |
+| [Paseo SDK reference](https://paseo.sh/docs/sdk/reference) | A standalone public client accepts daemon URL plus password or a complete authorization header; the injected plugin API omits connection lifecycle. |
+| [Paseo security](https://paseo.sh/docs/security) | Connected clients are trusted operators of the daemon user's resources; password authentication protects the daemon surface rather than individual operations. |
+| [Paseo configuration](https://paseo.sh/docs/configuration) | The daemon password is a server-level setting, not a verb-scoped capability. |
+| [Paseo workspace SDK](https://paseo.sh/docs/sdk/workspaces) | `source.kind=directory` registers an existing directory; `source.kind=worktree` requests Paseo-owned creation. |
+| [Paseo worktrees](https://paseo.sh/docs/worktrees) | Paseo-owned worktrees execute admitted repository setup/teardown and are removed on archive. |
+| Installed `dolt sql-server --help` and `dolt backup --help`, 2.3.2 | The selected TaskStore and backup interfaces are external processes/commands, not an admitted embedded library. |
 
-No private endpoint, internal Paseo database, UI automation, or log parsing was
-used as a product authority path. Plugin logs were inspected only to diagnose
-disposable fixture-load failures.
+No private endpoint, internal database, CLI orchestration, agent MCP, UI
+automation, or log parser was used as product authority.
 
-## Decisive public-authority result
+## Prior evidence preserved without repetition
 
-The checked-in
-[`authority-probe.ts`](../../../tools/spikes/dir-m1.12/live-fixture/authority-probe.ts)
-compiled against exact `@getpaseo/plugin@0.7.2` and
-`@getpaseo/client@0.7.2`. It establishes:
-
-```text
-"paseo" is not a key of PluginContext
-PluginHandlerContext["paseo"] is PaseoApi
-"connect" and "close" are not keys of the injected PaseoApi
-```
-
-The installed declarations agree. `PluginContext` exposes contribution
-registration and `handle`; only the handler context has `paseo`. The official
-reference states that the handler connection belongs to the subprocess and
-closes when the plugin stops.
-
-The live no-web-UI daemon loaded the connector twice around a supported plugin
-reload. Both top-level connector descriptions recorded:
-
-```json
-{"hasTopLevelPaseoApi":false}
-{"hasPaseoApi":false,"contractHash":"9ee14489ce72ddace0df4550b11ad03ce3ac946bd9392e67e5cd047c210715e4"}
-```
-
-No inbound UI RPC existed in the headless topology, so no handler context
-could supply the API. Retaining an API obtained by a prior handler cannot fix
-reload: the public contract says its owning subprocess connection closes. The
-standalone engine therefore cannot initiate startup reconciliation, scheduler
-effects, Organizer MCP effects, or periodic observation through a connector
-after headless load/reload. Engine process survival does not convey the
-non-serializable in-process authority object across the hop.
-
-The public standalone-client alternative requires daemon URL and password or
-authorization-header authority in the engine. It bypasses the required thin
-plugin connector and the ADR-0002 injected authority path, so it was not used
-as a fallback. A connected desktop/web/mobile client could call a bootstrap
-RPC, but that is not headless and makes correctness depend on client presence.
-
-This single absent supported authority path falsifies the full standalone
-boundary even though the isolated transport mechanics below pass.
-
-## Extra-hop contract and interruption matrix
-
+The deterministic
 [`standalone-engine-contract.mjs`](../../../tools/spikes/dir-m1.12/standalone-engine-contract.mjs)
-is a deterministic, product-free model. It starts separate engine/connector
-processes over an owned Unix-domain socket with uint32be length-prefixed JSON
-frames. Its connector accepts only Director agent-runtime verbs and exact
-arguments; it rejects policy, retry, and expected-version fields. The engine
-owns command identity, policy, intent, observation, retry classification,
-projection, and cursors.
+already ran a separate engine and connector over an owned Unix-domain socket.
+Its normalized committed output remains
+[`observed-output.json`](observed-output.json). It proved:
 
-The modeled agent-runtime capabilities are:
+- a closed eight-verb Director host port and descriptor;
+- command/query separation, idempotency-key payload conflict, expected version,
+  engine projections, a monotonic resumable cursor, and generated-client drift;
+- zero handoff for missing capability, stale contract, connector policy, or a
+  stale epoch holder;
+- ADR-0015 T0–T5, including a durable intent while the connector persisted an
+  external object then dropped the response; restart observed/adopted it with
+  one logical completion and no second handoff;
+- linked compensation as a new Command which preserved the original Effect;
+- engine survival across plugin reload and finite exit after connector absence.
+
+The first run also proved workspace registration is not managed creation.
+`source.kind=directory` reported a Git worktree with
+`isPaseoOwnedWorktree=false` and left it after archive. After engine-side
+ADR-0014 digest admission, `source.kind=worktree` ran setup once, reported
+Paseo ownership, and removed the worktree on archive. The standalone engine
+must retain that admission before the connector call.
+
+ADR-0004/ADR-0012 evidence and installed Dolt public help remain decisive for
+TaskStore mode. Director Engine owns the typed store adapter and sole raw SQL
+identity; `dolt sql-server` remains external. Append-only guards and global and
+session safe-commit checks remain mandatory. Online consumers use engine
+projections; raw offline inspection requires pause and server absence. Backup
+uses supported online backup to a unique destination and fresh restore
+verification, never a live directory copy. No new database was created.
+
+These passing matrices were deliberately not rerun.
+
+## Focused connector-owned-authority probe
+
+The committed source fixture is
+[`connector-authority-fixture`](../../../tools/spikes/dir-m1.12/connector-authority-fixture/).
+The live installed fixture commit was
+`f9336225f22a75b641fe1f82746db9d10ef97286`; its Git tree excluded
+`node_modules`.
+
+### Reproduction shape
+
+The following is the sanitized command shape. The credential value is
+intentionally absent. The run used port 17713 and one owned
+`/tmp/director-m1.12-auth.XXXXXX` root.
+
+```sh
+paseo plugin init "$PROBE_ROOT/plugin-src" \
+  --id director-connector-authority-probe --json
+cp tools/spikes/dir-m1.12/connector-authority-fixture/* \
+  "$PROBE_ROOT/plugin-src/"
+
+# Add exact @getpaseo/client@0.7.2 and the scaffold's exact public dependencies,
+# generate a lockfile, typecheck, then commit only sources and the lockfile.
+npm install --save-exact @getpaseo/client@0.7.2
+npm run typecheck
+git add package.json package-lock.json paseo-plugin.json '*.ts' '*.mjs'
+git commit -m 'fixture: connector-owned authority probe'
+
+PASEO_PASSWORD_FILE="$PROBE_ROOT/credential" \
+  paseo daemon start --home "$PROBE_ROOT/home" \
+  --listen 127.0.0.1:17713 --foreground --no-relay --no-mcp \
+  --no-inject-mcp --no-web-ui
+
+paseo plugin add "file://$PROBE_ROOT/plugin-src" --ref main --json
+# The manifest applies: npm ci --ignore-scripts
+# Public SDK control then enables, reloads, checks status, and removes the plugin.
+```
+
+Paseo cloned the Git repository into staging and applied the declared manifest
+build `npm ci --ignore-scripts` before activation. This is not an install hook.
+It materialized the locked connector SDK dependency because the plugin server
+host-provides only `@getpaseo/plugin`, `@getpaseo/plugin/server`, and `zod`.
+
+The connector read its own credential file, created `@getpaseo/client`,
+connected headlessly, and performed only read-only `workspaces.list`. It then
+sent the engine a normalized descriptor with contract version/hash, the eight
+fixed Director capabilities, authority owner `director-for-paseo`, credential
+kind `daemon-password`, and scope `full-daemon-operator`. The engine child was
+spawned with a sanitized allowlist environment and received no raw client.
+
+[`connector-authority-output.json`](connector-authority-output.json) records:
 
 ```text
-executionWorkspace.createManaged
-executionWorkspace.observe
-executionWorkspace.archive
-taskAgent.createWithInitialPrompt
-reviewerAgent.createWithInitialPrompt
-helperAgent.observe
-agent.observe
-agent.archive
+SDK-ready events: 2; read-only workspace counts: 0, 0
+connector reload: applied; engine starts: 1; same engine survived: true
+engine credential environment keys: []
+descriptors: 2; contract version: 1; fixed capabilities: 8
+secret in engine events: false; host mutations: 0
 ```
 
-The happy path covered eight lifecycle effects: Paseo-managed Execution
-Workspace creation, Task Agent creation with its initial prompt, observation
-of a Task-Agent-created helper without engine launch, independent Reviewer
-creation, explicit helper/Reviewer/Task Agent archive, and workspace archive.
-It produced seven connector mutation handoffs, eight completed effects,
-seventeen ordered events, and a stable resumable cursor page.
+After deleting the connector credential file, the requested reload was
+attempted and failed: command exit 1, plugin status `failed`, error
+`connector credential file is absent`, zero later SDK-ready events, and zero
+host mutations. It was not a successfully applied reload and no alternate
+authority or mode was selected.
 
-The failure matrix injected:
+### Exact authority boundary
 
-| Boundary | Durable/external condition | Result after restart |
-|---|---|---|
-| T0 before intent | no durable intent | one admitted intent, one handoff, one completion |
-| T0 after intent | intent durable, no observation | one handoff, one completion |
-| T1 after observation | precondition observation durable | fresh reconciliation, one handoff, one completion |
-| T2 after dispatch claim | permit/attempt durable, no handoff | one handoff, one completion |
-| T3 connector call in flight | intent and dispatch durable; connector persisted external object then dropped response | engine observed/adopted exact correlation; one handoff, one completion |
-| T4 before projection | response recorded as observation-required, completion event absent | fresh observation; zero repeat handoff; one completion event |
+Installed public `PaseoClientConfig` has URL, optional daemon password, and
+optional complete proxy authorization header. It has no scope, permission, or
+capability field. The resulting high-level client includes agent, workspace,
+and daemon configuration operations, including configuration mutation. The
+official security model makes a connected client a trusted daemon operator.
 
-ADR-0015 T5 compensation is not another connector state. The model admitted a
-separate command linked to the preserved original Effect, then ran that
-compensating archive through the same T0–T4 protocol. It produced one archive
-handoff, kept the original result, and retained the `compensationFor` link.
+Therefore these facts are both true:
 
-Same-key/same-payload replay returned the original command. Same key with a
-different payload failed with
-`IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD`. Removing the Reviewer
-capability, changing the contract hash, or placing policy in a connector
-request each failed before any external handoff. A stale holder at lease epoch
-1 also failed before observation or handoff after durable takeover advanced
-the engine fence to epoch 2; the connector never interprets a TaskStore epoch.
-A generated client was built only in the owned temporary directory;
-regeneration matched, a framing-schema mutation produced drift, and no
-generated client was committed. The captured result is
-[`observed-output.json`](observed-output.json).
+1. Connector ownership is mechanically verified. The engine did not receive
+   the disposable password in environment or protocol, and replacement
+   connectors reconnected around engine survival.
+2. Exact 0.7.2 does not expose an acceptably least-privileged headless
+   credential. The exercised credential was deliberately labelled
+   `full-daemon-operator`; a proxy header or passwordless loopback does not add
+   Paseo verb scopes.
 
-Initial execution inside the filesystem sandbox failed with `listen EPERM` for
-the owned Unix socket. The exact same bounded command was rerun under the
-approved local-socket permission. One fixture assertion initially counted
-archive observations as mutations; the correction distinguished desired
-archive state and helper observation. The successful matrix above is the only
-evidence result, and its owned temporary root was absent afterward.
+Using it in product is a new P2 residual-risk decision, not an implementation
+detail or a conclusion this Task Agent can silently apply.
 
-Reproduction:
+### Attempted versus applied corrections
+
+- An initial setup command reached the dependency-install phase inside the
+  filesystem sandbox and stopped before any daemon, plugin installation, or
+  fixture commit was applied. Its exact stale setup process group was later
+  terminated and proven absent.
+- The permitted rerun installed 315 locked packages and reported zero audit
+  vulnerabilities; exact TypeScript checking passed.
+- An initial disposable fixture commit accidentally tracked `node_modules`.
+  A second disposable commit removed it from the Git index before plugin
+  installation. Only final source commit `f9336225...` was installed, and its
+  tree excluded `node_modules`.
+- The successful initial load and reload were applied. The later reload after
+  credential deletion was attempted and failed closed, as intended.
+- No host mutation was attempted by the connector probe.
+
+## Focused release/development distribution probe
+
+[`engine-distribution-contract.mjs`](../../../tools/spikes/dir-m1.12/engine-distribution-contract.mjs)
+created one disposable minimal Go source repository, a statically linked
+release artifact and exact-source notice file, one local HTTP release server,
+one separately committed installed pin, one external XDG-style cache, and one
+development build. It ran offline with `CGO_ENABLED=0`, `GOPROXY=off`,
+`GOSUMDB=off`, `GOTOOLCHAIN=local`, `-trimpath`, and `-buildvcs=false`.
+
+Command:
 
 ```sh
-node --check tools/spikes/dir-m1.12/standalone-engine-contract.mjs
-node tools/spikes/dir-m1.12/standalone-engine-contract.mjs
+node tools/spikes/dir-m1.12/engine-distribution-contract.mjs
 ```
 
-The second command needs permission to create a Unix-domain socket under its
-owned temporary root.
+[`distribution-output.json`](distribution-output.json) records the applied
+result:
 
-## Workspace adoption, creation, and ADR-0014
-
-The live product fixture committed a non-empty `worktree.setup` command. The
-engine-side harness computed lifecycle digest
-`f84e9135f403a74dabab552192b8e8e51a150e112085196666832443875ef9a3`.
-Without the fixture human approval it made no SDK call: the workspace count and
-setup marker were unchanged. With the exact digest admitted, public workspace
-creation ran setup once.
-
-Observed public result:
-
-```json
-{
-  "refusalBeforeSdkCall": true,
-  "adoptedKind": "worktree",
-  "adoptedPaseoOwned": false,
-  "adoptedDirectoryRemained": true,
-  "managedKind": "worktree",
-  "managedPaseoOwned": true,
-  "setupRanOnlyAfterApproval": true,
-  "managedDirectoryRemoved": true
-}
+```text
+source Candidate E: 5b65533269a6d2c62f5dbed81a5658d405ed782f
+installed pin P:     349b49aa08de97183bcf07de166c4ceb77c48fc1
+version/target:      0.0.0-spike / linux-amd64
+binary SHA-256:      484b48f8272f663327c0fa73003034eee5b9ad5f334c05a3f1efc015e075ab23
+notices SHA-256:     24dd766e93559a6b45a8e8bbedafce70f0f4ef2275c6ab3b5601bdea5b1e3ad5
+cache outside plugin checkout: true; downloaded assets: 2
 ```
 
-Registering the engine-created Git worktree through
-`source.kind=directory` identifies it as a Git worktree but reports
-`gitRuntime.isPaseoOwnedWorktree=false`; archive leaves the directory. That is
-adoption, not the Paseo-managed topology required by PLAN §13.1. The current
-plan therefore continues to require `source.kind=worktree`. Because that call
-runs repository lifecycle configuration, ADR-0014 admission remains an engine
-precondition before the policy-free connector invokes Paseo. Adoption cannot
-be used as an implicit bypass.
+The released binary self-reported release mode, version, E, notice digest, and
+the linked fixture dependency. A corrupted download produced
+`ENGINE_DIGEST_MISMATCH`, did not execute, and triggered zero compilations.
+Explicit development mode compiled exactly once and self-reported
+`development/dev` with a distinct binary digest. A missing mode produced
+`ENGINE_MODE_REQUIRED`. The development run did not fetch release assets, and
+release failure did not compile.
 
-The first workspace run exposed only fixture-shape issues: the supported setup
-form is a command string, snapshots use `workspaceKind`, and Git runtime
-enrichment settles asynchronously. Each partial attempt was followed by
-archive and exact worktree/branch cleanup before the corrected observation.
+The fixture notices name the linked third-party module/license and exact E.
+The production contract requires review of E; generation of binary and notices
+from E; immutable GitHub Release assets; and a separately reviewed installed
+connector commit P pinning version, target, E, and both digests. The cache is
+outside Paseo's managed checkout. Released and local identities must appear in
+logs, Doctor, and support bundles. Go is required for development and release
+building, not for release users.
 
-### Live reproduction commands
+The local fixture proved mechanics, not a public release, GitHub permissions,
+CI provenance service, production target matrix, or production dependencies.
 
-Use a dedicated host port and owned temporary root. Keep the generated password
-out of transcripts and evidence. These commands intentionally target only the
-disposable daemon and repositories:
+## UI liveness and two-hop boundary
 
-```sh
-DIRECTOR_M112_SOURCE_ROOT="$(pwd)"
-DIRECTOR_M112_ROOT="$(mktemp -d /tmp/director-m1.12-live.XXXXXX)"
-DIRECTOR_M112_RUNTIME_ROOT="$DIRECTOR_M112_ROOT/runtime"
-DIRECTOR_LIFECYCLE_MARKER="$DIRECTOR_M112_ROOT/lifecycle-ran"
-DIRECTOR_PASEO_PASSWORD="$(openssl rand -hex 24)"
-DIRECTOR_PASEO_URL="ws://127.0.0.1:17712/ws"
-export DIRECTOR_M112_SOURCE_ROOT DIRECTOR_M112_ROOT
-export DIRECTOR_M112_RUNTIME_ROOT DIRECTOR_LIFECYCLE_MARKER
-export DIRECTOR_PASEO_PASSWORD DIRECTOR_PASEO_URL
-mkdir -p "$DIRECTOR_M112_RUNTIME_ROOT"
+The React Native surface reaches the plugin server through Paseo's fixed
+Zod-validated RPC. Only plugin-server-to-engine is Director's interface. The
+existing scaffold inventory contains per-client subscriptions and TanStack
+Query, suggesting query invalidation may bound perceived liveness. This run did
+not measure refresh behavior and makes no engine-push latency claim. M1 must
+measure Paseo query invalidation/subscription behavior before selecting UI
+refresh cadence. The UI still renders only engine projections and submits
+typed engine commands.
 
-paseo plugin init "$DIRECTOR_M112_ROOT/plugin-src" \
-  --id director-standalone-probe --json
-cp "$DIRECTOR_M112_SOURCE_ROOT"/tools/spikes/dir-m1.12/live-fixture/* \
-  "$DIRECTOR_M112_ROOT/plugin-src/"
-cd "$DIRECTOR_M112_ROOT/plugin-src"
-npm pkg set scripts.preinstall='node install-marker.mjs preinstall'
-npm pkg set scripts.install='node install-marker.mjs install'
-npm pkg set scripts.postinstall='node install-marker.mjs postinstall'
-npm install --ignore-scripts
-npm run typecheck
-node --check engine-source.mjs
-node --check live-client.mjs
-node --check prepare-engine.mjs
-test ! -e "$DIRECTOR_M112_RUNTIME_ROOT/install-script-ran"
-
-git init -b main
-git config user.name 'Director Spike'
-git config user.email 'director-spike@example.invalid'
-git add authority-probe.ts connector.server.ts engine-source.mjs index.ts \
-  install-marker.mjs live-client.mjs main.client.tsx package.json \
-  package-lock.json paseo-plugin.json prepare-engine.mjs tsconfig.json
-git commit -m 'fixture: standalone connector probe'
-
-mkdir -p "$DIRECTOR_M112_ROOT/product"
-cp "$DIRECTOR_M112_SOURCE_ROOT"/tools/spikes/dir-m1.12/product-fixture/* \
-  "$DIRECTOR_M112_ROOT/product/"
-git -C "$DIRECTOR_M112_ROOT/product" init -b main
-git -C "$DIRECTOR_M112_ROOT/product" config user.name 'Director Spike'
-git -C "$DIRECTOR_M112_ROOT/product" \
-  config user.email 'director-spike@example.invalid'
-git -C "$DIRECTOR_M112_ROOT/product" add README.md paseo.json setup.mjs
-git -C "$DIRECTOR_M112_ROOT/product" commit -m 'fixture: lifecycle surface'
-DIRECTOR_PRODUCT_REPOSITORY="$DIRECTOR_M112_ROOT/product"
-DIRECTOR_ENGINE_WORKTREE="$DIRECTOR_M112_ROOT/engine-created-worktree"
-export DIRECTOR_PRODUCT_REPOSITORY DIRECTOR_ENGINE_WORKTREE
-git -C "$DIRECTOR_PRODUCT_REPOSITORY" worktree add \
-  -b spike/dir-m1.12-engine-created "$DIRECTOR_ENGINE_WORKTREE" main
-
-PASEO_PASSWORD="$DIRECTOR_PASEO_PASSWORD" \
-  paseo daemon start --home "$DIRECTOR_M112_ROOT/home" \
-  --listen 127.0.0.1:17712 --foreground --no-relay --no-mcp \
-  --no-inject-mcp --no-web-ui \
-  >"$DIRECTOR_M112_ROOT/daemon.log" 2>&1 &
-DIRECTOR_DAEMON_PID="$!"
-export DIRECTOR_DAEMON_PID
-
-for DIRECTOR_WAIT_ATTEMPT in $(seq 1 100); do
-  if node "$DIRECTOR_M112_ROOT/plugin-src/live-client.mjs" enable-plugins; then
-    break
-  fi
-  sleep 0.1
-done
-kill -0 "$DIRECTOR_DAEMON_PID"
-PASEO_PASSWORD="$DIRECTOR_PASEO_PASSWORD" paseo plugin add \
-  "file://$DIRECTOR_M112_ROOT/plugin-src" --ref main \
-  --host 127.0.0.1:17712 --json
-test ! -e "$DIRECTOR_M112_RUNTIME_ROOT/install-script-ran"
-cat "$DIRECTOR_M112_RUNTIME_ROOT/prepared.json"
-for DIRECTOR_WAIT_ATTEMPT in $(seq 1 100); do
-  if test -s "$DIRECTOR_M112_RUNTIME_ROOT/engine.pid"; then break; fi
-  sleep 0.1
-done
-test -s "$DIRECTOR_M112_RUNTIME_ROOT/engine.pid"
-DIRECTOR_ENGINE_PID_BEFORE="$(cat "$DIRECTOR_M112_RUNTIME_ROOT/engine.pid")"
-node "$DIRECTOR_M112_ROOT/plugin-src/live-client.mjs" workspace-probe
-PASEO_PASSWORD="$DIRECTOR_PASEO_PASSWORD" paseo plugin reload \
-  director-standalone-probe --host 127.0.0.1:17712 --json
-test "$(cat "$DIRECTOR_M112_RUNTIME_ROOT/engine.pid")" = \
-  "$DIRECTOR_ENGINE_PID_BEFORE"
-cat "$DIRECTOR_M112_RUNTIME_ROOT/events.jsonl"
-```
-
-For the recorded run, the manifest/build preparation was introduced through
-the same installation's `paseo plugin update` path so failed-candidate
-preservation and final exact-SHA activation were visible. A clean reproduction
-may include the final manifest in its initial commit as shown above; it exercises
-the same documented preparation and activation sequence.
-
-Cleanup uses public workspace archive and plugin remove first, waits for the
-exact engine PID to disappear, removes only the two named disposable branches
-and engine-created worktree after ownership checks, gracefully stops the daemon
-with `paseo daemon stop --home`, validates process/socket absence, and finally
-removes the exact `mktemp` root:
-
-```sh
-node "$DIRECTOR_M112_ROOT/plugin-src/live-client.mjs" cleanup-workspaces
-PASEO_PASSWORD="$DIRECTOR_PASEO_PASSWORD" paseo plugin remove \
-  director-standalone-probe --host 127.0.0.1:17712 --json
-PASEO_PASSWORD="$DIRECTOR_PASEO_PASSWORD" paseo plugin ls \
-  --host 127.0.0.1:17712 --json
-
-DIRECTOR_ENGINE_PID="$(cat "$DIRECTOR_M112_RUNTIME_ROOT/engine.pid")"
-for DIRECTOR_WAIT_ATTEMPT in $(seq 1 60); do
-  if ! kill -0 "$DIRECTOR_ENGINE_PID" 2>/dev/null; then break; fi
-  sleep 0.1
-done
-if kill -0 "$DIRECTOR_ENGINE_PID" 2>/dev/null; then exit 1; fi
-test ! -e "$DIRECTOR_M112_RUNTIME_ROOT/engine.sock"
-
-git -C "$DIRECTOR_PRODUCT_REPOSITORY" worktree list --porcelain
-git -C "$DIRECTOR_PRODUCT_REPOSITORY" worktree remove \
-  "$DIRECTOR_ENGINE_WORKTREE"
-if git -C "$DIRECTOR_PRODUCT_REPOSITORY" show-ref --verify --quiet \
-  refs/heads/spike/dir-m1.12-engine-created; then
-  git -C "$DIRECTOR_PRODUCT_REPOSITORY" branch --delete --force \
-    spike/dir-m1.12-engine-created
-fi
-if git -C "$DIRECTOR_PRODUCT_REPOSITORY" show-ref --verify --quiet \
-  refs/heads/spike/dir-m1.12-managed; then
-  git -C "$DIRECTOR_PRODUCT_REPOSITORY" branch --delete --force \
-    spike/dir-m1.12-managed
-fi
-rm -f -- "$DIRECTOR_LIFECYCLE_MARKER"
-test "$(git -C "$DIRECTOR_PRODUCT_REPOSITORY" worktree list --porcelain | \
-  grep -c '^worktree ')" -eq 1
-test "$(git -C "$DIRECTOR_PRODUCT_REPOSITORY" branch --format='%(refname:short)')" = main
-test ! -e "$DIRECTOR_ENGINE_WORKTREE"
-test ! -e "$DIRECTOR_LIFECYCLE_MARKER"
-
-PASEO_PASSWORD="$DIRECTOR_PASEO_PASSWORD" paseo daemon stop \
-  --home "$DIRECTOR_M112_ROOT/home" --json
-for DIRECTOR_WAIT_ATTEMPT in $(seq 1 100); do
-  if ! kill -0 "$DIRECTOR_DAEMON_PID" 2>/dev/null; then break; fi
-  sleep 0.1
-done
-if kill -0 "$DIRECTOR_DAEMON_PID" 2>/dev/null; then exit 1; fi
-case "$DIRECTOR_M112_ROOT" in
-  /tmp/director-m1.12-live.*) rm -rf -- "$DIRECTOR_M112_ROOT" ;;
-  *) exit 1 ;;
-esac
-test ! -e "$DIRECTOR_M112_ROOT"
-```
-
-Do not substitute a normal Paseo home or an existing repository. The recorded
-run validated the exact root and ownership before each removal; the complete
-absence observations appear below.
-
-## Audited engine-artifact distribution
-
-The successful disposable Git update installed exact fixture commit
-`69664251de1187f7809ce38f5bc40ba7c9278ee2`. Its manifest declared one
-direct-argv preparation command:
-
-```json
-{"build":[["node","prepare-engine.mjs"]]}
-```
-
-The command verified committed engine source hash
-`fb29fe79c1632f8921dff2d681e9e8879e0b782e8bb13d3394ec15aeea032ca1`
-and copied it to a content-addressed engine-owned runtime path. The connector
-contains that expected hash and never discovers or executes an arbitrary
-artifact. `preinstall`, `install`, and `postinstall` sentinel scripts existed
-in `package.json`; Paseo inferred no package-manager action and the sentinels
-remained absent. The preparation observation was:
-
-```json
-{
-  "engineSha": "fb29fe79c1632f8921dff2d681e9e8879e0b782e8bb13d3394ec15aeea032ca1",
-  "artifactHash": "fb29fe79c1632f8921dff2d681e9e8879e0b782e8bb13d3394ec15aeea032ca1",
-  "installScriptsIgnored": true,
-  "downloadedArtifacts": 0,
-  "vendoredArtifacts": 0
-}
-```
-
-This proves a first-party source artifact can traverse the audited Git
-lifecycle without a committed binary, vendored runtime, implicit package
-install, or download. Content-addressed preparation avoids overwriting the
-running artifact when a later candidate fails. Unreferenced candidate
-artifacts require the ordinary ownership/retention cleanup gate.
-
-Two preceding disposable update candidates failed and Paseo preserved the
-installed commit. They attempted to locate an adjacent artifact through
-`import.meta.url`; the 0.7 server bundler reported `Invalid URL` and then an
-undefined path. That route is not supported. The manifest preparation path is
-the reproduced mechanism.
-
-## Engine reload and cleanup
-
-The prepared standalone Node engine PID `1201734` accepted connector PID
-`1201676`, observed its cleanup/disconnect, and accepted replacement connector
-PID `1207940` after supported plugin reload. The engine PID did not change.
-Both connectors reported no top-level Paseo authority. On plugin removal the
-second connector closed; after the bounded three-second connector-absence
-lease the engine recorded `engine-exit-no-connector` and PID absence was
-proven. Thus process survival/reconciliation is technically feasible, but it
-does not repair the missing host-authority path.
-
-## TaskStore process mode
-
-No embedded TaskStore is admitted. ADR-0004 and ADR-0012 prove exact Dolt
-2.3.2 through its supported external SQL-server and CLI surfaces. Replacing
-that with a Go or Node in-process Dolt library would change the audited schema,
-safe-commit, identity, backup, and interruption boundary and requires new
-evidence.
-
-Under the retained plugin monolith, the typed TaskStore adapter stays in the
-trusted engine process and is the sole credential/raw-SQL principal; Dolt is
-an external engine-owned server process. The adapter must perform the existing
-global/session safe-commit and listener/database identity checks before every
-write. Append-only enforcement remains in the selected schema and does not
-move into a connector or an embedded library.
-
-External inspection while the server owns the data directory is allowed only
-through a typed read-only Director diagnostic/projection. Giving an operator,
-agent, connector, or UI a second raw SQL identity would violate ADR-0004.
-Offline inspection requires a paused Project and reconciled server absence.
-Online backup remains an engine-controlled `DOLT_BACKUP`/supported backup
-effect to a unique destination, followed by fresh restore and verification as
-ADR-0012 requires. Direct copying of a live data directory remains forbidden.
+The Agent Orchestrator Go-daemon/client shape in the architecture-session note
+was considered structural precedent only. No private interface, code, decision,
+or compatibility fact was copied from it.
 
 ## Cleanup and absence proof
 
-The final live cleanup observed:
+The connector plugin was removed through the public API and the final plugin
+list was empty. The daemon handled graceful SIGINT and closed. Exact PID and
+listener checks proved the engine process, connector process, stale initial
+setup process, and port 17713 absent. The credential, socket, plugin checkout,
+daemon home, dependency tree, release server, source repositories, build
+artifacts, caches, and complete owned roots
+`/tmp/director-m1.12-auth.FdntKB` and the distribution fixture root were absent.
+The normalized outputs record every cleanup predicate as true.
 
-```text
-active owned workspaces before final cleanup: 0
-plugin list after remove: []
-engine PID after connector-absence deadline: absent
-engine socket after exit: absent
-product worktrees after cleanup: source repository only
-product branches after cleanup: main only
-engine-created and Paseo-managed worktree directories: absent
-lifecycle marker: absent
-daemon stop: graceful, usedLifecycleRpc=true
-daemon process: absent
-/tmp/director-m1.12-live.ZInbnd: absent
-```
+No workspace, branch, database, remote ref, release, PR, or paid service was
+created by the added focused runs. The earlier bounded run had already removed
+its owned plugin, daemon, standalone process/socket, workspace directories,
+exact temporary branches, generated client, artifact root, and product
+fixture. The live Director TaskStore, `dir-m1.2`, its preserved ref and parked
+branch, `dir-m1.3`, `dir-m1.5`, `dir-m1.14`, and primary untracked research
+documents were untouched.
 
-The model independently removed its socket, child connector processes, state,
-ledger, generated client, and owned random root. No TaskStore database/listener
-was created. The shared development Beads server, `dir-m1.2`, its parked branch
-and preserved ref, and primary untracked research documents were never
-touched.
+## Result and required escalation
 
-## Result against criteria
+**Inconclusive.** All tested connector isolation, reload, contract,
+distribution, interruption, workspace, and TaskStore mechanics pass. The exact
+obstacle is that public Paseo 0.7.2 offers only a full daemon-operator password
+or unscoped proxy authorization header for a headless connector. No accepted
+human P2 decision permits that authority and no supported narrower capability
+was found.
 
-| Criterion | Result |
-|---|---|
-| Extra-hop intent/evidence/idempotency, T0-T4 interruption, T5 compensation, in-flight lost response | Pass in deterministic separate-process model |
-| Policy-free Director-verb connector, capabilities, stale fencing, fail-closed missing capability | Pass in model |
-| Projection, resumable cursor, generated-client drift check | Pass in model |
-| Existing worktree adoption versus Paseo-owned creation and ADR-0014 admission | Decided; adoption is not Paseo-owned, managed creation retains admission gate |
-| Audited first-party engine artifact, install scripts ignored, no vendor/download | Pass in live Git update |
-| External TaskStore mode and ADR-0004/ADR-0012 implications | Decided from accepted evidence and installed public interface |
-| Engine process survival/reconciliation across plugin reload/removal | Pass in live process probe |
-| Headless connector can acquire supported `PaseoApi` at startup/reload | **Fail; decisive** |
+The project owner must either explicitly accept that P2 risk for the trusted
+connector on exact 0.7.2, with credentials prohibited from crossing into the
+engine, or select a later stable compatibility floor after evidence proves a
+headless connector-scoped credential/startup API. Until then `dir-m1.2`,
+`dir-m1.3`, and `dir-m1.5` remain blocked. The monolith remains prohibited.
 
-The protocol, artifact, workspace, TaskStore, and process-lifecycle pieces do
-not compensate for the absent public headless authority path. The selected
-outcome is therefore the ADR-0017 No-go, not an inference that a standalone
-boundary is almost supported.
+## Decision-consistency matrix
+
+The Task Agent reread the complete current Task and all comments before this
+audit. These line ranges map every binding decision/current-record fact to the
+stopped documents; “verified” means the texts agree and contain no reversal.
+
+| Binding record/fact | ADR lines | Evidence lines | Consistency result |
+|---|---:|---:|---|
+| `01a07a0b-9c0a-7c88-9c9e-71d3614d5822`: standalone identity mandatory; monolith prohibited; old Candidate superseded | 29–36, 58–60, 300–327 | 5–18, 313–326 | Verified; outcome cannot reinstate monolith |
+| `01a07a13-d9e7-7338-bad3-00de330c5f4c`: Paseo host contains UI plus thin connector; engine owns truth and decisions | 29–43 | 95–127, 279–288 | Verified; UI owns no truth or transition |
+| Task owner distribution decision: GitHub Release digest pin; explicit dev compile; no fallback | 51–55, 205–246 | 233–274 | Verified; both modes are explicit and disjoint |
+| `01a07a1f-ab89-70c1-a751-ec4eaa8acb83`: Go engine, publishable without Paseo, one interface, review always required, blocked path means Inconclusive | 22–25, 29–43, 74–95, 307–351 | 16–18, 95–129, 313–326, 344–348 | Verified; all frozen facts are preserved |
+| Current Task acceptance: all policy/TaskStore/projections in engine; new host changes only connector; exact authority proof and blocked dependents | 29–49, 74–95, 115–203, 307–359 | 95–231, 313–326 | Verified; obstacle and P2 escalation are exact |
+| Corrected current-record premise: Git install is a clone with no dependency install/hook | 51–55, 171–175 | 82–90, 168–171 | Verified; declared build is not called an install hook |
+| Architecture-session analysis: two hops, measure query invalidation, contract over channel, engine process lifecycle, precedent not decision | 38–43, 134–148, 248–259 | 279–292 | Verified; liveness remains explicitly unmeasured |
+
+## Independent verification
+
+No self-review or Reviewer Agent was performed. The corrected Candidate awaits
+coordinator-owned independent exact-SHA review. Nothing was pushed, published,
+merged, or closed, and no dependent Task was started.

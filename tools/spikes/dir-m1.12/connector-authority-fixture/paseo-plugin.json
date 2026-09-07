@@ -1,0 +1,6 @@
+{
+  "id": "director-connector-authority-probe",
+  "build": [
+    ["npm", "ci", "--ignore-scripts"]
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "compatibility": {
+    "os": "linux",
+    "architecture": "amd64",
+    "go": "go version go1.26.5 linux/amd64"
+  },
+  "release": {
+    "sourceCandidate": "5b65533269a6d2c62f5dbed81a5658d405ed782f",
+    "installedCommit": "349b49aa08de97183bcf07de166c4ceb77c48fc1",
+    "version": "0.0.0-spike",
+    "target": "linux-amd64",
+    "binarySha256": "484b48f8272f663327c0fa73003034eee5b9ad5f334c05a3f1efc015e075ab23",
+    "noticesSha256": "24dd766e93559a6b45a8e8bbedafce70f0f4ef2275c6ab3b5601bdea5b1e3ad5",
+    "cacheOutsidePluginCheckout": true,
+    "downloadedAssets": 2,
+    "identity": {
+      "dependencyMarker": "linked-fixture-dependency",
+      "mode": "release",
+      "noticesSha256": "24dd766e93559a6b45a8e8bbedafce70f0f4ef2275c6ab3b5601bdea5b1e3ad5",
+      "sourceCandidate": "5b65533269a6d2c62f5dbed81a5658d405ed782f",
+      "version": "0.0.0-spike"
+    }
+  },
+  "digestMismatch": {
+    "code": "ENGINE_DIGEST_MISMATCH",
+    "executed": false,
+    "compilationFallbacks": 0
+  },
+  "development": {
+    "goToolchainIsDevelopmentOnly": true,
+    "compilations": 1,
+    "binarySha256": "9e5681fe06d2c6ed986b70bfabc0ed7b345bed14a1ad9e4f6899c10284d046e2",
+    "identity": {
+      "dependencyMarker": "linked-fixture-dependency",
+      "mode": "development",
+      "noticesSha256": "24dd766e93559a6b45a8e8bbedafce70f0f4ef2275c6ab3b5601bdea5b1e3ad5",
+      "sourceCandidate": "5b65533269a6d2c62f5dbed81a5658d405ed782f",
+      "version": "dev"
+    }
+  },
+  "explicitMode": {
+    "missingMode": "ENGINE_MODE_REQUIRED",
+    "releaseMismatchDidNotCompile": true
+  },
+  "cleanup": {
+    "ownedRootAbsent": true
+  }
+}

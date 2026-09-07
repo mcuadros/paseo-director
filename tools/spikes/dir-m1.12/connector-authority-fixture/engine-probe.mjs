@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 
-import { appendFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 
-const runtimeRoot = process.env.DIRECTOR_M112_RUNTIME_ROOT;
-if (!runtimeRoot) throw new Error("DIRECTOR_M112_RUNTIME_ROOT is required");
+const runtimeRoot = process.env.DIRECTOR_M112_AUTH_RUNTIME_ROOT;
+if (!runtimeRoot) throw new Error("DIRECTOR_M112_AUTH_RUNTIME_ROOT is required");
 
 const eventsPath = join(runtimeRoot, "events.jsonl");
 const pidPath = join(runtimeRoot, "engine.pid");
@@ -27,11 +32,16 @@ function scheduleExit() {
     if (clients.size !== 0) return;
     event("engine-exit-no-connector");
     server.close(() => process.exit(0));
-  }, 3000);
+  }, 10000);
 }
 
 if (existsSync(socketPath)) rmSync(socketPath);
 writeFileSync(pidPath, `${process.pid}\n`, { mode: 0o600 });
+const credentialEnvKeys = Object.keys(process.env).filter((key) =>
+  /(?:PASEO.*(?:PASSWORD|AUTH)|DIRECTOR_M112_AUTH_PASEO)/u.test(key),
+);
+event("engine-start", { credentialEnvKeys });
+
 const server = createServer((socket) => {
   clearTimeout(exitTimer);
   clients.add(socket);
@@ -40,10 +50,7 @@ const server = createServer((socket) => {
     for (const line of chunk.toString("utf8").split("\n").filter(Boolean)) {
       const message = JSON.parse(line);
       if (message.type === "connector-describe") {
-        event("connector-described", {
-          hasPaseoApi: message.hasPaseoApi,
-          contractHash: message.contractHash,
-        });
+        event("connector-described", { descriptor: message });
       }
     }
   });
@@ -54,10 +61,7 @@ const server = createServer((socket) => {
   });
 });
 
-server.listen(socketPath, () => {
-  event("engine-start");
-  scheduleExit();
-});
+server.listen(socketPath, () => scheduleExit());
 
 function stop(signal) {
   event("engine-stop", { signal });
