@@ -1042,7 +1042,7 @@ Linux platform rules:
 - Director never automatically downloads undeclared external third-party binaries. Its own declared, pinned, verified release artifact follows the preceding accepted distribution chain.
 - Doctor explains missing prerequisites and how to install them.
 - No telemetry.
-- ADR-0009 completed the M0 legal/distribution compatibility verification with a Go for Apache-2.0 on exact Paseo `0.7.2`. Before public beta, `dir-m6.4` must revalidate the license file and implement the final dependency inventory/notices, prerequisite disclosures, compatibility statement, naming disclaimer, and channel instructions.
+- ADR-0009 completed the M0 legal/distribution compatibility verification with a Go outcome for Apache-2.0 on exact Paseo `0.7.2`. Before public beta, `dir-m6.4` must revalidate the license file and implement the final dependency inventory/notices, prerequisite disclosures, compatibility statement, naming disclaimer, and channel instructions.
 - Channels: internal alpha, public beta, and stable.
 
 ## 20. Observability, reconciliation, and retention
