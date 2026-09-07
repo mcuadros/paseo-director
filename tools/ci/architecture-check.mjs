@@ -78,8 +78,8 @@ const TS_ALLOWED_EXTERNAL_IMPORTS = {
   connector: new Set(["@getpaseo/client"]),
 };
 const POLICY_DECLARATION = /(?:Reducer|Policy|Scheduler|Orchestrator|TaskStore|Reconciler|StateTransition|DomainModel|ApplicationService|LifecycleDecision|LifecycleTransition|(?:Eligibility|Launch|Retry|Escalation|Routing|Closure)Decision)$/i;
-const ADAPTER_RUNTIME_POLICY_DECLARATION = /(?:Domain|Application|Orchestrat|Eligib|Schedul|Retry|Escalat|Rout|Reconcil|StateTransition|TaskStore|Projection|Closure|Reducer|Policy)/i;
-const POLICY_PATH = /(?:^|\/)(?:domain|application|orchestration|eligibility|scheduler|scheduling|retry|escalation|routing|reconciliation|state-transition|taskstore|projection|closure|reducers?)(?:[./_-]|$)/i;
+const ADAPTER_RUNTIME_POLICY_DECLARATION = /(?:Domain|Application|Orchestrat|Eligib|Schedul|Retry|Escalat|Rout|Reconcil|StateTransition|TaskStore|Projection|Closure|Reducer|Policy|OrganizerRevisionState|ConfigurationRevisionState|RunConfigurationSnapshot)/i;
+const POLICY_PATH = /(?:^|\/)(?:domain|application|orchestration|eligibility|scheduler|scheduling|retry|escalation|routing|reconciliation|state-transition|taskstore|projection|closure|reducers?|organizer-revision|configuration-revision|revision-state|run-configuration-snapshot)(?:[./_-]|$)/i;
 
 export function classifyGoPackage(importPath) {
   if (importPath === ENGINE_MODULE) return null;
@@ -308,6 +308,26 @@ export function structureErrors(paths, packagePaths) {
       "engine/ports/host: exactly one engine-owned versioned host interface is required",
     );
   }
+  const configurationSchemas = paths.filter((path) =>
+    path.endsWith("/paseo-director.schema.json"),
+  );
+  if (
+    configurationSchemas.length !== 1 ||
+    configurationSchemas[0] !==
+      "engine/domain/configuration/paseo-director.schema.json"
+  ) {
+    errors.push(
+      "engine/domain/configuration: exactly one engine-owned paseo-director.json schema is required",
+    );
+  }
+  for (const requiredPackage of [
+    `${ENGINE_MODULE}/domain/configuration`,
+    `${ENGINE_MODULE}/application/configuration`,
+  ]) {
+    if (!packageSet.has(requiredPackage)) {
+      errors.push(`${requiredPackage}: required configuration boundary is missing`);
+    }
+  }
   if (!pathSet.has("generated/host-contract.shared.ts")) {
     errors.push("generated: the generated engine client is missing");
   }
@@ -416,7 +436,7 @@ function run(repositoryRoot) {
     return 1;
   }
   console.log(
-    "Architecture boundaries passed: inward Go dependencies, six pure reducer homes, seven closed claim schemas, and split Paseo host runtimes.",
+    "Architecture boundaries passed: inward Go dependencies, engine-owned configuration/revisions, six pure reducer homes, seven closed claim schemas, and split Paseo host runtimes.",
   );
   return 0;
 }

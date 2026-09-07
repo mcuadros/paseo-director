@@ -4,17 +4,15 @@
 package host
 
 import (
-	"bytes"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"math/big"
 	"slices"
-	"sort"
+
+	"github.com/mcuadros/director-engine/domain/jsondocument"
 )
 
 //go:embed host-interface.v1.json
@@ -36,109 +34,14 @@ type Descriptor struct {
 	Capabilities    []string `json:"capabilities"`
 }
 
-func writeCanonicalValue(decoder *json.Decoder, output *bytes.Buffer) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	switch value := token.(type) {
-	case json.Delim:
-		switch value {
-		case '{':
-			members := make(map[string][]byte)
-			for decoder.More() {
-				nameToken, err := decoder.Token()
-				if err != nil {
-					return err
-				}
-				name, ok := nameToken.(string)
-				if !ok {
-					return errors.New("JSON object name is not a string")
-				}
-				if _, duplicate := members[name]; duplicate {
-					return fmt.Errorf("duplicate JSON object key %q", name)
-				}
-				var member bytes.Buffer
-				if err := writeCanonicalValue(decoder, &member); err != nil {
-					return err
-				}
-				members[name] = member.Bytes()
-			}
-			closing, err := decoder.Token()
-			if err != nil || closing != json.Delim('}') {
-				return errors.New("JSON object is not closed")
-			}
-			names := make([]string, 0, len(members))
-			for name := range members {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			output.WriteByte('{')
-			for index, name := range names {
-				if index > 0 {
-					output.WriteByte(',')
-				}
-				encodedName, _ := json.Marshal(name)
-				output.Write(encodedName)
-				output.WriteByte(':')
-				output.Write(members[name])
-			}
-			output.WriteByte('}')
-			return nil
-		case '[':
-			output.WriteByte('[')
-			for index := 0; decoder.More(); index++ {
-				if index > 0 {
-					output.WriteByte(',')
-				}
-				if err := writeCanonicalValue(decoder, output); err != nil {
-					return err
-				}
-			}
-			closing, err := decoder.Token()
-			if err != nil || closing != json.Delim(']') {
-				return errors.New("JSON array is not closed")
-			}
-			output.WriteByte(']')
-			return nil
-		default:
-			return fmt.Errorf("unexpected JSON delimiter %q", value)
-		}
-	case json.Number:
-		integer := new(big.Int)
-		if _, ok := integer.SetString(value.String(), 10); !ok {
-			return fmt.Errorf("contract JSON number %q is not a canonicalizable integer", value)
-		}
-		output.WriteString(integer.String())
-		return nil
-	case string, bool, nil:
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		output.Write(encoded)
-		return nil
-	default:
-		return fmt.Errorf("unsupported JSON token %T", token)
-	}
-}
-
 // CanonicalJSON parses a contract document, rejects duplicate keys, and emits
 // a whitespace- and object-key-order-independent representation.
 func CanonicalJSON(schema []byte) ([]byte, error) {
-	decoder := json.NewDecoder(bytes.NewReader(schema))
-	decoder.UseNumber()
-	var canonical bytes.Buffer
-	if err := writeCanonicalValue(decoder, &canonical); err != nil {
+	canonical, err := jsondocument.Canonical(schema)
+	if err != nil {
 		return nil, fmt.Errorf("canonicalize host contract: %w", err)
 	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, errors.New("canonicalize host contract: trailing JSON value")
-		}
-		return nil, fmt.Errorf("canonicalize host contract: %w", err)
-	}
-	return canonical.Bytes(), nil
+	return canonical, nil
 }
 
 // CanonicalSHA256 hashes the parsed, duplicate-safe canonical contract.
