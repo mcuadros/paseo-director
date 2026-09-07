@@ -91,8 +91,9 @@ Schema checks are followed by deterministic semantic validation. Project,
 Workspace and reference identifiers are bounded; Workspace IDs and explicit
 references are unique; source paths are clean absolute Linux paths; Git branch
 names are safe; Workspace remotes use only `https://`, `ssh://`, `git://`, or
-safe scp-like SSH syntax; password-bearing URL/scp userinfo and command-bearing
-or local transports are rejected while username-only SSH forms such as
+safe scp-like SSH syntax; password-bearing URL/scp userinfo, Git remote-helper
+`token::address` dispatch, and command-bearing or local transports are rejected
+while username-only SSH forms such as
 `git@github.com:owner/repository.git` remain valid; profile tokens and provider
 families are closed; capacity and Run budgets are finite and internally
 consistent; Workspace overrides name a declared Workspace and select `inherit`
@@ -108,10 +109,12 @@ Both mutations use optimistic aggregate versions.
 
 1. `Preview` receives the exact Organizer Git object ID and the configuration
    bytes observed there.
-2. The engine strictly validates and canonicalizes the document, calculates a
-   content hash and a fixed-order top-level impact, and records the result as
-   pending. Invalid input remains an invalid pending projection so the failure
-   is explicit; the active revision is unchanged.
+2. The engine hashes the exact submitted bytes into `ContentSHA256`, strictly
+   validates and canonicalizes the document, and calculates a fixed-order
+   top-level impact. Valid input also receives `ConfigurationSHA256`, the hash
+   of its canonical form. Invalid input retains the same raw-byte meaning for
+   `ContentSHA256` and remains an invalid pending projection; the active
+   revision is unchanged.
 3. The preview ID deterministically binds the prior aggregate version, active
    revision and configuration hash, proposed revision, content hash, validation
    result and impact.

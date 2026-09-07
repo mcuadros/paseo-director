@@ -67,17 +67,20 @@ type Impact struct {
 // proposed revision, validated content, current active revision, aggregate
 // version, issues, and impact.
 type Preview struct {
-	SchemaVersion             string               `json:"schemaVersion"`
-	ID                        string               `json:"id"`
-	AggregateVersion          uint64               `json:"aggregateVersion"`
-	ActiveRevision            string               `json:"activeRevision,omitempty"`
-	ActiveConfigurationSHA256 string               `json:"activeConfigurationSha256,omitempty"`
-	ProposedRevision          string               `json:"proposedRevision"`
-	ContentSHA256             string               `json:"contentSha256"`
-	ConfigurationSHA256       string               `json:"configurationSha256,omitempty"`
-	Valid                     bool                 `json:"valid"`
-	Issues                    []domainconfig.Issue `json:"issues"`
-	Impact                    Impact               `json:"impact"`
+	SchemaVersion             string `json:"schemaVersion"`
+	ID                        string `json:"id"`
+	AggregateVersion          uint64 `json:"aggregateVersion"`
+	ActiveRevision            string `json:"activeRevision,omitempty"`
+	ActiveConfigurationSHA256 string `json:"activeConfigurationSha256,omitempty"`
+	ProposedRevision          string `json:"proposedRevision"`
+	// ContentSHA256 always identifies the exact ConfigurationJSON bytes
+	// submitted to Preview, whether or not those bytes form a valid document.
+	ContentSHA256 string `json:"contentSha256"`
+	// ConfigurationSHA256 identifies canonical validated configuration only.
+	ConfigurationSHA256 string               `json:"configurationSha256,omitempty"`
+	Valid               bool                 `json:"valid"`
+	Issues              []domainconfig.Issue `json:"issues"`
+	Impact              Impact               `json:"impact"`
 }
 
 func clonePreview(value Preview) Preview {
@@ -239,17 +242,18 @@ func (state State) Preview(command PreviewCommand) (State, Preview, error) {
 	if !validRevision(command.OrganizerRevision) {
 		return state, Preview{}, ErrRevisionInvalid
 	}
+	configurationJSON := slices.Clone(command.ConfigurationJSON)
 	preview := Preview{
 		SchemaVersion:    PreviewSchemaVersion,
 		AggregateVersion: state.version + 1,
 		ProposedRevision: command.OrganizerRevision,
+		ContentSHA256:    hashBytes(configurationJSON),
 		Issues:           []domainconfig.Issue{},
 	}
 	if state.active != nil {
 		preview.ActiveRevision = state.active.revision
 		preview.ActiveConfigurationSHA256 = state.active.document.SHA256()
 	}
-	configurationJSON := slices.Clone(command.ConfigurationJSON)
 	document, err := domainconfig.Parse(configurationJSON)
 	var pendingDocument *domainconfig.Document
 	if err != nil {
@@ -257,7 +261,6 @@ func (state State) Preview(command PreviewCommand) (State, Preview, error) {
 		if !ok {
 			return state, Preview{}, fmt.Errorf("validate Organizer configuration: %w", err)
 		}
-		preview.ContentSHA256 = hashBytes(configurationJSON)
 		preview.Valid = false
 		preview.Issues = issues
 		preview.Impact = Impact{Kind: ImpactInvalid, ChangedSections: []string{}}
@@ -265,7 +268,6 @@ func (state State) Preview(command PreviewCommand) (State, Preview, error) {
 		if state.active != nil && state.active.revision == command.OrganizerRevision && state.active.document.SHA256() != document.SHA256() {
 			return state, Preview{}, ErrRevisionContentConflict
 		}
-		preview.ContentSHA256 = document.SHA256()
 		preview.ConfigurationSHA256 = document.SHA256()
 		preview.Valid = true
 		preview.Impact = previewImpact(state.active, document)

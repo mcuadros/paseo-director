@@ -114,6 +114,15 @@ export function repositoryFiles(repositoryRoot) {
     .sort();
 }
 
+export function repositorySymlinkErrors(repositoryRoot, paths) {
+  return paths
+    .filter((path) => lstatSync(resolve(repositoryRoot, path)).isSymbolicLink())
+    .map(
+      (path) =>
+        `${path}: tracked repository symlinks require an explicit policy`,
+    );
+}
+
 export function formatErrors(repositoryRoot, paths) {
   const errors = [];
   for (const path of paths) {
@@ -151,7 +160,13 @@ export function formatErrors(repositoryRoot, paths) {
       cwd: repositoryRoot,
       encoding: "utf8",
     });
-    if (result.status !== 0) {
+    if (result.error?.code === "ENOENT") {
+      errors.push("gofmt is required but was not found on PATH");
+    } else if (result.error) {
+      errors.push(
+        `gofmt failed to start: ${result.error.code ?? "unknown error"}`,
+      );
+    } else if (result.status !== 0) {
       errors.push(`gofmt failed: ${result.stderr.trim()}`);
     } else {
       for (const path of result.stdout.trim().split("\n").filter(Boolean)) {
@@ -666,13 +681,12 @@ function scaffoldErrors(repositoryRoot, paths) {
 
 export function lintRepository(repositoryRoot) {
   const paths = repositoryFiles(repositoryRoot);
-  const symlinkErrors = paths
-    .filter((path) => lstatSync(resolve(repositoryRoot, path)).isSymbolicLink())
-    .map(
-      (path) =>
-        `${path}: tracked repository symlinks require an explicit policy`,
-    );
+  const symlinkErrors = repositorySymlinkErrors(repositoryRoot, paths);
   if (symlinkErrors.length > 0) {
+    // Symlink rejection is categorical: content readers and their other lint
+    // diagnostics do not run against an ambiguous tree, every section count
+    // is deliberately zero, and a clean rerun after removing the symlinks is
+    // required for further diagnostics.
     return {
       errors: symlinkErrors,
       governance: { count: 0, errors: [] },

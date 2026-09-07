@@ -315,6 +315,19 @@ func hasPasswordUserinfo(value string) bool {
 	return at >= 0 && strings.ContainsRune(authority[:at], ':')
 }
 
+func hasGitRemoteHelperDispatch(value string) bool {
+	if strings.Contains(value, "://") {
+		return false
+	}
+	authority := remoteAuthority(value)
+	separator := strings.IndexByte(authority, ':')
+	if separator < 0 || separator+1 >= len(authority) || authority[separator+1] != ':' {
+		return false
+	}
+	usernameSeparator := strings.IndexByte(authority, '@')
+	return usernameSeparator < 0 || usernameSeparator > separator
+}
+
 func validRemoteUsername(value string) bool {
 	if value == "" {
 		return false
@@ -443,6 +456,9 @@ func validateRemote(value string) (string, string) {
 	}
 	if hasUnsafeRemoteCommandSyntax(decoded) {
 		return "remote_command_unsafe", "remote cannot contain command-bearing syntax"
+	}
+	if hasGitRemoteHelperDispatch(decoded) {
+		return "remote_helper_unsupported", "Git remote-helper dispatch is not permitted"
 	}
 	if separator := strings.Index(decoded, "://"); separator >= 0 {
 		scheme := strings.ToLower(decoded[:separator])

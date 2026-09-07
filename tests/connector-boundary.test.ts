@@ -259,6 +259,52 @@ test("credential loading rejects mutable metadata changes across the descriptor 
   }
 });
 
+test("credential loading pins every mutable metadata field across the descriptor read", async (context) => {
+  const fields = ["size", "mtimeMs", "ctimeMs", "mode", "uid", "nlink"] as const;
+  const originalFstatSync = fs.fstatSync;
+
+  for (const field of fields) {
+    await context.test(field, (fieldContext) => {
+      const boundary = temporaryBoundary();
+      let calls = 0;
+      try {
+        fieldContext.mock.method(fs, "fstatSync", (descriptor: number) => {
+          const status = originalFstatSync(descriptor);
+          calls += 1;
+          if (calls !== 2) return status;
+          return new Proxy(status, {
+            get(target, property) {
+              const value = Reflect.get(target, property, target);
+              return property === field ? value + 1 : value;
+            },
+          });
+        });
+        syncBuiltinESMExports();
+
+        assert.throws(
+          () =>
+            loadConnectorCredential({
+              checkoutRoot: boundary.checkoutRoot,
+              credentialPath: boundary.credentialPath,
+              disjointEnginePaths: [],
+            }),
+          (error: unknown) =>
+            error instanceof ConnectorCredentialError &&
+            error.code === "CONNECTOR_CREDENTIAL_METADATA_CHANGED" &&
+            error.message ===
+              "the connector credential metadata changed between the pre-read and post-read checks",
+          field,
+        );
+        assert.equal(calls, 2, `${field} test must span exactly two fstat samples`);
+      } finally {
+        fieldContext.mock.restoreAll();
+        syncBuiltinESMExports();
+        rmSync(boundary.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 test("connector startup fails before constructing a client when credential is absent", () => {
   const boundary = temporaryBoundary();
   let clients = 0;
