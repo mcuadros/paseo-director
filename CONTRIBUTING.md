@@ -81,29 +81,23 @@ the same pinned Linux job. Workflow changes follow the normal Beads Task,
 exact-SHA review, and integration process; required checks cannot use
 `continue-on-error` or another silent skip.
 
-Before the product scaffold exists, the dependency-free baseline runs the
-PLAN section 21.1 checks that are applicable to the repository: text
-formatting, ADR lifecycle and relationship lint, JavaScript syntax, and focused
-tests of the CI guard itself. It also reuses the bounded deterministic M0
-contracts for policy and idempotency, state-file durability, exact-SHA delivery
-guards, the practical runtime boundary, operational limits, and worker-timeout
-cleanup. It never runs a live provider, a live forge operation, or the full
-large-tree and worktree experiments.
+The first product scaffold replaces the pre-product guard with deterministic
+locked installation, Go and TypeScript build/type checks, formatting, lint,
+unit, contract, responsive-shell, Linux boundary, distribution, and startup
+smoke checks. The suite also retains the bounded deterministic M0 contracts for
+policy and idempotency, state-file durability, exact-SHA delivery guards, the
+practical runtime boundary, operational limits, and worker-timeout cleanup. It
+never runs a live provider, live forge mutation, paid model, or Windows job.
 
-Product typechecking, domain/policy tests, Zod contracts, responsive
-components, complete Linux product-path coverage, and the fake provider do not
-exist yet. The guard proves that precondition and fails if a root product
-manifest, TypeScript configuration, or product source/test root appears. The
-workflow is JSON-compatible YAML so Node validates its syntax without an
-unrecorded parser dependency.
-
-The Task that introduces the first product scaffold owns replacing that
-pre-product guard in the same Candidate with deterministic install, typecheck,
-lint, formatting, unit/contract/component, Linux coverage, and fake-provider
-commands for every applicable PLAN section 21.1 category. A category may be
-absent only while the guard can prove that its corresponding product surface
-does not exist. Actions and the Node runtime remain pinned to exact versions;
-an upgrade is an explicit reviewed workflow change.
+The scaffold validator inspects every workflow, follows its own symlinked entry
+path, and rejects path/event filters, non-main push coverage, missing pull
+request coverage, silent skips, mutable action references, and replacement of
+the real suite. Product reducers, claims, policies, scheduling, preparation,
+validation routing, liveness, TaskStore, and fake-agent behavior do not exist in
+this Task; the validator rejects those product packages until their owning M1
+Tasks add the corresponding PLAN section 21.1 tests. Actions plus the Node and
+Go runtimes remain pinned to exact versions. An upgrade is an explicit reviewed
+workflow change.
 
 ## Definition of Done
 
