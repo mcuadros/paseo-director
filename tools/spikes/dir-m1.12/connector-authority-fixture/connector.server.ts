@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -13,8 +14,9 @@ import {
 } from "@getpaseo/client";
 
 const CONTRACT_VERSION = 1;
-const CONTRACT_HASH =
-  "388d934979e865f4156a8d53bbe88732a24b71beaa7eb72f0058d770c4b63864";
+const AUTHORITY_OWNER = "director-for-paseo";
+const CREDENTIAL_KIND = "daemon-password";
+const CREDENTIAL_SCOPE = "full-daemon-operator";
 const CAPABILITIES = [
   "executionWorkspace.createManaged",
   "executionWorkspace.observe",
@@ -25,6 +27,18 @@ const CAPABILITIES = [
   "agent.observe",
   "agent.archive",
 ] as const;
+const CONTRACT_DOCUMENT = JSON.stringify({
+  descriptorType: "connector-describe",
+  contractVersion: CONTRACT_VERSION,
+  capabilities: CAPABILITIES,
+  authorityOwner: AUTHORITY_OWNER,
+  credentialKind: CREDENTIAL_KIND,
+  credentialScope: CREDENTIAL_SCOPE,
+  observationFields: ["workspaceCount"],
+});
+const CONTRACT_HASH = createHash("sha256")
+  .update(CONTRACT_DOCUMENT)
+  .digest("hex");
 
 function event(path: string, type: string, detail: Record<string, unknown> = {}) {
   appendFileSync(
@@ -119,9 +133,9 @@ export function startConnectorAuthorityProbe(): {
     const observed = await paseo.workspaces.list({ page: { limit: 1 } });
     if (stopped) return;
     event(eventsPath, "connector-sdk-ready", {
-      authorityOwner: "director-for-paseo",
-      credentialKind: "daemon-password",
-      credentialScope: "full-daemon-operator",
+      authorityOwner: AUTHORITY_OWNER,
+      credentialKind: CREDENTIAL_KIND,
+      credentialScope: CREDENTIAL_SCOPE,
       observedWorkspaceCount: observed.entries.length,
     });
     await connectEngine();
@@ -132,9 +146,9 @@ export function startConnectorAuthorityProbe(): {
         contractVersion: CONTRACT_VERSION,
         contractHash: CONTRACT_HASH,
         capabilities: CAPABILITIES,
-        authorityOwner: "director-for-paseo",
-        credentialKind: "daemon-password",
-        credentialScope: "full-daemon-operator",
+        authorityOwner: AUTHORITY_OWNER,
+        credentialKind: CREDENTIAL_KIND,
+        credentialScope: CREDENTIAL_SCOPE,
         observation: { workspaceCount: observed.entries.length },
       })}\n`,
     );

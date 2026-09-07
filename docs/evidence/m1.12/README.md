@@ -11,11 +11,14 @@
   `c44312a4846f7b9bdd2d54a0e931035e108f0dc2`
 - **Superseded unreviewed Candidate:**
   `87a7238fc82d8c52120b11cbe0fbde407d6d668b`
+- **Superseded changes-requested Candidate:**
+  `7d6934ca6a36bceb66c901c0feda1464d1ce7877`
 - **Result:** Go for the exact Paseo 0.7.2 connector-authority compatibility
   gate under the project-owner-accepted P2 bounds
 - **Scope:** architecture evidence; no Director product behavior
 
-No superseded SHA may be reviewed, published, or treated as authority.
+No superseded SHA is eligible for further review, publication, integration, or
+authority. The sole review of `7d6934ca...` returned `changes_requested`.
 The standalone Go engine and prohibition on the monolith are binding inputs,
 not outcome choices.
 
@@ -298,8 +301,9 @@ the linked fixture dependency. A corrupted download produced
 `ENGINE_DIGEST_MISMATCH`, did not execute, and triggered zero compilations.
 Explicit development mode compiled exactly once and self-reported
 `development/dev` with a distinct binary digest. A missing mode produced
-`ENGINE_MODE_REQUIRED`. The development run did not fetch release assets, and
-release failure did not compile.
+`ENGINE_MODE_REQUIRED` before either launch path ran. The same selector routes
+the exercised release and development paths; the development run did not fetch
+release assets, and release failure did not compile.
 
 The fixture notices name the linked third-party module/license and exact E.
 The production contract requires review of E; generation of binary and notices
@@ -311,6 +315,22 @@ building, not for release users.
 
 The local fixture proved mechanics, not a public release, GitHub permissions,
 CI provenance service, production target matrix, or production dependencies.
+
+Review correction made the fixture evidence more direct without rerunning the
+live connector probe. The distribution fixture now exercises valid release,
+valid development, and missing-mode input through the same selector, and names
+its counter `developmentCompilations`. The connector-authority fixture derives
+its advertised hash from its explicit descriptor contract document instead of
+an opaque literal. The latter source correction changes no normalized observed
+field in `connector-authority-output.json`; it received only a syntax/static
+check in this correction run, not a new daemon or connector execution.
+
+The first distribution-fixture invocation in this correction run was attempted
+inside the filesystem sandbox and stopped at `spawnSync git EPERM`; no Git child
+started, and the fixture's `finally` cleanup removed its owned root. The
+permitted rerun applied the release and development paths, reproduced every
+previous value, added `missingModeRejectedBeforeLaunch: true`, and again
+reported `ownedRootAbsent: true`.
 
 ## UI liveness and two-hop boundary
 
@@ -361,6 +381,11 @@ release-download/development-compile distribution, mandatory review, and
 monolith prohibition remain unchanged. This Task Agent does not start or resume
 dependent work.
 
+For `dir-m1.14`, the exact amended PLAN list is §§1, 3.2, 6.1, 6.2, 6.4, 6.5,
+19.2, 19.4, and 20.1. The standalone-headless evidence fulfills the existing
+§19.2 trigger. Flat §27 has no subsection, remains an external-fact
+revalidation gate, and is not amended by ADR-0017.
+
 ## Decision-consistency matrix
 
 The Task Agent reread the complete current Task note headed “Human decision
@@ -369,18 +394,30 @@ exact ADR, evidence, and user-facing deployment lines.
 
 | Binding record/fact | ADR lines | Evidence lines | User-doc lines | Result |
 |---|---:|---:|---:|---|
-| P2 selection: accept exact-0.7.2 full daemon-operator connector credential; reject waiting | 202–208, 289–317, 335–349 | 219–223, 351–356 | 9–11, 26–29 | Verified; chosen risk and rejected wait agree |
-| Bound 1: credential outside checkout and connector-process-readable only | 212–213 | 227–228 | 15–16 | Verified; exact |
-| Bound 2: no engine environment/protocol, UI, TaskStore, log, or timeline propagation | 214–216, 374–376 | 229–231 | 17–19 | Verified; exact or stricter |
-| Bound 3: startup and reload fail closed when absent | 217–218 | 232–233 | 20–21 | Verified; exact |
-| Bound 4: advertise full scope, contract version/hash, and only fixed capabilities | 219–221 | 234–236 | 22–24 | Verified; exact |
-| Bound 5: disclose requirement before installation | 222–223, 369–370 | 237–238 | 7–13 | Verified; warning precedes install links |
-| Revision intent: narrow on supported scoped/startup-injected capability; connector-only change | 310–317, 343–349 | 247–251 | 26–29 | Verified; no engine-logic change |
-| Effective ADR-0002 amendment is exact-0.7.2 bounded | 0017:11–12, 202–208; 0002:8, 86–99 | 247–251 | 26–29, 38 | Verified; reciprocal and visible |
-| Frozen architecture: standalone Go, single interface, UI host package, fixed distribution, mandatory review, monolith prohibited | 29–43, 52–56, 328–362, 371–378 | 358–362 | 31–36 | Verified; no frozen decision reversed |
+| P2 selection: accept exact-0.7.2 full daemon-operator connector credential; reject waiting | 204–210, 291–319, 337–351 | 222–226, 371–376 | 9–11, 26–29 | Verified; chosen risk and rejected wait agree |
+| Bound 1: credential outside checkout and connector-process-readable only | 214–215 | 230–231 | 15–16 | Verified; exact |
+| Bound 2: no engine environment/protocol, UI, TaskStore, log, or timeline propagation | 216–218, 378–380 | 232–234 | 17–19 | Verified; exact or stricter |
+| Bound 3: startup and reload fail closed when absent | 219–220 | 235–236 | 20–21 | Verified; exact |
+| Bound 4: advertise full scope, contract version/hash, and only fixed capabilities | 221–223 | 237–239 | 22–24 | Verified; exact |
+| Bound 5: disclose requirement before installation | 224–225, 373–374 | 240–241 | 7–13 | Verified; warning precedes install links |
+| Revision intent: narrow on supported scoped/startup-injected capability; connector-only change | 312–319, 345–351 | 250–254 | 26–29 | Verified; no engine-logic change |
+| Effective ADR-0002 amendment is exact-0.7.2 bounded | 0017:11–12, 204–210; 0002:8, 86–99 | 250–254 | 26–29, 38 | Verified; reciprocal and visible |
+| Frozen architecture: standalone Go, single interface, UI host package, fixed distribution, mandatory review, monolith prohibited | 29–43, 52–56, 330–366, 375–382 | 378–381 | 31–36 | Verified; no frozen decision reversed |
+| Exact PLAN amendment target for `dir-m1.14` | 9–10, 353–361 | 384–387 | — | Verified; §§1, 3.2, 6.1, 6.2, 6.4, 6.5, 19.2, 19.4, and 20.1; §27 unchanged |
 
 ## Independent verification
 
-No self-review or Reviewer Agent was performed. The replacement Candidate awaits
-coordinator-owned independent exact-SHA review. Nothing was pushed, published,
-merged, or closed, and no dependent Task was started.
+Stored verdict `01a07a64-a0a6-7493-b9d5-b34a88d2b38a` records independent
+review of superseded Candidate `7d6934ca...` against the exact current base.
+The reviewer verified every binding human decision and all five accepted P2
+bounds, then returned `changes_requested` only for a nonexistent PLAN subsection
+reference; its three P3 notes motivated the deterministic fixture corrections
+above. This replacement Candidate awaits a new coordinator-owned independent
+exact-SHA review. This Task Agent performed no self-review and created no
+Reviewer Agent. Nothing was pushed, published, merged, or closed, and no
+dependent Task was started.
+
+The initial final static assertion was attempted and rejected these three
+historical uses of the nonexistent subsection number before commit. Replacing
+them with non-normative review-history wording was applied; the corrected
+reference scan and assertion suite then passed.

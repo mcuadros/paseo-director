@@ -185,6 +185,15 @@ function executeIdentity(binary) {
   return JSON.parse(output);
 }
 
+function selectEngineMode(selectedMode, launchers) {
+  if (selectedMode === "release") return launchers.release();
+  if (selectedMode === "development") return launchers.development();
+  throw new ContractError(
+    "ENGINE_MODE_REQUIRED",
+    "engine mode must be explicitly release or development",
+  );
+}
+
 async function main() {
   const root = mkdtempSync(join(tmpdir(), "director-m1.12-distribution."));
   const sourceRoot = join(root, "engine-source");
@@ -290,7 +299,7 @@ async function main() {
     });
     const releaseOrigin = await listen(server);
 
-    let releaseCompilations = 0;
+    let developmentCompilations = 0;
     async function launchRelease(selectedPin, selectedCacheHome) {
       const engineRoot = join(
         selectedCacheHome,
@@ -330,7 +339,36 @@ async function main() {
       };
     }
 
-    const release = await launchRelease(pin, cacheHome);
+    const developmentBinary = join(
+      cacheHome,
+      "director",
+      "engines",
+      "development",
+      sourceCandidate,
+      TARGET,
+      "director-engine",
+    );
+    function launchDevelopment() {
+      developmentCompilations += 1;
+      buildEngine({
+        sourceRoot,
+        destination: developmentBinary,
+        mode: "development",
+        version: "dev",
+        sourceCandidate,
+        noticesSha,
+      });
+      return {
+        binary: developmentBinary,
+        identity: executeIdentity(developmentBinary),
+      };
+    }
+
+    const launchers = {
+      release: () => launchRelease(pin, cacheHome),
+      development: launchDevelopment,
+    };
+    const release = await selectEngineMode("release", launchers);
     assert.equal(release.identity.mode, "release");
     assert.equal(release.identity.version, VERSION);
     assert.equal(release.identity.sourceCandidate, sourceCandidate);
@@ -341,7 +379,10 @@ async function main() {
     badPin.binary.sha256 = "0".repeat(64);
     let digestMismatch;
     try {
-      await launchRelease(badPin, badCacheHome);
+      await selectEngineMode("release", {
+        ...launchers,
+        release: () => launchRelease(badPin, badCacheHome),
+      });
       throw new Error("digest mismatch fixture unexpectedly executed");
     } catch (error) {
       assert(error instanceof ContractError);
@@ -349,45 +390,31 @@ async function main() {
       digestMismatch = {
         code: error.code,
         executed: false,
-        compilationFallbacks: releaseCompilations,
+        compilationFallbacks: developmentCompilations,
       };
     }
 
-    const developmentBinary = join(
-      cacheHome,
-      "director",
-      "engines",
-      "development",
-      sourceCandidate,
-      TARGET,
-      "director-engine",
-    );
-    releaseCompilations += 1;
-    buildEngine({
-      sourceRoot,
-      destination: developmentBinary,
-      mode: "development",
-      version: "dev",
-      sourceCandidate,
-      noticesSha,
-    });
-    const developmentIdentity = executeIdentity(developmentBinary);
+    const development = await selectEngineMode("development", launchers);
+    const developmentIdentity = development.identity;
     assert.equal(developmentIdentity.mode, "development");
     assert.equal(developmentIdentity.version, "dev");
 
     let missingMode;
+    let missingModeLaunches = 0;
     try {
-      const selectedMode = undefined;
-      if (selectedMode !== "release" && selectedMode !== "development") {
-        throw new ContractError(
-          "ENGINE_MODE_REQUIRED",
-          "engine mode must be explicitly release or development",
-        );
-      }
+      await selectEngineMode(undefined, {
+        release: () => {
+          missingModeLaunches += 1;
+        },
+        development: () => {
+          missingModeLaunches += 1;
+        },
+      });
     } catch (error) {
       assert(error instanceof ContractError);
       missingMode = error.code;
     }
+    assert.equal(missingModeLaunches, 0);
 
     result = {
       compatibility: {
@@ -409,12 +436,13 @@ async function main() {
       digestMismatch,
       development: {
         goToolchainIsDevelopmentOnly: true,
-        compilations: releaseCompilations,
+        compilations: developmentCompilations,
         binarySha256: sha256(readFileSync(developmentBinary)),
         identity: developmentIdentity,
       },
       explicitMode: {
         missingMode,
+        missingModeRejectedBeforeLaunch: missingModeLaunches === 0,
         releaseMismatchDidNotCompile: digestMismatch.compilationFallbacks === 0,
       },
     };

@@ -6,8 +6,8 @@
 - **Plan gate:** M1 engine/process/host boundary before scaffolding
 - **Decision owners:** project owner for the frozen architecture and residual-risk
   choice; `dir-m1.12` Task Agent for the scoped evidence result
-- **Amends:** PLAN §§1, 3.2, 6.1, 6.2, 6.4, 6.5, 19.2, 19.4, 20.1,
-  and 27.2
+- **Amends:** PLAN §§1, 3.2, 6.1, 6.2, 6.4, 6.5, 19.2, 19.4, and
+  20.1
 - **Amends:** [ADR-0002](0002-paseo-0.7.2-public-surface.md) for the
   project-owner-accepted connector-owned daemon credential on exact 0.7.2
 - **Refines:** [ADR-0018](0018-deterministic-coordination-boundary.md) by
@@ -59,8 +59,10 @@ This is evidence-driven architecture research, not product implementation.
 Candidate `80f5cf1a3344cf3ac9232ba5e10f1de07b5509a8` and rebased carrier
 `c44312a4846f7b9bdd2d54a0e931035e108f0dc2` remain superseded unreviewed;
 Candidate `87a7238fc82d8c52120b11cbe0fbde407d6d668b` is also superseded
-unreviewed because it left the P2 choice open. None is authority or eligible
-for review or publication.
+unreviewed because it left the P2 choice open. Candidate
+`7d6934ca6a36bceb66c901c0feda1464d1ce7877` is superseded after its exact-SHA
+review requested correction of a nonexistent PLAN subsection reference. None is
+authority or eligible for further review, publication, or integration.
 
 ## Question or hypothesis
 
@@ -353,8 +355,10 @@ The frozen architecture requires these PLAN amendments when consolidated by
 §§6.1 and 6.2 standalone process and module ownership; §6.4 the single host
 port; §6.5 engine lease/supervision; §19.2 Go for the engine and TypeScript for
 the Paseo host; §19.4 pinned release/dev distribution; §20.1 cross-process
-reconciliation; and §27.2 fulfillment of the evidence trigger. The PLAN body
-is intentionally not rewritten by this Task.
+reconciliation. The concrete standalone-headless evidence in this ADR fulfills
+the existing §19.2 trigger. Flat §27 remains unchanged: its external-fact
+revalidation gate still applies and is not an amended section. The PLAN body is
+intentionally not rewritten by this Task.
 
 ADR-0018 remains authoritative for deterministic coordination content. This
 ADR refines only its process-permissive sentence: the logical Director Engine
@@ -398,8 +402,13 @@ requires an explicit reviewed decision and evidence, not semver inference.
 
 ## Independent verification
 
-This Candidate intentionally awaits coordinator-owned independent exact-SHA
-review. This Task Agent did not self-review or create a Reviewer Agent and does
-not push, publish, merge, close the Task, or start dependent work. Candidate,
-base, checks, decision-consistency audit, cleanup, review, delivery, and
-residual risk are recorded in Beads by the authorized actors.
+Independent review of superseded Candidate `7d6934ca6a36bceb66c901c0feda1464d1ce7877`
+against base `66f8b7127543305db0f560fc8106d2d2c0e5b15f` returned
+`changes_requested`; stored verdict `01a07a64-a0a6-7493-b9d5-b34a88d2b38a`
+verified every human decision and P2 bound and blocked only on the invalid PLAN
+subsection reference. This replacement Candidate intentionally awaits a new
+coordinator-owned independent exact-SHA review. This Task Agent did not
+self-review or create a Reviewer Agent and does not push, publish, merge, close
+the Task, or start dependent work. Candidate, base, checks,
+decision-consistency audit, cleanup, review, delivery, and residual risk are
+recorded in Beads by the authorized actors.

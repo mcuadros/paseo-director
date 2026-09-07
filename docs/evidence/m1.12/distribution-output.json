@@ -40,6 +40,7 @@
   },
   "explicitMode": {
     "missingMode": "ENGINE_MODE_REQUIRED",
+    "missingModeRejectedBeforeLaunch": true,
     "releaseMismatchDidNotCompile": true
   },
   "cleanup": {
