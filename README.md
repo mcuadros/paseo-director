@@ -1,6 +1,6 @@
 # Director for Paseo
 
-Director is a public Paseo plugin for planning, executing, reviewing, and delivering medium-to-large software products that span one or more repositories.
+Director is standalone Go software for planning, executing, reviewing, and delivering medium-to-large software products that span one or more repositories. It is usable and publishable without Paseo. Director for Paseo is its public Paseo host package, containing the complete planned React Native UI, the minimum policy-free connector, and other Paseo-only integration.
 
 The project is currently in its evidence-gathering phase. Product implementation does not begin until the M0 gates in the approved plan are satisfied.
 

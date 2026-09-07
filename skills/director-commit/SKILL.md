@@ -49,6 +49,6 @@ Allowed types are `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `c
 2. Re-run `git status --short`.
 3. Confirm no intended file was left behind and no unrelated file was committed.
 4. Record the SHA and validation evidence in Beads.
-5. Hand the exact SHA to an independent top-level Reviewer Agent.
+5. Hand the exact SHA to the authorized coordinator, which owns independent Reviewer Agent launch.
 
 Do not amend another author's commit, rewrite shared history, bypass hooks, or call a dirty worktree review-ready.
