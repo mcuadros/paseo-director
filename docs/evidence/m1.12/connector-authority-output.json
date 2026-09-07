@@ -1,0 +1,46 @@
+{
+  "fixtureCommit": "f9336225f22a75b641fe1f82746db9d10ef97286",
+  "sdkReadyCount": 2,
+  "connectorReloaded": true,
+  "readOnlyWorkspaceCounts": [
+    0,
+    0
+  ],
+  "engineStartCount": 1,
+  "engineSurvivedReload": true,
+  "engineCredentialEnvKeys": [],
+  "descriptorCount": 2,
+  "descriptorContractVersions": [
+    1
+  ],
+  "descriptorCredentialScopes": [
+    "full-daemon-operator"
+  ],
+  "descriptorCapabilities": [
+    "executionWorkspace.createManaged",
+    "executionWorkspace.observe",
+    "executionWorkspace.archive",
+    "taskAgent.createWithInitialPrompt",
+    "reviewerAgent.createWithInitialPrompt",
+    "helperAgent.observe",
+    "agent.observe",
+    "agent.archive"
+  ],
+  "secretAbsentFromEngineEvents": true,
+  "hostMutations": 0,
+  "missingCredentialReload": {
+    "exit": 1,
+    "pluginStatus": "failed",
+    "error": "connector credential file is absent",
+    "newSdkReadyEventsAfterFailure": 0
+  },
+  "cleanup": {
+    "pluginListEmpty": true,
+    "daemonStopped": true,
+    "ownedRootAbsent": true,
+    "engineProcessAbsent": true,
+    "pluginProcessAbsent": true,
+    "listenerAbsent": true,
+    "staleSetupProcessAbsent": true
+  }
+}

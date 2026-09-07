@@ -4,7 +4,7 @@
 - **Plan version:** 0.3
 - **Last updated:** 2026-09-06
 - **Approved:** 2026-09-06
-- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope; [ADR-0014](adr/0014-practical-linux-agent-boundary.md) for the human-approved practical trusted-provider Linux boundary; [ADR-0016](adr/0016-defer-taskstore-scale-proof-to-m5.md) for deferring TaskStore agreed-scale proof to `dir-m5.10`; [ADR-0018](adr/0018-deterministic-coordination-boundary.md) for deterministic coordination decisions and structured agent outcome claims
+- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope; [ADR-0014](adr/0014-practical-linux-agent-boundary.md) for the human-approved practical trusted-provider Linux boundary; [ADR-0016](adr/0016-defer-taskstore-scale-proof-to-m5.md) for deferring TaskStore agreed-scale proof to `dir-m5.10`; [ADR-0017](adr/0017-standalone-engine-connector-authority-boundary.md) for the standalone Go engine and accepted exact-0.7.2 connector authority; [ADR-0018](adr/0018-deterministic-coordination-boundary.md) for deterministic coordination decisions and structured agent outcome claims
 - **Plugin repository:** <https://github.com/mcuadros/paseo-director>
 - **Public name:** Director for Paseo
 - **Short UI name:** Director
