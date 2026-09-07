@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import {
+import fs, {
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -11,6 +11,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -216,6 +217,44 @@ test("credential ancestors reject writable substitution paths and permit sticky 
       "substituting the credential symlink with a writable-ancestor target must fail closed",
     );
   } finally {
+    rmSync(boundary.root, { recursive: true, force: true });
+  }
+});
+
+test("credential loading rejects mutable metadata changes across the descriptor read", (context) => {
+  const boundary = temporaryBoundary();
+  const originalReadFileSync = fs.readFileSync;
+  try {
+    context.mock.method(fs, "readFileSync", (path: unknown, options: unknown) => {
+      if (typeof path !== "number" || options !== "utf8") {
+        throw new Error("unexpected credential test read");
+      }
+      const contents = originalReadFileSync(path, options);
+      writeFileSync(
+        boundary.credentialPath,
+        "changed-boundary-secret-with-a-different-size\n",
+        { mode: 0o600 },
+      );
+      return contents;
+    });
+    syncBuiltinESMExports();
+
+    assert.throws(
+      () =>
+        loadConnectorCredential({
+          checkoutRoot: boundary.checkoutRoot,
+          credentialPath: boundary.credentialPath,
+          disjointEnginePaths: [],
+        }),
+      (error: unknown) =>
+        error instanceof ConnectorCredentialError &&
+        error.code === "CONNECTOR_CREDENTIAL_METADATA_CHANGED" &&
+        error.message ===
+          "the connector credential metadata changed between the pre-read and post-read checks",
+    );
+  } finally {
+    context.mock.restoreAll();
+    syncBuiltinESMExports();
     rmSync(boundary.root, { recursive: true, force: true });
   }
 });

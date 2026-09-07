@@ -14,8 +14,11 @@ ancestor through the filesystem root, rejecting group/other-writable ancestors
 unless Linux sticky-bit semantics protect a trusted-owner child in a directory
 owned by the connector user or root (for example, an owner-only credential
 directory under root-owned `/tmp`). It also rechecks the credential file and
-ancestor identities while loading, so a detected rename or symlink substitution
-fails closed. Its bytes and path never enter Director Engine
+ancestor identities while loading: the path must match the `O_NOFOLLOW` file
+descriptor before the read, mutable file metadata must remain unchanged across
+the read, and every checked ancestor must retain its identity afterward. A
+detected pre-open substitution, read-time metadata change, or ancestor
+substitution fails closed. Its bytes and path never enter Director Engine
 arguments, environment, protocol, UI, store, projections, logs, timelines,
 diagnostics, or support bundles. Connector startup and reload fail closed before
 host mutation when the file is absent, empty, broadly readable, in an unsafe

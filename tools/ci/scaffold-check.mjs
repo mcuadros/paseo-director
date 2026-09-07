@@ -532,7 +532,7 @@ export function hostSourceErrors(path, source) {
   }
   if (
     isHostRuntime &&
-    /\b(?:eligibility|scheduler|retryPolicy|escalation|reconciliation|TaskStore|stateTransition|closurePolicy)\b/.test(
+    /\b(?:eligibility|scheduler|retryPolicy|escalation|reconciliation|TaskStore|stateTransition|closurePolicy)\b/i.test(
       source,
     )
   ) {
@@ -666,6 +666,21 @@ function scaffoldErrors(repositoryRoot, paths) {
 
 export function lintRepository(repositoryRoot) {
   const paths = repositoryFiles(repositoryRoot);
+  const symlinkErrors = paths
+    .filter((path) => lstatSync(resolve(repositoryRoot, path)).isSymbolicLink())
+    .map(
+      (path) =>
+        `${path}: tracked repository symlinks require an explicit policy`,
+    );
+  if (symlinkErrors.length > 0) {
+    return {
+      errors: symlinkErrors,
+      governance: { count: 0, errors: [] },
+      paths,
+      syntax: { count: 0, errors: [] },
+      workflows: { count: 0, errors: [] },
+    };
+  }
   const governance = governanceErrors(repositoryRoot, paths);
   const syntax = syntaxErrors(repositoryRoot, paths);
   const workflows = workflowErrors(repositoryRoot, paths);
@@ -686,7 +701,7 @@ function printErrors(label, errors) {
   errors.forEach((error) => console.error(`- ${error}`));
 }
 
-function run(repositoryRoot, mode) {
+export function run(repositoryRoot, mode) {
   const paths = repositoryFiles(repositoryRoot);
   if (mode === "format") {
     const errors = formatErrors(repositoryRoot, paths);
