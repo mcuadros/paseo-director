@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -63,6 +64,33 @@ func configurationJSON(projectName string) []byte {
 		"SCHEMA_ID", domainconfig.SchemaID,
 		"PROJECT_NAME", projectName,
 	).Replace(validConfigurationTemplate))
+}
+
+func expansionConfigurationJSON(t *testing.T, workspaceCount int) []byte {
+	t.Helper()
+	document, err := domainconfig.Parse(configurationJSON("Director"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := document.Configuration()
+	configuration.Workspaces = make([]domainconfig.Workspace, 0, workspaceCount)
+	configuration.WorkspaceOverrides = []domainconfig.WorkspaceOverride{}
+	for index := 0; index < workspaceCount; index++ {
+		identifier := fmt.Sprintf("product-%03d", index)
+		configuration.Workspaces = append(configuration.Workspaces, domainconfig.Workspace{
+			ID:                identifier,
+			Remote:            fmt.Sprintf("ssh://git@host-%03d.example/product.git", index),
+			SourcePath:        "/srv/" + identifier + "/" + strings.Repeat("<", 4000),
+			DefaultBaseBranch: "main",
+		})
+	}
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(configuration); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
 }
 
 func confirmed(preview Preview, actor string) ApplyCommand {
@@ -335,6 +363,65 @@ func TestRunConfigurationSnapshotIsImmutableAndStrictlyRoundTrips(t *testing.T) 
 	duplicateField := bytes.Replace(first, []byte(`"snapshotVersion":`), []byte(`"snapshotVersion":"duplicate","snapshotVersion":`), 1)
 	if _, err := ParseRunConfigurationSnapshot(duplicateField); !errors.Is(err, ErrSnapshotInvalid) {
 		t.Fatalf("duplicate snapshot field error = %v", err)
+	}
+}
+
+func TestEveryAdmittedCanonicalExpansionSnapshotRoundTrips(t *testing.T) {
+	var state State
+	state, preview, err := state.Preview(PreviewCommand{
+		ExpectedVersion:   0,
+		OrganizerRevision: strings.Repeat("e", 40),
+		ConfigurationJSON: expansionConfigurationJSON(t, 40),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.Valid {
+		t.Fatalf("admitted expansion Preview = %#v", preview)
+	}
+	state, err = state.Apply(confirmed(preview, "human:user-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := state.FreezeRunConfiguration()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("Marshal(snapshot) error = %v", err)
+	}
+	if len(serialized) > MaximumSnapshotBytes {
+		t.Fatalf("snapshot bytes = %d, maximum = %d", len(serialized), MaximumSnapshotBytes)
+	}
+	if len(serialized) < domainconfig.MaximumCanonicalDocumentBytes*9/10 {
+		t.Fatalf("snapshot fixture did not exercise the boundary: bytes = %d", len(serialized))
+	}
+	restored, err := ParseRunConfigurationSnapshot(serialized)
+	if err != nil {
+		t.Fatalf("ParseRunConfigurationSnapshot(expanded) error = %v", err)
+	}
+	if len(restored.Configuration().Workspaces) != 40 || restored.ConfigurationSHA256() != snapshot.ConfigurationSHA256() {
+		t.Fatal("expanded snapshot did not round-trip exactly")
+	}
+
+	var rejected State
+	rejected, invalid, err := rejected.Preview(PreviewCommand{
+		ExpectedVersion:   0,
+		OrganizerRevision: strings.Repeat("f", 40),
+		ConfigurationJSON: expansionConfigurationJSON(t, 128),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalid.Valid || len(invalid.Issues) != 1 || invalid.Issues[0].Code != "canonical_document_too_large" {
+		t.Fatalf("oversize canonical Preview = %#v", invalid)
+	}
+	if _, err := rejected.Apply(confirmed(invalid, "human:user-1")); !errors.Is(err, ErrPendingRevisionInvalid) {
+		t.Fatalf("Apply(oversize canonical) error = %v", err)
+	}
+	if _, err := rejected.FreezeRunConfiguration(); !errors.Is(err, ErrActiveRevisionMissing) {
+		t.Fatalf("FreezeRunConfiguration(oversize canonical) error = %v", err)
 	}
 }
 

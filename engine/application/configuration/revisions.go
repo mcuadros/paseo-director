@@ -25,6 +25,9 @@ import (
 const (
 	PreviewSchemaVersion  = "director.configuration-preview/v1"
 	SnapshotSchemaVersion = "director.run-configuration-snapshot/v1"
+	// MaximumSnapshotBytes includes the bounded canonical configuration plus
+	// fixed version, revision, digest, field-name, and JSON framing overhead.
+	MaximumSnapshotBytes = domainconfig.MaximumCanonicalDocumentBytes + 4096
 )
 
 var (
@@ -362,23 +365,27 @@ func (snapshot RunConfigurationSnapshot) MarshalJSON() ([]byte, error) {
 	if !validRevision(snapshot.organizerRevision) || snapshot.document.SHA256() == "" {
 		return nil, ErrSnapshotInvalid
 	}
-	return json.Marshal(snapshotWire{
+	encoded, err := json.Marshal(snapshotWire{
 		SnapshotVersion:     SnapshotSchemaVersion,
 		OrganizerRevision:   snapshot.organizerRevision,
 		ConfigurationSHA256: snapshot.document.SHA256(),
 		Configuration:       snapshot.document.CanonicalJSON(),
 	})
+	if err != nil || len(encoded) > MaximumSnapshotBytes {
+		return nil, ErrSnapshotInvalid
+	}
+	return encoded, nil
 }
 
 // ParseRunConfigurationSnapshot strictly reconstructs a persisted snapshot and
 // proves its schema version, revision identity, configuration validity, and
 // canonical content hash.
 func ParseRunConfigurationSnapshot(input []byte) (RunConfigurationSnapshot, error) {
-	if len(input) == 0 || len(input) > domainconfig.MaximumDocumentBytes+4096 {
+	if len(input) == 0 || len(input) > MaximumSnapshotBytes {
 		return RunConfigurationSnapshot{}, ErrSnapshotInvalid
 	}
 	canonical, err := jsondocument.Canonical(input)
-	if err != nil {
+	if err != nil || len(canonical) > MaximumSnapshotBytes {
 		return RunConfigurationSnapshot{}, ErrSnapshotInvalid
 	}
 	decoder := json.NewDecoder(bytes.NewReader(canonical))

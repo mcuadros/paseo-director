@@ -104,8 +104,11 @@ Each Organizer repository is discovered through one strict
 `paseo-director.json`. Director Engine owns its version 1 schema, semantic
 validation, pending/active revision state, deterministic Preview/Apply boundary,
 and immutable Run configuration snapshots. Invalid or unapproved revisions
-never become Run inputs. Director for Paseo only renders the engine projection
-and submits typed commands; it owns no activation or snapshot policy.
+never become Run inputs. Published-schema validation is necessary but not
+sufficient: engine admission also rejects invalid Unicode, canonical expansion,
+password-bearing or unsafe Git remotes, unsafe paths, and semantic conflicts.
+Director for Paseo only renders the engine projection and submits typed
+commands; it owns no activation or snapshot policy.
 
 See [Organizer configuration and revisions](docs/configuration.md) for the
 complete minimal document and transition contract.

@@ -13,7 +13,86 @@ import (
 	"io"
 	"math/big"
 	"sort"
+	"unicode/utf8"
 )
+
+var (
+	// ErrInvalidUTF8 rejects byte sequences which encoding/json would
+	// otherwise replace with U+FFFD.
+	ErrInvalidUTF8 = errors.New("JSON document is not valid UTF-8")
+	// ErrInvalidUnicodeSurrogate rejects escaped UTF-16 surrogate halves which
+	// encoding/json would otherwise replace with U+FFFD.
+	ErrInvalidUnicodeSurrogate = errors.New("JSON string contains an unpaired Unicode surrogate")
+)
+
+func hexValue(value byte) (uint16, bool) {
+	switch {
+	case value >= '0' && value <= '9':
+		return uint16(value - '0'), true
+	case value >= 'a' && value <= 'f':
+		return uint16(value-'a') + 10, true
+	case value >= 'A' && value <= 'F':
+		return uint16(value-'A') + 10, true
+	default:
+		return 0, false
+	}
+}
+
+func unicodeEscape(document []byte, start int) (uint16, bool) {
+	if start+4 > len(document) {
+		return 0, false
+	}
+	var value uint16
+	for _, digit := range document[start : start+4] {
+		part, ok := hexValue(digit)
+		if !ok {
+			return 0, false
+		}
+		value = value*16 + part
+	}
+	return value, true
+}
+
+func validateStringEncoding(document []byte) error {
+	if !utf8.Valid(document) {
+		return ErrInvalidUTF8
+	}
+	inString := false
+	for index := 0; index < len(document); index++ {
+		switch document[index] {
+		case '"':
+			inString = !inString
+		case '\\':
+			if !inString || index+1 >= len(document) {
+				continue
+			}
+			if document[index+1] != 'u' {
+				index++
+				continue
+			}
+			first, ok := unicodeEscape(document, index+2)
+			if !ok {
+				continue
+			}
+			switch {
+			case first >= 0xd800 && first <= 0xdbff:
+				if index+12 > len(document) || document[index+6] != '\\' || document[index+7] != 'u' {
+					return ErrInvalidUnicodeSurrogate
+				}
+				second, ok := unicodeEscape(document, index+8)
+				if !ok || second < 0xdc00 || second > 0xdfff {
+					return ErrInvalidUnicodeSurrogate
+				}
+				index += 11
+			case first >= 0xdc00 && first <= 0xdfff:
+				return ErrInvalidUnicodeSurrogate
+			default:
+				index += 5
+			}
+		}
+	}
+	return nil
+}
 
 func writeCanonicalValue(decoder *json.Decoder, output *bytes.Buffer) error {
 	token, err := decoder.Token()
@@ -102,10 +181,13 @@ func writeCanonicalValue(decoder *json.Decoder, output *bytes.Buffer) error {
 	}
 }
 
-// Canonical parses one complete JSON value, rejects duplicate keys and
-// non-integer numeric spellings, and sorts object keys recursively. Array order
-// remains significant.
+// Canonical parses one complete JSON value, rejects invalid UTF-8, unpaired
+// escaped surrogates, duplicate keys, and non-integer numeric spellings, and
+// sorts object keys recursively. Array order remains significant.
 func Canonical(document []byte) ([]byte, error) {
+	if err := validateStringEncoding(document); err != nil {
+		return nil, err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(document))
 	decoder.UseNumber()
 	var canonical bytes.Buffer

@@ -18,8 +18,10 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/mcuadros/director-engine/domain/jsondocument"
 )
@@ -34,6 +36,10 @@ const (
 	// MaximumDocumentBytes bounds untrusted Organizer configuration before it
 	// is decoded or retained in a preview.
 	MaximumDocumentBytes = 1 << 20
+	// MaximumCanonicalDocumentBytes bounds the canonical representation which
+	// is activated and embedded into Run snapshots. Bounding both forms makes
+	// every admitted configuration snapshot restorable.
+	MaximumCanonicalDocumentBytes = 1 << 20
 )
 
 //go:embed paseo-director.schema.json
@@ -257,9 +263,201 @@ func validToken(value string) bool {
 	return tokenPattern.MatchString(value)
 }
 
-func validRemote(value string) bool {
-	return len(value) > 0 && len(value) <= 2048 && !strings.HasPrefix(value, "-") &&
-		strings.IndexFunc(value, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) < 0
+func decodeRemoteEscapes(value string) (string, bool) {
+	decoded := make([]byte, 0, len(value))
+	for index := 0; index < len(value); index++ {
+		if value[index] != '%' {
+			decoded = append(decoded, value[index])
+			continue
+		}
+		if index+2 >= len(value) {
+			return "", false
+		}
+		part, err := strconv.ParseUint(value[index+1:index+3], 16, 8)
+		if err != nil {
+			return "", false
+		}
+		decoded = append(decoded, byte(part))
+		index += 2
+	}
+	return string(decoded), utf8.Valid(decoded)
+}
+
+func unsafeWhitespaceOrControl(r rune) bool {
+	return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.In(r, unicode.Cf)
+}
+
+func hasUnsafeRemoteWhitespace(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool {
+		return unsafeWhitespaceOrControl(r)
+	}) >= 0
+}
+
+func hasUnsafeRemoteCommandSyntax(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool {
+		return strings.ContainsRune("\\\"'`$;&|<>", r)
+	}) >= 0
+}
+
+func remoteAuthority(value string) string {
+	if separator := strings.Index(value, "://"); separator >= 0 {
+		value = value[separator+3:]
+	}
+	if slash := strings.IndexByte(value, '/'); slash >= 0 {
+		return value[:slash]
+	}
+	return value
+}
+
+func hasPasswordUserinfo(value string) bool {
+	authority := remoteAuthority(value)
+	at := strings.LastIndexByte(authority, '@')
+	return at >= 0 && strings.ContainsRune(authority[:at], ':')
+}
+
+func validRemoteUsername(value string) bool {
+	if value == "" {
+		return false
+	}
+	return strings.IndexFunc(value, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || strings.ContainsRune("._-", r))
+	}) < 0
+}
+
+func validRemoteHost(value string) bool {
+	if value == "" || strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") ||
+		strings.HasPrefix(value, "-") || strings.HasSuffix(value, "-") || strings.Contains(value, "..") {
+		return false
+	}
+	return strings.IndexFunc(value, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '-')
+	}) < 0
+}
+
+func validRemoteHostPort(value string) bool {
+	if strings.HasPrefix(value, "[") {
+		closing := strings.IndexByte(value, ']')
+		if closing < 2 {
+			return false
+		}
+		address := value[1:closing]
+		if strings.IndexFunc(address, func(r rune) bool {
+			return !((r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') ||
+				(r >= '0' && r <= '9') || r == ':' || r == '.')
+		}) >= 0 {
+			return false
+		}
+		value = value[closing+1:]
+		if value == "" {
+			return true
+		}
+		if !strings.HasPrefix(value, ":") {
+			return false
+		}
+		value = value[1:]
+		return value != "" && strings.IndexFunc(value, func(r rune) bool { return r < '0' || r > '9' }) < 0
+	}
+	if strings.Count(value, ":") > 1 {
+		return false
+	}
+	host := value
+	if colon := strings.LastIndexByte(value, ':'); colon >= 0 {
+		host = value[:colon]
+		port := value[colon+1:]
+		if port == "" || strings.IndexFunc(port, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+			return false
+		}
+	}
+	return validRemoteHost(host)
+}
+
+func validURLRemote(value string) bool {
+	separator := strings.Index(value, "://")
+	if separator <= 0 {
+		return false
+	}
+	rest := value[separator+3:]
+	authority := rest
+	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+		authority = rest[:slash]
+	}
+	if authority == "" || strings.ContainsAny(authority, "?#") || strings.Count(authority, "@") > 1 {
+		return false
+	}
+	hostPort := authority
+	if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+		if !validRemoteUsername(authority[:at]) {
+			return false
+		}
+		hostPort = authority[at+1:]
+	}
+	return validRemoteHostPort(hostPort) && !strings.ContainsAny(rest, "?#")
+}
+
+func validSCPLikeRemote(value string) bool {
+	if strings.Contains(value, "://") || strings.Count(value, "@") > 1 {
+		return false
+	}
+	hostStart := 0
+	hasUsername := false
+	if at := strings.LastIndexByte(value, '@'); at >= 0 {
+		if !validRemoteUsername(value[:at]) {
+			return false
+		}
+		hasUsername = true
+		hostStart = at + 1
+	}
+	separatorOffset := strings.IndexByte(value[hostStart:], ':')
+	if separatorOffset <= 0 {
+		return false
+	}
+	separator := hostStart + separatorOffset
+	host := value[hostStart:separator]
+	remotePath := value[separator+1:]
+	if hostStart == 0 {
+		switch strings.ToLower(host) {
+		case "ext", "file", "ftp", "git", "git+ssh", "http", "https", "rsync", "ssh":
+			return false
+		}
+	}
+	hostIsExplicit := hasUsername || strings.EqualFold(host, "localhost") || strings.ContainsRune(host, '.')
+	return hostIsExplicit && validRemoteHost(host) && remotePath != "" && !strings.HasPrefix(remotePath, "-") &&
+		!strings.Contains(remotePath, "::")
+}
+
+func validateRemote(value string) (string, string) {
+	if len(value) == 0 || len(value) > 2048 || strings.HasPrefix(value, "-") {
+		return "remote_invalid", "remote must be bounded and cannot begin with an option prefix"
+	}
+	decoded, ok := decodeRemoteEscapes(value)
+	if !ok {
+		return "remote_format_invalid", "remote contains invalid percent-encoding or Unicode"
+	}
+	if hasUnsafeRemoteWhitespace(decoded) {
+		return "remote_whitespace_unsafe", "remote cannot contain whitespace or control characters"
+	}
+	if hasPasswordUserinfo(decoded) {
+		return "remote_userinfo_password", "remote userinfo cannot contain a password"
+	}
+	if hasUnsafeRemoteCommandSyntax(decoded) {
+		return "remote_command_unsafe", "remote cannot contain command-bearing syntax"
+	}
+	if separator := strings.Index(decoded, "://"); separator >= 0 {
+		scheme := strings.ToLower(decoded[:separator])
+		if scheme != "https" && scheme != "ssh" && scheme != "git" {
+			return "remote_scheme_unsupported", "remote scheme must be https, ssh, or git"
+		}
+		if !validURLRemote(decoded) {
+			return "remote_format_invalid", "remote URL structure is invalid"
+		}
+		return "", ""
+	}
+	if !validSCPLikeRemote(decoded) {
+		return "remote_format_invalid", "remote must use https, ssh, git, or safe scp-like syntax"
+	}
+	return "", ""
 }
 
 func validGitBranch(value string) bool {
@@ -282,7 +480,8 @@ func validGitBranch(value string) bool {
 
 func validSourcePath(value string) bool {
 	return len(value) >= 2 && len(value) <= 4096 && strings.HasPrefix(value, "/") &&
-		!strings.Contains(value, "\\") && pathpkg.Clean(value) == value
+		!strings.Contains(value, "\\") && pathpkg.Clean(value) == value &&
+		strings.IndexFunc(value, unsafeWhitespaceOrControl) < 0
 }
 
 func validateProfile(path string, profile AgentProfile, issues *[]Issue) {
@@ -320,7 +519,8 @@ func validateReferences(field, prefix, suffix string, references []FileReference
 		identifiers[reference.ID] = struct{}{}
 		validPath := len(reference.Path) <= 512 && !strings.Contains(reference.Path, "\\") &&
 			!pathpkg.IsAbs(reference.Path) && pathpkg.Clean(reference.Path) == reference.Path &&
-			strings.HasPrefix(reference.Path, prefix) && strings.HasSuffix(reference.Path, suffix)
+			strings.HasPrefix(reference.Path, prefix) && strings.HasSuffix(reference.Path, suffix) &&
+			strings.IndexFunc(reference.Path, unsafeWhitespaceOrControl) < 0
 		if !validPath {
 			*issues = append(*issues, issue("reference_path_invalid", base+".path", "reference path must be a clean relative path in its declared Organizer directory"))
 		} else if _, duplicate := paths[reference.Path]; duplicate {
@@ -359,8 +559,8 @@ func validate(value Configuration) error {
 			issues = append(issues, issue("workspace_duplicate", base+".id", "workspace id must be unique"))
 		}
 		workspaceIDs[workspace.ID] = struct{}{}
-		if !validRemote(workspace.Remote) {
-			issues = append(issues, issue("remote_invalid", base+".remote", "remote identity must be bounded and contain no whitespace or control characters"))
+		if code, message := validateRemote(workspace.Remote); code != "" {
+			issues = append(issues, issue(code, base+".remote", message))
 		}
 		if !validSourcePath(workspace.SourcePath) {
 			issues = append(issues, issue("source_path_invalid", base+".sourcePath", "source path must be a clean absolute Linux path"))
@@ -438,8 +638,9 @@ func validate(value Configuration) error {
 
 // Parse strictly decodes, schema-checks, and semantically validates one
 // paseo-director.json document. Unknown fields, duplicate keys, trailing
-// values, non-integer numeric spellings, unsupported versions, and invalid
-// cross-field relationships all fail closed.
+// values, invalid Unicode, non-integer numeric spellings, raw or canonical
+// oversize input, unsupported versions, and invalid cross-field relationships
+// all fail closed.
 func Parse(input []byte) (Document, error) {
 	if len(input) == 0 {
 		return Document{}, invalidDocument("document_empty", "configuration document is required")
@@ -449,7 +650,13 @@ func Parse(input []byte) (Document, error) {
 	}
 	canonical, err := jsondocument.Canonical(input)
 	if err != nil {
+		if errors.Is(err, jsondocument.ErrInvalidUTF8) || errors.Is(err, jsondocument.ErrInvalidUnicodeSurrogate) {
+			return Document{}, invalidDocument("json_encoding_invalid", "configuration must contain exact valid UTF-8 and paired Unicode escapes")
+		}
 		return Document{}, invalidDocument("json_invalid", "configuration must be one complete JSON value with unique object keys and integer numbers")
+	}
+	if len(canonical) > MaximumCanonicalDocumentBytes {
+		return Document{}, invalidDocument("canonical_document_too_large", "canonical configuration exceeds the 1 MiB activation limit")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(canonical))
 	decoder.DisallowUnknownFields()

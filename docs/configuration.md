@@ -10,7 +10,16 @@ The Director Engine owns the closed JSON Schema at
 [`engine/domain/configuration/paseo-director.schema.json`](../engine/domain/configuration/paseo-director.schema.json).
 The M1 schema version is `1` and requires the exact engine-owned `$schema`
 identifier. Unknown fields, duplicate object keys, trailing JSON values,
-non-integer numeric spellings and unsupported versions are rejected.
+non-integer numeric spellings, invalid UTF-8, unpaired escaped Unicode
+surrogates and unsupported versions are rejected. Both the source document and
+its canonical form are limited to 1 MiB so accepted configuration can always be
+embedded in and restored from a bounded Run snapshot.
+
+Validation against the published JSON Schema is necessary but insufficient for
+engine admission. JSON Schema establishes the portable closed shape and basic
+field constraints; the Go semantic validator is authoritative for byte-level
+Unicode fidelity, canonical-size limits, Git transports, credential-bearing
+userinfo, filesystem/reference paths and cross-field invariants.
 
 ## Version 1 document
 
@@ -81,12 +90,16 @@ This is a complete minimal document:
 Schema checks are followed by deterministic semantic validation. Project,
 Workspace and reference identifiers are bounded; Workspace IDs and explicit
 references are unique; source paths are clean absolute Linux paths; Git branch
-names are safe; profile tokens and provider families are closed; capacity and
-Run budgets are finite and internally consistent; Workspace overrides name a
-declared Workspace and select `inherit` or a concrete value; and skill/template
-paths are clean relative paths in their declared Organizer directories.
-Directory scanning never turns an unreferenced file into executable or prompt
-input.
+names are safe; Workspace remotes use only `https://`, `ssh://`, `git://`, or
+safe scp-like SSH syntax; password-bearing URL/scp userinfo and command-bearing
+or local transports are rejected while username-only SSH forms such as
+`git@github.com:owner/repository.git` remain valid; profile tokens and provider
+families are closed; capacity and Run budgets are finite and internally
+consistent; Workspace overrides name a declared Workspace and select `inherit`
+or a concrete value; and skill/template paths are clean relative paths in their
+declared Organizer directories. Source and reference paths reject whitespace
+and control characters. Directory scanning never turns an unreferenced file
+into executable or prompt input.
 
 ## Preview and Apply
 
@@ -127,10 +140,12 @@ snapshot containing:
 - the complete canonical version 1 configuration.
 
 Snapshot accessors return copies. Persisted snapshots are strictly reparsed and
-their revision, version and content hash are verified. A later Preview or Apply
-cannot change a snapshot already assigned to a Run. Thus a valid but unapproved
-pending revision, and even a human-confirmed invalid revision, cannot affect a
-new or existing Run.
+their internal revision format, contract version, configuration validity and
+content-hash consistency are verified within the bounded snapshot size. The
+trusted TaskStore layer later binds that self-consistent snapshot to its exact
+Project and Run. A later Preview or Apply cannot change a snapshot already
+assigned to a Run. Thus a valid but unapproved pending revision, and even a
+human-confirmed invalid revision, cannot affect a new or existing Run.
 
 This M1 skeleton does not create Organizer commits, authenticate a concrete
 host transport, persist Project state, compute Task-level effective overrides,
