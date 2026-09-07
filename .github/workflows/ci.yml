@@ -41,9 +41,9 @@
           }
         },
         {
-          "name": "Install exact locked dependencies",
+          "name": "Install exact locked dependencies and Dolt",
           "shell": "bash",
-          "run": "npm ci --ignore-scripts --no-audit --no-fund"
+          "run": "npm ci --ignore-scripts --no-audit --no-fund && bash tools/ci/install-dolt-2.3.2.sh"
         },
         {
           "name": "Run deterministic scaffold checks",

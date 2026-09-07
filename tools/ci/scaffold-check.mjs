@@ -19,7 +19,8 @@ const SETUP_NODE_REF =
   "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020";
 const SETUP_GO_REF =
   "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e";
-const INSTALL_COMMAND = "npm ci --ignore-scripts --no-audit --no-fund";
+const INSTALL_COMMAND =
+  "npm ci --ignore-scripts --no-audit --no-fund && bash tools/ci/install-dolt-2.3.2.sh";
 const CHECK_COMMAND = "npm run ci";
 const LICENSE_SHA256 =
   "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30";

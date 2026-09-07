@@ -6,6 +6,11 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const ALLOWED_ADAPTER_DEPENDENCIES = [
+  "filippo.io/edwards25519",
+  "github.com/go-sql-driver/mysql",
+];
+
 function run(repositoryRoot) {
   const result = spawnSync(
     "go",
@@ -27,7 +32,11 @@ function run(repositoryRoot) {
   }
   const nonStandard = result.stdout.split("\n").filter(Boolean);
   const unexpected = nonStandard.filter(
-    (path) => !path.startsWith("github.com/mcuadros/director-engine"),
+    (path) =>
+      !path.startsWith("github.com/mcuadros/director-engine") &&
+      !ALLOWED_ADAPTER_DEPENDENCIES.some(
+        (allowed) => path === allowed || path.startsWith(`${allowed}/`),
+      ),
   );
   if (unexpected.length > 0) {
     console.error(
@@ -40,7 +49,7 @@ function run(repositoryRoot) {
     return 1;
   }
   console.log(
-    `Standalone engine dependency check passed for ${nonStandard.length} engine packages and the Go standard library.`,
+    `Standalone engine dependency check passed for ${nonStandard.length} engine and pinned direct-Dolt adapter packages.`,
   );
   return 0;
 }

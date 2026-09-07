@@ -50,16 +50,36 @@ test("Go boundaries reject outward, cross-reducer, external, and effectful impor
       importPath: `${modulePath}/adapters/host`,
       imports: ["github.com/getpaseo/client"],
     },
+    {
+      importPath: `${modulePath}/adapters/taskstore`,
+      imports: ["github.com/gastownhall/beads"],
+    },
+    {
+      importPath: `${modulePath}/ports/taskstore`,
+      imports: ["context", "database/sql", `${modulePath}/domain`],
+    },
   ]);
   assert.ok(errors.some((error) => error.includes("domain boundary cannot import application")));
   assert.ok(errors.some((error) => error.includes("cannot depend on another reducer")));
   assert.ok(errors.some((error) => error.includes("effectful standard package time")));
   assert.ok(errors.some((error) => error.includes("imports external package")));
   assert.ok(
+    errors.some((error) =>
+      error.includes("cannot leak database backend package database/sql"),
+    ),
+  );
+  assert.ok(
     errors.some(
       (error) =>
         error.includes(`${modulePath}/adapters/host`) &&
         error.includes("github.com/getpaseo/client"),
+    ),
+  );
+  assert.ok(
+    errors.some(
+      (error) =>
+        error.includes(`${modulePath}/adapters/taskstore`) &&
+        error.includes("github.com/gastownhall/beads"),
     ),
   );
   assert.equal(
@@ -141,6 +161,105 @@ test("adapters and agent runtime cannot declare lifecycle policy", () => {
     ).length,
     1,
   );
+
+  for (const identifier of [
+    "TaskStoreAdapter",
+    "DoltTaskStore",
+    "ProjectionReader",
+    "DomainEventRow",
+  ]) {
+    assert.deepEqual(
+      policyOwnershipErrors(
+        "engine/adapters/dolt/taskstore.go",
+        `package dolt\ntype ${identifier} struct{}\n`,
+        "go",
+      ),
+      [],
+      `${identifier} is a readable adapter/data-access name, not policy ownership`,
+    );
+  }
+
+  for (const identifier of [
+    "TaskStorePolicy",
+    "ProjectionPolicy",
+    "DomainModel",
+    "ApplicationService",
+    "LifecycleTransition",
+    "RetryDecision",
+    "PolicyEngine",
+    "SchedulerLoop",
+    "OrchestratorState",
+    "ReducerRegistry",
+    "RetryDecisionMaker",
+    "LifecycleTransitionTable",
+    "EscalationPolicyTable",
+    "ReconcilerLoop",
+    "ClosureDecisionLog",
+  ]) {
+    assert.equal(
+      policyOwnershipErrors(
+        "engine/adapters/dolt/taskstore.go",
+        `package dolt\ntype ${identifier} struct{}\n`,
+        "go",
+      ).length,
+      1,
+      `${identifier} must remain prohibited policy ownership`,
+    );
+  }
+
+  assert.equal(
+    policyOwnershipErrors(
+      "engine/agent-runtime/runtime.go",
+      "package agentruntime\ntype DoltTaskStore struct{}\n",
+      "go",
+    ).length,
+    1,
+    "adapter data-access allowlist must not weaken agent-runtime",
+  );
+});
+
+test("connector retains domain, application, TaskStore, and projection path bans", () => {
+  const errors = typescriptBoundaryErrors(
+    ["domain", "application", "taskstore", "projection"].map((boundary) => ({
+      path: `connector/${boundary}.server.ts`,
+      source: "export const transport = true;\n",
+    })),
+  );
+  for (const boundary of ["domain", "application", "taskstore", "projection"]) {
+    assert.ok(
+      errors.some(
+        (error) =>
+          error.includes(`connector/${boundary}.server.ts`) &&
+          error.includes("connector path cannot own"),
+      ),
+      `${boundary} connector path must remain prohibited`,
+    );
+  }
+});
+
+test("adapter path exemption is limited to the exact Dolt TaskStore implementation", () => {
+  assert.deepEqual(policyPathErrors("engine/adapters/dolt/taskstore.go"), []);
+  for (const path of [
+    "engine/adapters/domain.go",
+    "engine/adapters/domain/store.go",
+    "engine/adapters/application.go",
+    "engine/adapters/application/x.go",
+    "engine/adapters/projection.go",
+    "engine/adapters/projection/reader.go",
+    "engine/adapters/taskstore.go",
+    "engine/adapters/dolt/taskstore_adapter.go",
+  ]) {
+    assert.equal(
+      policyPathErrors(path).length,
+      1,
+      `${path} must remain prohibited outside the exact exemption`,
+    );
+  }
+  assert.equal(
+    policyPathErrors("engine/agent-runtime/dolt/taskstore.go").length,
+    1,
+    "the adapter path exemption must not apply to agent-runtime",
+  );
 });
 
 test("policy-shaped paths are rejected symmetrically across every boundary layer", () => {
@@ -175,7 +294,7 @@ test("TypeScript boundaries reject host SDK escape, reverse imports, policy, and
     },
     {
       path: "connector/policy.server.ts",
-      source: "export class ClosurePolicy {}\n",
+      source: "export class ClosurePolicy {}\nexport class DoltTaskStore {}\n",
     },
     {
       path: "connector/retry-policy.server.ts",
@@ -221,6 +340,7 @@ test("TypeScript boundaries reject host SDK escape, reverse imports, policy, and
   assert.ok(errors.some((error) => error.includes("only the minimum Paseo connector")));
   assert.ok(errors.some((error) => error.includes("ui boundary cannot import connector")));
   assert.ok(errors.some((error) => error.includes("policy-shaped symbol ClosurePolicy")));
+  assert.ok(errors.some((error) => error.includes("policy-shaped symbol DoltTaskStore")));
   assert.ok(errors.some((error) => error.includes("connector path cannot own")));
   assert.ok(errors.some((error) => error.includes("OrganizerRevisionState")));
   assert.ok(errors.some((error) => error.includes("rpc runtime filename")));

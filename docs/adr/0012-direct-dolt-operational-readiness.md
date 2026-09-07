@@ -147,6 +147,18 @@ reconciliation do not cause additional long-property executions.
   CLI command. A command never receives credentials until this precondition is
   verified, and cleanup fails on an owned metrics process, a surviving
   credential marker, or root recreation.
+- ADR-0004 append-only ledgers and triggers contain the row-level `INSERT`,
+  `UPDATE`, `DELETE`, duplicate/ODKU, and `REPLACE` statement classes emitted by
+  the trusted adapter. Dolt/MySQL `TRUNCATE` is DDL and does not execute
+  row-level delete triggers, so it is outside that containment claim. The
+  production runtime writer grant must exclude `DROP`, which also denies
+  `TRUNCATE`. Its DML grants must be table-scoped: `guard_constants`,
+  `parent_guard`, and `immutable_write_guard` are read-only to that identity,
+  and bootstrap verifies their three exact seed rows before accepting an
+  existing schema. Bootstrap/migration authority remains a separate
+  engine-only control path. A privileged operator performing offline SQL
+  inspection must keep the Project paused and preserve the verified
+  backup/restore gate.
 - Backup synchronization replaces all branches and working sets at its
   destination. Seven-day retention therefore requires distinct owned
   point-in-time destinations and verification before expiry cleanup.
