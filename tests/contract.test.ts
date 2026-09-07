@@ -8,8 +8,8 @@ import {
   EXPECTED_HOST_DESCRIPTOR,
   HOST_CAPABILITIES,
   HostHandshakeError,
-} from "../shared/generated-host-contract.shared.ts";
-import { connectorStartupStatus } from "../shared/startup.shared.ts";
+} from "../generated/host-contract.shared.ts";
+import { connectorStartupStatus } from "../rpc/startup.shared.ts";
 
 test("the generated host descriptor accepts only the exact engine contract", () => {
   assert.equal(assertHostDescriptor(EXPECTED_HOST_DESCRIPTOR), EXPECTED_HOST_DESCRIPTOR);

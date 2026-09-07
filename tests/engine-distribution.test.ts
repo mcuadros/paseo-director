@@ -20,13 +20,13 @@ import {
   EngineDistributionError,
   parseReleaseMetadata,
   resolveEngine,
-} from "../server/engine-distribution.server.ts";
+} from "../connector/engine-distribution.server.ts";
 import {
   EngineSelectionError,
   selectEngine,
   type DevelopmentEngineSelection,
   type ReleaseEngineSelection,
-} from "../server/engine-selection.server.ts";
+} from "../connector/engine-selection.server.ts";
 
 function digest(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");

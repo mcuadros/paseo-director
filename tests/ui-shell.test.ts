@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
-import { shellMetrics } from "../client/shell-layout.client.ts";
+import { shellMetrics } from "../ui/shell-layout.client.ts";
 
 test("the host UI shell has distinct compact and wide layouts", () => {
   assert.deepEqual(shellMetrics(true), {
@@ -33,7 +33,7 @@ test("Director for Paseo retains every planned top-level UI shell", () => {
   ]) {
     assert.ok(entry.includes(registration), `missing ${registration}`);
   }
-  const shells = readFileSync(resolve("client/shells.client.tsx"), "utf8");
+  const shells = readFileSync(resolve("ui/shells.client.tsx"), "utf8");
   for (const token of [
     "Create Project",
     "Adopt Organizer",

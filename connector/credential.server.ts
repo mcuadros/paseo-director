@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Connector-only credential loading; credential material never crosses the host port.
 
 import {
   closeSync,

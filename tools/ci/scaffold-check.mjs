@@ -29,6 +29,7 @@ const RELEASE_ORIGIN = "https://github.com";
 const RELEASE_PATH_PREFIX =
   "/mcuadros/paseo-director/releases/download/";
 const REQUIRED_SCRIPTS = [
+  "architecture:check",
   "build",
   "build:engine",
   "ci",
@@ -52,14 +53,19 @@ const REQUIRED_UI_REGISTRATIONS = [
   'id: "open-task-inspector"',
 ];
 const ENGINE_ALLOWED_PREFIXES = [
+  "engine/adapters/",
+  "engine/agent-runtime/",
+  "engine/application/",
   "engine/cmd/director-engine/",
   "engine/cmd/generate-host-client/",
-  "engine/contract/",
+  "engine/domain/",
+  "engine/ports/",
+  "engine/projection/",
+  "engine/reducer/",
 ];
 const FUTURE_PRODUCT_PATHS = [
-  /^engine\/(?:application|domain|orchestration|projection|reducers|scheduler|taskstore)\//,
   /^(?:application|domain|orchestration|projection|reducers|scheduler|taskstore)\//,
-  /^server\/(?:application|domain|orchestration|projection|reducers|scheduler|taskstore)\//,
+  /^connector\/(?:application|domain|orchestration|projection|reducers|scheduler|taskstore)\//,
 ];
 const FORBIDDEN_DISTRIBUTION_PATHS = [
   /(^|\/)(?:bin|node_modules|vendor)(?:\/|$)/,
@@ -513,13 +519,14 @@ export function hostSourceErrors(path, source) {
   const errors = [];
   const isHostRuntime =
     path === "index.ts" ||
-    path.startsWith("client/") ||
-    path.startsWith("server/") ||
-    path.startsWith("shared/");
+    path.startsWith("connector/") ||
+    path.startsWith("generated/") ||
+    path.startsWith("rpc/") ||
+    path.startsWith("ui/");
   if (
     isHostRuntime &&
     source.includes("@getpaseo/client") &&
-    path !== "server/connector.server.ts"
+    path !== "connector/paseo.server.ts"
   ) {
     errors.push(`${path}: Paseo SDK imports belong only in the host connector`);
   }
@@ -701,7 +708,7 @@ function run(repositoryRoot, mode) {
     console.log(`- ${result.governance.count} ADRs have reciprocal lifecycle relationships`);
     console.log(`- ${result.workflows.count} Linux workflow has unfiltered pull-request/main coverage`);
     console.log("- standalone engine, full host UI shell, connector boundary, and explicit release state exist");
-    console.log("- product reducers, stores, scheduling, providers, and lifecycle behavior remain absent");
+    console.log("- architecture package homes exist without unrelated product behavior");
     return 0;
   }
   console.error("Usage: node tools/ci/scaffold-check.mjs <format|lint>");

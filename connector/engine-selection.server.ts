@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Connector-side process selection preserves explicit, disjoint engine modes.
 
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";

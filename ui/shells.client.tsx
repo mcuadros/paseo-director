@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Client-only React Native surfaces render engine-owned projections.
 
 import type {
   PluginAgentPanelProps,

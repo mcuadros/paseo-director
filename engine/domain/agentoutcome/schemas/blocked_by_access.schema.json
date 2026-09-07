@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mcuadros/paseo-director/engine/domain/agentoutcome/schemas/blocked_by_access.schema.json",
+  "title": "BlockedByAccessAgentOutcomeClaim",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "operationCode", "failureFingerprint"],
+  "oneOf": [
+    { "required": ["capabilityCode"], "not": { "required": ["resourceCode"] } },
+    { "required": ["resourceCode"], "not": { "required": ["capabilityCode"] } }
+  ],
+  "properties": {
+    "outcome": { "const": "blocked_by_access" },
+    "capabilityCode": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "resourceCode": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "operationCode": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "failureFingerprint": { "type": "string", "minLength": 1, "maxLength": 256 }
+  }
+}

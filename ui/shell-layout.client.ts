@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Client-only layout primitives for the complete Director UI.
 
 export type ShellMetrics = {
   padding: number;

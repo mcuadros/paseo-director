@@ -9,11 +9,12 @@
     "node": ">=22"
   },
   "scripts": {
+    "architecture:check": "node --test tools/ci/architecture-check.test.mjs && node tools/ci/architecture-check.mjs",
     "build": "npm run build:engine && npm run typecheck",
     "build:engine": "go -C engine build -trimpath -buildvcs=false ./...",
-    "ci": "npm run format:check && npm run lint && npm run contract:check && npm run build && npm run test:engine && npm run test:host && npm run smoke && npm run test:baseline",
+    "ci": "npm run format:check && npm run lint && npm run contract:check && npm run architecture:check && npm run build && npm run test:engine && npm run test:host && npm run smoke && npm run test:baseline",
     "contract:check": "node --test tools/ci/contract-check.test.mjs && node tools/ci/contract-check.mjs",
-    "contract:generate": "go -C engine run ./cmd/generate-host-client --schema contract/host-interface.v1.json --output ../shared/generated-host-contract.shared.ts",
+    "contract:generate": "go -C engine run ./cmd/generate-host-client --schema ports/host/host-interface.v1.json --output ../generated/host-contract.shared.ts",
     "engine:check": "node tools/ci/engine-independence.mjs",
     "format:check": "node tools/ci/scaffold-check.mjs format",
     "lint": "node tools/ci/scaffold-check.mjs lint && npm run engine:check && go -C engine vet ./...",

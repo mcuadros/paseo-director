@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { resolveEngine } from "../../server/engine-distribution.server.ts";
+import { resolveEngine } from "../../connector/engine-distribution.server.ts";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const temporaryRoot = mkdtempSync(join(tmpdir(), "director-startup-smoke-"));

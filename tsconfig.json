@@ -20,10 +20,11 @@
   },
   "include": [
     "index.ts",
-    "client/**/*.ts",
-    "client/**/*.tsx",
-    "server/**/*.ts",
-    "shared/**/*.ts",
+    "connector/**/*.ts",
+    "generated/**/*.ts",
+    "rpc/**/*.ts",
+    "ui/**/*.ts",
+    "ui/**/*.tsx",
     "tests/**/*.ts",
     "tools/smoke/**/*.ts"
   ]

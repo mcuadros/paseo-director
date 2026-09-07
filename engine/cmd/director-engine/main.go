@@ -10,7 +10,7 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/mcuadros/director-engine/contract"
+	"github.com/mcuadros/director-engine/ports/host"
 )
 
 var (
@@ -31,11 +31,11 @@ type identity struct {
 }
 
 func currentIdentity() (identity, error) {
-	definition, err := contract.EmbeddedDefinition()
+	definition, err := host.EmbeddedDefinition()
 	if err != nil {
 		return identity{}, err
 	}
-	contractHash, err := contract.SchemaSHA256()
+	contractHash, err := host.SchemaSHA256()
 	if err != nil {
 		return identity{}, err
 	}

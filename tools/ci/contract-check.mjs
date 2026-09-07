@@ -48,7 +48,7 @@ export function generateClient(repositoryRoot, schemaPath) {
 export function generatedClientMatches(repositoryRoot, schemaPath) {
   const generated = generateClient(repositoryRoot, schemaPath);
   const committed = readFileSync(
-    resolve(repositoryRoot, "shared/generated-host-contract.shared.ts"),
+    resolve(repositoryRoot, "generated/host-contract.shared.ts"),
   );
   return generated.equals(committed);
 }
@@ -56,7 +56,7 @@ export function generatedClientMatches(repositoryRoot, schemaPath) {
 function run(repositoryRoot) {
   const schemaPath = resolve(
     repositoryRoot,
-    "engine/contract/host-interface.v1.json",
+    "engine/ports/host/host-interface.v1.json",
   );
   if (!generatedClientMatches(repositoryRoot, schemaPath)) {
     console.error(

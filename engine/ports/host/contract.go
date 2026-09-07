@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package contract owns the versioned interface implemented by host connectors.
-package contract
+// Package host owns the single versioned interface implemented by host connectors.
+package host
 
 import (
 	"bytes"

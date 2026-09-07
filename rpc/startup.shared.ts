@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Paseo plugin RPC contracts transport engine state without reducing it.
 
 import { defineRpc } from "@getpaseo/plugin/server";
 import { z } from "zod";
@@ -8,7 +9,7 @@ import {
   HOST_CONTRACT_SHA256,
   HOST_CONTRACT_VERSION,
   HOST_CREDENTIAL_SCOPE,
-} from "./generated-host-contract.shared.ts";
+} from "../generated/host-contract.shared.ts";
 
 const descriptorSchema = z.strictObject({
   credentialScope: z.literal(HOST_CREDENTIAL_SCOPE),

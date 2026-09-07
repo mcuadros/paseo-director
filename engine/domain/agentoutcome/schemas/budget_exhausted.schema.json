@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mcuadros/paseo-director/engine/domain/agentoutcome/schemas/budget_exhausted.schema.json",
+  "title": "BudgetExhaustedAgentOutcomeClaim",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "budgetDimension", "observedAmount", "unit"],
+  "properties": {
+    "outcome": { "const": "budget_exhausted" },
+    "budgetDimension": { "enum": ["time", "cost", "tokens", "turns"] },
+    "observedAmount": { "type": "number", "minimum": 0 },
+    "unit": { "type": "string", "minLength": 1, "maxLength": 32 }
+  }
+}
