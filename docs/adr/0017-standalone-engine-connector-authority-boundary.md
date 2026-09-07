@@ -8,8 +8,8 @@
   choice; `dir-m1.12` Task Agent for the scoped evidence result
 - **Amends:** PLAN §§1, 3.2, 6.1, 6.2, 6.4, 6.5, 19.2, 19.4, 20.1,
   and 27.2
-- **Conditional change:** [ADR-0002](0002-paseo-0.7.2-public-surface.md) only if the
-  project owner admits a connector-owned public SDK credential
+- **Amends:** [ADR-0002](0002-paseo-0.7.2-public-surface.md) for the
+  project-owner-accepted connector-owned daemon credential on exact 0.7.2
 - **Refines:** [ADR-0018](0018-deterministic-coordination-boundary.md) by
   requiring its logical Director Engine boundary to be a separate Go process
 - **Preserves:** [ADR-0003](0003-paseo-0.7.2-lifecycle-recovery.md),
@@ -44,9 +44,10 @@ local channel is an implementation detail beneath that contract.
 
 ADR-0002 found that the top-level Paseo 0.7.2 plugin context has no injected
 `PaseoApi`; only an inbound handler receives one. The missing startup authority
-does not make the standalone boundary optional. The remaining question is
-whether Director for Paseo may create its own public supported Paseo SDK client
-and keep all host credential material on the connector side.
+does not make the standalone boundary optional. The verified headless mechanism
+has Director for Paseo create its own public supported Paseo SDK client and keep
+all host credential material on the connector side. The project owner accepted
+that mechanism and its bounded full daemon-operator authority.
 
 The owner also fixed engine distribution. Release mode downloads a versioned,
 digest-pinned Director binary from GitHub Releases. Development mode compiles
@@ -57,17 +58,19 @@ does not run dependency installation or install hooks.
 This is evidence-driven architecture research, not product implementation.
 Candidate `80f5cf1a3344cf3ac9232ba5e10f1de07b5509a8` and rebased carrier
 `c44312a4846f7b9bdd2d54a0e931035e108f0dc2` remain superseded unreviewed;
-neither is authority or eligible for review or publication.
+Candidate `87a7238fc82d8c52120b11cbe0fbde407d6d668b` is also superseded
+unreviewed because it left the P2 choice open. None is authority or eligible
+for review or publication.
 
 ## Question or hypothesis
 
 On the recorded exact Paseo 0.7.2 Linux tuple, can Director Engine complete the
 already-proven Task lifecycle through Director for Paseo while the Node
-connector alone owns a public supported SDK connection and acceptably scoped
-credential, exposes only fixed engine-owned host capabilities and normalized
-observations, leaks no secret or policy to the engine, and starts the
-owner-selected release/development artifact fail closed with attributable
-identity?
+connector alone owns a public supported SDK connection and the
+project-owner-accepted credential, exposes only fixed engine-owned host
+capabilities and normalized observations, leaks no secret or policy to the
+engine, and starts the owner-selected release/development artifact fail closed
+with attributable identity?
 
 ## Acceptance criteria
 
@@ -196,11 +199,34 @@ HTTP/WebSocket surface as a whole. Passwordless loopback grants the same
 reachability rather than lesser capability. A proxy header controls proxy
 admission, not Paseo message-level verbs.
 
-Thus connector ownership and secret isolation are verified, but acceptable
-least privilege is not. Adopting this path would amend ADR-0002 from
-host-injected authority to a connector-owned broad daemon credential and would
-accept a new P2 residual risk. This Task Agent cannot make that human security
-decision.
+Thus connector ownership and secret non-propagation are verified, while exact
+0.7.2 least privilege is unavailable. Under the Task note headed “Human
+decision 2026-09-07,” the project owner accepted this P2 residual risk rather
+than block M1 on a vendor roadmap without a committed date. This makes the
+bounded ADR-0002 amendment effective: on exact 0.7.2 the public headless SDK
+authority is a connector-owned full daemon-operator credential, not an
+engine-owned credential or a top-level host-injected `PaseoApi`.
+
+The acceptance has these mandatory controls:
+
+1. Credential material lives outside every repository and Paseo-managed plugin
+   checkout and is readable only by the Director for Paseo connector process.
+2. Credential bytes and location never enter Director Engine argv,
+   environment, inherited file descriptors, protocol messages/events, UI,
+   TaskStore, projection, support bundle, log, or timeline record.
+3. Initial startup and every reload fail closed before SDK-ready, engine
+   attachment, or host mutation when the credential is absent or empty.
+4. Before accepting a command, the connector advertises
+   `credentialScope=full-daemon-operator`, contract version and contract hash,
+   and only the fixed capability set. Missing or stale values fail closed.
+5. User-facing deployment documentation discloses the daemon-operator
+   requirement and these controls before installation.
+
+These are product/deployment requirements, not claims that the research fixture
+implemented a hostile same-UID sandbox. The fixture positively verified
+connector-only loading, sanitized engine environment/protocol, descriptor
+contents, reload behavior, and fail-closed absence. M1 must preserve the
+connector-only read boundary when it implements credential provisioning.
 
 ### Distribution and lifecycle pass the decided shape
 
@@ -264,9 +290,8 @@ engine/connector contract or make a React Native client an engine consumer.
 
 This is the only fully exercised headless public mechanism. It keeps the
 credential and SDK out of the engine and passes startup, reload, capability,
-fail-closed, and lifecycle mechanics. It is not selected without the project
-owner explicitly accepting the P2 risk that a trusted Director for Paseo
-connector holds full daemon-operator authority.
+fail-closed, and lifecycle mechanics. Selected after the project owner
+explicitly accepted the P2 risk and mandatory controls above.
 
 ### Connector-owned proxy authorization header
 
@@ -280,13 +305,16 @@ This avoids a separately stored daemon credential, but it exists only during
 an inbound handler in exact 0.7.2. It cannot establish headless startup or
 reload reconciliation and dies with the old plugin subprocess.
 
-### A later stable Paseo compatibility floor
+### Wait for a later stable Paseo compatibility floor
 
-A stable supported version could resolve the boundary if it exposes either a
-headless connector-scoped credential restricted to the required operations or
-a startup-injected supported API with equivalent scope. No such version is
-assumed. Exact declarations, security semantics, headless startup/reload, and
-the focused contract must be evidenced before changing the compatibility floor.
+Rejected as the current path because no vendor delivery date is committed. The
+recorded intent is still to narrow authority as soon as a stable supported
+version exposes either a headless connector-scoped credential restricted to the
+required operations or a startup-injected supported API with equivalent scope.
+Exact declarations, security semantics, headless startup/reload, and the
+focused contract must be evidenced before changing the compatibility floor;
+that change touches connector authority and compatibility only, not engine
+logic.
 
 ### Direct SDK authority in Director Engine
 
@@ -304,26 +332,20 @@ fallback under any evidence outcome.
 
 ## Decision
 
-**Inconclusive.** The standalone Go engine, separate process, one engine-owned
-host interface, Paseo UI host package, and release-download/development-compile
-distribution remain mandatory. The scoped connector/compatibility gate cannot
-yet admit exact Paseo 0.7.2 because its only reproduced headless public client
-authority is a full daemon-operator password, and no project-owner P2 decision
-accepts that residual risk. Transport, lifecycle, distribution, interruption,
-workspace, and TaskStore mechanics passed and are not the obstacle.
+**Go.** Exact Paseo 0.7.2 is admitted for Director for Paseo using the public
+SDK with the project-owner-accepted full daemon-operator credential, subject to
+every mandatory control above. The credential and SDK connection belong only
+to the policy-free Node connector. Director Engine remains a separate
+standalone Go process and receives only the versioned fixed-capability host
+contract and normalized observations. The connector never receives or decides
+Director policy.
 
-The precise project-owner escalation is one of:
-
-1. Explicitly accept the P2 residual risk that trusted Director for Paseo on
-   exact 0.7.2 stores and uses the shared full daemon-operator password,
-   constrained to the connector process, sanitized from the engine, and backed
-   by the declared locked SDK preparation step; or
-2. Select a later stable Paseo compatibility floor only after evidence proves
-   a supported headless connector-scoped credential or startup-injected API
-   restricted to Director's required host operations.
-
-Until one choice is reviewed and integrated, `dir-m1.2`, `dir-m1.3`, and
-`dir-m1.5` remain blocked. Failure of the 0.7.2 credential mechanism may never
+The accepted P2 choice resolves the connector-authority gate. Waiting for an
+unknown later compatibility floor is not the selected path. The project still
+intends to narrow authority immediately after Paseo provides and Director
+evidences a supported headless connector-scoped credential or equivalently
+scoped startup-injected API. Such a change may alter only connector authority
+and compatibility bounds. It may not move engine logic into the connector or
 reinstate the monolith.
 
 The frozen architecture requires these PLAN amendments when consolidated by
@@ -341,16 +363,16 @@ idempotency, review, and no-fat-controller requirements remain unchanged.
 
 ## Consequences
 
-- Implementation cannot start while the authority decision is unresolved; the
-  accepted passing fixtures do not authorize product scaffolding.
-- A later owner choice changes only the connector authority/compatibility
-  premise. It does not reopen standalone identity, UI ownership, engine policy
-  ownership, the single host port, distribution mode, or mandatory review.
+- The connector-authority architecture gate is resolved, but this Task Agent
+  does not start dependent implementation. Candidate review and integration
+  remain coordinator-owned gates.
+- The accepted broad credential is an explicit P2 residual risk, not a claim of
+  least privilege. Exact-0.7.2 deployment must surface it before installation.
 - Independent exact-SHA review remains mandatory even when deterministic checks
   pass and must cover correctness, security, maintainability, readability,
   quality, and rigor.
-- The connector becomes a high-trust host adapter if option 1 is accepted. Its
-  credential must never enter engine argv, environment, protocol, logs,
+- The connector is a high-trust host adapter. Its credential must never enter
+  engine argv, environment, inherited descriptors, protocol, logs, timeline,
   TaskStore, projection, UI, or support bundle.
 - New hosts implement the same engine-owned port and generated contract; they
   do not fork engine policy or projections.
@@ -360,18 +382,19 @@ idempotency, review, and no-fat-controller requirements remain unchanged.
 
 ## Compatibility bounds
 
-This Inconclusive result is bounded to Debian 13.6 x86-64, Linux
+This Go result is bounded to Debian 13.6 x86-64, Linux
 `6.12.107+deb13-amd64`, exact public Paseo 0.7.2 packages and security model,
 one same-user password-protected loopback daemon, one Git-installed plugin,
 one Node connector, and one local standalone engine. Node 26.7.0 ran the
 fixture while the documented implementation floor remains Node 22. Go 1.26.5
 proved only linux/amd64 static release and development identities.
 
-It does not admit Paseo preview releases, another stable version, passwordless
-production operation, proxy-scoped authority, multi-user daemon isolation,
-another OS/architecture, a remote engine, or embedded Dolt. Any compatibility
-change requires an explicit reviewed decision and evidence, not semver
-inference.
+It admits the public password-authenticated SDK only through Director for
+Paseo under the mandatory controls above. It does not admit Paseo preview
+releases, another stable version, passwordless production operation,
+proxy-scoped authority, multi-user daemon isolation, another OS/architecture,
+a remote engine, or embedded Dolt. Any compatibility or authority change
+requires an explicit reviewed decision and evidence, not semver inference.
 
 ## Independent verification
 

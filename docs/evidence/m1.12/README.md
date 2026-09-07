@@ -9,11 +9,13 @@
   `66f8b7127543305db0f560fc8106d2d2c0e5b15f`
 - **Superseded rebased carrier:**
   `c44312a4846f7b9bdd2d54a0e931035e108f0dc2`
-- **Result:** Inconclusive only for the exact Paseo 0.7.2 connector-authority
-  compatibility gate
+- **Superseded unreviewed Candidate:**
+  `87a7238fc82d8c52120b11cbe0fbde407d6d668b`
+- **Result:** Go for the exact Paseo 0.7.2 connector-authority compatibility
+  gate under the project-owner-accepted P2 bounds
 - **Scope:** architecture evidence; no Director product behavior
 
-Neither superseded SHA may be reviewed, published, or treated as authority.
+No superseded SHA may be reviewed, published, or treated as authority.
 The standalone Go engine and prohibition on the monolith are binding inputs,
 not outcome choices.
 
@@ -21,7 +23,7 @@ not outcome choices.
 
 Can the standalone Director Engine complete the proven Task lifecycle while
 Director for Paseo alone owns a public supported Paseo 0.7.2 connection and
-acceptably scoped credential, exposes only fixed host capabilities and
+the project-owner-accepted credential, exposes only fixed host capabilities and
 normalized observations, keeps secrets and policy out of the engine, and
 starts the decided release/development engine artifact fail closed with
 attributable identity?
@@ -41,8 +43,10 @@ in the engine; fixed Director capabilities; fail-closed missing authority;
 preservation of the prior T0–T5, workspace, TaskStore, drift, projection,
 cursor, and reload results; and the fixed release-download/development-compile
 distribution. If exact 0.7.2 exposed only an over-broad credential and no
-accepted least-privilege capability, the allowed result was Inconclusive with
-an exact project-owner P2 choice. A monolith was not an allowed result.
+accepted least-privilege capability, the frame required an exact project-owner
+P2 choice. The prior Candidate recorded the intermediate result before that decision.
+The current Task note headed “Human decision 2026-09-07” now accepts the
+bounded exact-0.7.2 credential. A monolith was never an allowed result.
 
 The amendment permitted exactly one disposable password-protected loopback
 Paseo home/daemon/plugin, one connector-authority probe, one local release
@@ -206,13 +210,45 @@ Therefore these facts are both true:
 1. Connector ownership is mechanically verified. The engine did not receive
    the disposable password in environment or protocol, and replacement
    connectors reconnected around engine survival.
-2. Exact 0.7.2 does not expose an acceptably least-privileged headless
-   credential. The exercised credential was deliberately labelled
-   `full-daemon-operator`; a proxy header or passwordless loopback does not add
-   Paseo verb scopes.
+2. Exact 0.7.2 does not expose a least-privileged headless credential. The
+   exercised credential was deliberately labelled `full-daemon-operator`; a
+   proxy header or passwordless loopback does not add Paseo verb scopes.
 
-Using it in product is a new P2 residual-risk decision, not an implementation
-detail or a conclusion this Task Agent can silently apply.
+### Accepted P2 authority bounds
+
+The current Task note headed “Human decision 2026-09-07” records the project
+owner’s acceptance of the full daemon-operator credential on exact Paseo 0.7.2
+and rejection of waiting for a vendor roadmap without a committed date. This
+resolves the authority choice; it does not turn the credential into least
+privilege.
+
+The accepted deployment contract requires, one bound at a time:
+
+1. Credential material is outside every repository and Paseo-managed plugin
+   checkout and readable only by the Director for Paseo connector process.
+2. Credential bytes and location never reach Director Engine argv,
+   environment, inherited file descriptors, protocol messages/events, UI,
+   TaskStore, projections, support bundles, logs, or timeline records.
+3. Startup and reload fail closed before SDK-ready, engine attachment, or host
+   mutation when credential material is absent or empty.
+4. Before command handling, the connector advertises
+   `credentialScope=full-daemon-operator`, contract version and contract hash,
+   and only its fixed capability set; missing or stale values fail closed.
+5. User-facing documentation discloses the full daemon-operator requirement
+   and controls before installation.
+
+The fixture positively verified connector-owned credential loading, an engine
+environment with no credential keys, secret-free engine protocol events, the
+required descriptor, replacement-connector reload, and fail-closed credential
+absence. It did not claim a hostile same-UID sandbox. Connector-only
+readability is a mandatory product/deployment control for M1 credential
+provisioning.
+
+This exact-0.7.2 choice makes ADR-0017’s bounded ADR-0002 amendment effective.
+Recorded intent is to narrow authority as soon as Paseo exposes and Director
+evidences a supported headless connector-scoped credential or equivalently
+scoped startup-injected API. That revision changes only connector authority and
+compatibility, never engine logic.
 
 ### Attempted versus applied corrections
 
@@ -310,39 +346,41 @@ fixture. The live Director TaskStore, `dir-m1.2`, its preserved ref and parked
 branch, `dir-m1.3`, `dir-m1.5`, `dir-m1.14`, and primary untracked research
 documents were untouched.
 
-## Result and required escalation
+## Result and accepted boundary
 
-**Inconclusive.** All tested connector isolation, reload, contract,
-distribution, interruption, workspace, and TaskStore mechanics pass. The exact
-obstacle is that public Paseo 0.7.2 offers only a full daemon-operator password
-or unscoped proxy authorization header for a headless connector. No accepted
-human P2 decision permits that authority and no supported narrower capability
-was found.
+**Go.** All tested connector isolation, reload, contract, distribution,
+interruption, workspace, and TaskStore mechanics pass. Public Paseo 0.7.2
+offers only a full daemon-operator password or unscoped proxy authorization
+header for a headless connector; under “Human decision 2026-09-07,” the project
+owner explicitly accepts that P2 residual risk with the five mandatory bounds
+above and rejects waiting for an undated vendor capability.
 
-The project owner must either explicitly accept that P2 risk for the trusted
-connector on exact 0.7.2, with credentials prohibited from crossing into the
-engine, or select a later stable compatibility floor after evidence proves a
-headless connector-scoped credential/startup API. Until then `dir-m1.2`,
-`dir-m1.3`, and `dir-m1.5` remain blocked. The monolith remains prohibited.
+The connector-authority question is therefore resolved for exact 0.7.2. The
+standalone Go engine, one host interface, UI in Director for Paseo,
+release-download/development-compile distribution, mandatory review, and
+monolith prohibition remain unchanged. This Task Agent does not start or resume
+dependent work.
 
 ## Decision-consistency matrix
 
-The Task Agent reread the complete current Task and all comments before this
-audit. These line ranges map every binding decision/current-record fact to the
-stopped documents; “verified” means the texts agree and contain no reversal.
+The Task Agent reread the complete current Task note headed “Human decision
+2026-09-07.” The stopped-text audit maps each bound and frozen decision to
+exact ADR, evidence, and user-facing deployment lines.
 
-| Binding record/fact | ADR lines | Evidence lines | Consistency result |
-|---|---:|---:|---|
-| `01a07a0b-9c0a-7c88-9c9e-71d3614d5822`: standalone identity mandatory; monolith prohibited; old Candidate superseded | 29–36, 58–60, 300–327 | 5–18, 313–326 | Verified; outcome cannot reinstate monolith |
-| `01a07a13-d9e7-7338-bad3-00de330c5f4c`: Paseo host contains UI plus thin connector; engine owns truth and decisions | 29–43 | 95–127, 279–288 | Verified; UI owns no truth or transition |
-| Task owner distribution decision: GitHub Release digest pin; explicit dev compile; no fallback | 51–55, 205–246 | 233–274 | Verified; both modes are explicit and disjoint |
-| `01a07a1f-ab89-70c1-a751-ec4eaa8acb83`: Go engine, publishable without Paseo, one interface, review always required, blocked path means Inconclusive | 22–25, 29–43, 74–95, 307–351 | 16–18, 95–129, 313–326, 344–348 | Verified; all frozen facts are preserved |
-| Current Task acceptance: all policy/TaskStore/projections in engine; new host changes only connector; exact authority proof and blocked dependents | 29–49, 74–95, 115–203, 307–359 | 95–231, 313–326 | Verified; obstacle and P2 escalation are exact |
-| Corrected current-record premise: Git install is a clone with no dependency install/hook | 51–55, 171–175 | 82–90, 168–171 | Verified; declared build is not called an install hook |
-| Architecture-session analysis: two hops, measure query invalidation, contract over channel, engine process lifecycle, precedent not decision | 38–43, 134–148, 248–259 | 279–292 | Verified; liveness remains explicitly unmeasured |
+| Binding record/fact | ADR lines | Evidence lines | User-doc lines | Result |
+|---|---:|---:|---:|---|
+| P2 selection: accept exact-0.7.2 full daemon-operator connector credential; reject waiting | 202–208, 289–317, 335–349 | 219–223, 351–356 | 9–11, 26–29 | Verified; chosen risk and rejected wait agree |
+| Bound 1: credential outside checkout and connector-process-readable only | 212–213 | 227–228 | 15–16 | Verified; exact |
+| Bound 2: no engine environment/protocol, UI, TaskStore, log, or timeline propagation | 214–216, 374–376 | 229–231 | 17–19 | Verified; exact or stricter |
+| Bound 3: startup and reload fail closed when absent | 217–218 | 232–233 | 20–21 | Verified; exact |
+| Bound 4: advertise full scope, contract version/hash, and only fixed capabilities | 219–221 | 234–236 | 22–24 | Verified; exact |
+| Bound 5: disclose requirement before installation | 222–223, 369–370 | 237–238 | 7–13 | Verified; warning precedes install links |
+| Revision intent: narrow on supported scoped/startup-injected capability; connector-only change | 310–317, 343–349 | 247–251 | 26–29 | Verified; no engine-logic change |
+| Effective ADR-0002 amendment is exact-0.7.2 bounded | 0017:11–12, 202–208; 0002:8, 86–99 | 247–251 | 26–29, 38 | Verified; reciprocal and visible |
+| Frozen architecture: standalone Go, single interface, UI host package, fixed distribution, mandatory review, monolith prohibited | 29–43, 52–56, 328–362, 371–378 | 358–362 | 31–36 | Verified; no frozen decision reversed |
 
 ## Independent verification
 
-No self-review or Reviewer Agent was performed. The corrected Candidate awaits
+No self-review or Reviewer Agent was performed. The replacement Candidate awaits
 coordinator-owned independent exact-SHA review. Nothing was pushed, published,
 merged, or closed, and no dependent Task was started.
