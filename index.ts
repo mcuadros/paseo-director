@@ -6,9 +6,9 @@ import {
   DirectorHome,
   ProjectBoard,
   TaskInspector,
-} from "./client/shells.client";
-import { startConnectorShellFromEnvironment } from "./server/connector.server";
-import { connectorStartupStatus } from "./shared/startup.shared";
+} from "./ui/shells.client";
+import { startConnectorShellFromEnvironment } from "./connector/paseo.server";
+import { connectorStartupStatus } from "./rpc/startup.shared";
 
 export default function contribute(plugin: PluginContext) {
   const connector = startConnectorShellFromEnvironment();

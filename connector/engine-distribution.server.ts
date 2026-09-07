@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Connector-side distribution locates the standalone engine without owning policy.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";

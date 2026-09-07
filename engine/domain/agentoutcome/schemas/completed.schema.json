@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mcuadros/paseo-director/engine/domain/agentoutcome/schemas/completed.schema.json",
+  "title": "CompletedAgentOutcomeClaim",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "candidateSha", "baseSha", "criteriaResults", "residualRiskCodes"],
+  "properties": {
+    "outcome": { "const": "completed" },
+    "candidateSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+    "baseSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+    "criteriaResults": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 128,
+      "propertyNames": { "minLength": 1, "maxLength": 128 },
+      "additionalProperties": { "enum": ["claimed_satisfied", "claimed_unsatisfied"] }
+    },
+    "residualRiskCodes": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 32,
+      "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+    }
+  }
+}

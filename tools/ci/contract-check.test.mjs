@@ -20,7 +20,7 @@ import {
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const schemaPath = resolve(
   repositoryRoot,
-  "engine/contract/host-interface.v1.json",
+  "engine/ports/host/host-interface.v1.json",
 );
 
 test("the committed client is generated from the exact engine schema", () => {
@@ -47,7 +47,7 @@ test("generated TypeScript is invariant to schema key order and whitespace", () 
     );
     const generated = generateClient(repositoryRoot, reorderedSchema);
     const committed = readFileSync(
-      resolve(repositoryRoot, "shared/generated-host-contract.shared.ts"),
+      resolve(repositoryRoot, "generated/host-contract.shared.ts"),
     );
     assert.equal(generated.equals(committed), true);
   } finally {
@@ -88,7 +88,7 @@ test("an intentional schema mutation produces detectable drift", () => {
     );
     const generated = generateClient(repositoryRoot, changedSchema);
     const committed = readFileSync(
-      resolve(repositoryRoot, "shared/generated-host-contract.shared.ts"),
+      resolve(repositoryRoot, "generated/host-contract.shared.ts"),
     );
     assert.equal(generated.equals(committed), false);
   } finally {

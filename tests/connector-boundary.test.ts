@@ -17,17 +17,17 @@ import test from "node:test";
 
 import type { PaseoClientConfig } from "@getpaseo/client";
 
-import { startConnectorShell } from "../server/connector.server.ts";
+import { startConnectorShell } from "../connector/paseo.server.ts";
 import {
   ConnectorCredentialError,
   loadConnectorCredential,
-} from "../server/credential.server.ts";
-import { engineBoundaryPaths } from "../server/engine-distribution.server.ts";
+} from "../connector/credential.server.ts";
+import { engineBoundaryPaths } from "../connector/engine-distribution.server.ts";
 import {
   developmentEnginePaths,
   engineProcessEnvironment,
   selectEngine,
-} from "../server/engine-selection.server.ts";
+} from "../connector/engine-selection.server.ts";
 
 function secureDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });

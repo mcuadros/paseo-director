@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Paseo-specific adapter for the engine-owned host port.
 
 import {
   createPaseoClient,
@@ -16,8 +17,8 @@ import {
   type HostCommand,
   type HostDescriptor,
   type HostObservation,
-} from "../shared/generated-host-contract.shared.ts";
-import type { ConnectorStartupStatus } from "../shared/startup.shared.ts";
+} from "../generated/host-contract.shared.ts";
+import type { ConnectorStartupStatus } from "../rpc/startup.shared.ts";
 import { loadConnectorCredential } from "./credential.server.ts";
 import { engineBoundaryPaths } from "./engine-distribution.server.ts";
 import {

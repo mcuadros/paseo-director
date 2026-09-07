@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mcuadros/paseo-director/engine/domain/agentoutcome/schemas/needs_human_decision.schema.json",
+  "title": "NeedsHumanDecisionAgentOutcomeClaim",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "questionCode", "question", "options", "affectedScope", "resumeCondition"],
+  "properties": {
+    "outcome": { "const": "needs_human_decision" },
+    "questionCode": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "question": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "options": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "affectedScope": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "resumeCondition": { "type": "string", "minLength": 1, "maxLength": 512 }
+  }
+}

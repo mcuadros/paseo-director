@@ -51,6 +51,7 @@ npm run ci
 Useful focused commands:
 
 ```text
+npm run architecture:check
 npm run build
 npm run test:engine
 npm run test:host
@@ -96,8 +97,34 @@ external executables are neither vendored nor redistributed.
 
 ## Architecture
 
-The engine owns [the versioned host schema](engine/contract/host-interface.v1.json).
-It generates [the TypeScript client](shared/generated-host-contract.shared.ts),
+The Go module is split into inward-pointing boundaries:
+
+```text
+cmd (composition only)
+├── adapters ────────────────→ ports ──→ domain
+├── agent-runtime ──→ application ─────→ domain
+│                              ├────────→ ports
+│                              ├────────→ projection ──→ domain
+│                              └────────→ reducer/* ───→ domain
+└── standalone engine executable
+```
+
+`reducer/eligibility`, `launch`, `retry`, `escalation`, `routing`, and
+`closure` are the exclusive homes for the six pure decision reducers. The
+seven closed agent-outcome schemas live under `domain/agentoutcome`; claims are
+inputs, never lifecycle evidence. Infrastructure adapters and the fixed-scope
+agent runtime may translate or perform an authorized effect but cannot own a
+reducer, policy, TaskStore, projection, or lifecycle decision.
+
+The Paseo 0.7 host uses the stable mixed `index.ts` entry while separating
+runtime code by the official suffix contract: `ui/*.client.*`,
+`rpc/*.shared.ts`, `generated/*.shared.ts`, and `connector/*.server.ts`. This
+keeps the complete React Native UI independent of the minimum connector and
+leaves a mechanical path to separate entries if a later stable Paseo version
+is explicitly admitted.
+
+The engine owns [the versioned host schema](engine/ports/host/host-interface.v1.json).
+It generates [the TypeScript client](generated/host-contract.shared.ts),
 and CI rejects any drift. The contract hash is derived from duplicate-key-safe
 canonical JSON with sorted object keys, so whitespace and object-key order do
 not change identity while semantic edits do. Runtime handshake validation

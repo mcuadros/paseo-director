@@ -180,12 +180,12 @@ test("engine independence disables VCS stamping", () => {
 test("connector policy and Paseo SDK imports outside the adapter fail lint", () => {
   assert.deepEqual(
     hostSourceErrors(
-      "server/scheduler.server.ts",
+      "connector/scheduler.server.ts",
       'import "@getpaseo/client"; const retryPolicy = true;\n',
     ),
     [
-      "server/scheduler.server.ts: Paseo SDK imports belong only in the host connector",
-      "server/scheduler.server.ts: host source contains prohibited workflow policy",
+      "connector/scheduler.server.ts: Paseo SDK imports belong only in the host connector",
+      "connector/scheduler.server.ts: host source contains prohibited workflow policy",
     ],
   );
 });
@@ -193,9 +193,10 @@ test("connector policy and Paseo SDK imports outside the adapter fail lint", () 
 test("prohibited host policy vocabulary covers the entrypoint and every host directory", () => {
   for (const [path, source] of [
     ["index.ts", "const eligibility = 'forbidden';\n"],
-    ["client/policy.client.tsx", "const retryPolicy = 'forbidden';\n"],
-    ["server/policy.server.ts", "const scheduler = 'forbidden';\n"],
-    ["shared/policy.shared.ts", "const closurePolicy = 'forbidden';\n"],
+    ["ui/policy.client.tsx", "const retryPolicy = 'forbidden';\n"],
+    ["connector/policy.server.ts", "const scheduler = 'forbidden';\n"],
+    ["rpc/policy.shared.ts", "const closurePolicy = 'forbidden';\n"],
+    ["generated/policy.shared.ts", "const reconciliation = 'forbidden';\n"],
   ]) {
     assert.deepEqual(hostSourceErrors(path, source), [
       `${path}: host source contains prohibited workflow policy`,

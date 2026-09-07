@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/mcuadros/paseo-director/engine/contract/host-interface.v1.json",
+  "$id": "https://github.com/mcuadros/paseo-director/engine/ports/host/host-interface.v1.json",
   "schemaVersion": 1,
   "contractVersion": "director-host/v1",
   "credentialScope": "full-daemon-operator",
