@@ -1,0 +1,6 @@
+{
+  "id": "director-standalone-probe",
+  "build": [
+    ["node", "prepare-engine.mjs"]
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "contractVersion": "director-agent-runtime/v1",
+  "contractHash": "9ee14489ce72ddace0df4550b11ad03ce3ac946bd9392e67e5cd047c210715e4",
+  "transport": "Unix-domain socket with uint32be length-prefixed JSON frames",
+  "happyPath": {
+    "effects": 8,
+    "handoffs": 7,
+    "helperObservedWithoutEngineLaunch": true,
+    "events": 17,
+    "cursorResumedEvents": 13,
+    "idempotentReplay": true,
+    "payloadConflictRejected": true
+  },
+  "faultMatrix": [
+    {
+      "boundary": "T0_BEFORE_INTENT",
+      "handoffs": 1,
+      "completions": 1
+    },
+    {
+      "boundary": "T0_AFTER_INTENT",
+      "handoffs": 1,
+      "completions": 1
+    },
+    {
+      "boundary": "T1_AFTER_OBSERVATION",
+      "handoffs": 1,
+      "completions": 1
+    },
+    {
+      "boundary": "T2_AFTER_DISPATCH_CLAIM",
+      "handoffs": 1,
+      "completions": 1
+    },
+    {
+      "boundary": "T3_IN_FLIGHT",
+      "handoffs": 1,
+      "completions": 1
+    },
+    {
+      "boundary": "T4_BEFORE_PROJECTION",
+      "handoffs": 1,
+      "completions": 1
+    }
+  ],
+  "compensation": {
+    "originalPreserved": true,
+    "linkedCompensatingCommand": true,
+    "ordinaryBoundaryProtocolReused": true,
+    "handoffs": 1
+  },
+  "negatives": {
+    "missing-reviewer": {
+      "rejectedBeforeHandoff": true
+    },
+    "drift": {
+      "rejectedBeforeHandoff": true
+    },
+    "policyField": {
+      "rejectedBeforeHandoff": true
+    },
+    "staleFence": {
+      "rejectedBeforeHandoff": true
+    }
+  },
+  "generatedClient": {
+    "cleanGeneration": true,
+    "driftRejected": true,
+    "generatedOutputCommitted": false
+  },
+  "cleanup": {
+    "ownedRoot": "director-m1.12-contract-<random>",
+    "absent": true
+  }
+}
