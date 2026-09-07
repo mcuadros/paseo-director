@@ -154,6 +154,28 @@ test("published metadata rejects the empty-input digest and dot path segments", 
     { ...valid, notices: { ...valid.notices, sha256: EMPTY_SHA256 } },
     { ...valid, version: "." },
     { ...valid, version: ".." },
+    {
+      ...valid,
+      binary: {
+        ...valid.binary,
+        url: "https://github.com/mcuadros/paseo-director/releases/download/../../../../attacker/evil/releases/download/v1/x",
+      },
+    },
+    {
+      ...valid,
+      binary: {
+        ...valid.binary,
+        url: "https://github.com/mcuadros/paseo-director/releases/download/%2e%2e/%2e%2e/%2e%2e/%2e%2e/attacker/x",
+      },
+    },
+    {
+      ...valid,
+      binary: { ...valid.binary, url: `${valid.binary.url}?mirror=attacker` },
+    },
+    {
+      ...valid,
+      binary: { ...valid.binary, url: `${valid.binary.url}#attacker` },
+    },
   ]) {
     assert.throws(
       () => parseReleaseMetadata(Buffer.from(JSON.stringify(metadata))),

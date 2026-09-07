@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  type Stats,
+} from "node:fs";
 import { dirname } from "node:path";
 
 import {
@@ -15,6 +25,94 @@ export class ConnectorCredentialError extends Error {
     super(message);
     this.name = "ConnectorCredentialError";
     this.code = code;
+  }
+}
+
+type DirectoryIdentity = {
+  path: string;
+  dev: number;
+  ino: number;
+  mode: number;
+  uid: number;
+};
+
+function sameIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function credentialAncestorIdentities(
+  credentialDirectory: string,
+  credentialStatus: Stats,
+): DirectoryIdentity[] {
+  const identities: DirectoryIdentity[] = [];
+  if (typeof process.geteuid !== "function") {
+    throw new ConnectorCredentialError(
+      "CONNECTOR_CREDENTIAL_PLATFORM",
+      "connector credential ownership checks require Linux effective-user identity",
+    );
+  }
+  const connectorUid = process.geteuid();
+  let filesystemRoot = credentialDirectory;
+  while (dirname(filesystemRoot) !== filesystemRoot) {
+    filesystemRoot = dirname(filesystemRoot);
+  }
+  const filesystemRootUid = lstatSync(filesystemRoot).uid;
+  const trustedOwner = (uid: number) =>
+    uid === connectorUid || uid === filesystemRootUid;
+  let protectedEntryStatus = credentialStatus;
+  let current = credentialDirectory;
+  while (true) {
+    const status = lstatSync(current);
+    if (!status.isDirectory()) {
+      throw new ConnectorCredentialError(
+        "CONNECTOR_CREDENTIAL_ANCESTOR_SUBSTITUTED",
+        "a canonical connector credential ancestor is not a directory",
+      );
+    }
+    const writableByGroupOrOther = (status.mode & 0o022) !== 0;
+    const hasStickyBit = (status.mode & 0o1000) !== 0;
+    const stickyProtectionIsSafe =
+      hasStickyBit &&
+      trustedOwner(status.uid) &&
+      trustedOwner(protectedEntryStatus.uid);
+    if (writableByGroupOrOther && !stickyProtectionIsSafe) {
+      throw new ConnectorCredentialError(
+        "CONNECTOR_CREDENTIAL_DIRECTORY_PERMISSIONS",
+        "connector credential ancestors must not be writable by group or other users unless a trusted owner and child make Linux sticky-bit protection safe",
+      );
+    }
+    identities.push({
+      path: current,
+      dev: status.dev,
+      ino: status.ino,
+      mode: status.mode,
+      uid: status.uid,
+    });
+    protectedEntryStatus = status;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return identities;
+}
+
+function assertAncestorIdentitiesUnchanged(
+  identities: readonly DirectoryIdentity[],
+): void {
+  for (const identity of identities) {
+    const status = lstatSync(identity.path);
+    if (
+      !status.isDirectory() ||
+      status.dev !== identity.dev ||
+      status.ino !== identity.ino ||
+      status.mode !== identity.mode ||
+      status.uid !== identity.uid
+    ) {
+      throw new ConnectorCredentialError(
+        "CONNECTOR_CREDENTIAL_ANCESTOR_SUBSTITUTED",
+        "a canonical connector credential ancestor changed while loading the credential",
+      );
+    }
   }
 }
 
@@ -46,21 +144,46 @@ export function loadConnectorCredential(options: {
       );
     }
   }
-  const directoryMode = statSync(credentialDirectory).mode & 0o777;
-  if ((directoryMode & 0o022) !== 0) {
+  const credentialStatus = lstatSync(credentialPath);
+  if (!credentialStatus.isFile()) {
     throw new ConnectorCredentialError(
-      "CONNECTOR_CREDENTIAL_DIRECTORY_PERMISSIONS",
-      "the connector credential directory must not be writable by group or other users",
+      "CONNECTOR_CREDENTIAL_REQUIRED",
+      "the connector credential must be a regular file",
     );
   }
-  const mode = statSync(credentialPath).mode & 0o777;
-  if ((mode & 0o077) !== 0) {
+  if ((credentialStatus.mode & 0o077) !== 0) {
     throw new ConnectorCredentialError(
       "CONNECTOR_CREDENTIAL_PERMISSIONS",
       "the connector credential must not be readable by group or other users",
     );
   }
-  const credential = readFileSync(credentialPath, "utf8").trim();
+  const ancestorIdentities = credentialAncestorIdentities(
+    credentialDirectory,
+    credentialStatus,
+  );
+  const descriptor = openSync(
+    credentialPath,
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  let credential: string;
+  try {
+    if (!sameIdentity(credentialStatus, fstatSync(descriptor))) {
+      throw new ConnectorCredentialError(
+        "CONNECTOR_CREDENTIAL_SUBSTITUTED",
+        "the connector credential changed before it could be opened",
+      );
+    }
+    credential = readFileSync(descriptor, "utf8").trim();
+    if (!sameIdentity(credentialStatus, fstatSync(descriptor))) {
+      throw new ConnectorCredentialError(
+        "CONNECTOR_CREDENTIAL_SUBSTITUTED",
+        "the connector credential changed while it was being read",
+      );
+    }
+    assertAncestorIdentitiesUnchanged(ancestorIdentities);
+  } finally {
+    closeSync(descriptor);
+  }
   if (credential.length === 0) {
     throw new ConnectorCredentialError(
       "CONNECTOR_CREDENTIAL_EMPTY",

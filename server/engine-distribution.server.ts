@@ -25,8 +25,9 @@ import {
   type ReleaseEngineSelection,
 } from "./engine-selection.server.ts";
 
-const RELEASE_URL_PREFIX =
-  "https://github.com/mcuadros/paseo-director/releases/download/";
+const RELEASE_ORIGIN = "https://github.com";
+const RELEASE_PATH_PREFIX =
+  "/mcuadros/paseo-director/releases/download/";
 export const EMPTY_SHA256 =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -102,6 +103,24 @@ function validateSegment(value: unknown, field: string): string {
   return value;
 }
 
+function isDirectorReleaseAssetUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    parsed.origin === RELEASE_ORIGIN &&
+    parsed.username === "" &&
+    parsed.password === "" &&
+    parsed.pathname.startsWith(RELEASE_PATH_PREFIX) &&
+    parsed.search === "" &&
+    parsed.hash === ""
+  );
+}
+
 function validateAsset(value: unknown, field: string): ReleaseAsset {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new EngineDistributionError(
@@ -113,8 +132,7 @@ function validateAsset(value: unknown, field: string): ReleaseAsset {
   const keys = Object.keys(asset).sort();
   if (
     !isDeepStrictAssetKeys(keys) ||
-    typeof asset.url !== "string" ||
-    !asset.url.startsWith(RELEASE_URL_PREFIX) ||
+    !isDirectorReleaseAssetUrl(asset.url) ||
     typeof asset.sha256 !== "string" ||
     !/^[0-9a-f]{64}$/.test(asset.sha256) ||
     asset.sha256 === EMPTY_SHA256

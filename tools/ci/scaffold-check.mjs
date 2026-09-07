@@ -4,7 +4,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  existsSync,
   lstatSync,
   readFileSync,
   realpathSync,
@@ -26,6 +25,9 @@ const LICENSE_SHA256 =
   "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30";
 const EMPTY_SHA256 =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const RELEASE_ORIGIN = "https://github.com";
+const RELEASE_PATH_PREFIX =
+  "/mcuadros/paseo-director/releases/download/";
 const REQUIRED_SCRIPTS = [
   "build",
   "build:engine",
@@ -94,7 +96,15 @@ export function repositoryFiles(repositoryRoot) {
       ]),
     ]),
   ]
-    .filter((path) => existsSync(resolve(repositoryRoot, path)))
+    .filter((path) => {
+      try {
+        lstatSync(resolve(repositoryRoot, path));
+        return true;
+      } catch (error) {
+        if (error?.code === "ENOENT") return false;
+        throw error;
+      }
+    })
     .sort();
 }
 
@@ -385,7 +395,7 @@ export function checkWorkflowSet(entries) {
   return errors;
 }
 
-function workflowErrors(repositoryRoot, paths) {
+export function workflowErrors(repositoryRoot, paths) {
   const errors = [];
   const workflowPaths = paths.filter((path) => path.startsWith(".github/workflows/"));
   const entries = [];
@@ -426,15 +436,24 @@ function validReleaseSegment(value) {
 }
 
 function releaseAssetValid(asset) {
+  let parsed;
+  try {
+    parsed = new URL(asset?.url);
+  } catch {
+    return false;
+  }
   return (
     asset !== null &&
     typeof asset === "object" &&
     !Array.isArray(asset) &&
     isDeepStrictEqual(Object.keys(asset).sort(), ["sha256", "url"]) &&
     typeof asset.url === "string" &&
-    asset.url.startsWith(
-      "https://github.com/mcuadros/paseo-director/releases/download/",
-    ) &&
+    parsed.origin === RELEASE_ORIGIN &&
+    parsed.username === "" &&
+    parsed.password === "" &&
+    parsed.pathname.startsWith(RELEASE_PATH_PREFIX) &&
+    parsed.search === "" &&
+    parsed.hash === "" &&
     typeof asset.sha256 === "string" &&
     /^[0-9a-f]{64}$/.test(asset.sha256) &&
     asset.sha256 !== EMPTY_SHA256
@@ -505,12 +524,12 @@ export function hostSourceErrors(path, source) {
     errors.push(`${path}: Paseo SDK imports belong only in the host connector`);
   }
   if (
-    path.startsWith("server/") &&
+    isHostRuntime &&
     /\b(?:eligibility|scheduler|retryPolicy|escalation|reconciliation|TaskStore|stateTransition|closurePolicy)\b/.test(
       source,
     )
   ) {
-    errors.push(`${path}: host server source contains prohibited workflow policy`);
+    errors.push(`${path}: host source contains prohibited workflow policy`);
   }
   return errors;
 }
