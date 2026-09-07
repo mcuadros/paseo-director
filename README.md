@@ -139,8 +139,8 @@ The closed `paseo-director.json` contract lives under
 frozen Run snapshots live under `application/configuration`; no host package
 owns those transitions.
 
-The Paseo 0.7 host uses the stable mixed `index.ts` entry while separating
-runtime code by the official suffix contract: `ui/*.client.*`,
+The Paseo 0.7 host uses the stable mixed `index.ts` entry. The Director
+repository convention separates runtime code as `ui/*.client.*`,
 `rpc/*.shared.ts`, `generated/*.shared.ts`, and `connector/*.server.ts`. This
 keeps the complete React Native UI independent of the minimum connector and
 leaves a mechanical path to separate entries if a later stable Paseo version

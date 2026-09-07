@@ -6,7 +6,10 @@ import { readFileSync, realpathSync } from "node:fs";
 import { posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { repositoryFiles } from "./scaffold-check.mjs";
+import {
+  repositoryFiles,
+  repositorySymlinkErrors,
+} from "./scaffold-check.mjs";
 
 const ENGINE_MODULE = "github.com/mcuadros/director-engine";
 const GO_ROOTS = [
@@ -49,6 +52,7 @@ const PURE_GO_ROLES = new Set(["domain", "reducer", "projection"]);
 const IMPURE_STANDARD_IMPORTS = [
   "crypto/rand",
   "database",
+  "log",
   "math/rand",
   "net",
   "os",
@@ -80,6 +84,15 @@ const TS_ALLOWED_EXTERNAL_IMPORTS = {
 const POLICY_DECLARATION = /(?:Reducer|Policy|Scheduler|Orchestrator|TaskStore|Reconciler|StateTransition|DomainModel|ApplicationService|LifecycleDecision|LifecycleTransition|(?:Eligibility|Launch|Retry|Escalation|Routing|Closure)Decision)$/i;
 const ADAPTER_RUNTIME_POLICY_DECLARATION = /(?:Domain|Application|Orchestrat|Eligib|Schedul|Retry|Escalat|Rout|Reconcil|StateTransition|TaskStore|Projection|Closure|Reducer|Policy|OrganizerRevisionState|ConfigurationRevisionState|RunConfigurationSnapshot)/i;
 const POLICY_PATH = /(?:^|\/)(?:domain|application|orchestration|eligibility|scheduler|scheduling|retry|escalation|routing|reconciliation|state-transition|taskstore|projection|closure|reducers?|organizer-revision|configuration-revision|revision-state|run-configuration-snapshot)(?:[./_-]|$)/i;
+const CANONICAL_HOST_CONTRACT = "engine/ports/host/host-interface.v1.json";
+const POLICY_GUARDED_PATH_PREFIXES = [
+  ["ui", "ui/"],
+  ["rpc", "rpc/"],
+  ["generated", "generated/"],
+  ["connector", "connector/"],
+  ["adapters", "engine/adapters/"],
+  ["agent-runtime", "engine/agent-runtime/"],
+];
 
 export function classifyGoPackage(importPath) {
   if (importPath === ENGINE_MODULE) return null;
@@ -112,7 +125,7 @@ function declarations(source, language) {
 }
 
 export function policyOwnershipErrors(path, source, language) {
-  const declarationPattern = /^(?:engine\/(?:adapters|agent-runtime)|connector)\//.test(path)
+  const declarationPattern = /^(?:engine\/(?:adapters|agent-runtime)|ui|rpc|generated|connector)\//.test(path)
     ? ADAPTER_RUNTIME_POLICY_DECLARATION
     : POLICY_DECLARATION;
   return declarations(source, language)
@@ -121,6 +134,17 @@ export function policyOwnershipErrors(path, source, language) {
       (identifier) =>
         `${path}: boundary adapter/runtime declares policy-shaped symbol ${identifier}`,
     );
+}
+
+export function policyPathErrors(path) {
+  const boundary = POLICY_GUARDED_PATH_PREFIXES.find(([, prefix]) =>
+    path.startsWith(prefix),
+  );
+  if (!boundary) return [];
+  const [role, prefix] = boundary;
+  return POLICY_PATH.test(path.slice(prefix.length))
+    ? [`${path}: ${role} path cannot own a Director policy boundary`]
+    : [];
 }
 
 export function goDependencyErrors(packages) {
@@ -230,9 +254,7 @@ export function typescriptBoundaryErrors(files) {
     if (!validRuntimeSuffix(path, role)) {
       errors.push(`${path}: ${role} runtime filename has the wrong Paseo 0.7 suffix`);
     }
-    if (role === "connector" && POLICY_PATH.test(path.slice("connector/".length))) {
-      errors.push(`${path}: connector path cannot own a Director policy boundary`);
-    }
+    errors.push(...policyPathErrors(path));
     errors.push(...policyOwnershipErrors(path, source, "typescript"));
     for (const specifier of importSpecifiers(source)) {
       if (specifier.startsWith(".")) {
@@ -269,7 +291,53 @@ export function typescriptBoundaryErrors(files) {
   return errors;
 }
 
-export function structureErrors(paths, packagePaths) {
+function hasHostContractPathShape(path) {
+  if (!path.startsWith("engine/") || !path.endsWith(".json")) return false;
+  const relativePath = path.slice("engine/".length).toLowerCase();
+  const tokens = relativePath.split(/[\/._-]+/);
+  return (
+    relativePath.startsWith("ports/host/") ||
+    (tokens.includes("host") &&
+      (tokens.includes("interface") || tokens.includes("contract")))
+  );
+}
+
+function hasHostContractContentShape(source) {
+  if (typeof source !== "string") return false;
+  try {
+    const value = JSON.parse(source);
+    return (
+      value !== null &&
+      typeof value === "object" &&
+      Array.isArray(value.capabilities) &&
+      (value.command !== undefined || value.observation !== undefined)
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function hostContractErrors(files) {
+  const hostContracts = files.filter(
+    ({ path, source }) =>
+      path === CANONICAL_HOST_CONTRACT ||
+      hasHostContractPathShape(path) ||
+      (path.startsWith("engine/") &&
+        path.endsWith(".json") &&
+        hasHostContractContentShape(source)),
+  );
+  if (
+    hostContracts.length === 1 &&
+    hostContracts[0].path === CANONICAL_HOST_CONTRACT
+  ) {
+    return [];
+  }
+  return [
+    "engine/ports/host: exactly one engine-owned versioned host interface is required",
+  ];
+}
+
+export function structureErrors(paths, packagePaths, fileSources = new Map()) {
   const errors = [];
   const pathSet = new Set(paths);
   const packageSet = new Set(packagePaths);
@@ -297,17 +365,11 @@ export function structureErrors(paths, packagePaths) {
       `engine/domain/agentoutcome: expected exactly seven closed schemas (${expectedSchemas.join(", ")})`,
     );
   }
-  const hostInterfaces = paths.filter((path) =>
-    /^engine\/.+\/host-interface\..+\.json$/.test(path),
+  errors.push(
+    ...hostContractErrors(
+      paths.map((path) => ({ path, source: fileSources.get(path) })),
+    ),
   );
-  if (
-    hostInterfaces.length !== 1 ||
-    hostInterfaces[0] !== "engine/ports/host/host-interface.v1.json"
-  ) {
-    errors.push(
-      "engine/ports/host: exactly one engine-owned versioned host interface is required",
-    );
-  }
   const configurationSchemas = paths.filter((path) =>
     path.endsWith("/paseo-director.schema.json"),
   );
@@ -389,22 +451,30 @@ function listGoPackages(repositoryRoot) {
 
 export function architectureErrors(repositoryRoot) {
   const paths = repositoryFiles(repositoryRoot);
+  const symlinkErrors = repositorySymlinkErrors(repositoryRoot, paths);
+  if (symlinkErrors.length > 0) return symlinkErrors;
   const packages = listGoPackages(repositoryRoot);
+  const fileSources = new Map(
+    paths
+      .filter((path) => path.startsWith("engine/") && path.endsWith(".json"))
+      .map((path) => [
+        path,
+        readFileSync(resolve(repositoryRoot, path), "utf8"),
+      ]),
+  );
   const errors = [
-    ...structureErrors(paths, packages.map(({ importPath }) => importPath)),
+    ...structureErrors(
+      paths,
+      packages.map(({ importPath }) => importPath),
+      fileSources,
+    ),
     ...goDependencyErrors(packages),
   ];
   for (const path of paths.filter((candidate) => candidate.endsWith(".go"))) {
     const importPath = `${ENGINE_MODULE}/${posix.dirname(path).replace(/^engine\/?/, "")}`;
     const role = classifyGoPackage(importPath);
     if (role === "adapters" || role === "agent-runtime") {
-      const boundaryRelativePath = path.replace(
-        new RegExp(`^engine/${role}/`),
-        "",
-      );
-      if (POLICY_PATH.test(boundaryRelativePath)) {
-        errors.push(`${path}: ${role} path cannot own a Director policy boundary`);
-      }
+      errors.push(...policyPathErrors(path));
       errors.push(
         ...policyOwnershipErrors(
           path,

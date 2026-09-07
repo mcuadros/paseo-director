@@ -11,6 +11,7 @@ import {
   readlinkSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -268,20 +269,29 @@ test("legitimate UI, connector, RPC, and generated host sources remain policy-fr
 
 test("standalone lint reports tracked dangling non-workflow symlinks without stacks", (context) => {
   const temporaryRoot = trackedRepositoryCopy("director-ci-lint-dangling-");
+  const deferredSyntaxPath = "tools/ci/deferred-broken.mjs";
   const danglingPaths = [
     "connector/gone.server.ts",
     "docs/adr/0099-gone.md",
     "tools/ci/gone.mjs",
   ];
   try {
+    writeFileSync(
+      resolve(temporaryRoot, deferredSyntaxPath),
+      "export const = broken;\n",
+    );
     for (const path of danglingPaths) {
       mkdirSync(dirname(resolve(temporaryRoot, path)), { recursive: true });
       symlinkSync("missing-target", resolve(temporaryRoot, path));
     }
-    const tracked = spawnSync("git", ["add", "--", ...danglingPaths], {
-      cwd: temporaryRoot,
-      encoding: "utf8",
-    });
+    const tracked = spawnSync(
+      "git",
+      ["add", "--", deferredSyntaxPath, ...danglingPaths],
+      {
+        cwd: temporaryRoot,
+        encoding: "utf8",
+      },
+    );
     assert.equal(tracked.status, 0, tracked.stderr);
 
     const expectedErrors = danglingPaths
@@ -290,7 +300,11 @@ test("standalone lint reports tracked dangling non-workflow symlinks without sta
         (path) =>
           `${path}: tracked repository symlinks require an explicit policy`,
       );
-    assert.deepEqual(lintRepository(temporaryRoot).errors, expectedErrors);
+    const lintResult = lintRepository(temporaryRoot);
+    assert.deepEqual(lintResult.errors, expectedErrors);
+    assert.deepEqual(lintResult.governance, { count: 0, errors: [] });
+    assert.deepEqual(lintResult.syntax, { count: 0, errors: [] });
+    assert.deepEqual(lintResult.workflows, { count: 0, errors: [] });
 
     const output = [];
     context.mock.method(console, "error", (message) => {
@@ -310,6 +324,27 @@ test("standalone lint reports tracked dangling non-workflow symlinks without sta
       ...expectedErrors.map((error) => `- ${error}`),
     ]);
   } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("missing gofmt returns a deterministic format diagnostic", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "director-ci-no-gofmt-"));
+  const goPath = "engine/doc.go";
+  const originalPath = process.env.PATH;
+  try {
+    mkdirSync(dirname(resolve(temporaryRoot, goPath)), { recursive: true });
+    writeFileSync(resolve(temporaryRoot, goPath), "package engine\n");
+    process.env.PATH = "";
+    assert.deepEqual(formatErrors(temporaryRoot, [goPath]), [
+      "gofmt is required but was not found on PATH",
+    ]);
+  } finally {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
     rmSync(temporaryRoot, { recursive: true, force: true });
   }
 });

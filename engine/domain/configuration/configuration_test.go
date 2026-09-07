@@ -280,6 +280,7 @@ func TestRemoteValidationAllowsOnlySafeExplicitGitTransports(t *testing.T) {
 		"git://github.com/example/product.git",
 		"git@github.com:example/product.git",
 		"deploy.user@build-host:example/product.git",
+		"user@ext::sh",
 		"github.com:example/product.git",
 	} {
 		t.Run(remote, func(t *testing.T) {
@@ -323,7 +324,23 @@ func TestRemoteValidationRejectsCredentialsUnsafeSchemesAndCommands(t *testing.T
 		},
 		"ext command transport": {
 			remote: "ext::sh",
-			code:   "remote_format_invalid",
+			code:   "remote_helper_unsupported",
+		},
+		"custom remote helper": {
+			remote: "foo.bar::sh",
+			code:   "remote_helper_unsupported",
+		},
+		"custom remote helper absolute address": {
+			remote: "a.b::/tmp/x",
+			code:   "remote_helper_unsupported",
+		},
+		"custom remote helper arbitrary address": {
+			remote: "my.helper::anything",
+			code:   "remote_helper_unsupported",
+		},
+		"encoded custom remote helper": {
+			remote: "foo.bar%3A%3Ash",
+			code:   "remote_helper_unsupported",
 		},
 		"unencrypted HTTP": {
 			remote: "http://github.com/example/product.git",

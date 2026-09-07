@@ -150,6 +150,42 @@ func TestPreviewIsDeterministicAndDoesNotActivate(t *testing.T) {
 	}
 }
 
+func TestPreviewContentSHA256AlwaysIdentifiesSubmittedBytes(t *testing.T) {
+	validInput := configurationJSON("Director")
+	var initial State
+	_, valid, err := initial.Preview(PreviewCommand{
+		ExpectedVersion:   0,
+		OrganizerRevision: strings.Repeat("a", 40),
+		ConfigurationJSON: validInput,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validDocument, err := domainconfig.Parse(validInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valid.ContentSHA256 != hashBytes(validInput) || valid.ConfigurationSHA256 != validDocument.SHA256() {
+		t.Fatalf("valid Preview hashes = content %s, configuration %s", valid.ContentSHA256, valid.ConfigurationSHA256)
+	}
+	if valid.ContentSHA256 == valid.ConfigurationSHA256 {
+		t.Fatal("valid Preview did not distinguish submitted bytes from canonical configuration")
+	}
+
+	invalidInput := bytes.Replace(validInput, []byte(`"schemaVersion": 1`), []byte(`"schemaVersion": 2`), 1)
+	_, invalid, err := initial.Preview(PreviewCommand{
+		ExpectedVersion:   0,
+		OrganizerRevision: strings.Repeat("b", 40),
+		ConfigurationJSON: invalidInput,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalid.Valid || invalid.ContentSHA256 != hashBytes(invalidInput) || invalid.ConfigurationSHA256 != "" {
+		t.Fatalf("invalid Preview hashes = content %s, configuration %s, valid %v", invalid.ContentSHA256, invalid.ConfigurationSHA256, invalid.Valid)
+	}
+}
+
 func TestApplyRequiresExactHumanApprovedValidPreview(t *testing.T) {
 	var initial State
 	state, preview, err := initial.Preview(PreviewCommand{
