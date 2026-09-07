@@ -5,10 +5,9 @@
 - **Beads Task:** `dir-m0.14`
 - **Plan gate:** M0 operating-system authority separation
 - **Decision owner:** Human project owner
-- **Amends normative runtime-boundary decisions in:** PLAN §§4, 11–15, 18, 21, 23, and 25
+- **Amends normative runtime-boundary decisions in:** PLAN §§4, 11–15, 18, 21, 23, and 25; [ADR-0005](0005-session-scoped-mcp-provider-matrix.md), by admitting its exact proven provider tuples only inside this practical boundary
 - **Supersedes:** the M1-blocking No-go Decision in [ADR-0008](0008-director-threat-model.md), while retaining its maximal threat analysis
-- **Preserves:** [ADR-0005](0005-session-scoped-mcp-provider-matrix.md),
-  [ADR-0007](0007-git-worktree-ownership-and-cleanup.md), and
+- **Preserves:** [ADR-0007](0007-git-worktree-ownership-and-cleanup.md) and
   [ADR-0011](0011-linux-only-platform-scope.md)
 
 ## Context
