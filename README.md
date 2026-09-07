@@ -9,7 +9,13 @@ The credential must be a non-empty owner-only file outside both the repository
 and every Paseo-managed plugin checkout. Before constructing a Paseo client,
 the connector resolves symlinks and proves the credential directory is
 bidirectionally disjoint from the checkout, engine source, engine cache, and
-every derived engine path. Its bytes and path never enter Director Engine
+every derived engine path. It checks that directory and every canonical
+ancestor through the filesystem root, rejecting group/other-writable ancestors
+unless Linux sticky-bit semantics protect a trusted-owner child in a directory
+owned by the connector user or root (for example, an owner-only credential
+directory under root-owned `/tmp`). It also rechecks the credential file and
+ancestor identities while loading, so a detected rename or symlink substitution
+fails closed. Its bytes and path never enter Director Engine
 arguments, environment, protocol, UI, store, projections, logs, timelines,
 diagnostics, or support bundles. Connector startup and reload fail closed before
 host mutation when the file is absent, empty, broadly readable, in an unsafe
@@ -73,9 +79,12 @@ daemon-process environment values before installation or reload:
 The committed release descriptor explicitly marks `0.0.0-scaffold` as
 unpublished and declares no assets or digests. Release resolution rejects that
 state before any fetch. A later coordinator-owned release must replace it with
-reviewed GitHub Release URLs and non-empty SHA-256 pins for both the engine and
-exact-source notices. Empty-input digests are invalid. Release mode never
-compiles as a fallback.
+normalized URLs under the exact
+`https://github.com/mcuadros/paseo-director/releases/download/` origin/path
+prefix and non-empty SHA-256 pins for both the engine and exact-source notices.
+Dot-segment traversal that normalizes outside that prefix, another origin/path,
+URL credentials, query, or fragment is invalid. Empty-input digests are invalid.
+Release mode never compiles as a fallback.
 Development mode always compiles the selected Go source and never downloads or
 falls back to release mode. A missing or conflicting mode fails closed.
 

@@ -5,8 +5,10 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -115,6 +117,103 @@ test("credential loading fails closed for absence, content, location, and permis
       (error: unknown) =>
         error instanceof ConnectorCredentialError &&
         error.code === "CONNECTOR_CREDENTIAL_IN_CHECKOUT",
+    );
+  } finally {
+    rmSync(boundary.root, { recursive: true, force: true });
+  }
+});
+
+test("credential ancestors reject writable substitution paths and permit sticky protection", () => {
+  const boundary = temporaryBoundary();
+  const baseOptions = {
+    checkoutRoot: boundary.checkoutRoot,
+    disjointEnginePaths: [] as string[],
+  };
+  const createCredential = (directory: string, content = "boundary-secret\n") => {
+    secureDirectory(directory);
+    const path = join(directory, "connector.password");
+    writeFileSync(path, content, { mode: 0o600 });
+    return path;
+  };
+  try {
+    for (const mode of [0o770, 0o777]) {
+      const unsafeAncestor = join(boundary.root, `unsafe-${mode.toString(8)}`);
+      const credentialPath = createCredential(
+        join(unsafeAncestor, "credential"),
+      );
+      chmodSync(unsafeAncestor, mode);
+      assert.throws(
+        () => loadConnectorCredential({ ...baseOptions, credentialPath }),
+        (error: unknown) =>
+          error instanceof ConnectorCredentialError &&
+          error.code === "CONNECTOR_CREDENTIAL_DIRECTORY_PERMISSIONS",
+        `ancestor mode ${mode.toString(8)} must fail closed`,
+      );
+    }
+
+    const stickyAncestor = join(boundary.root, "sticky-ancestor");
+    const stickyCredential = createCredential(
+      join(stickyAncestor, "credential"),
+    );
+    chmodSync(stickyAncestor, 0o1777);
+    assert.equal(
+      loadConnectorCredential({
+        ...baseOptions,
+        credentialPath: stickyCredential,
+      }),
+      "boundary-secret",
+    );
+
+    const substitutedAncestor = join(boundary.root, "renamed-ancestor");
+    const substitutedCredential = createCredential(
+      join(substitutedAncestor, "credential"),
+    );
+    renameSync(substitutedAncestor, `${substitutedAncestor}-original`);
+    createCredential(
+      join(substitutedAncestor, "credential"),
+      "substituted-secret\n",
+    );
+    chmodSync(substitutedAncestor, 0o777);
+    assert.throws(
+      () =>
+        loadConnectorCredential({
+          ...baseOptions,
+          credentialPath: substitutedCredential,
+        }),
+      (error: unknown) =>
+        error instanceof ConnectorCredentialError &&
+        error.code === "CONNECTOR_CREDENTIAL_DIRECTORY_PERMISSIONS",
+      "renaming a checked-looking ancestor and substituting a writable tree must fail closed",
+    );
+
+    const trustedTarget = join(boundary.root, "trusted-target");
+    createCredential(trustedTarget);
+    const unsafeTargetRoot = join(boundary.root, "unsafe-target-root");
+    const unsafeTarget = join(unsafeTargetRoot, "credential");
+    createCredential(unsafeTarget, "substituted-secret\n");
+    chmodSync(unsafeTargetRoot, 0o777);
+    const credentialLink = join(boundary.root, "credential-link");
+    symlinkSync(trustedTarget, credentialLink);
+    const linkedCredential = join(credentialLink, "connector.password");
+    assert.equal(
+      loadConnectorCredential({
+        ...baseOptions,
+        credentialPath: linkedCredential,
+      }),
+      "boundary-secret",
+    );
+    unlinkSync(credentialLink);
+    symlinkSync(unsafeTarget, credentialLink);
+    assert.throws(
+      () =>
+        loadConnectorCredential({
+          ...baseOptions,
+          credentialPath: linkedCredential,
+        }),
+      (error: unknown) =>
+        error instanceof ConnectorCredentialError &&
+        error.code === "CONNECTOR_CREDENTIAL_DIRECTORY_PERMISSIONS",
+      "substituting the credential symlink with a writable-ancestor target must fail closed",
     );
   } finally {
     rmSync(boundary.root, { recursive: true, force: true });

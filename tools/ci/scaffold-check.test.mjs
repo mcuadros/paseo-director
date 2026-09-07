@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import {
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -16,9 +17,12 @@ import { fileURLToPath } from "node:url";
 import {
   checkWorkflowContract,
   checkWorkflowSet,
+  formatErrors,
   hostSourceErrors,
   lintRepository,
+  repositoryFiles,
   releaseMetadataErrors,
+  workflowErrors,
 } from "./scaffold-check.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -140,6 +144,20 @@ test("release validation rejects empty digests, dot segments, and assets while u
     }).some((error) => error.includes("digest")),
   );
   assert.ok(releaseMetadataErrors({ ...published, version: ".." }).length > 0);
+  for (const url of [
+    "https://github.com/mcuadros/paseo-director/releases/download/../../../../attacker/evil/releases/download/v1/x",
+    "https://github.com/mcuadros/paseo-director/releases/download/%2e%2e/%2e%2e/%2e%2e/%2e%2e/attacker/x",
+    `${asset.url}?mirror=attacker`,
+    `${asset.url}#attacker`,
+  ]) {
+    assert.ok(
+      releaseMetadataErrors({
+        ...published,
+        binary: { ...asset, url },
+      }).some((error) => error.includes("binary identity")),
+      `release validator accepted ${url}`,
+    );
+  }
   assert.ok(
     releaseMetadataErrors({
       schemaVersion: 1,
@@ -167,9 +185,59 @@ test("connector policy and Paseo SDK imports outside the adapter fail lint", () 
     ),
     [
       "server/scheduler.server.ts: Paseo SDK imports belong only in the host connector",
-      "server/scheduler.server.ts: host server source contains prohibited workflow policy",
+      "server/scheduler.server.ts: host source contains prohibited workflow policy",
     ],
   );
+});
+
+test("prohibited host policy vocabulary covers the entrypoint and every host directory", () => {
+  for (const [path, source] of [
+    ["index.ts", "const eligibility = 'forbidden';\n"],
+    ["client/policy.client.tsx", "const retryPolicy = 'forbidden';\n"],
+    ["server/policy.server.ts", "const scheduler = 'forbidden';\n"],
+    ["shared/policy.shared.ts", "const closurePolicy = 'forbidden';\n"],
+  ]) {
+    assert.deepEqual(hostSourceErrors(path, source), [
+      `${path}: host source contains prohibited workflow policy`,
+    ]);
+  }
+});
+
+test("tracked dangling workflow symlinks remain visible to repository policies", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "director-ci-dangling-"));
+  try {
+    mkdirSync(join(temporaryRoot, ".github", "workflows"), { recursive: true });
+    const danglingPath = ".github/workflows/dangling.yml";
+    symlinkSync("missing-workflow.yml", join(temporaryRoot, danglingPath));
+    for (const args of [
+      ["init", "--quiet"],
+      ["add", "--", danglingPath],
+    ]) {
+      const result = spawnSync("git", args, {
+        cwd: temporaryRoot,
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr);
+    }
+
+    const paths = repositoryFiles(temporaryRoot);
+    assert.deepEqual(paths, [danglingPath]);
+    assert.ok(
+      formatErrors(temporaryRoot, paths).includes(
+        `${danglingPath}: tracked repository symlinks require an explicit policy`,
+      ),
+    );
+    const workflows = workflowErrors(temporaryRoot, paths);
+    assert.equal(workflows.count, 1);
+    assert.ok(
+      workflows.errors.some(
+        (error) =>
+          error.startsWith(`${danglingPath}: workflow must be JSON-compatible YAML:`),
+      ),
+    );
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 test("the checker executes when its entry path is a symlink", () => {
