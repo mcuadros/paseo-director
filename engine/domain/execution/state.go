@@ -4,6 +4,8 @@ package execution
 
 const SchemaVersion = "director.execution/v1"
 
+const StartupReconciliationSchemaVersion = "director.startup-reconciliation/v1"
+
 // EffectKind is the closed M1 effect vocabulary. Host-view operations cross
 // the engine-owned host port; the remaining operations use engine adapters.
 type EffectKind string
@@ -108,12 +110,53 @@ type CandidateObservation struct {
 	NoConflict       bool   `json:"noConflict"`
 }
 
+// CleanupIntentFact is the bounded durable identity of one cleanup intent
+// recovered at engine startup. It contains no path, command, or model text.
+type CleanupIntentFact struct {
+	EffectID string      `json:"effectId"`
+	Kind     EffectKind  `json:"kind"`
+	Phase    EffectPhase `json:"phase"`
+	Attempt  uint32      `json:"attempt"`
+}
+
+// StartupReconciliation records the exact durable graph and bounded external
+// identities recovered by one engine startup before effects resume. The
+// command digest refers to immutable TaskStore rows; CandidateSHA is
+// corroborated independently and never comes from model narration alone.
+type StartupReconciliation struct {
+	SchemaVersion              string              `json:"schemaVersion"`
+	ID                         string              `json:"id"`
+	ObservedRunVersion         uint64              `json:"observedRunVersion"`
+	ObservedAtMillis           int64               `json:"observedAtMillis"`
+	CommandCount               uint64              `json:"commandCount"`
+	CommandChainHash           string              `json:"commandChainHash"`
+	LastCommandID              string              `json:"lastCommandId"`
+	OperationalObservationID   string              `json:"operationalObservationId"`
+	EffectObservationCount     uint64              `json:"effectObservationCount"`
+	EffectObservationChainHash string              `json:"effectObservationChainHash,omitempty"`
+	WorktreeID                 string              `json:"worktreeId,omitempty"`
+	WorkspaceID                string              `json:"workspaceId,omitempty"`
+	AgentID                    string              `json:"agentId,omitempty"`
+	CandidateID                string              `json:"candidateId,omitempty"`
+	CandidateSHA               string              `json:"candidateSha,omitempty"`
+	CleanupIntents             []CleanupIntentFact `json:"cleanupIntents,omitempty"`
+	FrontierEffectID           string              `json:"frontierEffectId,omitempty"`
+	FrontierEffectKind         EffectKind          `json:"frontierEffectKind,omitempty"`
+	FrontierObservationID      string              `json:"frontierObservationId,omitempty"`
+	FrontierObservationHash    string              `json:"frontierObservationHash,omitempty"`
+	CandidateObservationID     string              `json:"candidateObservationId,omitempty"`
+	CandidateObservationHash   string              `json:"candidateObservationHash,omitempty"`
+	HostCursor                 uint64              `json:"hostCursor,omitempty"`
+	FactHash                   string              `json:"factHash"`
+}
+
 // State is the durable M1 execution projection stored inside its Run record.
 // A zero State belongs to pre-execution TaskStore records created by older M1
 // skeletons and remains valid.
 type State struct {
 	SchemaVersion                    string                  `json:"schemaVersion,omitempty"`
 	Scope                            Scope                   `json:"scope,omitempty"`
+	StartCommandID                   string                  `json:"startCommandId,omitempty"`
 	EligibilityDecisionVersion       string                  `json:"eligibilityDecisionVersion,omitempty"`
 	EligibilityDecisionID            string                  `json:"eligibilityDecisionId,omitempty"`
 	EligibilityFactsHash             string                  `json:"eligibilityFactsHash,omitempty"`
@@ -151,5 +194,6 @@ type State struct {
 	HostViewArchive                  Effect                  `json:"hostViewArchive,omitempty"`
 	WorktreeRemove                   Effect                  `json:"worktreeRemove,omitempty"`
 	NeedsYou                         *NeedsYou               `json:"needsYou,omitempty"`
+	LastStartupReconciliation        *StartupReconciliation  `json:"lastStartupReconciliation,omitempty"`
 	Terminal                         bool                    `json:"terminal,omitempty"`
 }

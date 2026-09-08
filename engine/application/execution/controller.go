@@ -203,8 +203,10 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 	}
 	decision := eligibility.Reduce(command.EligibilityFacts)
 	result := StartResult{Decision: decision}
+	startCommandID := stableID("command", command.RequestID, "run-create")
 	if existing, err := controller.store.Run(ctx, command.Scope.RunID); err == nil {
 		if existing.TaskID != task.ID || existing.BaseSHA != command.BaseSHA ||
+			existing.Execution.StartCommandID != startCommandID ||
 			existing.Execution.EligibilityDecisionID != decision.DecisionID ||
 			existing.Execution.EligibilityFactsHash != decision.FactsHash {
 			return StartResult{}, errors.New("existing Run conflicts with start command")
@@ -224,8 +226,10 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 	if decision.Kind != eligibility.DecisionEligible {
 		return result, nil
 	}
+	commandID := startCommandID
 	state := domainexecution.State{
 		SchemaVersion: domainexecution.SchemaVersion, Scope: command.Scope,
+		StartCommandID:             commandID,
 		EligibilityDecisionVersion: eligibility.SchemaVersion,
 		EligibilityDecisionID:      decision.DecisionID, EligibilityFactsHash: decision.FactsHash,
 		CapacityReservationID: stableID("capacity", command.Scope.RunID),
@@ -264,7 +268,6 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		ID: command.Scope.RunID, TaskID: task.ID, Number: command.RunNumber,
 		BaseSHA: command.BaseSHA, Execution: state,
 	}
-	commandID := stableID("command", command.RequestID, "run-create")
 	storeResult, err := controller.store.CreateRun(ctx, domain.CommandRequest{
 		IdempotencyKey: commandID, Type: "run.fake_execution.create", AggregateID: run.ID,
 		Payload: eventPayload(struct {
@@ -581,6 +584,21 @@ func hostArguments(run domain.Run, effect domainexecution.Effect) host.Arguments
 	}
 }
 
+func hostResumeCursor(state domainexecution.State) uint64 {
+	var cursor uint64
+	if state.LastStartupReconciliation != nil {
+		cursor = state.LastStartupReconciliation.HostCursor
+	}
+	for _, effect := range []domainexecution.Effect{
+		state.HostView, state.Agent, state.AgentArchive, state.HostViewArchive,
+	} {
+		if effect.Observation != nil && effect.Observation.Cursor > cursor {
+			cursor = effect.Observation.Cursor
+		}
+	}
+	return cursor
+}
+
 func runtimeRequest(run domain.Run, effect domainexecution.Effect) runtimeport.Request {
 	state := run.Execution
 	return runtimeport.Request{
@@ -603,7 +621,7 @@ func (controller *Controller) verifyHost(ctx context.Context) error {
 	return host.ValidateDescriptor(descriptor)
 }
 
-func (controller *Controller) observeEffect(ctx context.Context, run domain.Run, kind domainexecution.EffectKind) (domainexecution.EffectObservation, error) {
+func (controller *Controller) observeEffectAfter(ctx context.Context, run domain.Run, kind domainexecution.EffectKind, afterCursor uint64) (domainexecution.EffectObservation, error) {
 	effect := effectPointer(&run.Execution, kind)
 	if effect == nil {
 		return domainexecution.EffectObservation{}, errors.New("unknown execution effect")
@@ -617,7 +635,7 @@ func (controller *Controller) observeEffect(ctx context.Context, run domain.Run,
 			RequestID:       requestID,
 			IdempotencyKey:  stableID("idempotency", effect.ID, "observe"),
 			ExpectedVersion: run.Version, Capability: hostCapability(kind, true),
-			Arguments: hostArguments(run, *effect),
+			AfterCursor: afterCursor, Arguments: hostArguments(run, *effect),
 		}
 		observed, err := controller.host.Invoke(ctx, command)
 		if err != nil {
@@ -642,6 +660,10 @@ func (controller *Controller) observeEffect(ctx context.Context, run domain.Run,
 		return normalized, nil
 	}
 	return controller.runtime.ObserveEffect(ctx, runtimeRequest(run, *effect))
+}
+
+func (controller *Controller) observeEffect(ctx context.Context, run domain.Run, kind domainexecution.EffectKind) (domainexecution.EffectObservation, error) {
+	return controller.observeEffectAfter(ctx, run, kind, hostResumeCursor(run.Execution))
 }
 
 func (controller *Controller) dispatchEffect(ctx context.Context, run domain.Run, kind domainexecution.EffectKind) error {
@@ -739,7 +761,10 @@ func (controller *Controller) applyEffectDecision(
 		}
 		next.Version = run.Version + 1
 		err := controller.dispatchEffect(ctx, next, kind)
-		return StepResult{Run: next, Progressed: true}, err
+		if err != nil {
+			return StepResult{Run: next, Progressed: true}, &EffectHandoffError{Kind: kind, err: err}
+		}
+		return StepResult{Run: next, Progressed: true}, nil
 	case "adopt":
 		next := run
 		effect := effectPointer(&next.Execution, kind)

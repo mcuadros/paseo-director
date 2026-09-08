@@ -68,6 +68,16 @@ type Environment struct {
 var _ runtimeport.Port = (*Environment)(nil)
 var _ host.Port = (*Environment)(nil)
 
+// RestartedEnvironment is a new policy-free adapter instance over the same
+// fake external world. It models a connector/engine process replacement:
+// in-memory controller state is gone while observable external facts survive.
+type RestartedEnvironment struct {
+	world *Environment
+}
+
+var _ runtimeport.Port = (*RestartedEnvironment)(nil)
+var _ host.Port = (*RestartedEnvironment)(nil)
+
 // NewEnvironment creates an empty fake world. All mutations remain scoped to
 // Options.WorktreePath and the disposable source repository.
 func NewEnvironment(options Options) *Environment {
@@ -76,6 +86,35 @@ func NewEnvironment(options Options) *Environment {
 		mutations: make(map[execution.EffectKind]int),
 		lost:      make(map[execution.EffectKind]bool),
 	}
+}
+
+// Restart returns a distinct adapter instance over the persistent fake world.
+func (environment *Environment) Restart() *RestartedEnvironment {
+	return &RestartedEnvironment{world: environment}
+}
+
+func (environment *RestartedEnvironment) Describe(ctx context.Context) (host.Descriptor, error) {
+	return environment.world.Describe(ctx)
+}
+
+func (environment *RestartedEnvironment) Invoke(ctx context.Context, command host.Command) (host.Observation, error) {
+	return environment.world.Invoke(ctx, command)
+}
+
+func (environment *RestartedEnvironment) ObserveEffect(ctx context.Context, request runtimeport.Request) (execution.EffectObservation, error) {
+	return environment.world.ObserveEffect(ctx, request)
+}
+
+func (environment *RestartedEnvironment) DispatchEffect(ctx context.Context, request runtimeport.Request) error {
+	return environment.world.DispatchEffect(ctx, request)
+}
+
+func (environment *RestartedEnvironment) ObserveOperational(ctx context.Context, scope execution.Scope, policy execution.OperationalPolicy) (execution.OperationalObservation, error) {
+	return environment.world.ObserveOperational(ctx, scope, policy)
+}
+
+func (environment *RestartedEnvironment) ObserveCandidate(ctx context.Context, request runtimeport.CandidateRequest) (execution.CandidateObservation, error) {
+	return environment.world.ObserveCandidate(ctx, request)
 }
 
 func digest(value any) string {

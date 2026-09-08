@@ -4,7 +4,7 @@
 // This generated boundary contains transport types only and owns no policy.
 
 export const HOST_CONTRACT_VERSION = "director-host/v1" as const;
-export const HOST_CONTRACT_SHA256 = "4913e22847a77c222060e1968c5e92f2def114d6eef5795f1269cad2d73167cf" as const;
+export const HOST_CONTRACT_SHA256 = "b327fdb713f9ea8726c77f07c8385f6a15f619923781a920b9dae27143ce9ad1" as const;
 export const HOST_CREDENTIAL_SCOPE = "full-daemon-operator" as const;
 export const HOST_CAPABILITIES = [
   "executionWorkspace.createManaged",
@@ -93,6 +93,7 @@ export interface HostCommand {
   requestId: string;
   idempotencyKey: string;
   expectedVersion: number;
+  afterCursor?: number;
   capability: HostCapability;
   arguments: Readonly<HostCommandArguments>;
 }

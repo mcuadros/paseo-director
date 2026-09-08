@@ -39,3 +39,37 @@ func TestEffectAndCandidateEvidenceRequireCurrentSelfConsistentFacts(t *testing.
 		t.Fatal("future Candidate observation remained current")
 	}
 }
+
+func TestStartupReconciliationBindsCommandCandidateExecutionAndCleanupFacts(t *testing.T) {
+	reconciliation := StartupReconciliation{
+		SchemaVersion: StartupReconciliationSchemaVersion,
+		ID:            "startup-1", ObservedRunVersion: 9, ObservedAtMillis: 1_000,
+		CommandCount: 10, CommandChainHash: "command-chain", LastCommandID: "command-10",
+		OperationalObservationID: "operational-1",
+		EffectObservationCount:   1, EffectObservationChainHash: "effect-chain",
+		WorktreeID: "worktree-1", WorkspaceID: "workspace-1", AgentID: "agent-1",
+		CandidateID: "candidate-1", CandidateSHA: "1111111111111111111111111111111111111111",
+		CleanupIntents: []CleanupIntentFact{{
+			EffectID: "cleanup-1", Kind: EffectAgentArchive,
+			Phase: EffectDispatching, Attempt: 1,
+		}},
+		FrontierEffectID: "cleanup-1", FrontierEffectKind: EffectAgentArchive,
+		FrontierObservationID: "effect-observation-1", FrontierObservationHash: "effect-hash",
+		CandidateObservationID: "candidate-observation-1", CandidateObservationHash: "candidate-hash",
+		HostCursor: 17,
+	}
+	reconciliation.FactHash = StartupReconciliationHash(reconciliation)
+	if !ValidStartupReconciliation(reconciliation) {
+		t.Fatal("exact startup reconciliation was rejected")
+	}
+	tampered := reconciliation
+	tampered.AgentID = "agent-2"
+	if ValidStartupReconciliation(tampered) {
+		t.Fatal("tampered startup execution identity remained valid")
+	}
+	tampered = reconciliation
+	tampered.CleanupIntents[0].Attempt++
+	if ValidStartupReconciliation(tampered) {
+		t.Fatal("tampered startup cleanup intent remained valid")
+	}
+}

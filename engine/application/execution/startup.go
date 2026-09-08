@@ -1,0 +1,779 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package execution
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/mcuadros/director-engine/domain"
+	domainexecution "github.com/mcuadros/director-engine/domain/execution"
+	runtimeport "github.com/mcuadros/director-engine/ports/runtime"
+	storeport "github.com/mcuadros/director-engine/ports/taskstore"
+)
+
+// EffectHandoffError means an adapter returned an error only after the
+// dispatching phase was durable. The external result is unknown and startup
+// reconciliation must observe it before making another decision.
+type EffectHandoffError struct {
+	Kind domainexecution.EffectKind
+	err  error
+}
+
+func (failure *EffectHandoffError) Error() string {
+	return fmt.Sprintf("%s outcome requires reconciliation", failure.Kind)
+}
+
+func (failure *EffectHandoffError) Unwrap() error {
+	return failure.err
+}
+
+// StartupCommandSchemaVersion is the closed M1 startup command contract.
+const StartupCommandSchemaVersion = "director.application.startup/v1"
+
+// StartupCommand identifies one engine startup. RequestID is retained across
+// retries within that process and changed only for a new startup. NowMillis is
+// supplied by TaskStore time rather than a connector or model clock.
+type StartupCommand struct {
+	SchemaVersion string
+	RequestID     string
+	NowMillis     int64
+}
+
+// StartupRunResult is a bounded projection of facts recovered for one Run.
+type StartupRunResult struct {
+	RunID             string
+	ReconciliationID  string
+	RecoveredCommands int
+	WorktreeID        string
+	WorkspaceID       string
+	AgentID           string
+	CandidateID       string
+	CandidateSHA      string
+	CleanupIntents    int
+	Progressed        bool
+	HandoffUnknown    bool
+	NeedsYou          bool
+	Terminal          bool
+}
+
+// StartupResult reports one complete durable scan followed by at most one
+// resumed transition for every active walking-skeleton Run.
+type StartupResult struct {
+	Projects int
+	Tasks    int
+	Runs     []StartupRunResult
+}
+
+type durableStartupRun struct {
+	project   domain.Project
+	task      domain.Task
+	run       domain.Run
+	commands  []string
+	candidate *domain.Candidate
+}
+
+type observedStartupRun struct {
+	durable              durableStartupRun
+	operational          *domainexecution.OperationalObservation
+	frontierKind         domainexecution.EffectKind
+	frontierObservation  *domainexecution.EffectObservation
+	effectObservations   []domainexecution.EffectObservation
+	candidateObservation *domainexecution.CandidateObservation
+	hostCursor           uint64
+	unsafeCode           domainexecution.NeedCode
+}
+
+func expectedEffect(runID string, kind domainexecution.EffectKind) string {
+	return stableID("effect", runID, string(kind))
+}
+
+func validDurableEffect(run domain.Run, effect domainexecution.Effect, kind domainexecution.EffectKind, attempts uint32, required bool) error {
+	if effect.ID == "" {
+		if required {
+			return fmt.Errorf("%s intent is missing", kind)
+		}
+		return nil
+	}
+	if effect.ID != expectedEffect(run.ID, kind) || effect.Kind != kind ||
+		effect.AttemptLimit != attempts || effect.Attempt > effect.AttemptLimit {
+		return fmt.Errorf("%s intent identity is invalid", kind)
+	}
+	switch effect.Phase {
+	case domainexecution.EffectIntentRecorded, domainexecution.EffectDispatching:
+		if effect.ExternalID != "" {
+			return fmt.Errorf("%s incomplete intent has an external identity", kind)
+		}
+	case domainexecution.EffectComplete:
+		if effect.ExternalID == "" || !identifierPattern.MatchString(effect.ExternalID) || len(effect.ExternalID) > 128 {
+			return fmt.Errorf("%s completed intent lacks an external identity", kind)
+		}
+	default:
+		return fmt.Errorf("%s intent phase is invalid", kind)
+	}
+	if effect.Observation != nil {
+		if effect.Observation.EffectID != effect.ID ||
+			effect.Observation.BindingHash != run.Execution.RepositoryBindingHash ||
+			(effect.Observation.ExternalID != "" &&
+				(!identifierPattern.MatchString(effect.Observation.ExternalID) || len(effect.Observation.ExternalID) > 128)) ||
+			!domainexecution.ValidEffectObservation(*effect.Observation) {
+			return fmt.Errorf("%s observation is invalid", kind)
+		}
+	}
+	return nil
+}
+
+func effectProgressed(effect domainexecution.Effect) bool {
+	return effect.Phase != domainexecution.EffectIntentRecorded || effect.Attempt > 0 || effect.Observation != nil
+}
+
+func validateExecutionGraph(run domain.Run) error {
+	state := run.Execution
+	if state.SchemaVersion != domainexecution.SchemaVersion ||
+		state.Scope.ProjectID == "" || state.Scope.WorkspaceID == "" ||
+		state.Scope.TaskID != run.TaskID || state.Scope.RunID != run.ID ||
+		state.StartCommandID == "" ||
+		state.RepositoryBindingHash != repositoryBindingHash(
+			state.Scope, state.SourcePath, state.WorktreePath, state.Branch, run.BaseSHA,
+		) {
+		return errors.New("Run execution scope or repository binding is invalid")
+	}
+	if state.LastStartupReconciliation != nil &&
+		!domainexecution.ValidStartupReconciliation(*state.LastStartupReconciliation) {
+		return errors.New("last startup reconciliation is invalid")
+	}
+	for _, fixture := range []struct {
+		effect   domainexecution.Effect
+		kind     domainexecution.EffectKind
+		attempts uint32
+		required bool
+	}{
+		{state.Worktree, domainexecution.EffectWorktreeCreate, 2, true},
+		{state.HostView, domainexecution.EffectHostViewCreate, 2, true},
+		{state.Boundary, domainexecution.EffectBoundaryMaterialize, 2, true},
+		{state.Setup, domainexecution.EffectSetupRun, 2, setupRequired(state.LifecycleSurfaces)},
+		{state.Agent, domainexecution.EffectAgentCreate, 2, false},
+		{state.AgentArchive, domainexecution.EffectAgentArchive, 2, false},
+		{state.HostViewArchive, domainexecution.EffectHostViewArchive, 2, false},
+		{state.WorktreeRemove, domainexecution.EffectWorktreeRemove, 1, false},
+	} {
+		if err := validDurableEffect(run, fixture.effect, fixture.kind, fixture.attempts, fixture.required); err != nil {
+			return err
+		}
+	}
+	if !setupRequired(state.LifecycleSurfaces) && state.Setup.ID != "" {
+		return errors.New("Run has an undeclared lifecycle setup intent")
+	}
+	if effectProgressed(state.HostView) && state.Worktree.Phase != domainexecution.EffectComplete {
+		return errors.New("host-view effect precedes worktree creation")
+	}
+	if effectProgressed(state.Boundary) && state.HostView.Phase != domainexecution.EffectComplete {
+		return errors.New("isolation effect precedes host-view registration")
+	}
+	if state.Setup.ID != "" && effectProgressed(state.Setup) && state.Boundary.Phase != domainexecution.EffectComplete {
+		return errors.New("lifecycle setup precedes isolation")
+	}
+	if state.PreparationReady && (state.Worktree.Phase != domainexecution.EffectComplete ||
+		state.HostView.Phase != domainexecution.EffectComplete ||
+		state.Boundary.Phase != domainexecution.EffectComplete ||
+		(state.Setup.ID != "" && state.Setup.Phase != domainexecution.EffectComplete) ||
+		state.PreparationBarrierHash == "" || state.PreparationBarrierHash != preparationBarrier(state)) {
+		return errors.New("preparation_ready is not bound to completed preparation facts")
+	}
+	if state.Agent.ID != "" && !state.PreparationReady {
+		return errors.New("Task Agent intent precedes preparation_ready")
+	}
+	if state.Claim != nil && (state.Agent.Phase != domainexecution.EffectComplete || !validClaim(*state.Claim, run)) {
+		return errors.New("Run completed claim is not bound to its execution")
+	}
+	if state.CandidateObservation != nil {
+		if state.Claim == nil || state.CandidateObservation.ClaimID != state.Claim.ID ||
+			state.CandidateObservation.BindingHash != state.RepositoryBindingHash ||
+			!domainexecution.ValidCandidateObservation(*state.CandidateObservation) {
+			return errors.New("Run Candidate observation is invalid")
+		}
+	}
+	if run.CurrentCandidateID != "" && state.CandidateObservation == nil {
+		return errors.New("current Candidate lacks its admission observation")
+	}
+	if state.AgentArchive.ID != "" && run.CurrentCandidateID == "" {
+		return errors.New("cleanup intent precedes Candidate admission")
+	}
+	if state.HostViewArchive.ID != "" && state.AgentArchive.Phase != domainexecution.EffectComplete {
+		return errors.New("host-view cleanup precedes agent termination")
+	}
+	if state.WorktreeRemove.ID != "" && state.HostViewArchive.Phase != domainexecution.EffectComplete {
+		return errors.New("worktree cleanup precedes host-view archival")
+	}
+	if state.Terminal && (state.AgentArchive.Phase != domainexecution.EffectComplete ||
+		state.HostViewArchive.Phase != domainexecution.EffectComplete ||
+		state.WorktreeRemove.Phase != domainexecution.EffectComplete) {
+		return errors.New("terminal Run lacks completed cleanup facts")
+	}
+	return nil
+}
+
+func loadRunEvents(ctx context.Context, store storeport.TaskStore, runID string) ([]domain.Event, error) {
+	events := make([]domain.Event, 0)
+	var cursor uint64
+	for {
+		page, err := store.Events(ctx, domain.EventQuery{RunID: runID, AfterGlobalSequence: cursor, Limit: 1000})
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, page...)
+		if len(page) < 1000 {
+			return events, nil
+		}
+		cursor = page[len(page)-1].GlobalSequence
+	}
+}
+
+func commandForEvent(run domain.Run, event domain.Event, candidate *domain.Candidate) (string, string, error) {
+	switch event.Type {
+	case "run.fake_execution.created":
+		if event.AggregateVersion != 0 {
+			return "", "", errors.New("Run create event version is invalid")
+		}
+		return run.Execution.StartCommandID, "run.fake_execution.create", nil
+	case "candidate.admitted":
+		if candidate == nil {
+			return "", "", errors.New("Candidate event lacks an immutable Candidate")
+		}
+		return stableID("command", run.ID, "candidate-1", candidate.CommitSHA), "candidate.admit", nil
+	default:
+		if event.AggregateVersion == 0 {
+			return "", "", errors.New("Run transition has a create version")
+		}
+		return stableID("command", run.ID, fmt.Sprintf("version-%d", event.AggregateVersion), event.Type), event.Type, nil
+	}
+}
+
+func (controller *Controller) scanDurableRun(ctx context.Context, project domain.Project, task domain.Task, run domain.Run) (durableStartupRun, error) {
+	result := durableStartupRun{project: project, task: task, run: run}
+	if run.Execution.Scope.ProjectID != project.ID || task.ProjectID != project.ID {
+		return result, errors.New("Run execution Project identity is invalid")
+	}
+	if err := validateExecutionGraph(run); err != nil {
+		return result, err
+	}
+	candidates, err := controller.store.Candidates(ctx, run.ID)
+	if err != nil {
+		return result, err
+	}
+	if run.CurrentCandidateID == "" {
+		if len(candidates) != 0 {
+			return result, errors.New("Run has an unprojected Candidate")
+		}
+	} else {
+		if len(candidates) != 1 || candidates[0].ID != run.CurrentCandidateID ||
+			candidates[0].RunID != run.ID || run.Execution.Claim == nil ||
+			candidates[0].Sequence != 1 ||
+			candidates[0].ID != stableID("candidate", run.ID, "1", run.Execution.Claim.CandidateSHA) ||
+			candidates[0].CommitSHA != run.Execution.Claim.CandidateSHA ||
+			run.Execution.CandidateObservation == nil ||
+			run.Execution.CandidateObservation.CommitSHA != candidates[0].CommitSHA ||
+			run.Execution.CandidateObservation.BaseSHA != run.BaseSHA ||
+			!run.Execution.CandidateObservation.Clean || !run.Execution.CandidateObservation.Reachable ||
+			!run.Execution.CandidateObservation.Owned || !run.Execution.CandidateObservation.DescendsFromBase ||
+			!run.Execution.CandidateObservation.NoConflict {
+			return result, errors.New("Run Candidate projection is invalid")
+		}
+		candidate := candidates[0]
+		result.candidate = &candidate
+	}
+	events, err := loadRunEvents(ctx, controller.store, run.ID)
+	if err != nil {
+		return result, err
+	}
+	if uint64(len(events)) != run.Version+1 {
+		return result, errors.New("Run command/event history is incomplete")
+	}
+	seen := make(map[string]struct{}, len(events))
+	for index, event := range events {
+		if event.RunID != run.ID || event.AggregateID != run.ID ||
+			event.AggregateVersion != uint64(index) || event.Sequence != uint64(index)+1 {
+			return result, errors.New("Run event history is not contiguous")
+		}
+		commandID, commandType, err := commandForEvent(run, event, result.candidate)
+		if err != nil {
+			return result, err
+		}
+		if _, duplicate := seen[commandID]; duplicate {
+			return result, errors.New("Run command history contains a duplicate identity")
+		}
+		command, err := controller.store.Command(ctx, commandID)
+		if err != nil {
+			return result, err
+		}
+		expectedVersion := uint64(0)
+		if event.AggregateVersion > 0 {
+			expectedVersion = event.AggregateVersion - 1
+		}
+		if command.IdempotencyKey != commandID || command.Type != commandType ||
+			command.AggregateID != run.ID || command.ExpectedVersion != expectedVersion ||
+			command.Outcome != domain.CommandApplied || command.ObservedVersion != event.AggregateVersion ||
+			command.EventID != event.ID {
+			return result, errors.New("Run command outcome is not bound to its event")
+		}
+		seen[commandID] = struct{}{}
+		result.commands = append(result.commands, commandID)
+	}
+	return result, nil
+}
+
+func cleanupIntentFacts(state domainexecution.State) []domainexecution.CleanupIntentFact {
+	result := make([]domainexecution.CleanupIntentFact, 0, 3)
+	for _, effect := range []domainexecution.Effect{state.AgentArchive, state.HostViewArchive, state.WorktreeRemove} {
+		if effect.ID != "" {
+			result = append(result, domainexecution.CleanupIntentFact{
+				EffectID: effect.ID, Kind: effect.Kind, Phase: effect.Phase, Attempt: effect.Attempt,
+			})
+		}
+	}
+	return result
+}
+
+func startupFrontier(run domain.Run) domainexecution.EffectKind {
+	state := run.Execution
+	if run.CurrentCandidateID != "" {
+		if state.AgentArchive.ID == "" {
+			return domainexecution.EffectAgentCreate
+		}
+		if state.AgentArchive.Phase != domainexecution.EffectComplete {
+			return domainexecution.EffectAgentArchive
+		}
+		if state.HostViewArchive.ID == "" {
+			return domainexecution.EffectHostViewCreate
+		}
+		if state.HostViewArchive.Phase != domainexecution.EffectComplete {
+			return domainexecution.EffectHostViewArchive
+		}
+		if state.WorktreeRemove.ID == "" {
+			return domainexecution.EffectWorktreeCreate
+		}
+		if state.WorktreeRemove.Phase != domainexecution.EffectComplete {
+			return domainexecution.EffectWorktreeRemove
+		}
+		return ""
+	}
+	for _, effect := range []domainexecution.Effect{state.Worktree, state.HostView, state.Boundary} {
+		if effect.Phase != domainexecution.EffectComplete {
+			return effect.Kind
+		}
+	}
+	if setupRequired(state.LifecycleSurfaces) && state.Setup.Phase != domainexecution.EffectComplete {
+		return state.Setup.Kind
+	}
+	if state.Agent.ID == "" {
+		return ""
+	}
+	return domainexecution.EffectAgentCreate
+}
+
+func resourceStillExpected(closeEffect domainexecution.Effect) bool {
+	return closeEffect.ID == "" || closeEffect.Phase == domainexecution.EffectIntentRecorded
+}
+
+func startupObservationKinds(run domain.Run) []domainexecution.EffectKind {
+	state := run.Execution
+	result := make([]domainexecution.EffectKind, 0, 6)
+	seen := make(map[domainexecution.EffectKind]struct{}, 6)
+	add := func(kind domainexecution.EffectKind) {
+		if kind == "" {
+			return
+		}
+		if _, exists := seen[kind]; exists {
+			return
+		}
+		seen[kind] = struct{}{}
+		result = append(result, kind)
+	}
+	if state.Worktree.Phase == domainexecution.EffectComplete && resourceStillExpected(state.WorktreeRemove) {
+		add(domainexecution.EffectWorktreeCreate)
+	}
+	if state.HostView.Phase == domainexecution.EffectComplete && resourceStillExpected(state.HostViewArchive) {
+		add(domainexecution.EffectHostViewCreate)
+	}
+	if state.Boundary.Phase == domainexecution.EffectComplete && resourceStillExpected(state.WorktreeRemove) {
+		add(domainexecution.EffectBoundaryMaterialize)
+	}
+	if state.Setup.ID != "" && state.Setup.Phase == domainexecution.EffectComplete && resourceStillExpected(state.WorktreeRemove) {
+		add(domainexecution.EffectSetupRun)
+	}
+	if state.Agent.Phase == domainexecution.EffectComplete && resourceStillExpected(state.AgentArchive) {
+		add(domainexecution.EffectAgentCreate)
+	}
+	add(startupFrontier(run))
+	return result
+}
+
+func exactCompletedIdentity(effect domainexecution.Effect, observation domainexecution.EffectObservation) bool {
+	return effect.Phase != domainexecution.EffectComplete ||
+		(observation.Status == domainexecution.ObservationDesired &&
+			observation.ExternalID == effect.ExternalID)
+}
+
+func exactCleanupIdentity(state domainexecution.State, kind domainexecution.EffectKind, observation domainexecution.EffectObservation) bool {
+	expected := ""
+	switch kind {
+	case domainexecution.EffectAgentArchive:
+		expected = state.Agent.ExternalID
+	case domainexecution.EffectHostViewArchive:
+		expected = state.HostView.ExternalID
+	case domainexecution.EffectWorktreeRemove:
+		expected = state.Worktree.ExternalID
+	default:
+		return true
+	}
+	return expected != "" && observation.ExternalID == expected
+}
+
+func exactCandidateFacts(run domain.Run, observation domainexecution.CandidateObservation, nowMillis int64) bool {
+	return run.Execution.Claim != nil &&
+		domainexecution.CurrentCandidateObservation(observation, nowMillis) &&
+		observation.ClaimID == run.Execution.Claim.ID &&
+		observation.WorktreeID == run.Execution.Worktree.ExternalID &&
+		observation.BindingHash == run.Execution.RepositoryBindingHash &&
+		observation.CommitSHA == run.Execution.Claim.CandidateSHA &&
+		observation.BaseSHA == run.BaseSHA && observation.Clean && observation.Reachable &&
+		observation.Owned && observation.DescendsFromBase && observation.NoConflict
+}
+
+func (controller *Controller) observeStartupRun(ctx context.Context, durable durableStartupRun, nowMillis int64) (observedStartupRun, error) {
+	result := observedStartupRun{durable: durable}
+	run := durable.run
+	result.hostCursor = hostResumeCursor(run.Execution)
+	if run.Execution.Terminal {
+		return result, nil
+	}
+	operational, err := controller.runtime.ObserveOperational(ctx, run.Execution.Scope, run.Execution.OperationalPolicy)
+	if err != nil {
+		return result, err
+	}
+	if operational.ID == "" {
+		return result, errors.New("startup operational observation identity is missing")
+	}
+	result.operational = &operational
+	frontier := startupFrontier(run)
+	result.frontierKind = frontier
+	for _, kind := range startupObservationKinds(run) {
+		observation, err := controller.observeEffectAfter(ctx, run, kind, result.hostCursor)
+		if err != nil {
+			return result, err
+		}
+		if !domainexecution.CurrentEffectObservation(observation, nowMillis) {
+			return result, errors.New("startup effect observation is invalid or stale")
+		}
+		result.effectObservations = append(result.effectObservations, observation)
+		if kind == frontier {
+			frontierObservation := observation
+			result.frontierObservation = &frontierObservation
+		}
+		if observation.Cursor > 0 {
+			if result.hostCursor > 0 && observation.Cursor <= result.hostCursor {
+				result.unsafeCode = domainexecution.NeedCode("startup_host_cursor_not_monotonic")
+			}
+			result.hostCursor = observation.Cursor
+		}
+		effect := effectPointer(&run.Execution, kind)
+		if effect == nil || observation.EffectID != effect.ID ||
+			observation.BindingHash != run.Execution.RepositoryBindingHash {
+			result.unsafeCode = domainexecution.NeedCode("startup_execution_identity_mismatch")
+		} else if !exactCompletedIdentity(*effect, observation) {
+			result.unsafeCode = domainexecution.NeedCode("startup_execution_identity_mismatch")
+		} else if !exactCleanupIdentity(run.Execution, kind, observation) {
+			result.unsafeCode = domainexecution.NeedCode("startup_execution_identity_mismatch")
+		}
+	}
+	if run.Execution.Claim != nil &&
+		(run.Execution.WorktreeRemove.ID == "" || run.Execution.WorktreeRemove.Phase == domainexecution.EffectIntentRecorded) {
+		observation, err := controller.runtime.ObserveCandidate(ctx, candidateRequest(run))
+		if err != nil {
+			return result, err
+		}
+		if !domainexecution.CurrentCandidateObservation(observation, nowMillis) {
+			return result, errors.New("startup Candidate observation is invalid or stale")
+		}
+		result.candidateObservation = &observation
+		if durable.candidate != nil && !exactCandidateFacts(run, observation, nowMillis) {
+			result.unsafeCode = domainexecution.NeedCode("startup_candidate_facts_not_admitted")
+		}
+	}
+	return result, nil
+}
+
+func candidateRequest(run domain.Run) runtimeport.CandidateRequest {
+	return runtimeport.CandidateRequest{
+		Scope: run.Execution.Scope, SourcePath: run.Execution.SourcePath,
+		WorktreePath: run.Execution.WorktreePath, Branch: run.Execution.Branch,
+		WorktreeID:  run.Execution.Worktree.ExternalID,
+		BindingHash: run.Execution.RepositoryBindingHash, Claim: *run.Execution.Claim,
+	}
+}
+
+func startupSnapshot(request StartupCommand, observed observedStartupRun) domainexecution.StartupReconciliation {
+	run := observed.durable.run
+	snapshot := domainexecution.StartupReconciliation{
+		SchemaVersion:      domainexecution.StartupReconciliationSchemaVersion,
+		ID:                 stableID("startup-reconciliation", run.ID, request.RequestID),
+		ObservedRunVersion: run.Version,
+		ObservedAtMillis:   request.NowMillis,
+		CommandCount:       uint64(len(observed.durable.commands)),
+		CommandChainHash:   hashText(strings.Join(observed.durable.commands, "\x1f")),
+		WorktreeID:         run.Execution.Worktree.ExternalID,
+		WorkspaceID:        run.Execution.HostView.ExternalID,
+		AgentID:            run.Execution.Agent.ExternalID,
+		CleanupIntents:     cleanupIntentFacts(run.Execution),
+		FrontierEffectKind: observed.frontierKind,
+		HostCursor:         observed.hostCursor,
+	}
+	if observed.operational != nil {
+		snapshot.OperationalObservationID = observed.operational.ID
+	}
+	if len(observed.effectObservations) > 0 {
+		parts := make([]string, 0, len(observed.effectObservations))
+		for _, observation := range observed.effectObservations {
+			parts = append(parts, observation.ID+"\x1e"+observation.FactHash)
+		}
+		snapshot.EffectObservationCount = uint64(len(observed.effectObservations))
+		snapshot.EffectObservationChainHash = hashText(strings.Join(parts, "\x1f"))
+	}
+	if len(observed.durable.commands) > 0 {
+		snapshot.LastCommandID = observed.durable.commands[len(observed.durable.commands)-1]
+	}
+	if effect := effectPointer(&run.Execution, observed.frontierKind); effect != nil {
+		snapshot.FrontierEffectID = effect.ID
+	}
+	if observed.durable.candidate != nil {
+		snapshot.CandidateID = observed.durable.candidate.ID
+		snapshot.CandidateSHA = observed.durable.candidate.CommitSHA
+	}
+	if observed.frontierObservation != nil {
+		snapshot.FrontierObservationID = observed.frontierObservation.ID
+		snapshot.FrontierObservationHash = observed.frontierObservation.FactHash
+	}
+	if observed.candidateObservation != nil {
+		snapshot.CandidateObservationID = observed.candidateObservation.ID
+		snapshot.CandidateObservationHash = observed.candidateObservation.FactHash
+	}
+	snapshot.FactHash = domainexecution.StartupReconciliationHash(snapshot)
+	return snapshot
+}
+
+func (controller *Controller) persistStartupRun(ctx context.Context, request StartupCommand, observed observedStartupRun) (domain.Run, error) {
+	run := observed.durable.run
+	snapshot := startupSnapshot(request, observed)
+	if run.Execution.LastStartupReconciliation != nil &&
+		run.Execution.LastStartupReconciliation.ID == snapshot.ID {
+		return run, nil
+	}
+	next := run
+	next.Version = run.Version + 1
+	next.Execution.LastStartupReconciliation = &snapshot
+	if observed.operational != nil {
+		observation := *observed.operational
+		next.Execution.OperationalObservation = &observation
+		next.Execution.OperationalObservationRunVersion = next.Version
+		next.Execution.OperationalObservationConsumed = false
+	}
+	if observed.frontierObservation != nil {
+		if effect := effectPointer(&next.Execution, observed.frontierKind); effect != nil && effect.Phase != domainexecution.EffectComplete {
+			observation := *observed.frontierObservation
+			effect.Observation = &observation
+		}
+	}
+	if observed.candidateObservation != nil {
+		observation := *observed.candidateObservation
+		next.Execution.CandidateObservation = &observation
+	}
+	commandID := stableID("command", run.ID, fmt.Sprintf("version-%d", next.Version), "run.startup_reconciled")
+	payload := struct {
+		Reconciliation         domainexecution.StartupReconciliation   `json:"reconciliation"`
+		OperationalObservation *domainexecution.OperationalObservation `json:"operationalObservation"`
+		EffectObservations     []domainexecution.EffectObservation     `json:"effectObservations,omitempty"`
+		CandidateObservation   *domainexecution.CandidateObservation   `json:"candidateObservation,omitempty"`
+		UnsafeCode             domainexecution.NeedCode                `json:"unsafeCode,omitempty"`
+	}{snapshot, observed.operational, observed.effectObservations, observed.candidateObservation, observed.unsafeCode}
+	result, err := controller.store.UpdateRun(ctx, domain.CommandRequest{
+		IdempotencyKey: commandID, Type: "run.startup_reconciled", AggregateID: run.ID,
+		ExpectedVersion: run.Version,
+		Payload:         eventPayload(payload),
+	}, next, domain.Event{
+		ID: stableID("event", commandID), RunID: run.ID, Sequence: run.Version + 2,
+		AggregateID: run.ID, AggregateVersion: next.Version, Type: "run.startup_reconciled",
+		Payload: eventPayload(payload),
+	})
+	if err != nil {
+		return domain.Run{}, err
+	}
+	if result.Outcome != domain.CommandApplied {
+		return domain.Run{}, errors.New("persist startup reconciliation: version conflict")
+	}
+	return next, nil
+}
+
+func startupRunResult(run domain.Run) StartupRunResult {
+	result := StartupRunResult{
+		RunID: run.ID, RecoveredCommands: int(run.Version) + 1,
+		WorktreeID:     run.Execution.Worktree.ExternalID,
+		WorkspaceID:    run.Execution.HostView.ExternalID,
+		AgentID:        run.Execution.Agent.ExternalID,
+		CleanupIntents: len(cleanupIntentFacts(run.Execution)),
+		NeedsYou:       run.Execution.NeedsYou != nil, Terminal: run.Execution.Terminal,
+	}
+	if run.Execution.LastStartupReconciliation != nil {
+		result.ReconciliationID = run.Execution.LastStartupReconciliation.ID
+	}
+	result.CandidateID = run.CurrentCandidateID
+	if result.CandidateID != "" && run.Execution.Claim != nil {
+		result.CandidateSHA = run.Execution.Claim.CandidateSHA
+	}
+	return result
+}
+
+func duplicateExecutionIdentity(runs []durableStartupRun) error {
+	seen := map[string]string{}
+	for _, durable := range runs {
+		state := durable.run.Execution
+		for kind, identity := range map[string]string{
+			"worktree":  state.Worktree.ExternalID,
+			"workspace": state.HostView.ExternalID,
+			"agent":     state.Agent.ExternalID,
+		} {
+			if identity == "" {
+				continue
+			}
+			key := kind + "\x1f" + identity
+			if owner, duplicate := seen[key]; duplicate && owner != durable.run.ID {
+				return fmt.Errorf("duplicate %s execution identity across Runs", kind)
+			}
+			seen[key] = durable.run.ID
+		}
+	}
+	return nil
+}
+
+// ReconcileStartup performs one complete read-only scan of every durable M1
+// Run and its immutable Command/Candidate graph before it records observations
+// or resumes any effect. Each active Run then advances by at most one existing
+// reducer decision, so a restart cannot starve another Run or bypass policy.
+func (controller *Controller) ReconcileStartup(ctx context.Context, command StartupCommand) (StartupResult, error) {
+	if command.SchemaVersion != StartupCommandSchemaVersion ||
+		!identifierPattern.MatchString(command.RequestID) || len(command.RequestID) > 128 || command.NowMillis < 0 {
+		return StartupResult{}, errors.New("invalid startup reconciliation command")
+	}
+	version, err := controller.store.SchemaVersion(ctx)
+	if err != nil {
+		return StartupResult{}, err
+	}
+	if version != storeport.SchemaVersion {
+		return StartupResult{}, storeport.ErrSchemaVersion
+	}
+	projects, err := controller.store.Projects(ctx)
+	if err != nil {
+		return StartupResult{}, err
+	}
+	sort.Slice(projects, func(left, right int) bool { return projects[left].ID < projects[right].ID })
+	result := StartupResult{Projects: len(projects)}
+	durableRuns := make([]durableStartupRun, 0)
+	for _, project := range projects {
+		tasks, err := controller.store.Tasks(ctx, project.ID)
+		if err != nil {
+			return StartupResult{}, err
+		}
+		sort.Slice(tasks, func(left, right int) bool { return tasks[left].ID < tasks[right].ID })
+		result.Tasks += len(tasks)
+		for _, task := range tasks {
+			runs, err := controller.store.Runs(ctx, task.ID)
+			if err != nil {
+				return StartupResult{}, err
+			}
+			for _, run := range runs {
+				if run.Execution.SchemaVersion == "" {
+					continue
+				}
+				durable, err := controller.scanDurableRun(ctx, project, task, run)
+				if err != nil {
+					return StartupResult{}, fmt.Errorf("startup scan %s: %w", run.ID, err)
+				}
+				durableRuns = append(durableRuns, durable)
+			}
+		}
+	}
+	if err := duplicateExecutionIdentity(durableRuns); err != nil {
+		return StartupResult{}, err
+	}
+
+	// Gather all external facts before the first TaskStore write or lifecycle
+	// mutation. A connector/runtime failure therefore leaves every Run intact.
+	observedRuns := make([]observedStartupRun, 0, len(durableRuns))
+	for _, durable := range durableRuns {
+		observed, err := controller.observeStartupRun(ctx, durable, command.NowMillis)
+		if err != nil {
+			return StartupResult{}, fmt.Errorf("startup observe %s: %w", durable.run.ID, err)
+		}
+		observedRuns = append(observedRuns, observed)
+	}
+
+	for _, observed := range observedRuns {
+		run := observed.durable.run
+		entry := startupRunResult(run)
+		if observed.durable.task.Attention != nil {
+			entry.NeedsYou = true
+		}
+		if run.Execution.Terminal {
+			result.Runs = append(result.Runs, entry)
+			continue
+		}
+		run, err = controller.persistStartupRun(ctx, command, observed)
+		if err != nil {
+			return StartupResult{}, err
+		}
+		if observed.durable.project.State != "active" || observed.durable.task.Attention != nil || run.Execution.NeedsYou != nil {
+			entry = startupRunResult(run)
+			if observed.durable.task.Attention != nil {
+				entry.NeedsYou = true
+			}
+			entry.Progressed = run.Version != observed.durable.run.Version
+			result.Runs = append(result.Runs, entry)
+			continue
+		}
+		if observed.unsafeCode != "" {
+			if err := controller.parkRun(ctx, run, observed.unsafeCode); err != nil {
+				return StartupResult{}, err
+			}
+			run, err = controller.store.Run(ctx, run.ID)
+			if err != nil {
+				return StartupResult{}, err
+			}
+			entry = startupRunResult(run)
+			entry.Progressed = true
+			result.Runs = append(result.Runs, entry)
+			continue
+		}
+		step, stepErr := controller.Step(ctx, run.ID, command.NowMillis)
+		entry = startupRunResult(step.Run)
+		entry.Progressed = step.Progressed
+		if stepErr != nil {
+			var handoff *EffectHandoffError
+			if !errors.As(stepErr, &handoff) {
+				return StartupResult{}, stepErr
+			}
+			entry.HandoffUnknown = true
+		}
+		current, err := controller.store.Run(ctx, run.ID)
+		if err != nil {
+			return StartupResult{}, err
+		}
+		updated := startupRunResult(current)
+		updated.Progressed = entry.Progressed
+		updated.HandoffUnknown = entry.HandoffUnknown
+		result.Runs = append(result.Runs, updated)
+	}
+	sort.Slice(result.Runs, func(left, right int) bool { return result.Runs[left].RunID < result.Runs[right].RunID })
+	return result, nil
+}

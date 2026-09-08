@@ -78,13 +78,38 @@ observed before any repeat. The pure Retry reducer applies unique-create,
 idempotent-close, and destructive-terminal rules; a present destructive target
 after possible handoff parks instead of being deleted again.
 
-The contract test intentionally loses the response after every fake mutation
-and constructs a new Controller between every step. Exact external observations
-adopt one worktree, host view, rootless boundary, setup, Task Agent, agent
-archive, host-view archive, and worktree removal. The resulting Candidate and
-all Run identities reload through the direct-Dolt TaskStore. General process
-startup scanning and connector-reload orchestration remain owned by
-`dir-m1.9`.
+Startup reconciliation enumerates Projects, Tasks, and walking-skeleton Runs
+from the direct-Dolt TaskStore before any mutation. It validates the complete
+contiguous immutable Command/Event chain, the Run's deterministic effect graph,
+cross-Run execution-ID uniqueness, the exact Candidate row and claim binding,
+and cleanup intent ordering. A bounded, self-hashed startup record retains the
+command count/chain hash, final Command ID, execution IDs, Candidate identity,
+cleanup intents, external frontier, and last monotonic host cursor without
+copying a path, command body, model narrative, or credential. Its Command and
+immutable Event also retain the complete bounded operational, effect, and
+Candidate observation set; the startup record binds their identities and fact
+hashes before a later projection can replace them.
+
+Only after every durable Run passes the read-only scan does the engine refresh
+operational facts plus the current effect or Candidate from the runtime/host
+ports. It persists those observations before allowing one existing pure reducer
+to select the next transition. A dispatch error occurs after `dispatching` is
+durable and is therefore reported as an unknown handoff; the next startup
+observes and adopts or parks it under the effect class. Reusing one startup
+request is idempotent, while a replacement connector must advance the durable
+host cursor supplied as its observation-only `afterCursor`. Project pause,
+existing Needs-you state, terminal state, command conflict, Candidate drift,
+execution-ID mismatch, stale cursor, or unsafe cleanup evidence cannot dispatch
+a lifecycle effect.
+
+The recovery contract intentionally loses the response after every fake
+mutation and replaces both the Controller and policy-free adapter before and
+after every boundary. Exact external observations adopt one worktree, host
+view, rootless boundary, setup, Task Agent, agent archive, host-view archive,
+and worktree removal exactly once. TaskStore-only Candidate observation,
+admission, and cleanup-intent transitions are likewise reconstructed from
+durable facts. The resulting Candidate and all Run identities reload through
+the direct-Dolt TaskStore.
 
 An `AgentOutcomeClaim` is persisted immutably but changes no Candidate state.
 The Routing reducer first requires an exact clean, reachable, owned Git commit
@@ -110,7 +135,7 @@ development, the narrow checks are:
 
 ```text
 go -C engine test ./domain/execution ./reducer/...
-go -C engine test ./cmd/director-engine -run 'TestFakeExecutionVerticalPath|TestLifecycleAndPeriodicFacts'
+go -C engine test ./cmd/director-engine -run 'TestFakeExecutionVerticalPath|TestLifecycleAndPeriodicFacts|TestStartupReconciliation'
 npm run contract:check
 npm run architecture:check
 ```
