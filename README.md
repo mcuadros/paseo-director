@@ -42,9 +42,13 @@ queued Task through engine-owned Eligibility, Launch, Retry, Escalation,
 Routing, and fake-terminal Closure reductions; a Director-owned disposable Git
 worktree; a fake registered host view and top-level Task Agent; an externally
 observed exact Candidate; direct-Dolt state; and terminal fixture cleanup. It
-never selects a real provider or connects to Paseo. Production scheduling,
-live-provider execution, validation/review/delivery, and general startup
-reconciliation remain later milestone work. See
+never selects a real provider or connects to Paseo. Engine startup now scans
+every persisted walking-skeleton Run, validates its immutable Command/Event and
+Candidate graph, recovers exact execution IDs and cleanup intents, refreshes
+the external frontier through a replaceable policy-free connector, and resumes
+one reducer-authorized transition without duplicating an unknown effect.
+Production scheduling, live-provider execution, and validation/review/delivery
+remain later milestone work. See
 [Fake execution vertical path](docs/fake-execution.md).
 
 Alongside that fake path, the walking skeleton establishes the process,

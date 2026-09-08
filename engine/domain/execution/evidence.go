@@ -54,3 +54,25 @@ func CurrentCandidateObservation(observation CandidateObservation, nowMillis int
 		observation.ObservedAtMillis >= 0 && observation.ObservedAtMillis <= nowMillis &&
 		nowMillis-observation.ObservedAtMillis <= observation.MaximumAgeMillis
 }
+
+// StartupReconciliationHash binds one startup scan to its complete bounded
+// durable/external fact summary while excluding the self-hash field.
+func StartupReconciliationHash(observation StartupReconciliation) string {
+	observation.FactHash = ""
+	return evidenceDigest(observation)
+}
+
+// ValidStartupReconciliation rejects a partial or self-inconsistent startup
+// record before it can be treated as recovered state.
+func ValidStartupReconciliation(observation StartupReconciliation) bool {
+	return observation.SchemaVersion == StartupReconciliationSchemaVersion &&
+		observation.ID != "" && observation.ObservedAtMillis >= 0 &&
+		observation.CommandCount > 0 && observation.CommandChainHash != "" &&
+		observation.LastCommandID != "" && observation.OperationalObservationID != "" &&
+		(observation.EffectObservationCount == 0) == (observation.EffectObservationChainHash == "") &&
+		(observation.CandidateID == "") == (observation.CandidateSHA == "") &&
+		(observation.FrontierObservationID == "") == (observation.FrontierObservationHash == "") &&
+		(observation.CandidateObservationID == "") == (observation.CandidateObservationHash == "") &&
+		observation.FactHash != "" &&
+		observation.FactHash == StartupReconciliationHash(observation)
+}

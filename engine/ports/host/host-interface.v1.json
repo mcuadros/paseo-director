@@ -38,6 +38,7 @@
       "capability",
       "arguments"
     ],
+    "optional": ["afterCursor"],
     "maximumBytes": 1048576,
     "arguments": {
       "required": ["scope", "effectKind", "effectId", "bindingHash"],

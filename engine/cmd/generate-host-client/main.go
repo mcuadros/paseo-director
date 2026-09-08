@@ -108,6 +108,7 @@ export interface HostCommand {
   requestId: string;
   idempotencyKey: string;
   expectedVersion: number;
+  afterCursor?: number;
   capability: HostCapability;
   arguments: Readonly<HostCommandArguments>;
 }

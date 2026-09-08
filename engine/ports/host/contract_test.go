@@ -139,7 +139,8 @@ func TestParseDefinitionRejectsDuplicateCapabilities(t *testing.T) {
 func TestValidateObservationBindsEnvelopeResultAndHash(t *testing.T) {
 	command := Command{
 		RequestID: "request-1", IdempotencyKey: "effect-1", ExpectedVersion: 1,
-		Capability: CapabilityAgentObserve,
+		AfterCursor: 0,
+		Capability:  CapabilityAgentObserve,
 		Arguments: Arguments{
 			Scope:      execution.Scope{ProjectID: "project-1", WorkspaceID: "workspace-1", TaskID: "task-1", RunID: "run-1"},
 			EffectKind: execution.EffectAgentCreate, EffectID: "effect-1",
@@ -162,6 +163,7 @@ func TestValidateObservationBindsEnvelopeResultAndHash(t *testing.T) {
 	for name, mutate := range map[string]func(*Observation){
 		"request": func(value *Observation) { value.RequestID = "other" },
 		"cursor":  func(value *Observation) { value.Cursor = 0 },
+		"resume":  func(value *Observation) { value.Cursor = command.AfterCursor },
 		"binding": func(value *Observation) { value.Result.BindingHash = "other" },
 		"hash":    func(value *Observation) { value.Result.FactHash = strings.Repeat("0", 64) },
 	} {

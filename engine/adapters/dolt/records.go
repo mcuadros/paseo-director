@@ -239,6 +239,10 @@ func validateRun(run domain.Run) error {
 		if state.NeedsYou != nil && (state.NeedsYou.Code == "" || state.NeedsYou.WakeCondition == "" || state.NeedsYou.CleanupAuthorized) {
 			return fmt.Errorf("%w: invalid Run execution attention", storeport.ErrInvalidRecord)
 		}
+		if state.LastStartupReconciliation != nil &&
+			!execution.ValidStartupReconciliation(*state.LastStartupReconciliation) {
+			return fmt.Errorf("%w: invalid startup reconciliation", storeport.ErrInvalidRecord)
+		}
 	}
 	return nil
 }

@@ -88,6 +88,7 @@ type Command struct {
 	RequestID       string     `json:"requestId"`
 	IdempotencyKey  string     `json:"idempotencyKey"`
 	ExpectedVersion uint64     `json:"expectedVersion"`
+	AfterCursor     uint64     `json:"afterCursor,omitempty"`
 	Capability      Capability `json:"capability"`
 	Arguments       Arguments  `json:"arguments"`
 }
@@ -134,6 +135,7 @@ func ObservationResultHash(result ObservationResult) string {
 // ValidateObservation rejects a misbound or self-inconsistent host envelope.
 func ValidateObservation(command Command, observation Observation) error {
 	if observation.RequestID != command.RequestID || observation.Cursor == 0 ||
+		observation.Cursor <= command.AfterCursor ||
 		observation.ObservedAt == "" || observation.Result.EffectID != command.Arguments.EffectID ||
 		observation.Result.BindingHash != command.Arguments.BindingHash ||
 		observation.Result.MaximumAgeMillis <= 0 ||
