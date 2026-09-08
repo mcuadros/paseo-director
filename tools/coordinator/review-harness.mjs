@@ -561,6 +561,7 @@ export async function runReviewHarness(rawOptions, dependencies = {}) {
       },
       maintainedAdversarialHarness: [
         "tools/coordinator/coordinator.test.mjs",
+        "tools/coordinator/paseo-auth.test.mjs",
         "tools/coordinator/review-harness.test.mjs",
       ],
       environment,
