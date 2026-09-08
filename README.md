@@ -47,6 +47,11 @@ live-provider execution, validation/review/delivery, and general startup
 reconciliation remain later milestone work. See
 [Fake execution vertical path](docs/fake-execution.md).
 
+Alongside that fake path, the walking skeleton establishes the process,
+package, UI, host contract, credential, distribution, configuration/revision,
+previewed local Create/Adopt Organizer, direct-Dolt persistence, and CI
+boundaries on which later M1 Tasks can build.
+
 ## Development
 
 Requirements are Linux, Node.js 22 or newer, npm with lockfile support, Go
@@ -115,6 +120,17 @@ sufficient: engine admission also rejects invalid Unicode, canonical expansion,
 password-bearing or unsafe Git remotes, unsafe paths, and semantic conflicts.
 Director for Paseo only renders the engine projection and submits typed
 commands; it owns no activation or snapshot policy.
+
+The Go Organizer application also supports read-only Create/Adopt previews,
+verified-human Apply, interruption-safe local repository creation, read-only
+adoption, durable TaskStore reopen, and exact revision/configuration drift
+checks. Both flows validate configured Workspace roots and origin remotes
+without modifying product repositories. The minimal Create mode is local-only;
+remote Organizer creation is not implied. Organizer Git calls neutralize
+repository-local and worktree-scoped executable configuration without following
+external includes, bound output during streaming, use raw NUL-delimited paths
+for non-ASCII-safe recovery, and treat the committed request marker only as
+integrity correlation beneath an owner-controlled parent directory.
 
 See [Organizer configuration and revisions](docs/configuration.md) for the
 complete minimal document and transition contract.
@@ -185,6 +201,15 @@ to the stable port sentinels and contain no raw driver, listener, credential,
 SQL, table, address, or server output. Every singular and collection reload
 validates Project, Task, Run, and Candidate values before returning them.
 
+Project records now also carry the bounded Organizer repository projection.
+During a confirmed Create, the Project is paused and temporarily retains the
+canonical pending configuration needed to recover the approved effect saga;
+after the exact initial Git revision is committed, activation clears that
+payload and retains only repository identity, revision, and configuration hash.
+Adopt persists the same active projection atomically after a read-only exact
+repository check. Existing non-Organizer walking-skeleton Project rows remain
+readable, while malformed or contradictory Organizer projections fail closed.
+
 The schema remains ordinary externally inspectable Dolt tables, so the
 ADR-0012 pause/inspection, online-backup, fresh-restore, migration, and remote
 synchronization procedures remain applicable. This M1 skeleton makes no
@@ -201,7 +226,10 @@ records, and the guard-read-only, DROP-free runtime writer grant.
 The closed `paseo-director.json` contract lives under
 `domain/configuration`. Its optimistic pending/active revision aggregate and
 frozen Run snapshots live under `application/configuration`; no host package
-owns those transitions.
+owns those transitions. Organizer repository Preview/Apply/recovery lives under
+`application/organizer`, calls only the typed TaskStore and Organizer repository
+ports, and uses the policy-free `adapters/organizergit` implementation for
+direct-argv Git and atomic filesystem effects.
 
 The Paseo 0.7 host uses the stable mixed `index.ts` entry. The Director
 repository convention separates runtime code as `ui/*.client.*`,

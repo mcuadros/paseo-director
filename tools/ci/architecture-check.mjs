@@ -89,7 +89,7 @@ const ADAPTER_RUNTIME_DATA_DECLARATIONS = new Set([
   "ProjectionReader",
   "DomainEventRow",
 ]);
-const POLICY_PATH = /(?:^|\/)(?:domain|application|orchestration|eligibility|scheduler|scheduling|retry|escalation|routing|reconciliation|state-transition|taskstore|projection|closure|reducers?|policy|organizer-revision|configuration-revision|revision-state|run-configuration-snapshot)(?:[./_-]|$)/i;
+const POLICY_PATH = /(?:^|\/)(?:domain|application|orchestration|eligibility|scheduler|scheduling|retry|escalation|routing|reconciliation|state-transition|taskstore|projection|closure|reducers?|policy|organizer-revision|organizer-bootstrap|create-project|adopt-organizer|configuration-revision|revision-state|run-configuration-snapshot)(?:[./_-]|$)/i;
 const CANONICAL_HOST_CONTRACT = "engine/ports/host/host-interface.v1.json";
 const POLICY_GUARDED_PATH_PREFIXES = [
   ["ui", "ui/"],
@@ -407,6 +407,10 @@ export function structureErrors(paths, packagePaths, fileSources = new Map()) {
     if (!packageSet.has(requiredPackage)) {
       errors.push(`${requiredPackage}: required configuration boundary is missing`);
     }
+  }
+  const organizerApplication = `${ENGINE_MODULE}/application/organizer`;
+  if (!packageSet.has(organizerApplication)) {
+    errors.push(`${organizerApplication}: required Organizer application boundary is missing`);
   }
   if (!pathSet.has("generated/host-contract.shared.ts")) {
     errors.push("generated: the generated engine client is missing");

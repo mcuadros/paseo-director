@@ -150,8 +150,89 @@ Project and Run. A later Preview or Apply cannot change a snapshot already
 assigned to a Run. Thus a valid but unapproved pending revision, and even a
 human-confirmed invalid revision, cannot affect a new or existing Run.
 
-This M1 skeleton does not create Organizer commits, authenticate a concrete
-host transport, persist Project state, compute Task-level effective overrides,
-schedule work, launch agents, or execute delivery policy. Those behaviors
-belong to their later Tasks and must consume these engine-owned contracts rather
-than duplicate them in TypeScript.
+## Create and Adopt Organizer
+
+The M1 bootstrap application lives in the standalone Go Director Engine. The
+Paseo UI may render its projections and submit typed commands, but neither the
+TypeScript connector nor UI validates repositories, interprets approval,
+chooses effects, or projects active state.
+
+`PreviewCreate` is read-only. It validates Project identity, configuration,
+the absent canonical Organizer target, and every configured product Workspace
+path plus exact `origin` remote. It rejects an Organizer path which contains,
+or is contained by, a product Workspace. The preview binds a caller-retained
+request identity, the canonical configuration hash, the exact generated
+ownership marker, README, deterministic non-secret placeholder skill/template
+files, their hashes, and the complete ordered operation list. Every explicit
+configuration reference is materialized and committed; no unreferenced file is
+discovered or injected implicitly.
+The minimal M1 Create mode is local-only; remote selection and private GitHub
+repository creation remain later bootstrap capabilities and are never silent
+fallbacks.
+
+The request identity is a stable idempotency and integrity-correlation value,
+not secret authorization. The marker is deliberately committed and may be
+guessable. Create therefore requires the target to be absent beneath an
+existing canonical parent owned by the engine user and not writable by group
+or others. The created root and `.director` directory are mode `0700`, and
+recovery from the first effect adopts only a root containing the exact marker
+and no other state. A matching marker beside any foreign entry is refused
+before Director writes another file. Later phases verify the marker only as a
+binding to the already durable approved intent.
+
+`ApplyCreate` requires the exact Preview ID and a confirmed,
+server-authenticated human actor. Before touching the filesystem it persists a
+paused Project and approved operation identity through the selected TaskStore.
+Create then advances through these engine-owned effects:
+
+1. create/adopt the exact owned Organizer root and ownership marker;
+2. atomically create the exact canonical `paseo-director.json`;
+3. atomically create the previewed README and explicit reference files;
+4. initialize local Git with direct argv and no lifecycle hooks;
+5. create or adopt one exact initial commit; and
+6. record that exact revision and activate the Project.
+
+Each effect has a durable progress transition. If execution stops after a
+handoff but before its result is recorded, restart re-observes and adopts only
+the exact desired result. A mismatch, dirty repository, changed file, stale
+Preview, reused request with different content, missing approval, TaskStore
+conflict, or unavailable fact fails closed. The Project remains paused until
+the final activation, and repeated Apply/Recover calls do not create a second
+commit.
+
+Every Git read and write ignores system/global configuration and overrides
+repository-local and worktree-scoped executable settings: hooks and signing are
+disabled, `core.fsmonitor=false`, `core.quotePath=false`, external diff/network
+helpers are pinned inert, and filter commands plus diff command/text-conversion
+drivers are enumerated independently in each enabled scope before being
+overridden. Enumeration is bounded, never follows external include directives,
+and fails closed on an include, malformed configuration, or ambiguous worktree
+configuration extension.
+Create stages exact regular files with `hash-object --no-filters` and
+`update-index`, never `git add`, so attributes cannot execute a clean/process
+filter. Status and tracked-file comparisons use NUL-delimited raw path output,
+which preserves valid non-ASCII references exactly through every recovery
+boundary. Combined stdout/stderr is capped by the writer while Git is running;
+overflow stops collection and returns one typed redacted error without
+retaining the excess bytes.
+
+`PreviewAdopt` reads a clean exact Git root, committed
+`paseo-director.json`, current HEAD, and every configured Workspace identity.
+Every explicit skill/template reference must be a committed regular file. The
+preview performs no repository or TaskStore write. Confirmed `ApplyAdopt`
+re-runs that exact observation and then persists the active Project/revision in
+one TaskStore transaction. `Open` rechecks repository cleanliness, revision,
+configuration hash, Project identity, explicit references, and Workspace
+path/remotes after a process or TaskStore reopen. Drift never silently changes
+the active revision.
+
+Create and Adopt inspect product repositories only through read-only Git/path
+operations. They never add, edit, stage, commit, branch, or configure a product
+repository. The Organizer is durable repository/configuration state, not a
+persistent planning or decision-making agent.
+
+This M1 skeleton still does not authenticate a concrete host transport,
+compute Task-level effective overrides, schedule work, launch agents, create a
+remote Organizer, or execute delivery policy. Those behaviors belong to their
+later Tasks and must consume these engine-owned contracts rather than duplicate
+them in TypeScript.
