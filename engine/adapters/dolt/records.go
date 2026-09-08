@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/mcuadros/director-engine/domain"
+	"github.com/mcuadros/director-engine/domain/execution"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
 
@@ -22,15 +23,17 @@ type projectData struct {
 }
 
 type taskData struct {
-	Title              string `json:"title"`
-	Objective          string `json:"objective"`
-	AcceptanceCriteria string `json:"acceptanceCriteria"`
+	Title              string              `json:"title"`
+	Objective          string              `json:"objective"`
+	AcceptanceCriteria string              `json:"acceptanceCriteria"`
+	Attention          *execution.NeedsYou `json:"attention,omitempty"`
 }
 
 type runData struct {
-	Number             uint64 `json:"number"`
-	BaseSHA            string `json:"baseSha"`
-	CurrentCandidateID string `json:"currentCandidateId,omitempty"`
+	Number             uint64          `json:"number"`
+	BaseSHA            string          `json:"baseSha"`
+	CurrentCandidateID string          `json:"currentCandidateId,omitempty"`
+	Execution          execution.State `json:"execution,omitempty"`
 }
 
 func decodeRecord(document []byte, destination any) error {
@@ -96,6 +99,9 @@ func validateTask(task domain.Task) error {
 		task.AcceptanceCriteria == "" || len(task.AcceptanceCriteria) > 16*1024 {
 		return fmt.Errorf("%w: invalid Task", storeport.ErrInvalidRecord)
 	}
+	if task.Attention != nil && (task.Attention.Code == "" || task.Attention.WakeCondition == "" || task.Attention.CleanupAuthorized) {
+		return fmt.Errorf("%w: invalid Task attention", storeport.ErrInvalidRecord)
+	}
 	return nil
 }
 
@@ -117,6 +123,17 @@ func validateRun(run domain.Run) error {
 	}
 	if run.CurrentCandidateID != "" && !safeIdentifier(run.CurrentCandidateID, 128) {
 		return fmt.Errorf("%w: invalid current Candidate identity", storeport.ErrInvalidRecord)
+	}
+	state := run.Execution
+	if state.SchemaVersion != "" {
+		if state.SchemaVersion != execution.SchemaVersion || state.Scope.RunID != run.ID ||
+			state.Scope.TaskID != run.TaskID || !safeIdentifier(state.Scope.ProjectID, 128) ||
+			!safeIdentifier(state.Scope.WorkspaceID, 128) {
+			return fmt.Errorf("%w: invalid Run execution identity", storeport.ErrInvalidRecord)
+		}
+		if state.NeedsYou != nil && (state.NeedsYou.Code == "" || state.NeedsYou.WakeCondition == "" || state.NeedsYou.CleanupAuthorized) {
+			return fmt.Errorf("%w: invalid Run execution attention", storeport.ErrInvalidRecord)
+		}
 	}
 	return nil
 }
@@ -206,6 +223,7 @@ func (store *DoltTaskStore) CreateTask(
 	}
 	data, err := marshalRecord(taskData{
 		Title: task.Title, Objective: task.Objective, AcceptanceCriteria: task.AcceptanceCriteria,
+		Attention: task.Attention,
 	})
 	if err != nil {
 		return domain.CommandResult{}, err
@@ -237,6 +255,7 @@ func (store *DoltTaskStore) UpdateTask(
 	}
 	data, err := marshalRecord(taskData{
 		Title: task.Title, Objective: task.Objective, AcceptanceCriteria: task.AcceptanceCriteria,
+		Attention: task.Attention,
 	})
 	if err != nil {
 		return domain.CommandResult{}, err
@@ -274,7 +293,7 @@ func (store *DoltTaskStore) CreateRun(
 	if err := validateCreateCommand(command, run.ID, run.Version); err != nil {
 		return domain.CommandResult{}, err
 	}
-	data, err := marshalRecord(runData{Number: run.Number, BaseSHA: run.BaseSHA})
+	data, err := marshalRecord(runData{Number: run.Number, BaseSHA: run.BaseSHA, Execution: run.Execution})
 	if err != nil {
 		return domain.CommandResult{}, err
 	}
@@ -305,6 +324,7 @@ func (store *DoltTaskStore) UpdateRun(
 	}
 	data, err := marshalRecord(runData{
 		Number: run.Number, BaseSHA: run.BaseSHA, CurrentCandidateID: run.CurrentCandidateID,
+		Execution: run.Execution,
 	})
 	if err != nil {
 		return domain.CommandResult{}, err
@@ -331,7 +351,7 @@ func (store *DoltTaskStore) UpdateRun(
 		current := domain.Run{
 			ID: run.ID, TaskID: parentID, Number: currentData.Number,
 			BaseSHA: currentData.BaseSHA, CurrentCandidateID: currentData.CurrentCandidateID,
-			Version: currentVersion,
+			Execution: currentData.Execution, Version: currentVersion,
 		}
 		if err := validateReloaded(validateRun(current)); err != nil {
 			return mutationResult{}, err
@@ -535,6 +555,7 @@ func (store *DoltTaskStore) Task(ctx context.Context, id string) (domain.Task, e
 		return domain.Task{}, err
 	}
 	task.Title, task.Objective, task.AcceptanceCriteria = data.Title, data.Objective, data.AcceptanceCriteria
+	task.Attention = data.Attention
 	if err := validateReloaded(validateTask(task)); err != nil {
 		return domain.Task{}, err
 	}
@@ -571,6 +592,7 @@ func (store *DoltTaskStore) Tasks(ctx context.Context, projectID string) ([]doma
 			return nil, err
 		}
 		task.Title, task.Objective, task.AcceptanceCriteria = data.Title, data.Objective, data.AcceptanceCriteria
+		task.Attention = data.Attention
 		if err := validateReloaded(validateTask(task)); err != nil {
 			return nil, err
 		}
@@ -608,6 +630,7 @@ func (store *DoltTaskStore) Run(ctx context.Context, id string) (domain.Run, err
 		return domain.Run{}, err
 	}
 	run.Number, run.BaseSHA, run.CurrentCandidateID = data.Number, data.BaseSHA, data.CurrentCandidateID
+	run.Execution = data.Execution
 	if err := validateReloaded(validateRun(run)); err != nil {
 		return domain.Run{}, err
 	}
@@ -645,6 +668,7 @@ func (store *DoltTaskStore) Runs(ctx context.Context, taskID string) ([]domain.R
 			return nil, err
 		}
 		run.Number, run.BaseSHA, run.CurrentCandidateID = data.Number, data.BaseSHA, data.CurrentCandidateID
+		run.Execution = data.Execution
 		if err := validateReloaded(validateRun(run)); err != nil {
 			return nil, err
 		}

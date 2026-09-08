@@ -2,7 +2,11 @@
 
 package domain
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/mcuadros/director-engine/domain/execution"
+)
 
 // Project is the minimal mutable Project aggregate persisted by the walking
 // skeleton. Version is advanced only by an expected-version TaskStore write.
@@ -21,6 +25,7 @@ type Task struct {
 	Title              string
 	Objective          string
 	AcceptanceCriteria string
+	Attention          *execution.NeedsYou
 	Version            uint64
 }
 
@@ -33,6 +38,7 @@ type Run struct {
 	Number             uint64
 	BaseSHA            string
 	CurrentCandidateID string
+	Execution          execution.State
 	Version            uint64
 }
 

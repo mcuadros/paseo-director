@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/mcuadros/director-engine/domain/execution"
 )
 
 func TestEmbeddedContractAndDescriptor(t *testing.T) {
@@ -124,5 +126,44 @@ func TestParseDefinitionRejectsDuplicateCapabilities(t *testing.T) {
 	schema := []byte(`{"schemaVersion":1,"contractVersion":"v1","credentialScope":"scope","capabilities":["same","same"]}`)
 	if _, err := ParseDefinition(schema); err == nil {
 		t.Fatal("ParseDefinition() accepted duplicate capabilities")
+	}
+}
+
+func TestValidateObservationBindsEnvelopeResultAndHash(t *testing.T) {
+	command := Command{
+		RequestID: "request-1", IdempotencyKey: "effect-1", ExpectedVersion: 1,
+		Capability: CapabilityAgentObserve,
+		Arguments: Arguments{
+			Scope:      execution.Scope{ProjectID: "project-1", WorkspaceID: "workspace-1", TaskID: "task-1", RunID: "run-1"},
+			EffectKind: execution.EffectAgentCreate, EffectID: "effect-1",
+			BindingHash: strings.Repeat("1", 64),
+		},
+	}
+	result := ObservationResult{
+		EffectID: command.Arguments.EffectID, Status: execution.ObservationAbsent,
+		BindingHash: command.Arguments.BindingHash, PriorDispatcherAbsent: true,
+		MaximumAgeMillis: 30_000,
+	}
+	result.FactHash = ObservationResultHash(result)
+	observation := Observation{
+		RequestID: command.RequestID, Cursor: 1, ObservedAt: "1970-01-01T00:00:01Z",
+		Result: result,
+	}
+	if err := ValidateObservation(command, observation); err != nil {
+		t.Fatalf("valid observation: %v", err)
+	}
+	for name, mutate := range map[string]func(*Observation){
+		"request": func(value *Observation) { value.RequestID = "other" },
+		"cursor":  func(value *Observation) { value.Cursor = 0 },
+		"binding": func(value *Observation) { value.Result.BindingHash = "other" },
+		"hash":    func(value *Observation) { value.Result.FactHash = strings.Repeat("0", 64) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := observation
+			mutate(&changed)
+			if err := ValidateObservation(command, changed); err == nil {
+				t.Fatal("ValidateObservation accepted drift")
+			}
+		})
 	}
 }

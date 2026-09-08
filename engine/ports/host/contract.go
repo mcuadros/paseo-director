@@ -4,6 +4,7 @@
 package host
 
 import (
+	"context"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
 )
 
@@ -32,6 +34,108 @@ type Descriptor struct {
 	ContractVersion string   `json:"contractVersion"`
 	ContractHash    string   `json:"contractHash"`
 	Capabilities    []string `json:"capabilities"`
+}
+
+// Capability is one exact operation in the engine-owned host contract.
+type Capability string
+
+const (
+	CapabilityWorkspaceCreate     Capability = "executionWorkspace.createManaged"
+	CapabilityWorkspaceObserve    Capability = "executionWorkspace.observe"
+	CapabilityWorkspaceArchive    Capability = "executionWorkspace.archive"
+	CapabilityTaskAgentCreate     Capability = "taskAgent.createWithInitialPrompt"
+	CapabilityReviewerAgentCreate Capability = "reviewerAgent.createWithInitialPrompt"
+	CapabilityHelperAgentObserve  Capability = "helperAgent.observe"
+	CapabilityAgentObserve        Capability = "agent.observe"
+	CapabilityAgentArchive        Capability = "agent.archive"
+)
+
+// Arguments is the typed M1 subset of the host command union. ParentAgentID is
+// a pointer so a top-level Task Agent request proves the field was omitted.
+type Arguments struct {
+	Scope                  execution.Scope      `json:"scope"`
+	EffectKind             execution.EffectKind `json:"effectKind"`
+	EffectID               string               `json:"effectId"`
+	WorktreeID             string               `json:"worktreeId,omitempty"`
+	WorktreePath           string               `json:"worktreePath,omitempty"`
+	WorkspaceID            string               `json:"workspaceId,omitempty"`
+	AgentID                string               `json:"agentId,omitempty"`
+	Title                  string               `json:"title,omitempty"`
+	InitialPrompt          string               `json:"initialPrompt,omitempty"`
+	ParentAgentID          *string              `json:"parentAgentId,omitempty"`
+	LifecycleDigest        string               `json:"lifecycleDigest,omitempty"`
+	IsolationDigest        string               `json:"isolationDigest,omitempty"`
+	PreparationReady       bool                 `json:"preparationReady,omitempty"`
+	PreparationBarrierHash string               `json:"preparationBarrierHash,omitempty"`
+	BindingHash            string               `json:"bindingHash"`
+}
+
+// Command is the exact typed request accepted by a host connector.
+type Command struct {
+	RequestID       string     `json:"requestId"`
+	IdempotencyKey  string     `json:"idempotencyKey"`
+	ExpectedVersion uint64     `json:"expectedVersion"`
+	Capability      Capability `json:"capability"`
+	Arguments       Arguments  `json:"arguments"`
+}
+
+// ObservationResult is a normalized host fact. SDK receipts and model text
+// are not represented as evidence.
+type ObservationResult struct {
+	EffectID              string                      `json:"effectId"`
+	Status                execution.ObservationStatus `json:"status"`
+	ExternalID            string                      `json:"externalId,omitempty"`
+	BindingHash           string                      `json:"bindingHash"`
+	PriorDispatcherAbsent bool                        `json:"priorDispatcherAbsent"`
+	MaximumAgeMillis      int64                       `json:"maximumAgeMillis"`
+	FactHash              string                      `json:"factHash"`
+}
+
+// Observation is the resumable typed transport envelope returned by the host.
+type Observation struct {
+	RequestID  string            `json:"requestId"`
+	Cursor     uint64            `json:"cursor"`
+	ObservedAt string            `json:"observedAt"`
+	Result     ObservationResult `json:"result"`
+}
+
+// Port is the one engine-owned host interface. Director for Paseo implements
+// it without owning launch, retry, routing, or cleanup policy.
+type Port interface {
+	Describe(context.Context) (Descriptor, error)
+	Invoke(context.Context, Command) (Observation, error)
+}
+
+// ObservationResultHash binds every normalized result field while excluding
+// the self-hash field.
+func ObservationResultHash(result ObservationResult) string {
+	result.FactHash = ""
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		panic("marshal fixed host observation result: " + err.Error())
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+// ValidateObservation rejects a misbound or self-inconsistent host envelope.
+func ValidateObservation(command Command, observation Observation) error {
+	if observation.RequestID != command.RequestID || observation.Cursor == 0 ||
+		observation.ObservedAt == "" || observation.Result.EffectID != command.Arguments.EffectID ||
+		observation.Result.BindingHash != command.Arguments.BindingHash ||
+		observation.Result.MaximumAgeMillis <= 0 ||
+		observation.Result.FactHash == "" ||
+		observation.Result.FactHash != ObservationResultHash(observation.Result) {
+		return errors.New("host observation envelope is invalid")
+	}
+	switch observation.Result.Status {
+	case execution.ObservationDesired, execution.ObservationAbsent,
+		execution.ObservationOwnedPresent, execution.ObservationDifferent,
+		execution.ObservationAmbiguous, execution.ObservationUnavailable:
+		return nil
+	default:
+		return errors.New("host observation status is invalid")
+	}
 }
 
 // CanonicalJSON parses a contract document, rejects duplicate keys, and emits

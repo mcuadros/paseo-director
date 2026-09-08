@@ -37,10 +37,15 @@ Engine.
 Director for Paseo is an independent community plugin. It is not affiliated
 with, endorsed by, maintained by, or sponsored by Paseo.
 
-This walking skeleton intentionally implements no Task execution workflow. It
-establishes the process, package, UI, host contract, credential, distribution,
-configuration/revision, direct-Dolt persistence, and CI boundaries on which
-later M1 Tasks can build.
+The walking skeleton includes one explicitly fake execution path. It moves one
+queued Task through engine-owned Eligibility, Launch, Retry, Escalation,
+Routing, and fake-terminal Closure reductions; a Director-owned disposable Git
+worktree; a fake registered host view and top-level Task Agent; an externally
+observed exact Candidate; direct-Dolt state; and terminal fixture cleanup. It
+never selects a real provider or connects to Paseo. Production scheduling,
+live-provider execution, validation/review/delivery, and general startup
+reconciliation remain later milestone work. See
+[Fake execution vertical path](docs/fake-execution.md).
 
 ## Development
 
@@ -218,6 +223,11 @@ The connector implements only the eight fixed capabilities approved in
 It does not contain domain, application, orchestration, eligibility, scheduling,
 retry, escalation, routing, reconciliation, transition, TaskStore, projection,
 or closure policy.
+
+The M1 fake adapter implements that same generated typed host contract entirely
+inside the Go test fixture. Host-view registration never transfers product
+worktree ownership, and the production TypeScript connector remains a
+policy-free boundary rather than a second execution engine.
 
 - [Approved product and engineering plan](docs/PLAN.md)
 - [Contributing workflow](CONTRIBUTING.md)

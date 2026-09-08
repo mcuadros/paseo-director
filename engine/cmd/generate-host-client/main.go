@@ -45,19 +45,68 @@ export interface HostDescriptor {
   capabilities: typeof HOST_CAPABILITIES;
 }
 
+export interface HostScope {
+  projectId: string;
+  workspaceId: string;
+  taskId: string;
+  runId: string;
+}
+
+export type HostEffectKind =
+  | "host_view.create"
+  | "task_agent.create_with_initial_prompt"
+  | "task_agent.archive"
+  | "host_view.archive";
+
+export interface HostCommandArguments {
+  scope: Readonly<HostScope>;
+  effectKind: HostEffectKind;
+  effectId: string;
+  bindingHash: string;
+  worktreeId?: string;
+  worktreePath?: string;
+  workspaceId?: string;
+  agentId?: string;
+  title?: string;
+  initialPrompt?: string;
+  parentAgentId?: string;
+  lifecycleDigest?: string;
+  isolationDigest?: string;
+  preparationReady?: boolean;
+  preparationBarrierHash?: string;
+}
+
 export interface HostCommand {
   requestId: string;
   idempotencyKey: string;
   expectedVersion: number;
   capability: HostCapability;
-  arguments: Readonly<Record<string, unknown>>;
+  arguments: Readonly<HostCommandArguments>;
+}
+
+export type HostObservationStatus =
+  | "desired"
+  | "absent"
+  | "owned_present"
+  | "different"
+  | "ambiguous"
+  | "unavailable";
+
+export interface HostObservationResult {
+  effectId: string;
+  status: HostObservationStatus;
+  externalId?: string;
+  bindingHash: string;
+  priorDispatcherAbsent: boolean;
+  maximumAgeMillis: number;
+  factHash: string;
 }
 
 export interface HostObservation {
   requestId: string;
   cursor: number;
   observedAt: string;
-  result: unknown;
+  result: Readonly<HostObservationResult>;
 }
 
 export interface DirectorHost {
