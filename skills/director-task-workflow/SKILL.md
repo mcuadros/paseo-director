@@ -39,14 +39,34 @@ When new work is discovered, create a sibling Task under the same milestone Epic
 
 1. Run focused checks while iterating and the full Task-required checks before handoff.
 2. Use `$director-commit` to create focused commits.
-3. Require `$director-independent-review` to approve the exact final Candidate SHA.
-4. Address every blocking finding through the same Task Agent only in an authorized correction turn, and obtain a fresh review for a changed SHA.
-5. After each work or correction turn, submit a structured Candidate/outcome claim and hand the exact Candidate to the authorized coordinator; `$director-pull-request` is coordinator-only after independent approval.
-6. The Task Agent may produce Candidate/outcome claims and perform authorized correction turns, but it cannot decide or perform publication, pull-request creation or update, integration, lifecycle cleanup, or Task closure.
-7. Update Beads with the Candidate SHA, validation evidence, correction disposition, residual risks, and exact handoff. The Reviewer and authorized coordinator separately record review and post-handoff lifecycle evidence under their own identities.
-8. Only the Director Engine or authorized coordinator reconciles and executes publication, integration, cleanup, and Task closure. It preserves the exact remote-head, relevant-base, configured/required-check, mergeability, feedback, and atomic expected-head gates, and closes only after integration and owned-resource cleanup are verified.
+3. Run `director-coordinator review-handoff` with the exact Task, actor,
+   repository ID, base, Candidate, branch, checkout, ownership, and Paseo
+   resource bindings plus explicit checkout/lifecycle states and the structured
+   author-validation file. The handoff actor must be the Task assignee. Hand its
+   automatic non-authoritative Candidate/base/tree/diff/evidence manifest to
+   the coordinator; do not substitute a prose snapshot or a sequence of
+   unbound Git reads.
+4. Require `$director-independent-review` to approve the exact final Candidate SHA.
+5. Address every blocking finding through the same Task Agent only in an authorized correction turn, and obtain a fresh review for a changed SHA.
+6. After each work or correction turn, submit a structured Candidate/outcome claim and hand the exact Candidate to the authorized coordinator; `$director-pull-request` is coordinator-only after independent approval.
+7. The Task Agent may produce Candidate/outcome claims and perform authorized correction turns, but it cannot decide or perform publication, pull-request creation or update, integration, lifecycle cleanup, or Task closure.
+8. Update Beads with the Candidate SHA, validation evidence, correction disposition, residual risks, and exact handoff. The Reviewer and authorized coordinator separately record review and post-handoff lifecycle evidence under their own identities.
+9. Only the Director Engine or authorized coordinator reconciles and executes publication, integration, cleanup, and Task closure through the repository coordinator CLI. It preserves the exact remote-head, relevant-base, configured/required-check, mergeability, feedback, and atomic expected-head gates, and closes only after integration and owned-resource cleanup are verified.
 
 Candidate approval is not Task completion. The Task Agent keeps every reviewer-listed post-review gate pending in its claim; only the Director Engine or authorized coordinator may verify and complete push, PR, CI, integration, synchronization, cleanup, and closure gates.
+
+Report lifecycle facts only after reading them back. A Task Agent may verify
+that its checkout is clean and present at handoff, but must not claim that the
+worktree, agent, or workspace will remain after a one-shot schedule ends. The
+coordinator re-observes `present` versus `reclaimed` and uses the control
+repository plus exact Task ref; it never fabricates `none` for previously
+created lifecycle resources.
+
+The Task Agent does not ask a Reviewer to reconstruct maintained adversarial
+probes in `/tmp` or to rerun complete CI repeatedly. The authorized coordinator
+supplies the versioned review harness and its exact private run-state record.
+A novel probe which establishes a finding must become regression coverage in
+the Candidate or discovered sibling work.
 
 ## Stop safely
 

@@ -8,6 +8,10 @@
   "engines": {
     "node": ">=22"
   },
+  "bin": {
+    "director-coordinator": "tools/coordinator/cli.mjs",
+    "director-review-harness": "tools/coordinator/review-harness.mjs"
+  },
   "scripts": {
     "architecture:check": "node --test tools/ci/architecture-check.test.mjs && node tools/ci/architecture-check.mjs",
     "build": "npm run build:engine && npm run typecheck",
@@ -22,7 +26,7 @@
     "test": "npm run test:engine && npm run test:host && npm run smoke",
     "test:baseline": "node tools/spikes/dir-m0.10/effect-contract.mjs && node tools/spikes/dir-m0.10/guard-mutations.mjs && node tools/spikes/dir-m0.6/worktree-ownership.mjs --state-fsync-fixture && node tools/spikes/dir-m0.7/github-delivery.mjs --self-test && node docs/evidence/m0.14/practical-boundary-contract.mjs && node tools/spikes/dir-m0.17/ignored-tree-policy.mjs --timeout-probe",
     "test:engine": "go -C engine test ./...",
-    "test:host": "node --experimental-strip-types --test tests/*.test.ts && node --test tools/ci/scaffold-check.test.mjs",
+    "test:host": "node --experimental-strip-types --test tests/*.test.ts && node --test tools/ci/scaffold-check.test.mjs tools/coordinator/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

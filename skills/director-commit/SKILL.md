@@ -49,6 +49,15 @@ Allowed types are `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `c
 2. Re-run `git status --short`.
 3. Confirm no intended file was left behind and no unrelated file was committed.
 4. Record the SHA and validation evidence in Beads.
-5. Hand the exact SHA to the authorized coordinator, which owns independent Reviewer Agent launch.
+5. Bind the exact SHA, base, tree/diff, Task acceptance, current human
+   decisions, prior findings, author-validation references, ownership, and
+   pending gates with `director-coordinator review-handoff`. Its automatic
+   manifest is non-authoritative routing context, not review evidence.
+6. Hand the exact SHA and manifest to the authorized coordinator, which owns
+   independent Reviewer Agent launch and the versioned review harness.
+
+Record only lifecycle state read back at handoff. Do not assert future
+preservation of the Task worktree, agent, or workspace; one-shot schedules may
+reclaim them while preserving the exact local Task ref.
 
 Do not amend another author's commit, rewrite shared history, bypass hooks, or call a dirty worktree review-ready.

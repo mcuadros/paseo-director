@@ -221,5 +221,6 @@ or closure policy.
 
 - [Approved product and engineering plan](docs/PLAN.md)
 - [Contributing workflow](CONTRIBUTING.md)
+- [Deterministic coordinator CLI](docs/coordinator-cli.md)
 
 Development is tracked with Beads. Run `bd ready` to inspect unblocked work.

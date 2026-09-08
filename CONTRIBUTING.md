@@ -12,6 +12,10 @@ Each development Task is owned by one normal top-level Paseo Task Agent whose pa
 4. Claim it atomically with `bd update <id> --claim --json`.
 5. Work only in the Task's isolated Execution Workspace/worktree and branch named `task/<beads-id>-<short-slug>`.
 
+Use the dependency-free [coordinator CLI](docs/coordinator-cli.md) for the
+fresh Task/Candidate snapshot and exact-SHA review handoff. Keep its immutable
+context explicit; Task Agents do not invoke its mutating commands.
+
 Do not implement work from a later milestone or expand a Task silently. Record discovered work as a separate sibling Task.
 
 ## Commits
@@ -36,14 +40,47 @@ Every implementation commit requires review under `skills/director-independent-r
 
 - Review the exact SHA in a detached disposable checkout.
 - Do not give the reviewer the author's hidden conclusions or conversation.
+- Generate `director-coordinator review-handoff` once for the exact Candidate;
+  its automatic manifest is routing context, not review evidence.
+- In the fresh detached reviewer checkout, run
+  `npm ci --ignore-scripts --no-audit --no-fund` and verify `node`, `npm`,
+  `git`, and `go` are on `PATH` before starting the harness. Its preflight
+  rejects missing preparation without consuming the one complete-CI attempt.
+- Run `director-review-harness` with one private review-state file. It runs the
+  complete maintained CI at most once per exact review and collects independent
+  non-conflicting identity/CI results concurrently and deterministically. A
+  second full run requires the recorded invalid-run or failure-confirmation
+  exception; a third is forbidden.
+- Use the versioned maintained adversarial probes. Do not reconstruct an
+  equivalent `/tmp` probe when repository coverage exists.
 - Route corrections back to the same Task Agent as an authorized correction turn.
 - Review a changed SHA again from the beginning.
 - Treat `approve_candidate` as permission for the Director Engine or authorized coordinator to publish the reviewed SHA, not permission for a Task Agent, model, connector, or reviewer to publish or close the Task.
 - Keep push, PR, CI, integration, synchronization, and cleanup as explicit post-review gates.
 
+The manifest and harness narrow repeated mechanical work only. Review remains
+complete across acceptance, correctness, security, maintainability,
+readability, design, quality, and rigor. Focus reasoning on the diff,
+surrounding code, affected invariants, prior findings, and identified risks;
+use the harness to prove that the Candidate/base identity and unrelated
+immutable history did not move.
+
 ## Pull requests
 
 The Director Engine or authorized coordinator follows `skills/director-pull-request/SKILL.md` and the repository template after exact-SHA approval. Task Agents do not invoke that skill or perform publication/integration effects.
+
+The authorized coordinator uses `director-coordinator publish`, `gate`, and
+`integrate` with one external durable state file. After verified integration,
+it separately previews `cleanup-plan` and applies that exact plan with
+`cleanup-apply`. Direct `git push`, `gh pr create`, unguarded merge, and ad-hoc
+resource deletion are not the normal repository workflow.
+
+If the one-shot schedule reclaims the Task checkout after handoff, the
+coordinator uses the exact control repository/local Task ref with explicit
+`reclaimed` checkout and lifecycle bindings. It preserves the original
+agent/workspace IDs and never claims their live state was verified when it was
+not. Corrected Candidates use a stable Task/branch/ownership-hash PR marker so
+the same open PR can follow the newly reviewed head.
 
 - Open at most one active PR per Task.
 - Publish only an independently approved Candidate.
