@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	aggregateProject = "project"
-	aggregateTask    = "task"
-	aggregateRun     = "run"
-	maximumJSONBytes = 64 * 1024
+	aggregateProject        = "project"
+	aggregateTask           = "task"
+	aggregateRun            = "run"
+	maximumJSONBytes        = 64 * 1024
+	maximumProjectJSONBytes = 1152 * 1024
 	// Store-only contention retries remain finite while covering the tested
 	// eight-writer Event allocation envelope.
 	writeAttempts = 16
@@ -579,12 +580,20 @@ func validateUpdateCommand(command domain.CommandRequest, aggregateID string) er
 }
 
 func marshalRecord(value any) ([]byte, error) {
+	return marshalRecordLimit(value, maximumJSONBytes)
+}
+
+func marshalProjectRecord(value any) ([]byte, error) {
+	return marshalRecordLimit(value, maximumProjectJSONBytes)
+}
+
+func marshalRecordLimit(value any, maximum int) ([]byte, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return nil, fmt.Errorf("encode aggregate: %w", err)
 	}
-	if len(data) > maximumJSONBytes {
-		return nil, fmt.Errorf("%w: aggregate exceeds %d bytes", storeport.ErrInvalidRecord, maximumJSONBytes)
+	if len(data) > maximum {
+		return nil, fmt.Errorf("%w: aggregate exceeds %d bytes", storeport.ErrInvalidRecord, maximum)
 	}
 	return data, nil
 }

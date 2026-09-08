@@ -10,7 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/execution"
@@ -18,8 +21,21 @@ import (
 )
 
 type projectData struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
+	Name      string         `json:"name"`
+	State     string         `json:"state"`
+	Organizer *organizerData `json:"organizer,omitempty"`
+}
+
+type organizerData struct {
+	Mode                 domain.OrganizerMode  `json:"mode"`
+	Phase                domain.OrganizerPhase `json:"phase"`
+	RepositoryPath       string                `json:"repositoryPath"`
+	PreviewID            string                `json:"previewId"`
+	OperationID          string                `json:"operationId"`
+	HumanActorID         string                `json:"humanActorId"`
+	ConfigurationSHA256  string                `json:"configurationSha256"`
+	OrganizerRevision    string                `json:"organizerRevision,omitempty"`
+	PendingConfiguration json.RawMessage       `json:"pendingConfiguration,omitempty"`
 }
 
 type taskData struct {
@@ -86,9 +102,86 @@ func validateProject(project domain.Project) error {
 	}
 	switch project.State {
 	case "active", "paused", "degraded", "archived":
-		return nil
 	default:
 		return fmt.Errorf("%w: invalid Project state", storeport.ErrInvalidRecord)
+	}
+	if project.Organizer == nil {
+		return nil
+	}
+	organizer := project.Organizer
+	if organizer.Mode != domain.OrganizerModeCreate && organizer.Mode != domain.OrganizerModeAdopt {
+		return fmt.Errorf("%w: invalid Organizer mode", storeport.ErrInvalidRecord)
+	}
+	switch organizer.Phase {
+	case domain.OrganizerPhaseIntentRecorded,
+		domain.OrganizerPhaseRepositoryPrepared,
+		domain.OrganizerPhaseConfigurationWritten,
+		domain.OrganizerPhaseReadmeWritten,
+		domain.OrganizerPhaseReferencesWritten,
+		domain.OrganizerPhaseRepositoryInitialized,
+		domain.OrganizerPhaseRevisionCommitted,
+		domain.OrganizerPhaseActive:
+	default:
+		return fmt.Errorf("%w: invalid Organizer phase", storeport.ErrInvalidRecord)
+	}
+	if organizer.RepositoryPath == "" || len(organizer.RepositoryPath) > 4096 ||
+		!utf8.ValidString(organizer.RepositoryPath) || !filepath.IsAbs(organizer.RepositoryPath) ||
+		filepath.Clean(organizer.RepositoryPath) != organizer.RepositoryPath ||
+		!safeIdentifier(organizer.PreviewID, 64) || !safeIdentifier(organizer.OperationID, 64) ||
+		organizer.HumanActorID == "" || !utf8.ValidString(organizer.HumanActorID) ||
+		organizer.HumanActorID != strings.TrimSpace(organizer.HumanActorID) ||
+		strings.IndexFunc(organizer.HumanActorID, unicode.IsControl) >= 0 || len(organizer.HumanActorID) > 256 ||
+		len(organizer.ConfigurationSHA256) != 64 || !validGitObjectID(organizer.ConfigurationSHA256) {
+		return fmt.Errorf("%w: invalid Organizer identity", storeport.ErrInvalidRecord)
+	}
+	if organizer.Phase == domain.OrganizerPhaseActive {
+		if !validGitObjectID(organizer.OrganizerRevision) || len(organizer.PendingConfiguration) != 0 || project.State != "active" {
+			return fmt.Errorf("%w: invalid active Organizer", storeport.ErrInvalidRecord)
+		}
+	} else {
+		if organizer.Mode != domain.OrganizerModeCreate || len(organizer.PendingConfiguration) == 0 || project.State != "paused" {
+			return fmt.Errorf("%w: invalid pending Organizer", storeport.ErrInvalidRecord)
+		}
+		var pending any
+		if err := json.Unmarshal(organizer.PendingConfiguration, &pending); err != nil {
+			return fmt.Errorf("%w: invalid pending Organizer configuration", storeport.ErrInvalidRecord)
+		}
+		if organizer.Phase == domain.OrganizerPhaseRevisionCommitted {
+			if !validGitObjectID(organizer.OrganizerRevision) {
+				return fmt.Errorf("%w: invalid committed Organizer revision", storeport.ErrInvalidRecord)
+			}
+		} else if organizer.OrganizerRevision != "" {
+			return fmt.Errorf("%w: premature Organizer revision", storeport.ErrInvalidRecord)
+		}
+	}
+	return nil
+}
+
+func storedOrganizer(organizer *domain.Organizer) *organizerData {
+	if organizer == nil {
+		return nil
+	}
+	return &organizerData{
+		Mode: organizer.Mode, Phase: organizer.Phase,
+		RepositoryPath: organizer.RepositoryPath, PreviewID: organizer.PreviewID,
+		OperationID: organizer.OperationID, HumanActorID: organizer.HumanActorID,
+		ConfigurationSHA256:  organizer.ConfigurationSHA256,
+		OrganizerRevision:    organizer.OrganizerRevision,
+		PendingConfiguration: append(json.RawMessage(nil), organizer.PendingConfiguration...),
+	}
+}
+
+func reloadedOrganizer(organizer *organizerData) *domain.Organizer {
+	if organizer == nil {
+		return nil
+	}
+	return &domain.Organizer{
+		Mode: organizer.Mode, Phase: organizer.Phase,
+		RepositoryPath: organizer.RepositoryPath, PreviewID: organizer.PreviewID,
+		OperationID: organizer.OperationID, HumanActorID: organizer.HumanActorID,
+		ConfigurationSHA256:  organizer.ConfigurationSHA256,
+		OrganizerRevision:    organizer.OrganizerRevision,
+		PendingConfiguration: append(json.RawMessage(nil), organizer.PendingConfiguration...),
 	}
 }
 
@@ -107,6 +200,18 @@ func validateTask(task domain.Task) error {
 
 func validSHA(value string) bool {
 	if len(value) != 40 {
+		return false
+	}
+	for _, character := range value {
+		if !strings.ContainsRune("0123456789abcdef", character) {
+			return false
+		}
+	}
+	return true
+}
+
+func validGitObjectID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
 		return false
 	}
 	for _, character := range value {
@@ -174,7 +279,7 @@ func (store *DoltTaskStore) CreateProject(
 	if err := validateCreateCommand(command, project.ID, project.Version); err != nil {
 		return domain.CommandResult{}, err
 	}
-	data, err := marshalRecord(projectData{Name: project.Name, State: project.State})
+	data, err := marshalProjectRecord(projectData{Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer)})
 	if err != nil {
 		return domain.CommandResult{}, err
 	}
@@ -199,7 +304,7 @@ func (store *DoltTaskStore) UpdateProject(
 	if err := validateUpdateCommand(command, project.ID); err != nil {
 		return domain.CommandResult{}, err
 	}
-	data, err := marshalRecord(projectData{Name: project.Name, State: project.State})
+	data, err := marshalProjectRecord(projectData{Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer)})
 	if err != nil {
 		return domain.CommandResult{}, err
 	}
@@ -485,7 +590,7 @@ func projectByID(ctx context.Context, query rowQuerier, id string) (domain.Proje
 	if err := decodeRecord(rawData, &data); err != nil {
 		return domain.Project{}, err
 	}
-	project.Name, project.State = data.Name, data.State
+	project.Name, project.State, project.Organizer = data.Name, data.State, reloadedOrganizer(data.Organizer)
 	if err := validateReloaded(validateProject(project)); err != nil {
 		return domain.Project{}, err
 	}
@@ -517,7 +622,7 @@ func (store *DoltTaskStore) Projects(ctx context.Context) ([]domain.Project, err
 		if err := decodeRecord(rawData, &data); err != nil {
 			return nil, err
 		}
-		project.Name, project.State = data.Name, data.State
+		project.Name, project.State, project.Organizer = data.Name, data.State, reloadedOrganizer(data.Organizer)
 		if err := validateReloaded(validateProject(project)); err != nil {
 			return nil, err
 		}

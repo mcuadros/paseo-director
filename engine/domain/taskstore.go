@@ -8,13 +8,52 @@ import (
 	"github.com/mcuadros/director-engine/domain/execution"
 )
 
+// OrganizerMode records how a Project's Organizer repository entered Director.
+type OrganizerMode string
+
+const (
+	OrganizerModeCreate OrganizerMode = "create"
+	OrganizerModeAdopt  OrganizerMode = "adopt"
+)
+
+// OrganizerPhase is the durable create/adopt progress projected through the
+// TaskStore. Only PhaseActive may be used as an approved Project Organizer.
+type OrganizerPhase string
+
+const (
+	OrganizerPhaseIntentRecorded        OrganizerPhase = "intent_recorded"
+	OrganizerPhaseRepositoryPrepared    OrganizerPhase = "repository_prepared"
+	OrganizerPhaseConfigurationWritten  OrganizerPhase = "configuration_written"
+	OrganizerPhaseReadmeWritten         OrganizerPhase = "readme_written"
+	OrganizerPhaseReferencesWritten     OrganizerPhase = "references_written"
+	OrganizerPhaseRepositoryInitialized OrganizerPhase = "repository_initialized"
+	OrganizerPhaseRevisionCommitted     OrganizerPhase = "revision_committed"
+	OrganizerPhaseActive                OrganizerPhase = "active"
+)
+
+// Organizer is the durable repository/configuration projection owned by one
+// Project. PendingConfiguration exists only while an approved Create is being
+// recovered; active configuration remains canonical in Organizer Git.
+type Organizer struct {
+	Mode                 OrganizerMode
+	Phase                OrganizerPhase
+	RepositoryPath       string
+	PreviewID            string
+	OperationID          string
+	HumanActorID         string
+	ConfigurationSHA256  string
+	OrganizerRevision    string
+	PendingConfiguration json.RawMessage
+}
+
 // Project is the minimal mutable Project aggregate persisted by the walking
 // skeleton. Version is advanced only by an expected-version TaskStore write.
 type Project struct {
-	ID      string
-	Name    string
-	State   string
-	Version uint64
+	ID        string
+	Name      string
+	State     string
+	Version   uint64
+	Organizer *Organizer
 }
 
 // Task is the minimal mutable Task aggregate persisted by the walking

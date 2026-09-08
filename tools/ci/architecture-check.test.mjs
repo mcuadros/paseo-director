@@ -428,6 +428,21 @@ test("configuration revision policy guards cover every TypeScript host boundary"
   }
 });
 
+test("Organizer Create and Adopt orchestration paths stay out of host boundaries", () => {
+  for (const role of ["ui", "rpc", "generated", "connector"]) {
+    for (const boundary of ["organizer-bootstrap", "create-project", "adopt-organizer"]) {
+      const path = `${role}/${boundary}/status.server.ts`;
+      const errors = typescriptBoundaryErrors([
+        { path, source: "export interface HostStatus {}\n" },
+      ]);
+      assert.ok(
+        errors.some((error) => error.startsWith(path) && error.includes("path cannot own")),
+        `admitted ${boundary} path in ${role}`,
+      );
+    }
+  }
+});
+
 test("only the exact canonical engine host contract is admitted", () => {
   const canonicalPath = "engine/ports/host/host-interface.v1.json";
   const canonicalSource = readFileSync(resolve(repositoryRoot, canonicalPath), "utf8");
@@ -512,5 +527,6 @@ test("required reducer, outcome-schema, and split-host homes fail closed when ab
   assert.ok(errors.some((error) => error.includes("one engine-owned versioned host interface")));
   assert.ok(errors.some((error) => error.includes("engine-owned paseo-director.json schema")));
   assert.ok(errors.some((error) => error.includes("required configuration boundary")));
+  assert.ok(errors.some((error) => error.includes("application/organizer")));
   assert.ok(errors.some((error) => error.includes("generated engine client")));
 });
