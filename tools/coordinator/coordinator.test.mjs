@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -832,6 +832,30 @@ test("argument arrays preserve hostile PR title text without shell execution", a
     );
     assert.equal(createCall.args[createCall.args.indexOf("--title") + 1], hostileTitle);
   } finally {
+    fixture.cleanup();
+  }
+});
+
+test("selected Paseo credentials never enter state, output, or PR bodies", async () => {
+  const fixture = createRepositoryFixture();
+  const fake = fakeExternalCommands(fixture);
+  const password = `director-state-${randomBytes(24).toString("hex")}`;
+  const previous = process.env.PASEO_PASSWORD;
+  process.env.PASEO_PASSWORD = password;
+  try {
+    const output = await execute("publish", publicationOptions(fixture), {
+      run: fake.runner,
+    });
+    assert.equal(JSON.stringify(output).includes(password), false);
+    assert.equal(readFileSync(fixture.stateFile, "utf8").includes(password), false);
+    assert.equal(fake.state.pull.body.includes(password), false);
+    assert.equal(
+      fake.state.calls.some((call) => JSON.stringify(call).includes(password)),
+      false,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.PASEO_PASSWORD;
+    else process.env.PASEO_PASSWORD = previous;
     fixture.cleanup();
   }
 });

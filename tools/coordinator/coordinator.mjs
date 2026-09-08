@@ -45,6 +45,13 @@ const MAX_COMMAND_OUTPUT = 4 * 1_048_576;
 const COMMAND_TIMEOUT_MS = 120_000;
 const STATE_SCHEMA_VERSION = 1;
 const OUTPUT_SCHEMA_VERSION = 1;
+const PASEO_AGENT_STATUSES = new Set([
+  "initializing",
+  "idle",
+  "running",
+  "error",
+  "closed",
+]);
 const REVIEW_DIMENSIONS = [
   "acceptance",
   "correctness",
@@ -96,8 +103,58 @@ export class CoordinatorInterruption extends Error {
   }
 }
 
-function selectedEnvironment() {
+function isPaseoLifecycleRead(executable, args) {
+  return executable === "paseo" &&
+    ((args.length === 3 &&
+      args[0] === "inspect" &&
+      ID_PATTERN.test(args[1]) &&
+      args[2] === "--json") ||
+      (args.length === 3 &&
+        args[0] === "workspace" &&
+        args[1] === "ls" &&
+        args[2] === "--json"));
+}
+
+function paseoLifecycleOperation(args) {
+  return args[0] === "inspect" ? "agent.inspect" : "workspace.list";
+}
+
+function selectedPaseoPassword() {
+  const password = process.env.PASEO_PASSWORD;
+  return password !== undefined && password.length > 0 ? password : null;
+}
+
+function containsSelectedPaseoPassword(value) {
+  const password = selectedPaseoPassword();
+  if (password === null) return false;
+  const visit = (item) => {
+    if (typeof item === "string") return item.includes(password);
+    if (Array.isArray(item)) return item.some(visit);
+    if (isObject(item)) return Object.values(item).some(visit);
+    return false;
+  };
+  return visit(value);
+}
+
+function paseoHostEmbedsPassword(host) {
+  try {
+    const parsed = new URL(host);
+    return parsed.searchParams.has("password") ||
+      parsed.password.length > 0;
+  } catch {
+    return /(?:[?&]password)(?:=|&|$)/iu.test(host);
+  }
+}
+
+function selectedEnvironment(executable, args) {
   const selected = {};
+  const password = selectedPaseoPassword();
+  refuse(
+    process.env.PASEO_HOST !== undefined &&
+      paseoHostEmbedsPassword(process.env.PASEO_HOST),
+    "PASEO_AUTH_LOCATION_UNSUPPORTED",
+    "Paseo authentication must use the dedicated password environment variable",
+  );
   for (const key of [
     "PATH",
     "LANG",
@@ -109,7 +166,16 @@ function selectedEnvironment() {
     "GH_HOST",
     "PASEO_HOST",
   ]) {
-    if (process.env[key] !== undefined) selected[key] = process.env[key];
+    const value = process.env[key];
+    if (
+      value !== undefined &&
+      (password === null || !value.includes(password))
+    ) {
+      selected[key] = value;
+    }
+  }
+  if (isPaseoLifecycleRead(executable, args) && password !== null) {
+    selected.PASEO_PASSWORD = password;
   }
   selected.GH_PROMPT_DISABLED = "1";
   selected.GH_PAGER = "cat";
@@ -124,7 +190,7 @@ export function defaultCommandRunner(executable, args, options = {}) {
   const result = spawnSync(executable, args, {
     cwd: options.cwd,
     encoding: "utf8",
-    env: selectedEnvironment(),
+    env: selectedEnvironment(executable, args),
     input: options.input,
     maxBuffer: MAX_COMMAND_OUTPUT,
     shell: false,
@@ -141,6 +207,29 @@ export function defaultCommandRunner(executable, args, options = {}) {
 function checkedRun(run, executable, args, options = {}) {
   const result = run(executable, args, options);
   if (result.error || result.status !== 0) {
+    if (isPaseoLifecycleRead(executable, args)) {
+      const response = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+      const operation = paseoLifecycleOperation(args);
+      if (/Password required/iu.test(response)) {
+        throw new CoordinatorError(
+          "PASEO_AUTH_REQUIRED",
+          "Paseo lifecycle authentication is required",
+          { operation, status: result.status },
+        );
+      }
+      if (/Incorrect password/iu.test(response)) {
+        throw new CoordinatorError(
+          "PASEO_AUTH_FAILED",
+          "Paseo lifecycle authentication was rejected",
+          { operation, status: result.status },
+        );
+      }
+      throw new CoordinatorError(
+        "PASEO_LIFECYCLE_READ_FAILED",
+        "Paseo lifecycle facts were unavailable",
+        { operation, status: result.status },
+      );
+    }
     throw new CoordinatorError(
       "EXTERNAL_COMMAND_FAILED",
       `${executable} could not provide an authoritative result`,
@@ -163,7 +252,20 @@ function parsedJson(output, source) {
 }
 
 function runJson(run, executable, args, options = {}) {
-  return parsedJson(checkedRun(run, executable, args, options), executable);
+  const output = checkedRun(run, executable, args, options);
+  const lifecycleRead = isPaseoLifecycleRead(executable, args);
+  refuse(
+    lifecycleRead && containsSelectedPaseoPassword(output),
+    "PASEO_LIFECYCLE_RESPONSE_REDACTED",
+    "Paseo lifecycle response contained protected material",
+  );
+  const value = parsedJson(output, executable);
+  refuse(
+    lifecycleRead && containsSelectedPaseoPassword(value),
+    "PASEO_LIFECYCLE_RESPONSE_REDACTED",
+    "Paseo lifecycle response contained protected material",
+  );
+  return value;
 }
 
 function requireString(value, pattern, label) {
@@ -481,6 +583,11 @@ function loadState(options, { required = false } = {}) {
 }
 
 function persistState(path, state) {
+  refuse(
+    containsSelectedPaseoPassword(state),
+    "PROTECTED_MATERIAL_REDACTED",
+    "coordinator state contained protected material",
+  );
   persistPrivateJson(path, state, {
     identityCode: "STATE_IDENTITY_INVALID",
     temporaryCode: "STATE_TEMP_EXISTS",
@@ -894,6 +1001,47 @@ function repositoryFacts(run, options) {
   return { id: repository.id, name: repository.full_name };
 }
 
+function validatedPaseoAgent(agent, options, task) {
+  refuse(!isObject(agent), "PASEO_AGENT_RESPONSE_INVALID", "Paseo agent response is invalid");
+  refuse(agent.Id !== options.agentId, "PASEO_AGENT_MISMATCH", "Paseo returned a different agent");
+  refuse(agent.Name !== task.title, "PASEO_AGENT_TITLE_MISMATCH", "Task Agent title does not match the Task");
+  refuse(agent.ParentAgentId !== null, "PASEO_AGENT_PARENTED", "Task Agent is not top-level");
+  refuse(
+    typeof agent.Archived !== "boolean" ||
+      !PASEO_AGENT_STATUSES.has(agent.Status) ||
+      typeof agent.Cwd !== "string",
+    "PASEO_AGENT_RESPONSE_INVALID",
+    "Paseo agent response lacks bounded lifecycle facts",
+  );
+  refuse(
+    agent.Archived
+      ? typeof agent.ArchivedAt !== "string" ||
+        agent.ArchivedAt.length === 0 ||
+        agent.ArchivedAt.length > 64 ||
+        !Number.isFinite(Date.parse(agent.ArchivedAt))
+      : agent.ArchivedAt !== null && agent.ArchivedAt !== undefined,
+    "PASEO_AGENT_RESPONSE_INVALID",
+    "Paseo agent archive facts are invalid",
+  );
+  return agent;
+}
+
+function validatedPaseoWorkspaces(workspaces) {
+  refuse(!Array.isArray(workspaces), "PASEO_WORKSPACES_INVALID", "Paseo workspace list is invalid");
+  refuse(
+    workspaces.some(
+      (workspace) =>
+        !isObject(workspace) ||
+        typeof workspace.workspaceId !== "string" ||
+        typeof workspace.cwd !== "string" ||
+        typeof workspace.isolation !== "string",
+    ),
+    "PASEO_WORKSPACES_INVALID",
+    "Paseo workspace list lacks bounded identity facts",
+  );
+  return workspaces;
+}
+
 function paseoFacts(run, options, task) {
   if (options.lifecycleState === "none") {
     return { binding: "none", agent: null, workspace: null, verified: true };
@@ -906,18 +1054,20 @@ function paseoFacts(run, options, task) {
       verified: false,
     };
   }
-  const agent = runJson(run, "paseo", ["inspect", options.agentId, "--json"]);
-  refuse(agent.Id !== options.agentId, "PASEO_AGENT_MISMATCH", "Paseo returned a different agent");
-  refuse(agent.Name !== task.title, "PASEO_AGENT_TITLE_MISMATCH", "Task Agent title does not match the Task");
-  refuse(agent.ParentAgentId !== null, "PASEO_AGENT_PARENTED", "Task Agent is not top-level");
+  const agent = validatedPaseoAgent(
+    runJson(run, "paseo", ["inspect", options.agentId, "--json"]),
+    options,
+    task,
+  );
   refuse(agent.Archived === true, "PASEO_AGENT_NOT_ACTIVE", "Task Agent is already archived");
   refuse(
     canonicalExistingDirectory(agent.Cwd, "Task Agent cwd") !== options.checkout,
     "PASEO_AGENT_CHECKOUT_MISMATCH",
     "Task Agent cwd does not match the Task checkout",
   );
-  const workspaces = runJson(run, "paseo", ["workspace", "ls", "--json"]);
-  refuse(!Array.isArray(workspaces), "PASEO_WORKSPACES_INVALID", "Paseo workspace list is invalid");
+  const workspaces = validatedPaseoWorkspaces(
+    runJson(run, "paseo", ["workspace", "ls", "--json"]),
+  );
   const matches = workspaces.filter((workspace) => workspace.workspaceId === options.workspaceId);
   refuse(matches.length !== 1, "PASEO_WORKSPACE_AMBIGUOUS", "exact Paseo workspace is not active once");
   const workspace = matches[0];
@@ -930,8 +1080,8 @@ function paseoFacts(run, options, task) {
   return {
     binding: "active",
     agent: {
-      archived: agent.Archived === true,
-      archivedAt: agent.ArchivedAt ?? null,
+      archived: false,
+      archivedAt: null,
       id: agent.Id,
       status: agent.Status,
     },
@@ -1641,9 +1791,11 @@ function cleanupFacts(run, options, task, { allowAbsentWorkspace = false } = {})
       verified: false,
     };
   } else if (options.lifecycleState === "active") {
-    const inspected = runJson(run, "paseo", ["inspect", options.agentId, "--json"]);
-    refuse(inspected.Id !== options.agentId || inspected.Name !== task.title, "PASEO_AGENT_MISMATCH", "Task Agent identity changed");
-    refuse(inspected.ParentAgentId !== null, "PASEO_AGENT_PARENTED", "Task Agent is not top-level");
+    const inspected = validatedPaseoAgent(
+      runJson(run, "paseo", ["inspect", options.agentId, "--json"]),
+      options,
+      task,
+    );
     if (inspected.Archived !== true) {
       refuse(inspected.Status === "running", "PASEO_AGENT_RUNNING", "Task Agent is still running");
       refuse(
@@ -1658,8 +1810,9 @@ function cleanupFacts(run, options, task, { allowAbsentWorkspace = false } = {})
       id: inspected.Id,
       status: inspected.Status,
     };
-    const workspaces = runJson(run, "paseo", ["workspace", "ls", "--json"]);
-    refuse(!Array.isArray(workspaces), "PASEO_WORKSPACES_INVALID", "Paseo workspace list is invalid");
+    const workspaces = validatedPaseoWorkspaces(
+      runJson(run, "paseo", ["workspace", "ls", "--json"]),
+    );
     const matches = workspaces.filter((item) => item.workspaceId === options.workspaceId);
     refuse(matches.length > 1, "PASEO_WORKSPACE_AMBIGUOUS", "Paseo workspace identity is ambiguous");
     if (matches.length === 1) {
@@ -1878,6 +2031,11 @@ async function publish(run, options, deps) {
     refuse(bodyStatus.size > 131_072, "BODY_FILE_OVERSIZE", "PR body is too large");
     const body = readFileSync(options.bodyFile, "utf8");
     refuse(body.includes("\0"), "BODY_FILE_INVALID", "PR body contains a NUL byte");
+    refuse(
+      containsSelectedPaseoPassword(body),
+      "PROTECTED_MATERIAL_REDACTED",
+      "pull request body contained protected material",
+    );
     const completeBody = `${body.trimEnd()}\n\n${marker(options)}\n`;
     markDispatch(options.stateFile, state, "publish.pr", "unique_create");
     await dispatchHook(deps, "before", "publish.pr", { options, state });
@@ -1989,8 +2147,12 @@ async function cleanupApply(run, options, deps) {
       await dispatchHook(deps, "before", "cleanup.agent", { options, state });
       const archived = run("paseo", ["archive", options.agentId, "--json"], { cwd: options.controlRepo });
       await dispatchHook(deps, "after", "cleanup.agent", { options, result: archived, state });
-      const observed = runJson(run, "paseo", ["inspect", options.agentId, "--json"]);
-      refuse(observed.Id !== options.agentId || observed.Archived !== true, "AGENT_ARCHIVE_UNKNOWN", "Task Agent archive was not proven");
+      const observed = validatedPaseoAgent(
+        runJson(run, "paseo", ["inspect", options.agentId, "--json"]),
+        options,
+        task,
+      );
+      refuse(observed.Archived !== true, "AGENT_ARCHIVE_UNKNOWN", "Task Agent archive was not proven");
       markEffect(options.stateFile, state, "cleanup.agent", "idempotent_close", "complete", { archivedAt: observed.ArchivedAt });
     }
 
@@ -2007,7 +2169,9 @@ async function cleanupApply(run, options, deps) {
       await dispatchHook(deps, "before", "cleanup.workspace", { options, state });
       const archived = run("paseo", ["workspace", "archive", options.workspaceId, "--json"], { cwd: options.controlRepo });
       await dispatchHook(deps, "after", "cleanup.workspace", { options, result: archived, state });
-      const workspaces = runJson(run, "paseo", ["workspace", "ls", "--json"]);
+      const workspaces = validatedPaseoWorkspaces(
+        runJson(run, "paseo", ["workspace", "ls", "--json"]),
+      );
       refuse(
         workspaces.some((workspace) => workspace.workspaceId === options.workspaceId),
         "WORKSPACE_ARCHIVE_UNKNOWN",
@@ -2189,12 +2353,18 @@ export async function execute(command, rawOptions, dependencies = {}) {
     } else if (command === "cleanup-apply") {
       result = await cleanupApply(run, options, deps);
     }
-    return {
+    const output = {
       schemaVersion: OUTPUT_SCHEMA_VERSION,
       command,
       outcome: command === "gate" || command === "review-handoff" ? "ready" : "complete",
       result,
     };
+    refuse(
+      containsSelectedPaseoPassword(output),
+      "PROTECTED_MATERIAL_REDACTED",
+      "coordinator output contained protected material",
+    );
+    return output;
   };
   return MUTATING_COMMANDS.has(command)
     ? withStateLock(options, operation)
@@ -2213,7 +2383,7 @@ export function errorOutput(command, error) {
     };
   }
   if (error instanceof CoordinatorError) {
-    return {
+    const output = {
       schemaVersion: OUTPUT_SCHEMA_VERSION,
       command,
       outcome: "refused",
@@ -2221,6 +2391,16 @@ export function errorOutput(command, error) {
       message: boundedText(error.message),
       ...(error.details === undefined ? {} : { details: canonicalize(error.details) }),
     };
+    if (containsSelectedPaseoPassword(output)) {
+      return {
+        schemaVersion: OUTPUT_SCHEMA_VERSION,
+        command,
+        outcome: "refused",
+        code: "PROTECTED_MATERIAL_REDACTED",
+        message: "coordinator refusal contained protected material",
+      };
+    }
+    return output;
   }
   return {
     schemaVersion: OUTPUT_SCHEMA_VERSION,

@@ -49,6 +49,21 @@ proven. Exit `2` is a structured fail-closed refusal or interruption. Exit `1`
 is an unexpected internal failure. Raw command output, credentials, paths from
 GitHub feedback, and comment bodies are not copied into refusals.
 
+For an active lifecycle binding on a password-protected exact Paseo `0.7.2`
+daemon, inject the documented `PASEO_PASSWORD` into the coordinator process
+environment and keep `PASEO_HOST` separate from it. Never place the password
+in an option, connection URI, evidence file, or state file. The minimized
+command runner selects the password only into the child environment of the
+exact public `paseo inspect <agent-id> --json` and
+`paseo workspace ls --json` reads. Git, GitHub CLI, Beads, npm, Go, other Paseo
+verbs, and sibling executables never receive it. Raw Paseo responses are not
+copied into coordinator output or diagnostics. Missing or rejected
+authentication returns `PASEO_AUTH_REQUIRED` or `PASEO_AUTH_FAILED`; an
+interrupted or unavailable read returns `PASEO_LIFECYCLE_READ_FAILED`; and a
+response that echoes the selected credential returns
+`PASEO_LIFECYCLE_RESPONSE_REDACTED`. Each is bounded and retains no daemon
+response content.
+
 ## Commands
 
 - `snapshot` returns the bound Task, clean local Candidate, live base/head,
