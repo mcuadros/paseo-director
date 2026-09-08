@@ -27,6 +27,13 @@ func TestEmbeddedContractAndDescriptor(t *testing.T) {
 	if len(descriptor.ContractHash) != 64 {
 		t.Fatalf("contract hash length = %d", len(descriptor.ContractHash))
 	}
+	definition, err := EmbeddedDefinition()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definition.BoardQuery.Name != "board.snapshot" || definition.BoardQuery.Path != "/v1/board" || len(definition.BoardQuery.States) != 6 {
+		t.Fatalf("Board query definition = %#v", definition.BoardQuery)
+	}
 }
 
 func TestCanonicalHashIgnoresWhitespaceAndObjectKeyOrder(t *testing.T) {
@@ -123,7 +130,7 @@ func TestValidateDescriptorFailsClosed(t *testing.T) {
 }
 
 func TestParseDefinitionRejectsDuplicateCapabilities(t *testing.T) {
-	schema := []byte(`{"schemaVersion":1,"contractVersion":"v1","credentialScope":"scope","capabilities":["same","same"]}`)
+	schema := []byte(`{"schemaVersion":1,"contractVersion":"v1","credentialScope":"scope","capabilities":["same","same"],"boardQuery":{"name":"board.snapshot","method":"GET","path":"/v1/board","schemaVersion":1,"maximumTasks":1000,"maximumBytes":2097152,"states":["needs_you","queued","building","validating","in_review","ready"]}}`)
 	if _, err := ParseDefinition(schema); err == nil {
 		t.Fatal("ParseDefinition() accepted duplicate capabilities")
 	}

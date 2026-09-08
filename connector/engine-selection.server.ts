@@ -25,6 +25,7 @@ export type DevelopmentEngineSelection = {
   checkoutRoot: string;
   sourceRoot: string;
   cacheRoot: string;
+  moduleCache: string;
 };
 
 export type EngineSelection =
@@ -131,6 +132,15 @@ export function selectEngine(
       "development mode cannot select release metadata",
     );
   }
+  const moduleCache = environment.GOMODCACHE
+    ? absolutePath(environment.GOMODCACHE, "ENGINE_MODULE_CACHE_PATH")
+    : join(homedir(), "go", "pkg", "mod");
+  if (!pathsAreDisjoint(moduleCache, checkoutRoot)) {
+    throw new EngineSelectionError(
+      "ENGINE_MODULE_CACHE_IN_CHECKOUT",
+      "the development module cache must be outside the plugin checkout",
+    );
+  }
   return {
     mode,
     checkoutRoot: resolve(checkoutRoot),
@@ -139,16 +149,19 @@ export function selectEngine(
       "ENGINE_SOURCE_REQUIRED",
     ),
     cacheRoot,
+    moduleCache,
   };
 }
 
 export function engineProcessEnvironment(
   source: NodeJS.ProcessEnv,
   goCache: string,
+  moduleCache: string,
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     CGO_ENABLED: "0",
     GOCACHE: goCache,
+    GOMODCACHE: moduleCache,
     GOTOOLCHAIN: "local",
   };
   if (source.PATH) {

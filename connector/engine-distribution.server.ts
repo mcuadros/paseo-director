@@ -264,6 +264,7 @@ export function engineBoundaryPaths(selection: EngineSelection): string[] {
     selection.checkoutRoot,
     selection.sourceRoot,
     selection.cacheRoot,
+    selection.moduleCache,
     paths.binaryPath,
     paths.temporaryBinaryPath,
     paths.goCache,
@@ -386,7 +387,7 @@ function defaultCompile(
     {
       cwd: selection.sourceRoot,
       encoding: "utf8",
-      env: engineProcessEnvironment(process.env, goCache),
+      env: engineProcessEnvironment(process.env, goCache, selection.moduleCache),
     },
   );
   if (result.status !== 0) {

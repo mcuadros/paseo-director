@@ -444,7 +444,14 @@ func TestDoltStoreContract(t *testing.T) {
 	if err != nil || len(resumed) != 3 {
 		t.Fatalf("resumable Event query failed: %#v, %v", resumed, err)
 	}
-
+	allEvents, err := reloaded.Events(ctx, domain.EventQuery{Limit: 1000})
+	if err != nil || len(allEvents) == 0 {
+		t.Fatalf("complete Event query failed: %#v, %v", allEvents, err)
+	}
+	cursor, err := reloaded.LatestEventSequence(ctx)
+	if err != nil || cursor != allEvents[len(allEvents)-1].GlobalSequence {
+		t.Fatalf("latest Event cursor = %d, %v", cursor, err)
+	}
 	wrongIdentity := openContractStore(t, fixture, "another-store", false)
 	defer wrongIdentity.Close()
 	if _, err := wrongIdentity.SchemaVersion(ctx); !errors.Is(err, storeport.ErrUnhealthy) {

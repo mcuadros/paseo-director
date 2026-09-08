@@ -22,10 +22,23 @@ var embeddedSchema []byte
 
 // Definition is the generator-facing portion of the engine-owned host schema.
 type Definition struct {
-	SchemaVersion   int      `json:"schemaVersion"`
-	ContractVersion string   `json:"contractVersion"`
-	CredentialScope string   `json:"credentialScope"`
-	Capabilities    []string `json:"capabilities"`
+	SchemaVersion   int                  `json:"schemaVersion"`
+	ContractVersion string               `json:"contractVersion"`
+	CredentialScope string               `json:"credentialScope"`
+	Capabilities    []string             `json:"capabilities"`
+	BoardQuery      BoardQueryDefinition `json:"boardQuery"`
+}
+
+// BoardQueryDefinition is the transport metadata for the engine-computed
+// walking-skeleton Board snapshot. It adds no Paseo or connector policy.
+type BoardQueryDefinition struct {
+	Name          string   `json:"name"`
+	Method        string   `json:"method"`
+	Path          string   `json:"path"`
+	SchemaVersion int      `json:"schemaVersion"`
+	MaximumTasks  int      `json:"maximumTasks"`
+	MaximumBytes  int      `json:"maximumBytes"`
+	States        []string `json:"states"`
 }
 
 // Descriptor is the complete information a connector may advertise at handshake.
@@ -187,6 +200,27 @@ func ParseDefinition(schema []byte) (Definition, error) {
 		}
 		seen[capability] = struct{}{}
 	}
+	if definition.BoardQuery.Name != "board.snapshot" ||
+		definition.BoardQuery.Method != "GET" ||
+		definition.BoardQuery.Path != "/v1/board" ||
+		definition.BoardQuery.SchemaVersion != 1 ||
+		definition.BoardQuery.MaximumTasks != 1000 ||
+		definition.BoardQuery.MaximumBytes != 2*1024*1024 {
+		return Definition{}, errors.New("host Board query contract does not match")
+	}
+	if len(definition.BoardQuery.States) != 6 {
+		return Definition{}, errors.New("host Board query states do not match")
+	}
+	seenStates := make(map[string]struct{}, len(definition.BoardQuery.States))
+	for _, state := range definition.BoardQuery.States {
+		if state == "" {
+			return Definition{}, errors.New("host Board query state cannot be empty")
+		}
+		if _, exists := seenStates[state]; exists {
+			return Definition{}, fmt.Errorf("duplicate host Board query state %q", state)
+		}
+		seenStates[state] = struct{}{}
+	}
 	return definition, nil
 }
 
@@ -197,6 +231,7 @@ func EmbeddedDefinition() (Definition, error) {
 		return Definition{}, err
 	}
 	definition.Capabilities = slices.Clone(definition.Capabilities)
+	definition.BoardQuery.States = slices.Clone(definition.BoardQuery.States)
 	return definition, nil
 }
 

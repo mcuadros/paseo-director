@@ -7,8 +7,10 @@ import (
 	"testing"
 )
 
+const testBoardQuery = `"boardQuery":{"name":"board.snapshot","method":"GET","path":"/v1/board","schemaVersion":1,"maximumTasks":1000,"maximumBytes":2097152,"states":["needs_you","queued","building","validating","in_review","ready"]}`
+
 func TestRenderIsDeterministicAndCarriesContract(t *testing.T) {
-	schema := []byte("{\n  \"schemaVersion\": 1,\n  \"contractVersion\": \"test/v1\",\n  \"credentialScope\": \"scope\",\n  \"capabilities\": [\"one\", \"two\"]\n}\n")
+	schema := []byte("{\n  \"schemaVersion\": 1,\n  \"contractVersion\": \"test/v1\",\n  \"credentialScope\": \"scope\",\n  \"capabilities\": [\"one\", \"two\"],\n  " + testBoardQuery + "\n}\n")
 	first, err := render(schema)
 	if err != nil {
 		t.Fatal(err)
@@ -27,6 +29,8 @@ func TestRenderIsDeterministicAndCarriesContract(t *testing.T) {
 		[]byte(`HOST_CONTRACT_SHA256`),
 		[]byte(`interface HostCommandArguments`),
 		[]byte(`interface HostObservationResult`),
+		[]byte(`BOARD_QUERY_PATH = "/v1/board"`),
+		[]byte(`assertBoardSnapshot`),
 	} {
 		if !bytes.Contains(first, expected) {
 			t.Fatalf("render output does not contain %q", expected)
@@ -38,8 +42,9 @@ func TestRenderIsDeterministicAndCarriesContract(t *testing.T) {
 }
 
 func TestRenderIgnoresSchemaWhitespaceAndObjectKeyOrder(t *testing.T) {
-	first := []byte(`{"schemaVersion":1,"contractVersion":"test/v1","credentialScope":"scope","capabilities":["one","two"]}`)
+	first := []byte(`{"schemaVersion":1,"contractVersion":"test/v1","credentialScope":"scope","capabilities":["one","two"],` + testBoardQuery + `}`)
 	second := []byte(`{
+		"boardQuery": {"states":["needs_you","queued","building","validating","in_review","ready"],"maximumBytes":2097152,"maximumTasks":1000,"schemaVersion":1,"path":"/v1/board","method":"GET","name":"board.snapshot"},
 		"capabilities": ["one", "two"],
 		"credentialScope": "scope",
 		"contractVersion": "test/v1",
@@ -59,7 +64,7 @@ func TestRenderIgnoresSchemaWhitespaceAndObjectKeyOrder(t *testing.T) {
 }
 
 func TestRenderRejectsDuplicateSchemaKeys(t *testing.T) {
-	schema := []byte(`{"schemaVersion":1,"schemaVersion":1,"contractVersion":"test/v1","credentialScope":"scope","capabilities":["one"]}`)
+	schema := []byte(`{"schemaVersion":1,"schemaVersion":1,"contractVersion":"test/v1","credentialScope":"scope","capabilities":["one"],` + testBoardQuery + `}`)
 	if _, err := render(schema); err == nil {
 		t.Fatal("render() accepted duplicate schema keys")
 	}

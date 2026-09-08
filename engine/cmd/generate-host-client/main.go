@@ -36,7 +36,35 @@ func render(schema []byte) ([]byte, error) {
 		fmt.Fprintf(&output, "  %s,\n", strconv.Quote(capability))
 	}
 	output.WriteString("] as const;\n\n")
+	fmt.Fprintf(&output, "export const BOARD_QUERY_NAME = %s as const;\n", strconv.Quote(definition.BoardQuery.Name))
+	fmt.Fprintf(&output, "export const BOARD_QUERY_METHOD = %s as const;\n", strconv.Quote(definition.BoardQuery.Method))
+	fmt.Fprintf(&output, "export const BOARD_QUERY_PATH = %s as const;\n", strconv.Quote(definition.BoardQuery.Path))
+	fmt.Fprintf(&output, "export const BOARD_SCHEMA_VERSION = %d as const;\n", definition.BoardQuery.SchemaVersion)
+	fmt.Fprintf(&output, "export const BOARD_MAXIMUM_TASKS = %d as const;\n", definition.BoardQuery.MaximumTasks)
+	fmt.Fprintf(&output, "export const BOARD_MAXIMUM_BYTES = %d as const;\n", definition.BoardQuery.MaximumBytes)
+	output.WriteString("export const BOARD_STATES = [\n")
+	for _, state := range definition.BoardQuery.States {
+		fmt.Fprintf(&output, "  %s,\n", strconv.Quote(state))
+	}
+	output.WriteString("] as const;\n\n")
 	output.WriteString(`export type HostCapability = (typeof HOST_CAPABILITIES)[number];
+export type BoardState = (typeof BOARD_STATES)[number];
+
+export interface BoardTask {
+  id: string;
+  projectId: string;
+  projectName: string;
+  title: string;
+  state: BoardState;
+  runNumber: string | null;
+  candidateSha: string | null;
+}
+
+export interface BoardSnapshot {
+  schemaVersion: typeof BOARD_SCHEMA_VERSION;
+  cursor: string;
+  tasks: readonly BoardTask[];
+}
 
 export interface HostDescriptor {
   credentialScope: typeof HOST_CREDENTIAL_SCOPE;
@@ -133,6 +161,48 @@ export const EXPECTED_HOST_DESCRIPTOR: HostDescriptor = Object.freeze({
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return keys.length === sortedExpected.length && keys.every((key, index) => key === sortedExpected[index]);
+}
+
+function isBoundedIdentity(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+
+function isUint64Decimal(value: unknown): value is string {
+  return typeof value === "string" && /^(?:0|[1-9][0-9]{0,19})$/.test(value) && (value.length < 20 || value <= "18446744073709551615");
+}
+
+export class BoardContractError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "BoardContractError";
+    this.code = code;
+  }
+}
+
+export function assertBoardSnapshot(value: unknown): BoardSnapshot {
+  if (!isRecord(value) || !hasExactKeys(value, ["schemaVersion", "cursor", "tasks"])) {
+    throw new BoardContractError("BOARD_SNAPSHOT_FIELDS", "Board snapshot fields do not match");
+  }
+  if (value.schemaVersion !== BOARD_SCHEMA_VERSION || !isUint64Decimal(value.cursor) || !Array.isArray(value.tasks) || value.tasks.length > BOARD_MAXIMUM_TASKS) {
+    throw new BoardContractError("BOARD_SNAPSHOT_IDENTITY", "Board snapshot identity does not match");
+  }
+  for (const task of value.tasks) {
+    if (!isRecord(task) || !hasExactKeys(task, ["id", "projectId", "projectName", "title", "state", "runNumber", "candidateSha"])) {
+      throw new BoardContractError("BOARD_TASK_FIELDS", "Board task fields do not match");
+    }
+    if (!isBoundedIdentity(task.id) || !isBoundedIdentity(task.projectId) || typeof task.projectName !== "string" || task.projectName.length === 0 || task.projectName.length > 512 || typeof task.title !== "string" || task.title.length === 0 || task.title.length > 512 || !BOARD_STATES.includes(task.state as BoardState) || (task.runNumber !== null && !isUint64Decimal(task.runNumber)) || (task.candidateSha !== null && (typeof task.candidateSha !== "string" || !/^[0-9a-f]{40}$/.test(task.candidateSha)))) {
+      throw new BoardContractError("BOARD_TASK_VALUE", "Board task value does not match");
+    }
+  }
+  return value as unknown as BoardSnapshot;
 }
 
 export function assertHostDescriptor(value: unknown): HostDescriptor {

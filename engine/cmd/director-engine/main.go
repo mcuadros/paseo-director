@@ -47,7 +47,7 @@ func currentIdentity() (identity, error) {
 		Target:          runtime.GOOS + "-" + runtime.GOARCH,
 		ContractVersion: definition.ContractVersion,
 		ContractSHA256:  contractHash,
-		ProductBehavior: false,
+		ProductBehavior: true,
 	}, nil
 }
 
@@ -59,7 +59,7 @@ func writeJSON(writer io.Writer, value any) error {
 
 func run(arguments []string, stdout, stderr io.Writer) int {
 	if len(arguments) != 1 || (arguments[0] != "version" && arguments[0] != "smoke") {
-		fmt.Fprintln(stderr, "usage: director-engine <version|smoke>")
+		fmt.Fprintln(stderr, "usage: director-engine <version|smoke|serve-board>")
 		return 2
 	}
 	current, err := currentIdentity()
@@ -81,7 +81,7 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	}{
 		Event:           "director-engine.smoke-ready",
 		Identity:        current,
-		ProductBehavior: false,
+		ProductBehavior: true,
 	}); err != nil {
 		fmt.Fprintf(stderr, "director-engine: write smoke result: %v\n", err)
 		return 1
@@ -90,5 +90,8 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "serve-board" {
+		os.Exit(runBoardServer(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
