@@ -33,6 +33,22 @@ const TITLE = "Automate coordinator reconciliation and delivery gates";
 const BRANCH = "task/dir-m1.20-coordinator-test";
 const OWNERSHIP = "dir-m1.20-run-0001";
 const DECISION_TEXT = "HUMAN DECISION — keep exact-head integration";
+const PR_38_CHECKS_ONLY_OBSERVATION = Object.freeze({
+  candidate: "542031762ce37a6de99ba5ad479e77fda0012770",
+  checkRuns: Object.freeze({
+    total_count: 1,
+    check_runs: Object.freeze([
+      Object.freeze({
+        id: 102199975762,
+        name: "Scaffold checks (Linux)",
+        head_sha: "542031762ce37a6de99ba5ad479e77fda0012770",
+        status: "completed",
+        conclusion: "success",
+      }),
+    ]),
+  }),
+  commitStatus: Object.freeze({ state: "pending", total_count: 0, statuses: Object.freeze([]) }),
+});
 
 function command(executable, args, options = {}) {
   const result = defaultCommandRunner(executable, args, options);
@@ -273,6 +289,18 @@ function fakeExternalCommands(fixture, overrides = {}) {
       },
     ],
     comments: [],
+    checkRunsResponse: {
+      total_count: 1,
+      check_runs: [
+        {
+          id: 101,
+          name: "Scaffold checks (Linux)",
+          head_sha: fixture.candidate,
+          status: "completed",
+          conclusion: "success",
+        },
+      ],
+    },
     commitStatusResponse: { state: "success", total_count: 0, statuses: [] },
     createDispatches: 0,
     mergeDispatches: 0,
@@ -461,18 +489,7 @@ function fakeExternalCommands(fixture, overrides = {}) {
         if (record) return ok(pullObject(record));
       }
       if (endpoint.endsWith(`/commits/${fixture.candidate}/check-runs?filter=latest&per_page=100`)) {
-        return ok({
-          total_count: 1,
-          check_runs: [
-            {
-              id: 101,
-              name: "Scaffold checks (Linux)",
-              head_sha: fixture.candidate,
-              status: "completed",
-              conclusion: "success",
-            },
-          ],
-        });
+        return ok(state.checkRunsResponse);
       }
       if (endpoint.endsWith(`/commits/${fixture.candidate}/status`)) {
         return ok(state.commitStatusResponse);
@@ -997,43 +1014,230 @@ test("publish and gate refuse changed human-decision or prior-finding sets", asy
   }
 });
 
-test("commit-status pagination and rolled-up state fail closed", async () => {
-  for (const response of [
-    { state: "success", total_count: 101, statuses: [] },
-    { state: "pending", total_count: 0, statuses: [] },
-    {
-      state: "failure",
-      total_count: 1,
-      statuses: [
-        {
-          id: 1,
-          context: "hidden-failure",
-          sha: null,
-          state: "failure",
-        },
-      ],
-    },
-  ]) {
-    const fixture = createRepositoryFixture();
-    try {
-      const fake = fakeExternalCommands(fixture);
-      await execute("publish", publicationOptions(fixture), { run: fake.runner });
+test("gate admits the exact PR #38 checks-only GitHub fact with an explicit no-status rollup", async () => {
+  assert.equal(
+    PR_38_CHECKS_ONLY_OBSERVATION.checkRuns.check_runs[0].head_sha,
+    PR_38_CHECKS_ONLY_OBSERVATION.candidate,
+  );
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, {
+      checkRunsResponse: {
+        ...PR_38_CHECKS_ONLY_OBSERVATION.checkRuns,
+        check_runs: PR_38_CHECKS_ONLY_OBSERVATION.checkRuns.check_runs.map((check) => ({
+          ...check,
+          head_sha: fixture.candidate,
+        })),
+      },
+      commitStatusResponse: PR_38_CHECKS_ONLY_OBSERVATION.commitStatus,
+    });
+    await execute("publish", publicationOptions(fixture), { run: fake.runner });
+    const output = await execute("gate", gateOptions(fixture), { run: fake.runner });
+    assert.equal(output.outcome, "ready");
+    assert.equal(output.result.checks.statusRollup, "checks_only_no_statuses");
+    assert.deepEqual(output.result.checks.statuses, []);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("gate retains exact-Candidate and complete-success requirements when status contexts exist", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, {
+      commitStatusResponse: {
+        state: "success",
+        total_count: 2,
+        statuses: [
+          { id: 201, context: "legacy/unit", sha: fixture.candidate, state: "success" },
+          { id: 202, context: "legacy/lint", sha: fixture.candidate, state: "success" },
+        ],
+      },
+    });
+    await execute("publish", publicationOptions(fixture), { run: fake.runner });
+    const output = await execute("gate", gateOptions(fixture), { run: fake.runner });
+    assert.equal(output.result.checks.statusRollup, "success");
+    assert.deepEqual(output.result.checks.statuses, [
+      { context: "legacy/unit", id: 201 },
+      { context: "legacy/lint", id: 202 },
+    ]);
+
+    for (const response of [
+      {
+        state: "pending",
+        total_count: 1,
+        statuses: [
+          { id: 203, context: "legacy/combined-pending", sha: fixture.candidate, state: "success" },
+        ],
+      },
+      {
+        state: "failure",
+        total_count: 1,
+        statuses: [
+          { id: 204, context: "legacy/combined-failure", sha: fixture.candidate, state: "success" },
+        ],
+      },
+      {
+        state: "success",
+        total_count: 1,
+        statuses: [
+          { id: 205, context: "legacy/context-failure", sha: fixture.candidate, state: "failure" },
+        ],
+      },
+      {
+        state: "success",
+        total_count: 1,
+        statuses: [
+          { id: 206, context: "legacy/wrong-sha", sha: fixture.base, state: "success" },
+        ],
+      },
+    ]) {
       fake.state.commitStatusResponse = response;
       await assert.rejects(
         execute("gate", gateOptions(fixture), { run: fake.runner }),
-        (error) =>
-          error instanceof CoordinatorError &&
-          ["STATUSES_INCOMPLETE", "STATUS_NOT_PASSED"].includes(error.code),
+        (error) => error instanceof CoordinatorError && error.code === "STATUS_NOT_PASSED",
       );
-      const statusCall = fake.state.calls.find(
-        (call) =>
-          call.executable === "gh" &&
-          call.args.some((value) => value.endsWith("/status?per_page=100")),
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("check and status pagination, check completion, and required-check identity fail closed", async () => {
+  const cases = [
+    {
+      code: "CHECKS_INCOMPLETE",
+      checks: { total_count: 2, check_runs: [] },
+    },
+    {
+      code: "CHECK_NOT_PASSED",
+      checks: {
+        total_count: 1,
+        check_runs: [
+          {
+            id: 301,
+            name: "Scaffold checks (Linux)",
+            status: "in_progress",
+            conclusion: null,
+          },
+        ],
+      },
+    },
+    {
+      code: "CHECK_NOT_PASSED",
+      checks: {
+        total_count: 1,
+        check_runs: [
+          {
+            id: 302,
+            name: "Scaffold checks (Linux)",
+            status: "completed",
+            conclusion: "failure",
+          },
+        ],
+      },
+    },
+    {
+      code: "CHECK_SHA_MISMATCH",
+      checks: {
+        total_count: 1,
+        check_runs: [
+          {
+            id: 306,
+            name: "Scaffold checks (Linux)",
+            head_sha: "0000000000000000000000000000000000000000",
+            status: "completed",
+            conclusion: "success",
+          },
+        ],
+      },
+    },
+    {
+      code: "REQUIRED_CHECK_AMBIGUOUS",
+      checks: {
+        total_count: 1,
+        check_runs: [
+          {
+            id: 303,
+            name: "Different check",
+            status: "completed",
+            conclusion: "success",
+          },
+        ],
+      },
+    },
+    {
+      code: "REQUIRED_CHECK_AMBIGUOUS",
+      checks: {
+        total_count: 2,
+        check_runs: [
+          {
+            id: 304,
+            name: "Scaffold checks (Linux)",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
+            id: 305,
+            name: "Scaffold checks (Linux)",
+            status: "completed",
+            conclusion: "success",
+          },
+        ],
+      },
+    },
+  ];
+  for (const testCase of cases) {
+    const fixture = createRepositoryFixture();
+    try {
+      const fake = fakeExternalCommands(fixture, {
+        checkRunsResponse: {
+          ...testCase.checks,
+          check_runs: testCase.checks.check_runs.map((check) => ({
+            head_sha: fixture.candidate,
+            ...check,
+          })),
+        },
+      });
+      await execute("publish", publicationOptions(fixture), { run: fake.runner });
+      await assert.rejects(
+        execute("gate", gateOptions(fixture), { run: fake.runner }),
+        (error) => error instanceof CoordinatorError && error.code === testCase.code,
       );
-      assert.ok(statusCall);
     } finally {
       fixture.cleanup();
     }
+  }
+});
+
+test("nonzero legacy status pagination remains complete and bounded", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, {
+      commitStatusResponse: {
+        state: "success",
+        total_count: 101,
+        statuses: Array.from({ length: 100 }, (_, index) => ({
+          id: 400 + index,
+          context: `legacy/page-${index}`,
+          sha: fixture.candidate,
+          state: "success",
+        })),
+      },
+    });
+    await execute("publish", publicationOptions(fixture), { run: fake.runner });
+    await assert.rejects(
+      execute("gate", gateOptions(fixture), { run: fake.runner }),
+      (error) => error instanceof CoordinatorError && error.code === "STATUSES_INCOMPLETE",
+    );
+    const statusCall = fake.state.calls.find(
+      (call) =>
+        call.executable === "gh" &&
+        call.args.some((value) => value.endsWith("/status?per_page=100")),
+    );
+    assert.ok(statusCall);
+  } finally {
+    fixture.cleanup();
   }
 });
 
