@@ -25,10 +25,15 @@ func TestRenderIsDeterministicAndCarriesContract(t *testing.T) {
 		[]byte(`"one"`),
 		[]byte(`"two"`),
 		[]byte(`HOST_CONTRACT_SHA256`),
+		[]byte(`interface HostCommandArguments`),
+		[]byte(`interface HostObservationResult`),
 	} {
 		if !bytes.Contains(first, expected) {
 			t.Fatalf("render output does not contain %q", expected)
 		}
+	}
+	if bytes.Contains(first, []byte(`arguments: Readonly<Record<string, unknown>>`)) || bytes.Contains(first, []byte(`result: unknown`)) {
+		t.Fatal("generated host client retained an untyped command or observation boundary")
 	}
 }
 

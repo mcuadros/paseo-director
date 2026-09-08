@@ -4,7 +4,7 @@
 // This generated boundary contains transport types only and owns no policy.
 
 export const HOST_CONTRACT_VERSION = "director-host/v1" as const;
-export const HOST_CONTRACT_SHA256 = "e77428ac4bfacbd83ca40620fc71b8e1848ab7f3e7f6b83f045c765cb2f0cdc1" as const;
+export const HOST_CONTRACT_SHA256 = "d0b6b01a5ee4fad40d1439978db663aaaa41af43141d8bac183c03cff3dfab46" as const;
 export const HOST_CREDENTIAL_SCOPE = "full-daemon-operator" as const;
 export const HOST_CAPABILITIES = [
   "executionWorkspace.createManaged",
@@ -26,19 +26,68 @@ export interface HostDescriptor {
   capabilities: typeof HOST_CAPABILITIES;
 }
 
+export interface HostScope {
+  projectId: string;
+  workspaceId: string;
+  taskId: string;
+  runId: string;
+}
+
+export type HostEffectKind =
+  | "host_view.create"
+  | "task_agent.create_with_initial_prompt"
+  | "task_agent.archive"
+  | "host_view.archive";
+
+export interface HostCommandArguments {
+  scope: Readonly<HostScope>;
+  effectKind: HostEffectKind;
+  effectId: string;
+  bindingHash: string;
+  worktreeId?: string;
+  worktreePath?: string;
+  workspaceId?: string;
+  agentId?: string;
+  title?: string;
+  initialPrompt?: string;
+  parentAgentId?: string;
+  lifecycleDigest?: string;
+  isolationDigest?: string;
+  preparationReady?: boolean;
+  preparationBarrierHash?: string;
+}
+
 export interface HostCommand {
   requestId: string;
   idempotencyKey: string;
   expectedVersion: number;
   capability: HostCapability;
-  arguments: Readonly<Record<string, unknown>>;
+  arguments: Readonly<HostCommandArguments>;
+}
+
+export type HostObservationStatus =
+  | "desired"
+  | "absent"
+  | "owned_present"
+  | "different"
+  | "ambiguous"
+  | "unavailable";
+
+export interface HostObservationResult {
+  effectId: string;
+  status: HostObservationStatus;
+  externalId?: string;
+  bindingHash: string;
+  priorDispatcherAbsent: boolean;
+  maximumAgeMillis: number;
+  factHash: string;
 }
 
 export interface HostObservation {
   requestId: string;
   cursor: number;
   observedAt: string;
-  result: unknown;
+  result: Readonly<HostObservationResult>;
 }
 
 export interface DirectorHost {

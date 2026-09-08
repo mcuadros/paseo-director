@@ -22,7 +22,30 @@
       "capability",
       "arguments"
     ],
-    "maximumBytes": 1048576
+    "maximumBytes": 1048576,
+    "arguments": {
+      "required": ["scope", "effectKind", "effectId", "bindingHash"],
+      "scopeRequired": ["projectId", "workspaceId", "taskId", "runId"],
+      "effectKinds": [
+        "host_view.create",
+        "task_agent.create_with_initial_prompt",
+        "task_agent.archive",
+        "host_view.archive"
+      ],
+      "optional": [
+        "worktreeId",
+        "worktreePath",
+        "workspaceId",
+        "agentId",
+        "title",
+        "initialPrompt",
+        "parentAgentId",
+        "lifecycleDigest",
+        "isolationDigest",
+        "preparationReady",
+        "preparationBarrierHash"
+      ]
+    }
   },
   "observation": {
     "cursor": "uint64-monotonic",
@@ -31,6 +54,25 @@
       "cursor",
       "observedAt",
       "result"
-    ]
+    ],
+    "result": {
+      "required": [
+        "effectId",
+        "status",
+        "bindingHash",
+        "priorDispatcherAbsent",
+        "maximumAgeMillis",
+        "factHash"
+      ],
+      "statuses": [
+        "desired",
+        "absent",
+        "owned_present",
+        "different",
+        "ambiguous",
+        "unavailable"
+      ],
+      "optional": ["externalId"]
+    }
   }
 }

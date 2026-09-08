@@ -565,7 +565,17 @@ test("the connector descriptor and engine environment never propagate its creden
         idempotencyKey: "effect-1",
         expectedVersion: 1,
         capability: "agent.observe",
-        arguments: {},
+        arguments: {
+          scope: {
+            projectId: "project-1",
+            workspaceId: "workspace-1",
+            taskId: "task-1",
+            runId: "run-1",
+          },
+          effectKind: "task_agent.create_with_initial_prompt",
+          effectId: "effect-1",
+          bindingHash: "1".repeat(64),
+        },
       }),
       /HOST_CAPABILITY_NOT_IMPLEMENTED/,
     );

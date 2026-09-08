@@ -24,6 +24,7 @@ import (
 
 	"github.com/mcuadros/director-engine/adapters/dolt"
 	"github.com/mcuadros/director-engine/domain"
+	"github.com/mcuadros/director-engine/domain/execution"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
 
@@ -264,7 +265,22 @@ func runPortContract(t *testing.T, store storeport.TaskStore) {
 		event("event-task-create", "", 1, task.ID, 0, "task.created"),
 	)
 	requireApplied(t, result, err)
-	run := domain.Run{ID: "run-1", TaskID: task.ID, Number: 1, BaseSHA: baseSHA}
+	run := domain.Run{
+		ID: "run-1", TaskID: task.ID, Number: 1, BaseSHA: baseSHA,
+		Execution: execution.State{
+			SchemaVersion: "director.execution/v1",
+			Scope: execution.Scope{
+				ProjectID: "project-1", WorkspaceID: "workspace-1",
+				TaskID: "task-1", RunID: "run-1",
+			},
+			EligibilityDecisionID: "eligibility-1",
+			LifecycleDigest:       strings.Repeat("1", 64),
+			Worktree: execution.Effect{
+				ID: "worktree-1", Kind: execution.EffectWorktreeCreate,
+				Phase: execution.EffectIntentRecorded, AttemptLimit: 2,
+			},
+		},
+	}
 	result, err = store.CreateRun(
 		ctx,
 		command("command-run-create", "run.create", run.ID, 0, `{"number":1}`),
@@ -285,6 +301,11 @@ func runPortContract(t *testing.T, store storeport.TaskStore) {
 	requireApplied(t, result, err)
 
 	task.Title = "Persist and reload skeleton"
+	task.Attention = &execution.NeedsYou{
+		Code:              execution.NeedOperationalFactMissing,
+		WakeCondition:     "fresh_operational_observation",
+		CleanupAuthorized: false,
+	}
 	task.Version = 1
 	updateCommand := command(
 		"command-task-update", "task.update", task.ID, 0,
@@ -386,11 +407,15 @@ func TestDoltStoreContract(t *testing.T) {
 		t.Fatalf("Project did not reload: %#v, %v", project, err)
 	}
 	task, err := reloaded.Task(ctx, "task-1")
-	if err != nil || task.Version != 2 || !strings.HasPrefix(task.Title, "Concurrent ") {
+	if err != nil || task.Version != 2 || !strings.HasPrefix(task.Title, "Concurrent ") ||
+		task.Attention == nil || task.Attention.Code != execution.NeedOperationalFactMissing ||
+		task.Attention.CleanupAuthorized {
 		t.Fatalf("Task did not reload at winning version: %#v, %v", task, err)
 	}
 	run, err := reloaded.Run(ctx, "run-1")
-	if err != nil || run.Version != 1 || run.CurrentCandidateID != "candidate-1" {
+	if err != nil || run.Version != 1 || run.CurrentCandidateID != "candidate-1" ||
+		run.Execution.EligibilityDecisionID != "eligibility-1" ||
+		run.Execution.Worktree.ID != "worktree-1" {
 		t.Fatalf("Run/Candidate projection did not reload: %#v, %v", run, err)
 	}
 	if projects, err := reloaded.Projects(ctx); err != nil || len(projects) != 1 {
