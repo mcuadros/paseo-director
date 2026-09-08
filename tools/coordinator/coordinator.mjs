@@ -1520,19 +1520,22 @@ function checkFacts(run, options) {
     "STATUSES_INCOMPLETE",
     "GitHub commit statuses were not complete in one bounded page",
   );
-  refuse(
-    statuses.state !== "success" ||
-      statuses.statuses.some(
-        (status) =>
-          status.sha !== options.candidate || status.state !== "success",
-      ),
-    "STATUS_NOT_PASSED",
-    "combined commit status or a context is pending or non-passing",
-  );
+  const checksOnly = statuses.total_count === 0;
+  if (!checksOnly) {
+    refuse(
+      statuses.state !== "success" ||
+        statuses.statuses.some(
+          (status) =>
+            status.sha !== options.candidate || status.state !== "success",
+        ),
+      "STATUS_NOT_PASSED",
+      "combined commit status or a context is pending or non-passing",
+    );
+  }
   return {
     checkRuns: checks.check_runs.map((check) => ({ id: check.id, name: check.name })),
     required: options.requiredChecks,
-    statusRollup: statuses.state,
+    statusRollup: checksOnly ? "checks_only_no_statuses" : statuses.state,
     statuses: statuses.statuses.map((status) => ({ context: status.context, id: status.id })),
   };
 }

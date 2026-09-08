@@ -91,8 +91,11 @@ response content.
 - `gate` requires the exact PR number, review/manifest/harness/validation
   files, and one or more repeated `--required-check` values. It requires the live base/head tuple,
   open non-draft mergeability, every observed check/status to pass, each named
-  check exactly once, a complete bounded commit-status page and successful
-  rolled-up state, no requested reviewers, no current changes-requested or
+  check exactly once, and a complete bounded commit-status page. When that
+  page contains no legacy status contexts, the successful required Check Runs
+  produce an explicit `checks_only_no_statuses` rollup; otherwise the combined
+  status and every exact-Candidate context must be successful. The gate also requires
+  no requested reviewers, no current changes-requested or
   ambiguous review, no human issue comment, and no unresolved human review
   thread. It re-reads Beads and refuses if the manifest's binding human-decision
   or prior rejected-review reference set changed. `publish` and the final
