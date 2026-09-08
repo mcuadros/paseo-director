@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawnSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, writeSync } from "node:fs";
 import { posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -82,8 +82,14 @@ const TS_ALLOWED_EXTERNAL_IMPORTS = {
   connector: new Set(["@getpaseo/client"]),
 };
 const POLICY_DECLARATION = /(?:Reducer|Policy|Scheduler|Orchestrator|TaskStore|Reconciler|StateTransition|DomainModel|ApplicationService|LifecycleDecision|LifecycleTransition|(?:Eligibility|Launch|Retry|Escalation|Routing|Closure)Decision)$/i;
-const ADAPTER_RUNTIME_POLICY_DECLARATION = /(?:Domain|Application|Orchestrat|Eligib|Schedul|Retry|Escalat|Rout|Reconcil|StateTransition|TaskStore|Projection|Closure|Reducer|Policy|OrganizerRevisionState|ConfigurationRevisionState|RunConfigurationSnapshot)/i;
-const POLICY_PATH = /(?:^|\/)(?:domain|application|orchestration|eligibility|scheduler|scheduling|retry|escalation|routing|reconciliation|state-transition|taskstore|projection|closure|reducers?|organizer-revision|configuration-revision|revision-state|run-configuration-snapshot)(?:[./_-]|$)/i;
+const ADAPTER_RUNTIME_POLICY_DECLARATION = /(?:Domain|Application|Orchestrat|Eligib|Schedul|Retry|Escalat|Rout|Reconcil|StateTransition|Lifecycle|TaskStore|Projection|Closure|Reducer|Policy|OrganizerRevisionState|ConfigurationRevisionState|RunConfigurationSnapshot)/i;
+const ADAPTER_RUNTIME_DATA_DECLARATIONS = new Set([
+  "TaskStoreAdapter",
+  "DoltTaskStore",
+  "ProjectionReader",
+  "DomainEventRow",
+]);
+const POLICY_PATH = /(?:^|\/)(?:domain|application|orchestration|eligibility|scheduler|scheduling|retry|escalation|routing|reconciliation|state-transition|taskstore|projection|closure|reducers?|policy|organizer-revision|configuration-revision|revision-state|run-configuration-snapshot)(?:[./_-]|$)/i;
 const CANONICAL_HOST_CONTRACT = "engine/ports/host/host-interface.v1.json";
 const POLICY_GUARDED_PATH_PREFIXES = [
   ["ui", "ui/"],
@@ -93,6 +99,7 @@ const POLICY_GUARDED_PATH_PREFIXES = [
   ["adapters", "engine/adapters/"],
   ["agent-runtime", "engine/agent-runtime/"],
 ];
+const POLICY_PATH_EXEMPTIONS = new Set(["engine/adapters/dolt/taskstore.go"]);
 
 export function classifyGoPackage(importPath) {
   if (importPath === ENGINE_MODULE) return null;
@@ -125,11 +132,16 @@ function declarations(source, language) {
 }
 
 export function policyOwnershipErrors(path, source, language) {
+  const adapter = path.startsWith("engine/adapters/");
   const declarationPattern = /^(?:engine\/(?:adapters|agent-runtime)|ui|rpc|generated|connector)\//.test(path)
     ? ADAPTER_RUNTIME_POLICY_DECLARATION
     : POLICY_DECLARATION;
   return declarations(source, language)
-    .filter((identifier) => declarationPattern.test(identifier))
+    .filter(
+      (identifier) =>
+        declarationPattern.test(identifier) &&
+        !(adapter && ADAPTER_RUNTIME_DATA_DECLARATIONS.has(identifier)),
+    )
     .map(
       (identifier) =>
         `${path}: boundary adapter/runtime declares policy-shaped symbol ${identifier}`,
@@ -137,6 +149,7 @@ export function policyOwnershipErrors(path, source, language) {
 }
 
 export function policyPathErrors(path) {
+  if (POLICY_PATH_EXEMPTIONS.has(path)) return [];
   const boundary = POLICY_GUARDED_PATH_PREFIXES.find(([, prefix]) =>
     path.startsWith(prefix),
   );
@@ -157,6 +170,11 @@ export function goDependencyErrors(packages) {
     }
     for (const imported of current.imports) {
       if (!imported.includes(".")) {
+        if (role === "ports" && standardImportMatches(imported, "database")) {
+          errors.push(
+            `${current.importPath}: port boundary cannot leak database backend package ${imported}`,
+          );
+        }
         if (
           PURE_GO_ROLES.has(role) &&
           IMPURE_STANDARD_IMPORTS.some((prefix) =>
@@ -172,7 +190,7 @@ export function goDependencyErrors(packages) {
       if (!imported.startsWith(`${ENGINE_MODULE}/`)) {
         if (
           role === "adapters" &&
-          !/(?:paseo|director-for-paseo)/i.test(imported)
+          !/(?:paseo|director-for-paseo|(?:^|[./_-])beads(?:[./_-]|$))/i.test(imported)
         ) {
           continue;
         }
@@ -501,8 +519,14 @@ export function architectureErrors(repositoryRoot) {
 function run(repositoryRoot) {
   const errors = architectureErrors(repositoryRoot);
   if (errors.length > 0) {
-    console.error("Architecture boundary checks failed:");
-    errors.forEach((error) => console.error(`- ${error}`));
+    writeSync(
+      2,
+      [
+        "Architecture boundary checks failed:",
+        ...errors.map((error) => `- ${error}`),
+        "",
+      ].join("\n"),
+    );
     return 1;
   }
   console.log(

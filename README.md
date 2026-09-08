@@ -39,12 +39,13 @@ with, endorsed by, maintained by, or sponsored by Paseo.
 
 This walking skeleton intentionally implements no Task execution workflow. It
 establishes the process, package, UI, host contract, credential, distribution,
-configuration/revision, and CI boundaries on which later M1 Tasks can build.
+configuration/revision, direct-Dolt persistence, and CI boundaries on which
+later M1 Tasks can build.
 
 ## Development
 
-Requirements are Linux, Node.js 22 or newer, npm with lockfile support, and Go
-1.26.5. Install and run every local check deterministically:
+Requirements are Linux, Node.js 22 or newer, npm with lockfile support, Go
+1.26.5, and Dolt 2.3.2. Install and run every local check deterministically:
 
 ```text
 npm ci --ignore-scripts --no-audit --no-fund
@@ -132,7 +133,65 @@ cmd (composition only)
 seven closed agent-outcome schemas live under `domain/agentoutcome`; claims are
 inputs, never lifecycle evidence. Infrastructure adapters and the fixed-scope
 agent runtime may translate or perform an authorized effect but cannot own a
-reducer, policy, TaskStore, projection, or lifecycle decision.
+reducer, policy, projection decision, or lifecycle decision. The typed
+TaskStore authority remains inside the engine; its direct-Dolt implementation
+is an infrastructure adapter rather than a policy owner.
+
+### TaskStore skeleton
+
+The engine-owned [`TaskStore` port](engine/ports/taskstore/taskstore.go) exposes
+only typed Project, Task, Run, Candidate, Command, and Event records. It has no
+SQL, connection, credential, database-selection, or Beads surface. The one
+runtime implementation is [`DoltTaskStore`](engine/adapters/dolt/taskstore.go),
+which talks to a separately supervised Dolt 2.3.2 SQL server through private
+control and writer identities.
+
+`Bootstrap` installs schema version 1 only into an empty, explicitly selected
+database and verifies the complete expected table and guard-trigger sets plus
+the three exact guard seed rows on every later start; a missing or extra
+table/trigger, changed guard row, incomplete or foreign schema, wrong version,
+wrong database, or wrong store fails closed. Before each write the adapter sets
+and reads back the safe global and exact-connection session commit values,
+verifies the database and store identity, then commits the aggregate, immutable
+Command outcome, and Event in one transaction. Mutable aggregates use exact
+expected-version updates. Candidate, Command, and Event identities use
+append-only ledgers and triggers, including parent guards which remain active
+when a writer disables foreign-key checks.
+
+Applied Event allocation takes one transactional stream lock before assigning
+`global_sequence`. The lock is held through commit, so a consumer which resumes
+strictly after its last returned cursor cannot miss a lower-sequence Event that
+commits later. Commands rejected before Event creation do not take the lock.
+
+Those guards contain the row-level DML emitted by the trusted adapter:
+`INSERT`, `UPDATE`, `DELETE`, duplicate/ODKU, and `REPLACE` forms. Dolt/MySQL
+`TRUNCATE` is DDL, does not execute row-level delete triggers, and is outside
+that containment claim. The production runtime writer identity must therefore
+exclude `DROP` privilege, which also makes `TRUNCATE` unavailable. Its DML
+grants must be table-scoped so `guard_constants`, `parent_guard`, and
+`immutable_write_guard` are read-only: the writer receives `SELECT` but no
+direct `INSERT`, `UPDATE`, or `DELETE` on those three tables. Schema bootstrap
+and migration authority remains a separate engine-only control path and must
+never be exposed to agents, connectors, UI, repositories, or prompts.
+
+All port-facing connection, query, scan, cursor, replay-entry, and schema
+failures are typed as `HealthError` or `SchemaError`. Their bounded codes unwrap
+to the stable port sentinels and contain no raw driver, listener, credential,
+SQL, table, address, or server output. Every singular and collection reload
+validates Project, Task, Run, and Candidate values before returning them.
+
+The schema remains ordinary externally inspectable Dolt tables, so the
+ADR-0012 pause/inspection, online-backup, fresh-restore, migration, and remote
+synchronization procedures remain applicable. This M1 skeleton makes no
+production-scale claim; the agreed-scale proof remains assigned to `dir-m5.10`.
+Linux contract tests start disposable real Dolt 2.3.2 servers, create and reload
+all six record types, exercise idempotent replay and same-version contention,
+query the resumable Event cursor, inspect the tables externally, and verify the
+append-only and schema/identity fail-closed guards. Adversarial cases invoke
+every TaskStore port method with wrong credentials, a stopped backend, and its
+relevant missing table; they also cover every missing expected schema table and
+guard trigger, exact guard seed rows, invalid singular/collection persisted
+records, and the guard-read-only, DROP-free runtime writer grant.
 
 The closed `paseo-director.json` contract lives under
 `domain/configuration`. Its optimistic pending/active revision aggregate and

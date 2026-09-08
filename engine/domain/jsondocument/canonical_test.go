@@ -110,3 +110,38 @@ func TestCanonicalEscapingExpansionAndNestedValues(t *testing.T) {
 		t.Fatal("Canonical(nested) changed array structure")
 	}
 }
+
+func TestCanonicalWithNormalizedNumbersPreservesStrictEncoding(t *testing.T) {
+	left, err := CanonicalWithNormalizedNumbers([]byte(`{"z":1.2300e2,"a":[-0,0.0010]}`))
+	if err != nil {
+		t.Fatalf("CanonicalWithNormalizedNumbers(first) error = %v", err)
+	}
+	right, err := CanonicalWithNormalizedNumbers([]byte(` { "a" : [ 0.0, 1e-3 ], "z" : 123 } `))
+	if err != nil {
+		t.Fatalf("CanonicalWithNormalizedNumbers(second) error = %v", err)
+	}
+	if string(left) != `{"a":[0,0.001],"z":123}` || !bytes.Equal(left, right) {
+		t.Fatalf("equal decimal values differ: %s != %s", left, right)
+	}
+	for name, input := range map[string][]byte{
+		"invalid UTF-8":       {0xff},
+		"lone high surrogate": []byte(`{"value":"\ud800"}`),
+		"lone low surrogate":  []byte(`{"value":"\udc00"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := CanonicalWithNormalizedNumbers(input); err == nil {
+				t.Fatal("strict normalized-number canonicalization accepted invalid Unicode")
+			}
+		})
+	}
+}
+
+func TestCanonicalWithNormalizedNumbersBoundsExpansion(t *testing.T) {
+	if _, err := CanonicalWithNormalizedNumbers([]byte(`1e2000000`)); !errors.Is(err, ErrCanonicalDocumentTooLarge) {
+		t.Fatalf("oversize canonical number was not bounded: %v", err)
+	}
+	input := []byte("[" + strings.TrimSuffix(strings.Repeat("1e8191,", 129), ",") + "]")
+	if _, err := CanonicalWithNormalizedNumbersLimit(input, 1<<20); !errors.Is(err, ErrCanonicalDocumentTooLarge) {
+		t.Fatalf("document-wide numeric expansion was not bounded: %v", err)
+	}
+}
