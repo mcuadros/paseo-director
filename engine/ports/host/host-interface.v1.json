@@ -14,6 +14,22 @@
     "agent.observe",
     "agent.archive"
   ],
+  "boardQuery": {
+    "name": "board.snapshot",
+    "method": "GET",
+    "path": "/v1/board",
+    "schemaVersion": 1,
+    "maximumTasks": 1000,
+    "maximumBytes": 2097152,
+    "states": [
+      "needs_you",
+      "queued",
+      "building",
+      "validating",
+      "in_review",
+      "ready"
+    ]
+  },
   "command": {
     "required": [
       "requestId",

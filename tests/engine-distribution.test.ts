@@ -221,6 +221,7 @@ test("development mode compiles and never attempts a release download", async ()
     checkoutRoot,
     sourceRoot,
     cacheRoot,
+    moduleCache: join(root, "module-cache"),
   };
   let compiles = 0;
   let downloads = 0;
@@ -279,6 +280,21 @@ test("engine mode selection is explicit and disjoint", () => {
         checkoutRoot,
       ).mode,
       "development",
+    );
+    assert.throws(
+      () =>
+        selectEngine(
+          {
+            DIRECTOR_ENGINE_MODE: "development",
+            DIRECTOR_ENGINE_SOURCE_ROOT: join(root, "source"),
+            XDG_CACHE_HOME: join(root, "cache"),
+            GOMODCACHE: join(checkoutRoot, "module-cache"),
+          },
+          checkoutRoot,
+        ),
+      (error: unknown) =>
+        error instanceof EngineSelectionError &&
+        error.code === "ENGINE_MODULE_CACHE_IN_CHECKOUT",
     );
     const cacheLink = join(root, "cache-link");
     symlinkSync(checkoutRoot, cacheLink);

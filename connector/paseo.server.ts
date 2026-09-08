@@ -20,6 +20,10 @@ import {
 } from "../generated/host-contract.shared.ts";
 import type { ConnectorStartupStatus } from "../rpc/startup.shared.ts";
 import { loadConnectorCredential } from "./credential.server.ts";
+import {
+  createBoardTransport,
+  type BoardTransport,
+} from "./engine-board.server.ts";
 import { engineBoundaryPaths } from "./engine-distribution.server.ts";
 import {
   selectEngine,
@@ -30,15 +34,22 @@ export type ConnectorClient = Pick<PaseoClient, "close">;
 
 export type ConnectorDependencies = {
   createClient?: (configuration: PaseoClientConfig) => ConnectorClient;
+  boardTransport?: BoardTransport;
 };
 
 export class PaseoHostConnector implements DirectorHost {
   readonly #client: ConnectorClient;
   readonly #selection: EngineSelection;
+  readonly #boardTransport: BoardTransport;
 
-  constructor(client: ConnectorClient, selection: EngineSelection) {
+  constructor(
+    client: ConnectorClient,
+    selection: EngineSelection,
+    boardTransport: BoardTransport,
+  ) {
     this.#client = client;
     this.#selection = selection;
+    this.#boardTransport = boardTransport;
     assertHostDescriptor(EXPECTED_HOST_DESCRIPTOR);
   }
 
@@ -48,20 +59,24 @@ export class PaseoHostConnector implements DirectorHost {
 
   async invoke(_command: HostCommand): Promise<HostObservation> {
     throw new Error(
-      "HOST_CAPABILITY_NOT_IMPLEMENTED: the connector scaffold has no product behavior",
+      "HOST_CAPABILITY_NOT_IMPLEMENTED: the Board/List slice has no lifecycle host behavior",
     );
   }
 
   status(): ConnectorStartupStatus {
     return {
-      state: "scaffold-ready",
+      state: "board-ready",
       engineMode: this.#selection.mode,
-      productBehavior: false,
+      productBehavior: true,
       descriptor: {
         ...EXPECTED_HOST_DESCRIPTOR,
         capabilities: [...HOST_CAPABILITIES],
       },
     };
+  }
+
+  async loadBoard() {
+    return this.#boardTransport.load();
   }
 
   async close(): Promise<void> {
@@ -84,6 +99,11 @@ export function startConnectorShell(options: {
   if (!url) {
     throw new Error("DIRECTOR_PASEO_URL is required");
   }
+  const boardTransport =
+    options.dependencies?.boardTransport ??
+    createBoardTransport({
+      baseUrl: options.environment.DIRECTOR_ENGINE_URL,
+    });
   const createClient = options.dependencies?.createClient ?? createPaseoClient;
   const client = createClient({
     url,
@@ -91,7 +111,7 @@ export function startConnectorShell(options: {
     clientId: `director-connector-${process.pid}`,
     reconnect: { enabled: false },
   });
-  return new PaseoHostConnector(client, selection);
+  return new PaseoHostConnector(client, selection, boardTransport);
 }
 
 export function startConnectorShellFromEnvironment(): PaseoHostConnector {

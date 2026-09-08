@@ -9,6 +9,7 @@ import {
 } from "./ui/shells.client";
 import { startConnectorShellFromEnvironment } from "./connector/paseo.server";
 import { connectorStartupStatus } from "./rpc/startup.shared";
+import { boardSnapshotRpc } from "./rpc/board.shared";
 
 export default function contribute(plugin: PluginContext) {
   const connector = startConnectorShellFromEnvironment();
@@ -53,6 +54,7 @@ export default function contribute(plugin: PluginContext) {
     },
   });
   plugin.handle(connectorStartupStatus, () => connector.status());
+  plugin.handle(boardSnapshotRpc, () => connector.loadBoard());
 
   return () => connector.close();
 }

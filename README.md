@@ -52,6 +52,13 @@ package, UI, host contract, credential, distribution, configuration/revision,
 previewed local Create/Adopt Organizer, direct-Dolt persistence, and CI
 boundaries on which later M1 Tasks can build.
 
+Alongside that engine-owned fake path, the Board/List slice adds only read-only
+presentation behavior. Director Engine reads persisted Tasks through its typed
+TaskStore port, derives their current walking-skeleton state, and serves one
+bounded snapshot. Director for Paseo transports that snapshot through a strict
+plugin RPC and renders it without owning TaskStore access or lifecycle truth.
+Later Tasks extend real execution behavior on these boundaries.
+
 ## Development
 
 Requirements are Linux, Node.js 22 or newer, npm with lockfile support, Go
@@ -74,8 +81,8 @@ npm run smoke
 ```
 
 `npm run smoke` compiles the standalone development engine into an owned
-temporary cache, runs its `version` and no-product-behavior startup paths with
-an empty environment, and removes the temporary cache.
+temporary cache, runs its `version` and side-effect-free startup paths with an
+empty environment, and removes the temporary cache.
 
 ## Paseo host configuration
 
@@ -85,11 +92,18 @@ daemon-process environment values before installation or reload:
 - `DIRECTOR_PASEO_URL`: the daemon WebSocket URL.
 - `DIRECTOR_PASEO_CREDENTIAL_FILE`: an absolute path to the owner-only
   connector credential outside the checkout.
+- `DIRECTOR_ENGINE_URL`: an origin-only loopback HTTP URL with an explicit
+  port, such as `http://127.0.0.1:7041`, for the separately supervised Director
+  Engine Board endpoint.
 - `DIRECTOR_ENGINE_MODE`: exactly `release` or `development`.
 - `DIRECTOR_ENGINE_SOURCE_ROOT`: an absolute engine source path, required only
   in development mode.
 - `XDG_CACHE_HOME`: optional platform cache base; engine artifacts are always
   kept under its `director/engines` subtree outside the plugin checkout.
+- `GOMODCACHE`: optional absolute development module-cache path; otherwise the
+  Go toolchain's standard user module cache is used. The path is included in
+  the connector credential-disjointness boundary and only reaches the
+  development compiler environment.
 
 The committed release descriptor explicitly marks `0.0.0-scaffold` as
 unpublished and declares no assets or digests. Release resolution rejects that
@@ -102,6 +116,70 @@ URL credentials, query, or fragment is invalid. Empty-input digests are invalid.
 Release mode never compiles as a fallback.
 Development mode always compiles the selected Go source and never downloads or
 falls back to release mode. A missing or conflicting mode fails closed.
+
+## Minimal Board/List runtime
+
+The separately supervised engine opens an existing, already bootstrapped
+direct-Dolt TaskStore and serves the read-only Board contract on an explicit
+loopback address:
+
+```text
+director-engine serve-board \
+  --listen 127.0.0.1:7041 \
+  --taskstore-config /absolute/private/director-engine.json
+```
+
+The Board endpoint is unauthenticated. Its public contract version/hash are
+compatibility checks, not credentials. Run it only on the accepted single-user
+Linux host and keep its port confined to loopback; never proxy or expose it to
+another host or user. Any local process able to reach the port can read Project
+names, Task titles, Run numbers, and Candidate SHAs.
+
+The configuration file and any referenced password files must be absolute,
+regular, owner-only files outside repositories. Unknown, duplicate, missing,
+oversized, trailing, or unsupported fields fail closed. The closed version 1
+shape is:
+
+```json
+{
+  "schemaVersion": 1,
+  "storeId": "director-project-store",
+  "control": {
+    "address": "127.0.0.1:3307",
+    "database": "director",
+    "user": "director_control",
+    "passwordFile": "/absolute/private/dolt-control.password"
+  },
+  "writer": {
+    "address": "127.0.0.1:3307",
+    "database": "director",
+    "user": "director_writer",
+    "passwordFile": "/absolute/private/dolt-writer.password"
+  }
+}
+```
+
+`passwordFile` may be `null` only for an explicitly configured passwordless
+local test store. The server never bootstraps or repairs the selected database;
+missing identity, schema, or connection facts fail startup or the
+query closed with a bounded error. The endpoint accepts only the generated
+contract version and hash and returns no SQL, credentials, paths, objectives,
+or acceptance-criteria text.
+
+The Project Board panel loads the snapshot with TanStack Query, performs no
+automatic request retry, and refreshes the read-only query every two seconds.
+It renders loading, error, empty, cached-update, and data states. Wide mode
+defaults to Board and shows every applicable lane; compact mode defaults to
+List and shows one selected Board lane at a time. All text and surfaces use
+Paseo theme tokens, and controls expose roles, labels, selected state, and live
+status announcements.
+
+The M1 state mapping is intentionally narrow: persisted Task/Run attention is
+`Needs you`, no Run is `Queued`, a latest Run without a Candidate is `Building`,
+and a latest Run with a persisted Candidate is `Validating`. A Candidate alone
+can never produce `In review` or `Ready`; those states require later persisted
+Review and Validation facts. See
+[Board/List walking-skeleton contract](docs/board-list.md).
 
 The plugin manifest declares exact argv for its locked dependency preparation.
 Paseo executes those commands as trusted, unsandboxed daemon-host code with the
@@ -183,6 +261,9 @@ Applied Event allocation takes one transactional stream lock before assigning
 `global_sequence`. The lock is held through commit, so a consumer which resumes
 strictly after its last returned cursor cannot miss a lower-sequence Event that
 commits later. Commands rejected before Event creation do not take the lock.
+The same high-water mark is exposed through the typed `LatestEventSequence`
+read and serialized as decimal text in Board snapshots, avoiding JavaScript
+integer truncation.
 
 Those guards contain the row-level DML emitted by the trusted adapter:
 `INSERT`, `UPDATE`, `DELETE`, duplicate/ODKU, and `REPLACE` forms. Dolt/MySQL
@@ -238,7 +319,8 @@ keeps the complete React Native UI independent of the minimum connector and
 leaves a mechanical path to separate entries if a later stable Paseo version
 is explicitly admitted.
 
-The engine owns [the versioned host schema](engine/ports/host/host-interface.v1.json).
+The engine owns [the versioned host schema](engine/ports/host/host-interface.v1.json),
+including the Board query shape and closed state vocabulary.
 It generates [the TypeScript client](generated/host-contract.shared.ts),
 and CI rejects any drift. The contract hash is derived from duplicate-key-safe
 canonical JSON with sorted object keys, so whitespace and object-key order do

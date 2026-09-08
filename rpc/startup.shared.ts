@@ -33,9 +33,9 @@ export const connectorStartupStatus = defineRpc({
   name: "director.startup-status",
   input: z.strictObject({}),
   output: z.strictObject({
-    state: z.literal("scaffold-ready"),
+    state: z.literal("board-ready"),
     engineMode: z.enum(["release", "development"]),
-    productBehavior: z.literal(false),
+    productBehavior: z.literal(true),
     descriptor: descriptorSchema,
   }),
 });

@@ -24,6 +24,7 @@ import {
   loadConnectorCredential,
 } from "../connector/credential.server.ts";
 import { engineBoundaryPaths } from "../connector/engine-distribution.server.ts";
+import { BoardTransportError } from "../connector/engine-board.server.ts";
 import {
   developmentEnginePaths,
   engineProcessEnvironment,
@@ -336,6 +337,38 @@ test("connector startup fails before constructing a client when credential is ab
   }
 });
 
+test("connector startup requires the explicit engine Board endpoint before constructing a client", () => {
+  const boundary = temporaryBoundary();
+  let clients = 0;
+  try {
+    assert.throws(
+      () =>
+        startConnectorShell({
+          checkoutRoot: boundary.checkoutRoot,
+          environment: {
+            DIRECTOR_PASEO_CREDENTIAL_FILE: boundary.credentialPath,
+            DIRECTOR_PASEO_URL: "ws://127.0.0.1:6767/ws",
+            DIRECTOR_ENGINE_MODE: "development",
+            DIRECTOR_ENGINE_SOURCE_ROOT: boundary.sourceRoot,
+            XDG_CACHE_HOME: boundary.cacheBase,
+          },
+          dependencies: {
+            createClient() {
+              clients += 1;
+              return { async close() {} };
+            },
+          },
+        }),
+      (error: unknown) =>
+        error instanceof BoardTransportError &&
+        error.code === "ENGINE_BOARD_URL",
+    );
+    assert.equal(clients, 0);
+  } finally {
+    rmSync(boundary.root, { recursive: true, force: true });
+  }
+});
+
 test("credential directory is bidirectionally disjoint from every canonical engine path", () => {
   const root = mkdtempSync(join(tmpdir(), "director-disjoint-test-"));
   let clients = 0;
@@ -345,6 +378,7 @@ test("credential directory is bidirectionally disjoint from every canonical engi
     checkoutRoot: string;
     sourceRoot: string;
     cacheBase: string;
+    moduleCache?: string;
     credentialDirectory: string;
     credentialPath?: string;
     expectedCode?: string;
@@ -353,8 +387,9 @@ test("credential directory is bidirectionally disjoint from every canonical engi
       options.checkoutRoot,
       options.sourceRoot,
       options.cacheBase,
+      options.moduleCache,
       options.credentialDirectory,
-    ]) {
+    ].filter((path): path is string => path !== undefined)) {
       secureDirectory(path);
     }
     const credentialPath =
@@ -371,6 +406,7 @@ test("credential directory is bidirectionally disjoint from every canonical engi
             DIRECTOR_ENGINE_MODE: "development",
             DIRECTOR_ENGINE_SOURCE_ROOT: options.sourceRoot,
             XDG_CACHE_HOME: options.cacheBase,
+            GOMODCACHE: options.moduleCache,
           },
           dependencies: {
             createClient() {
@@ -442,6 +478,20 @@ test("credential directory is bidirectionally disjoint from every canonical engi
       credentialDirectory: join(credentialContainsCache, "credential"),
     });
 
+    const moduleCacheContainsCredential = join(root, "module-cache-contains-credential");
+    rejectCase({
+      name: "credential directory inside development module cache",
+      checkoutRoot: join(moduleCacheContainsCredential, "checkout"),
+      sourceRoot: join(moduleCacheContainsCredential, "source"),
+      cacheBase: join(moduleCacheContainsCredential, "cache"),
+      moduleCache: join(moduleCacheContainsCredential, "module-cache"),
+      credentialDirectory: join(
+        moduleCacheContainsCredential,
+        "module-cache",
+        "secrets",
+      ),
+    });
+
     const symlinkCase = join(root, "symlink-source-overlap");
     const sourceRoot = join(symlinkCase, "source");
     const actualCredentialDirectory = join(sourceRoot, "secrets");
@@ -494,6 +544,7 @@ test("development boundary enumerates every derived path passed to the engine", 
       selection.checkoutRoot,
       selection.sourceRoot,
       selection.cacheRoot,
+      selection.moduleCache,
       derived.binaryPath,
       derived.temporaryBinaryPath,
       derived.goCache,
@@ -515,6 +566,7 @@ test("the connector descriptor and engine environment never propagate its creden
       environment: {
         DIRECTOR_PASEO_CREDENTIAL_FILE: boundary.credentialPath,
         DIRECTOR_PASEO_URL: "ws://127.0.0.1:6767/ws",
+        DIRECTOR_ENGINE_URL: "http://127.0.0.1:7041",
         DIRECTOR_ENGINE_MODE: "development",
         DIRECTOR_ENGINE_SOURCE_ROOT: boundary.sourceRoot,
         XDG_CACHE_HOME: boundary.cacheBase,
@@ -547,10 +599,12 @@ test("the connector descriptor and engine environment never propagate its creden
         DIRECTOR_PASEO_PASSWORD: "boundary-secret",
       },
       join(boundary.root, "go-cache"),
+      join(boundary.root, "module-cache"),
     );
     assert.deepEqual(Object.keys(engineEnvironment).sort(), [
       "CGO_ENABLED",
       "GOCACHE",
+      "GOMODCACHE",
       "GOTOOLCHAIN",
       "PATH",
     ]);

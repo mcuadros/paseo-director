@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "tuple": {
+    "paseo": "0.7.2",
+    "browser": "Chrome/151.0.7922.34",
+    "host": "disposable passwordless loopback daemon with bundled web UI",
+    "plugin": "generated exact-0.7.2 fixture mounting repository ProjectBoard"
+  },
+  "identity": {
+    "projectBoardSourceSha256": "31945847b6ad7d5ddd9e3a50496f1ac65b4954fdc5c5a630f3330c06701202e8",
+    "paseoWebBundleSha256": "4dab10101531e58883d8018b704a43aaaeda6da2e90883404dae876b99ecaed2",
+    "measurementEntrySha256": "573c50c01ec0178a7c32d0d5fa6ec0b579fc0b998fc00697d8e7031e906bbe05",
+    "measurementHandlerSha256": "6b34547c40e07f3f38608ecffc143fef02070bf688f98446ac2d08370e516445"
+  },
+  "scenes": {
+    "loading": 1788848896538,
+    "empty": 1788848897798,
+    "data": 1788848899778,
+    "cachedRefreshFailurePreservedData": true,
+    "initialErrorAfterReload": 1788848904306
+  },
+  "refresh": {
+    "dataRequestAt": 1788848899746,
+    "errorRequestAt": 1788848901752,
+    "intervalMs": 2006,
+    "configuredMs": 2000
+  },
+  "requests": [
+    { "at": 1788848896537, "kind": "delayed-empty" },
+    { "at": 1788848899746, "kind": "data" },
+    { "at": 1788848901752, "kind": "error" },
+    { "at": 1788848904270, "kind": "error" }
+  ],
+  "providerFailureObserved": false,
+  "queryClientProviderPathExercised": true,
+  "result": "pass"
+}

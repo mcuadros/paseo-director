@@ -939,3 +939,20 @@ func (store *DoltTaskStore) Events(ctx context.Context, query domain.EventQuery)
 	}
 	return events, nil
 }
+
+// LatestEventSequence returns the TaskStore's monotonic committed high-water
+// mark without exposing an event table or backend cursor.
+func (store *DoltTaskStore) LatestEventSequence(ctx context.Context) (uint64, error) {
+	connection, err := store.readConnection(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer connection.Close()
+	var sequence uint64
+	if err := connection.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(global_sequence), 0) FROM events`,
+	).Scan(&sequence); err != nil {
+		return 0, queryFailure()
+	}
+	return sequence, nil
+}

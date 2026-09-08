@@ -161,4 +161,5 @@ type TaskStore interface {
 
 	Command(context.Context, string) (domain.Command, error)
 	Events(context.Context, domain.EventQuery) ([]domain.Event, error)
+	LatestEventSequence(context.Context) (uint64, error)
 }

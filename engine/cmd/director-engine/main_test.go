@@ -20,8 +20,8 @@ func TestVersionIdentity(t *testing.T) {
 	if result.Name != "director-engine" || result.Version == "" {
 		t.Fatalf("identity = %#v", result)
 	}
-	if result.ProductBehavior {
-		t.Fatal("version unexpectedly reports product behavior")
+	if !result.ProductBehavior {
+		t.Fatal("version does not report Board/List product behavior")
 	}
 }
 
@@ -37,7 +37,7 @@ func TestSmokeAndUsage(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatalf("decode smoke: %v", err)
 	}
-	if result.Event != "director-engine.smoke-ready" || result.ProductBehavior {
+	if result.Event != "director-engine.smoke-ready" || !result.ProductBehavior {
 		t.Fatalf("smoke result = %#v", result)
 	}
 
