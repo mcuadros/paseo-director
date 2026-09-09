@@ -51,11 +51,41 @@ type workspaceData struct {
 	Policy            domain.WorkspacePolicy    `json:"policy"`
 }
 
+type epicData struct {
+	Key          string                      `json:"key,omitempty"`
+	Title        string                      `json:"title"`
+	Description  string                      `json:"description,omitempty"`
+	Complete     bool                        `json:"complete"`
+	Priority     domain.Priority             `json:"priority,omitempty"`
+	Labels       []string                    `json:"labels,omitempty"`
+	Dependencies []domain.PlanningDependency `json:"dependencies,omitempty"`
+}
+
 type taskData struct {
-	Title              string              `json:"title"`
-	Objective          string              `json:"objective"`
-	AcceptanceCriteria string              `json:"acceptanceCriteria"`
-	Attention          *execution.NeedsYou `json:"attention,omitempty"`
+	Key                string                      `json:"key,omitempty"`
+	Title              string                      `json:"title"`
+	Objective          string                      `json:"objective"`
+	AcceptanceCriteria string                      `json:"acceptanceCriteria"`
+	WorkspaceIDs       []string                    `json:"workspaceIds"`
+	Parent             *domain.PlanningNodeRef     `json:"parent,omitempty"`
+	Complete           bool                        `json:"complete"`
+	Priority           domain.Priority             `json:"priority,omitempty"`
+	Labels             []string                    `json:"labels,omitempty"`
+	Dependencies       []domain.PlanningDependency `json:"dependencies,omitempty"`
+	ExternalReferences []domain.ExternalReference  `json:"externalReferences,omitempty"`
+	QueuedAtUnixMillis int64                       `json:"queuedAtUnixMillis,omitempty"`
+	Attention          *execution.NeedsYou         `json:"attention,omitempty"`
+}
+
+type dependencyOverrideData struct {
+	TaskID          string                    `json:"taskId"`
+	TaskVersion     uint64                    `json:"taskVersion"`
+	Dependency      domain.PlanningDependency `json:"dependency"`
+	ActorKind       domain.PlanningActorKind  `json:"actorKind"`
+	ActorID         string                    `json:"actorId"`
+	AuditID         string                    `json:"auditId"`
+	Granted         bool                      `json:"granted"`
+	GrantedAtMillis int64                     `json:"grantedAtMillis"`
 }
 
 type runData struct {
@@ -213,6 +243,71 @@ func workspaceRecord(workspace domain.Workspace) workspaceData {
 	}
 }
 
+func epicRecord(epic domain.Epic) epicData {
+	return epicData{
+		Key: epic.Key, Title: epic.Title, Description: epic.Description, Complete: epic.Complete,
+		Priority: epic.Priority, Labels: append([]string(nil), epic.Labels...),
+		Dependencies: append([]domain.PlanningDependency(nil), epic.Dependencies...),
+	}
+}
+
+func taskRecord(task domain.Task) taskData {
+	var parent *domain.PlanningNodeRef
+	if task.Parent != nil {
+		copy := *task.Parent
+		parent = &copy
+	}
+	return taskData{
+		Key: task.Key, Title: task.Title, Objective: task.Objective,
+		AcceptanceCriteria: task.AcceptanceCriteria,
+		WorkspaceIDs:       append([]string(nil), task.WorkspaceIDs...),
+		Parent:             parent,
+		Complete:           task.Complete,
+		Priority:           task.Priority,
+		Labels:             append([]string(nil), task.Labels...),
+		Dependencies:       append([]domain.PlanningDependency(nil), task.Dependencies...),
+		ExternalReferences: append([]domain.ExternalReference(nil), task.ExternalReferences...),
+		QueuedAtUnixMillis: task.QueuedAtUnixMillis,
+		Attention:          task.Attention,
+	}
+}
+
+func dependencyOverrideRecord(override domain.DependencyOverride) dependencyOverrideData {
+	return dependencyOverrideData{
+		TaskID: override.TaskID, TaskVersion: override.TaskVersion, Dependency: override.Dependency,
+		ActorKind: override.ActorKind, ActorID: override.ActorID, AuditID: override.AuditID,
+		Granted: override.Granted, GrantedAtMillis: override.GrantedAtMillis,
+	}
+}
+
+func reloadEpic(epic *domain.Epic, data epicData) {
+	epic.Key, epic.Title, epic.Description, epic.Complete = data.Key, data.Title, data.Description, data.Complete
+	epic.Priority = data.Priority
+	epic.Labels = append([]string(nil), data.Labels...)
+	epic.Dependencies = append([]domain.PlanningDependency(nil), data.Dependencies...)
+}
+
+func reloadTask(task *domain.Task, data taskData) {
+	task.Key, task.Title, task.Objective = data.Key, data.Title, data.Objective
+	task.AcceptanceCriteria, task.Complete, task.Priority = data.AcceptanceCriteria, data.Complete, data.Priority
+	task.WorkspaceIDs = append([]string(nil), data.WorkspaceIDs...)
+	if data.Parent != nil {
+		copy := *data.Parent
+		task.Parent = &copy
+	}
+	task.Labels = append([]string(nil), data.Labels...)
+	task.Dependencies = append([]domain.PlanningDependency(nil), data.Dependencies...)
+	task.ExternalReferences = append([]domain.ExternalReference(nil), data.ExternalReferences...)
+	task.QueuedAtUnixMillis = data.QueuedAtUnixMillis
+	task.Attention = data.Attention
+}
+
+func reloadDependencyOverride(override *domain.DependencyOverride, data dependencyOverrideData) {
+	override.TaskID, override.TaskVersion, override.Dependency = data.TaskID, data.TaskVersion, data.Dependency
+	override.ActorKind, override.ActorID, override.AuditID = data.ActorKind, data.ActorID, data.AuditID
+	override.Granted, override.GrantedAtMillis = data.Granted, data.GrantedAtMillis
+}
+
 func validateWorkspace(workspace domain.Workspace) error {
 	if err := domain.ValidateWorkspace(workspace); err != nil {
 		return fmt.Errorf("%w: invalid Workspace", storeport.ErrInvalidRecord)
@@ -221,14 +316,25 @@ func validateWorkspace(workspace domain.Workspace) error {
 }
 
 func validateTask(task domain.Task) error {
-	if !safeIdentifier(task.ID, 128) || !safeIdentifier(task.ProjectID, 128) ||
-		task.Title == "" || len(task.Title) > 512 ||
-		task.Objective == "" || len(task.Objective) > 16*1024 ||
-		task.AcceptanceCriteria == "" || len(task.AcceptanceCriteria) > 16*1024 {
+	if err := domain.ValidateTask(task); err != nil {
 		return fmt.Errorf("%w: invalid Task", storeport.ErrInvalidRecord)
 	}
 	if task.Attention != nil && (task.Attention.Code == "" || task.Attention.WakeCondition == "" || task.Attention.CleanupAuthorized) {
 		return fmt.Errorf("%w: invalid Task attention", storeport.ErrInvalidRecord)
+	}
+	return nil
+}
+
+func validateEpic(epic domain.Epic) error {
+	if err := domain.ValidateEpic(epic); err != nil {
+		return fmt.Errorf("%w: invalid Epic", storeport.ErrInvalidRecord)
+	}
+	return nil
+}
+
+func validateDependencyOverride(override domain.DependencyOverride) error {
+	if err := domain.ValidateDependencyOverride(override); err != nil {
+		return fmt.Errorf("%w: invalid dependency override", storeport.ErrInvalidRecord)
 	}
 	return nil
 }
@@ -306,6 +412,18 @@ func validateReloadedEvent(event domain.Event) error {
 
 func encodedWorkspace(workspace domain.Workspace) ([]byte, error) {
 	return marshalRecord(workspaceRecord(workspace))
+}
+
+func encodedEpic(epic domain.Epic) ([]byte, error) {
+	return marshalRecord(epicRecord(epic))
+}
+
+func encodedTask(task domain.Task) ([]byte, error) {
+	return marshalRecord(taskRecord(task))
+}
+
+func encodedDependencyOverride(override domain.DependencyOverride) ([]byte, error) {
+	return marshalRecord(dependencyOverrideRecord(override))
 }
 
 func insertWorkspaceAggregate(ctx context.Context, tx *sql.Tx, workspace domain.Workspace) error {
@@ -823,6 +941,93 @@ func (store *DoltTaskStore) UpdateWorkspace(
 	})
 }
 
+// CreateEpic appends the sole permitted grouping level under an existing
+// Project. The Project row serializes graph changes so concurrent edge writes
+// cannot both create a cycle.
+func (store *DoltTaskStore) CreateEpic(
+	ctx context.Context,
+	command domain.CommandRequest,
+	epic domain.Epic,
+	event domain.Event,
+) (domain.CommandResult, error) {
+	if err := validateEpic(epic); err != nil {
+		return domain.CommandResult{}, err
+	}
+	if err := validateCreateCommand(command, epic.ID, epic.Version); err != nil {
+		return domain.CommandResult{}, err
+	}
+	data, err := encodedEpic(epic)
+	if err != nil {
+		return domain.CommandResult{}, err
+	}
+	return store.apply(ctx, command, event, func(ctx context.Context, tx *sql.Tx) (mutationResult, error) {
+		if _, err := projectByIDForUpdate(ctx, tx, epic.ProjectID); err != nil {
+			return mutationResult{}, err
+		}
+		planning, err := planningByProject(ctx, tx, epic.ProjectID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		planning.Epics = append(planning.Epics, epic)
+		if err := domain.ValidatePlanning(planning); err != nil {
+			return mutationResult{}, fmt.Errorf("%w: invalid planning graph", storeport.ErrInvalidRecord)
+		}
+		if err := insertAggregate(ctx, tx, epic.ID, aggregateEpic, epic.ProjectID, epic.Version, data); err != nil {
+			return mutationResult{}, err
+		}
+		return mutationResult{outcome: domain.CommandApplied, observedVersion: epic.Version}, nil
+	})
+}
+
+// UpdateEpic persists one expected-version replacement. Project and key
+// identities are immutable and the complete graph is revalidated under the
+// Project serialization lock.
+func (store *DoltTaskStore) UpdateEpic(
+	ctx context.Context,
+	command domain.CommandRequest,
+	epic domain.Epic,
+	event domain.Event,
+) (domain.CommandResult, error) {
+	if err := validateEpic(epic); err != nil {
+		return domain.CommandResult{}, err
+	}
+	if err := validateUpdateCommand(command, epic.ID); err != nil {
+		return domain.CommandResult{}, err
+	}
+	data, err := encodedEpic(epic)
+	if err != nil {
+		return domain.CommandResult{}, err
+	}
+	return store.apply(ctx, command, event, func(ctx context.Context, tx *sql.Tx) (mutationResult, error) {
+		if _, err := projectByIDForUpdate(ctx, tx, epic.ProjectID); err != nil {
+			return mutationResult{}, err
+		}
+		current, err := epicByID(ctx, tx, epic.ID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if current.Version != command.ExpectedVersion {
+			return updateAggregate(ctx, tx, epic.ID, aggregateEpic, command.ExpectedVersion, epic.Version, data)
+		}
+		if current.ProjectID != epic.ProjectID || current.Key != epic.Key {
+			return mutationResult{}, fmt.Errorf("%w: Epic Project and key identities are immutable", storeport.ErrInvalidRecord)
+		}
+		planning, err := planningByProject(ctx, tx, epic.ProjectID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		for index := range planning.Epics {
+			if planning.Epics[index].ID == epic.ID {
+				planning.Epics[index] = epic
+			}
+		}
+		if err := domain.ValidatePlanning(planning); err != nil {
+			return mutationResult{}, fmt.Errorf("%w: invalid planning graph", storeport.ErrInvalidRecord)
+		}
+		return updateAggregate(ctx, tx, epic.ID, aggregateEpic, command.ExpectedVersion, epic.Version, data)
+	})
+}
+
 // CreateTask appends a Task under an existing Project.
 func (store *DoltTaskStore) CreateTask(
 	ctx context.Context,
@@ -836,16 +1041,21 @@ func (store *DoltTaskStore) CreateTask(
 	if err := validateCreateCommand(command, task.ID, task.Version); err != nil {
 		return domain.CommandResult{}, err
 	}
-	data, err := marshalRecord(taskData{
-		Title: task.Title, Objective: task.Objective, AcceptanceCriteria: task.AcceptanceCriteria,
-		Attention: task.Attention,
-	})
+	data, err := encodedTask(task)
 	if err != nil {
 		return domain.CommandResult{}, err
 	}
 	return store.apply(ctx, command, event, func(ctx context.Context, tx *sql.Tx) (mutationResult, error) {
-		if err := requireAggregateKind(ctx, tx, task.ProjectID, aggregateProject); err != nil {
+		if _, err := projectByIDForUpdate(ctx, tx, task.ProjectID); err != nil {
 			return mutationResult{}, err
+		}
+		planning, err := planningByProject(ctx, tx, task.ProjectID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		planning.Tasks = append(planning.Tasks, task)
+		if err := domain.ValidatePlanning(planning); err != nil {
+			return mutationResult{}, fmt.Errorf("%w: invalid planning graph", storeport.ErrInvalidRecord)
 		}
 		if err := insertAggregate(ctx, tx, task.ID, aggregateTask, task.ProjectID, task.Version, data); err != nil {
 			return mutationResult{}, err
@@ -855,7 +1065,8 @@ func (store *DoltTaskStore) CreateTask(
 }
 
 // UpdateTask persists one expected-version replacement without changing its
-// Project identity.
+// Project or key identity. An ordinary update cannot create or rewrite a
+// dependency override; overrides use GrantDependencyOverride.
 func (store *DoltTaskStore) UpdateTask(
 	ctx context.Context,
 	command domain.CommandRequest,
@@ -868,27 +1079,104 @@ func (store *DoltTaskStore) UpdateTask(
 	if err := validateUpdateCommand(command, task.ID); err != nil {
 		return domain.CommandResult{}, err
 	}
-	data, err := marshalRecord(taskData{
-		Title: task.Title, Objective: task.Objective, AcceptanceCriteria: task.AcceptanceCriteria,
-		Attention: task.Attention,
-	})
+	data, err := encodedTask(task)
 	if err != nil {
 		return domain.CommandResult{}, err
 	}
 	return store.apply(ctx, command, event, func(ctx context.Context, tx *sql.Tx) (mutationResult, error) {
-		var parentID string
-		if err := tx.QueryRowContext(ctx,
-			`SELECT parent_id FROM aggregates WHERE id = ? AND kind = ?`, task.ID, aggregateTask,
-		).Scan(&parentID); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return mutationResult{}, storeport.ErrNotFound
-			}
+		if _, err := projectByIDForUpdate(ctx, tx, task.ProjectID); err != nil {
 			return mutationResult{}, err
 		}
-		if parentID != task.ProjectID {
-			return mutationResult{}, fmt.Errorf("%w: Task Project identity is immutable", storeport.ErrInvalidRecord)
+		current, err := taskByID(ctx, tx, task.ID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if current.Version != command.ExpectedVersion {
+			return updateAggregate(ctx, tx, task.ID, aggregateTask, command.ExpectedVersion, task.Version, data)
+		}
+		if current.ProjectID != task.ProjectID || current.Key != task.Key {
+			return mutationResult{}, fmt.Errorf("%w: Task Project and key identities are immutable", storeport.ErrInvalidRecord)
+		}
+		planning, err := planningByProject(ctx, tx, task.ProjectID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		for index := range planning.Tasks {
+			if planning.Tasks[index].ID == task.ID {
+				planning.Tasks[index] = task
+			}
+		}
+		if err := domain.ValidatePlanning(planning); err != nil {
+			return mutationResult{}, fmt.Errorf("%w: invalid planning graph", storeport.ErrInvalidRecord)
 		}
 		return updateAggregate(ctx, tx, task.ID, aggregateTask, command.ExpectedVersion, task.Version, data)
+	})
+}
+
+// GrantDependencyOverride appends one immutable Task-scoped human decision.
+// The command targets the new override identity while the typed payload binds
+// the expected Task version. The record receives server time and the fixed
+// human actor kind; a stale Task version cannot release work.
+func (store *DoltTaskStore) GrantDependencyOverride(
+	ctx context.Context,
+	command domain.CommandRequest,
+	grant domain.HumanDependencyOverrideGrant,
+) (domain.CommandResult, error) {
+	if command.Type != "task.dependency_override.grant" || command.AggregateID != grant.ID ||
+		command.ExpectedVersion != 0 {
+		return domain.CommandResult{}, fmt.Errorf("%w: invalid dependency override command binding", storeport.ErrInvalidRecord)
+	}
+	if err := exactCommandPayload(command, grant); err != nil {
+		return store.rejectInvalidCommandReplay(ctx, command, err)
+	}
+	placeholder := domain.Event{
+		ID: "event-" + command.IdempotencyKey, Sequence: 1,
+		AggregateID: command.AggregateID, AggregateVersion: 0,
+		Type: command.Type, Payload: command.Payload,
+	}
+	return store.apply(ctx, command, placeholder, func(ctx context.Context, tx *sql.Tx) (mutationResult, error) {
+		current, err := taskByID(ctx, tx, grant.TaskID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if _, err := projectByIDForUpdate(ctx, tx, current.ProjectID); err != nil {
+			return mutationResult{}, err
+		}
+		current, err = taskByID(ctx, tx, grant.TaskID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if current.Version != grant.ExpectedTaskVersion {
+			return mutationResult{}, fmt.Errorf("%w: stale dependency override Task version", storeport.ErrInvalidRecord)
+		}
+		planning, err := planningByProject(ctx, tx, current.ProjectID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		nowMillis, err := store.transactionTimestampMillis(ctx, tx)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		override, err := domain.NewDependencyOverride(planning, grant, nowMillis)
+		if err != nil {
+			return mutationResult{}, fmt.Errorf("%w: dependency override rejected", storeport.ErrInvalidRecord)
+		}
+		data, err := encodedDependencyOverride(override)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if err := insertAggregate(ctx, tx, override.ID, aggregateOverride, override.TaskID, 0, data); err != nil {
+			return mutationResult{}, fmt.Errorf("append dependency override aggregate: %w", err)
+		}
+		payload, err := json.Marshal(override)
+		if err != nil {
+			return mutationResult{}, fmt.Errorf("%w: dependency override event", storeport.ErrInvalidRecord)
+		}
+		observedEvent := placeholder
+		observedEvent.Payload = payload
+		return mutationResult{
+			outcome: domain.CommandApplied, observedVersion: 0, event: &observedEvent,
+		}, nil
 	})
 }
 
@@ -1088,6 +1376,9 @@ func (store *DoltTaskStore) Project(ctx context.Context, id string) (domain.Proj
 	if _, err := workspacesByProject(ctx, connection, id); err != nil {
 		return domain.Project{}, err
 	}
+	if _, err := planningByProject(ctx, connection, id); err != nil {
+		return domain.Project{}, err
+	}
 	return project, nil
 }
 
@@ -1156,6 +1447,9 @@ func (store *DoltTaskStore) Projects(ctx context.Context) ([]domain.Project, err
 		if _, err := workspacesByProject(ctx, connection, project.ID); err != nil {
 			return nil, err
 		}
+		if _, err := planningByProject(ctx, connection, project.ID); err != nil {
+			return nil, err
+		}
 	}
 	return projects, nil
 }
@@ -1200,6 +1494,270 @@ func (store *DoltTaskStore) Workspaces(ctx context.Context, projectID string) ([
 	return workspaces, nil
 }
 
+func epicByID(ctx context.Context, query rowQuerier, id string) (domain.Epic, error) {
+	var epic domain.Epic
+	var rawData []byte
+	var parentKind sql.NullString
+	err := query.QueryRowContext(ctx,
+		`SELECT child.id, child.parent_id, child.version, child.data, parent.kind
+		FROM aggregates AS child
+		LEFT JOIN aggregates AS parent ON parent.id = child.parent_id
+		WHERE child.id = ? AND child.kind = ?`, id, aggregateEpic,
+	).Scan(&epic.ID, &epic.ProjectID, &epic.Version, &rawData, &parentKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Epic{}, storeport.ErrNotFound
+	}
+	if err != nil {
+		return domain.Epic{}, queryFailure()
+	}
+	if !parentKind.Valid || parentKind.String != aggregateProject {
+		return domain.Epic{}, backendFailure(storeport.HealthStoredRecordInvalid)
+	}
+	var data epicData
+	if err := decodeRecord(rawData, &data); err != nil {
+		return domain.Epic{}, err
+	}
+	reloadEpic(&epic, data)
+	if err := validateReloaded(validateEpic(epic)); err != nil {
+		return domain.Epic{}, err
+	}
+	return epic, nil
+}
+
+func epicsByProject(ctx context.Context, query rowsQuerier, projectID string) ([]domain.Epic, error) {
+	rows, err := query.QueryContext(ctx,
+		`SELECT id, parent_id, version, data FROM aggregates WHERE kind = ? AND parent_id = ? ORDER BY id`,
+		aggregateEpic, projectID,
+	)
+	if err != nil {
+		return nil, queryFailure()
+	}
+	defer rows.Close()
+	epics := make([]domain.Epic, 0)
+	for rows.Next() {
+		var epic domain.Epic
+		var rawData []byte
+		if err := rows.Scan(&epic.ID, &epic.ProjectID, &epic.Version, &rawData); err != nil {
+			return nil, scanFailure()
+		}
+		var data epicData
+		if err := decodeRecord(rawData, &data); err != nil {
+			return nil, err
+		}
+		reloadEpic(&epic, data)
+		if err := validateReloaded(validateEpic(epic)); err != nil {
+			return nil, err
+		}
+		epics = append(epics, epic)
+	}
+	if err := finishRows(rows); err != nil {
+		return nil, err
+	}
+	return epics, nil
+}
+
+func taskByID(ctx context.Context, query rowQuerier, id string) (domain.Task, error) {
+	var task domain.Task
+	var rawData []byte
+	var parentKind sql.NullString
+	err := query.QueryRowContext(ctx,
+		`SELECT child.id, child.parent_id, child.version, child.data, parent.kind
+		FROM aggregates AS child
+		LEFT JOIN aggregates AS parent ON parent.id = child.parent_id
+		WHERE child.id = ? AND child.kind = ?`, id, aggregateTask,
+	).Scan(&task.ID, &task.ProjectID, &task.Version, &rawData, &parentKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Task{}, storeport.ErrNotFound
+	}
+	if err != nil {
+		return domain.Task{}, queryFailure()
+	}
+	if !parentKind.Valid || parentKind.String != aggregateProject {
+		return domain.Task{}, backendFailure(storeport.HealthStoredRecordInvalid)
+	}
+	var data taskData
+	if err := decodeRecord(rawData, &data); err != nil {
+		return domain.Task{}, err
+	}
+	reloadTask(&task, data)
+	if err := validateReloaded(validateTask(task)); err != nil {
+		return domain.Task{}, err
+	}
+	return task, nil
+}
+
+func tasksByProject(ctx context.Context, query rowsQuerier, projectID string) ([]domain.Task, error) {
+	rows, err := query.QueryContext(ctx,
+		`SELECT id, parent_id, version, data FROM aggregates WHERE kind = ? AND parent_id = ? ORDER BY id`,
+		aggregateTask, projectID,
+	)
+	if err != nil {
+		return nil, queryFailure()
+	}
+	defer rows.Close()
+	tasks := make([]domain.Task, 0)
+	for rows.Next() {
+		var task domain.Task
+		var rawData []byte
+		if err := rows.Scan(&task.ID, &task.ProjectID, &task.Version, &rawData); err != nil {
+			return nil, scanFailure()
+		}
+		var data taskData
+		if err := decodeRecord(rawData, &data); err != nil {
+			return nil, err
+		}
+		reloadTask(&task, data)
+		if err := validateReloaded(validateTask(task)); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	if err := finishRows(rows); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
+func dependencyOverrideByID(ctx context.Context, query rowQuerier, id string) (domain.DependencyOverride, error) {
+	var override domain.DependencyOverride
+	var rawData []byte
+	var version uint64
+	var parentKind sql.NullString
+	err := query.QueryRowContext(ctx,
+		`SELECT child.id, child.parent_id, child.version, child.data, parent.kind
+		FROM aggregates AS child
+		LEFT JOIN aggregates AS parent ON parent.id = child.parent_id
+		WHERE child.id = ? AND child.kind = ?`, id, aggregateOverride,
+	).Scan(&override.ID, &override.TaskID, &version, &rawData, &parentKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.DependencyOverride{}, storeport.ErrNotFound
+	}
+	if err != nil {
+		return domain.DependencyOverride{}, queryFailure()
+	}
+	if version != 0 || !parentKind.Valid || parentKind.String != aggregateTask {
+		return domain.DependencyOverride{}, backendFailure(storeport.HealthStoredRecordInvalid)
+	}
+	var data dependencyOverrideData
+	if err := decodeRecord(rawData, &data); err != nil {
+		return domain.DependencyOverride{}, err
+	}
+	reloadDependencyOverride(&override, data)
+	if err := validateReloaded(validateDependencyOverride(override)); err != nil {
+		return domain.DependencyOverride{}, err
+	}
+	return override, nil
+}
+
+func dependencyOverridesByProject(ctx context.Context, query rowsQuerier, projectID string) ([]domain.DependencyOverride, error) {
+	rows, err := query.QueryContext(ctx,
+		`SELECT child.id, child.parent_id, child.version, child.data
+		FROM aggregates AS child
+		JOIN aggregates AS task ON task.id = child.parent_id AND task.kind = ?
+		WHERE child.kind = ? AND task.parent_id = ? ORDER BY child.id`,
+		aggregateTask, aggregateOverride, projectID,
+	)
+	if err != nil {
+		return nil, queryFailure()
+	}
+	defer rows.Close()
+	overrides := make([]domain.DependencyOverride, 0)
+	for rows.Next() {
+		var override domain.DependencyOverride
+		var rawData []byte
+		var version uint64
+		if err := rows.Scan(&override.ID, &override.TaskID, &version, &rawData); err != nil {
+			return nil, scanFailure()
+		}
+		if version != 0 {
+			return nil, backendFailure(storeport.HealthStoredRecordInvalid)
+		}
+		var data dependencyOverrideData
+		if err := decodeRecord(rawData, &data); err != nil {
+			return nil, err
+		}
+		reloadDependencyOverride(&override, data)
+		if err := validateReloaded(validateDependencyOverride(override)); err != nil {
+			return nil, err
+		}
+		overrides = append(overrides, override)
+	}
+	if err := finishRows(rows); err != nil {
+		return nil, err
+	}
+	return overrides, nil
+}
+
+func planningByProject(ctx context.Context, query interface {
+	rowQuerier
+	rowsQuerier
+}, projectID string) (domain.PlanningProject, error) {
+	workspaces, err := workspacesByProject(ctx, query, projectID)
+	if err != nil {
+		return domain.PlanningProject{}, err
+	}
+	epics, err := epicsByProject(ctx, query, projectID)
+	if err != nil {
+		return domain.PlanningProject{}, err
+	}
+	tasks, err := tasksByProject(ctx, query, projectID)
+	if err != nil {
+		return domain.PlanningProject{}, err
+	}
+	overrides, err := dependencyOverridesByProject(ctx, query, projectID)
+	if err != nil {
+		return domain.PlanningProject{}, err
+	}
+	planning := domain.PlanningProject{ID: projectID, Epics: epics, Tasks: tasks, Overrides: overrides}
+	for _, workspace := range workspaces {
+		planning.Workspaces = append(planning.Workspaces, workspace.ID)
+	}
+	if err := domain.ValidatePlanning(planning); err != nil {
+		return domain.PlanningProject{}, backendFailure(storeport.HealthStoredRecordInvalid)
+	}
+	return planning, nil
+}
+
+// Epic returns one Epic after validating its complete Project planning graph.
+func (store *DoltTaskStore) Epic(ctx context.Context, id string) (domain.Epic, error) {
+	if err := validateLookupID(id); err != nil {
+		return domain.Epic{}, err
+	}
+	connection, err := store.readConnection(ctx)
+	if err != nil {
+		return domain.Epic{}, err
+	}
+	defer connection.Close()
+	epic, err := epicByID(ctx, connection, id)
+	if err != nil {
+		return domain.Epic{}, err
+	}
+	if _, err := planningByProject(ctx, connection, epic.ProjectID); err != nil {
+		return domain.Epic{}, err
+	}
+	return epic, nil
+}
+
+// Epics returns one Project's Epics ordered by stable identity.
+func (store *DoltTaskStore) Epics(ctx context.Context, projectID string) ([]domain.Epic, error) {
+	if err := validateLookupID(projectID); err != nil {
+		return nil, err
+	}
+	connection, err := store.readConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer connection.Close()
+	if _, err := projectByID(ctx, connection, projectID); err != nil {
+		return nil, err
+	}
+	planning, err := planningByProject(ctx, connection, projectID)
+	if err != nil {
+		return nil, err
+	}
+	return planning.Epics, nil
+}
+
 // Task returns one Task without exposing its aggregate row or JSON.
 func (store *DoltTaskStore) Task(ctx context.Context, id string) (domain.Task, error) {
 	if err := validateLookupID(id); err != nil {
@@ -1210,24 +1768,11 @@ func (store *DoltTaskStore) Task(ctx context.Context, id string) (domain.Task, e
 		return domain.Task{}, err
 	}
 	defer connection.Close()
-	var task domain.Task
-	var rawData []byte
-	err = connection.QueryRowContext(ctx,
-		`SELECT id, parent_id, version, data FROM aggregates WHERE id = ? AND kind = ?`, id, aggregateTask,
-	).Scan(&task.ID, &task.ProjectID, &task.Version, &rawData)
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.Task{}, storeport.ErrNotFound
-	}
+	task, err := taskByID(ctx, connection, id)
 	if err != nil {
-		return domain.Task{}, queryFailure()
-	}
-	var data taskData
-	if err := decodeRecord(rawData, &data); err != nil {
 		return domain.Task{}, err
 	}
-	task.Title, task.Objective, task.AcceptanceCriteria = data.Title, data.Objective, data.AcceptanceCriteria
-	task.Attention = data.Attention
-	if err := validateReloaded(validateTask(task)); err != nil {
+	if _, err := planningByProject(ctx, connection, task.ProjectID); err != nil {
 		return domain.Task{}, err
 	}
 	return task, nil
@@ -1243,36 +1788,60 @@ func (store *DoltTaskStore) Tasks(ctx context.Context, projectID string) ([]doma
 		return nil, err
 	}
 	defer connection.Close()
-	rows, err := connection.QueryContext(ctx,
-		`SELECT id, parent_id, version, data FROM aggregates WHERE kind = ? AND parent_id = ? ORDER BY id`,
-		aggregateTask, projectID,
-	)
-	if err != nil {
-		return nil, queryFailure()
-	}
-	defer rows.Close()
-	var tasks []domain.Task
-	for rows.Next() {
-		var task domain.Task
-		var rawData []byte
-		if err := rows.Scan(&task.ID, &task.ProjectID, &task.Version, &rawData); err != nil {
-			return nil, scanFailure()
-		}
-		var data taskData
-		if err := decodeRecord(rawData, &data); err != nil {
-			return nil, err
-		}
-		task.Title, task.Objective, task.AcceptanceCriteria = data.Title, data.Objective, data.AcceptanceCriteria
-		task.Attention = data.Attention
-		if err := validateReloaded(validateTask(task)); err != nil {
-			return nil, err
-		}
-		tasks = append(tasks, task)
-	}
-	if err := finishRows(rows); err != nil {
+	if _, err := projectByID(ctx, connection, projectID); err != nil {
 		return nil, err
 	}
-	return tasks, nil
+	planning, err := planningByProject(ctx, connection, projectID)
+	if err != nil {
+		return nil, err
+	}
+	return planning.Tasks, nil
+}
+
+// DependencyOverride returns one immutable audited override fact after
+// validating the owning Project graph.
+func (store *DoltTaskStore) DependencyOverride(ctx context.Context, id string) (domain.DependencyOverride, error) {
+	if err := validateLookupID(id); err != nil {
+		return domain.DependencyOverride{}, err
+	}
+	connection, err := store.readConnection(ctx)
+	if err != nil {
+		return domain.DependencyOverride{}, err
+	}
+	defer connection.Close()
+	override, err := dependencyOverrideByID(ctx, connection, id)
+	if err != nil {
+		return domain.DependencyOverride{}, err
+	}
+	task, err := taskByID(ctx, connection, override.TaskID)
+	if err != nil {
+		return domain.DependencyOverride{}, err
+	}
+	if _, err := planningByProject(ctx, connection, task.ProjectID); err != nil {
+		return domain.DependencyOverride{}, err
+	}
+	return override, nil
+}
+
+// DependencyOverrides returns one Project's immutable override facts ordered
+// by stable identity.
+func (store *DoltTaskStore) DependencyOverrides(ctx context.Context, projectID string) ([]domain.DependencyOverride, error) {
+	if err := validateLookupID(projectID); err != nil {
+		return nil, err
+	}
+	connection, err := store.readConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer connection.Close()
+	if _, err := projectByID(ctx, connection, projectID); err != nil {
+		return nil, err
+	}
+	planning, err := planningByProject(ctx, connection, projectID)
+	if err != nil {
+		return nil, err
+	}
+	return planning.Overrides, nil
 }
 
 // Run returns one Run without exposing its aggregate row or JSON.

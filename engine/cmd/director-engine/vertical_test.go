@@ -163,6 +163,7 @@ func createVerticalRecords(t *testing.T, store *dolt.DoltTaskStore, suffix strin
 	task := domain.Task{
 		ID: "task-" + suffix, ProjectID: project.ID, Title: "Implement the fake execution vertical path",
 		Objective: "Produce one fake Candidate", AcceptanceCriteria: "criterion-1",
+		WorkspaceIDs: []string{workspace.ID},
 	}
 	command := func(key, kind, aggregate string) domain.CommandRequest {
 		return domain.CommandRequest{IdempotencyKey: key, Type: kind, AggregateID: aggregate, Payload: json.RawMessage(`{}`)}

@@ -62,14 +62,25 @@ type Project struct {
 	LeaseObservation *ProjectLeaseObservation
 }
 
-// Task is the minimal mutable Task aggregate persisted by the walking
-// skeleton. ProjectID is immutable after creation.
+// Task is one mutable planning unit. It belongs to exactly one Project,
+// targets exactly one Workspace through WorkspaceIDs, and may be standalone
+// or have one Epic parent. Dependencies and external references never replace
+// its canonical ID. ProjectID and Key are immutable after creation.
 type Task struct {
 	ID                 string
 	ProjectID          string
+	Key                string
 	Title              string
 	Objective          string
 	AcceptanceCriteria string
+	WorkspaceIDs       []string
+	Parent             *PlanningNodeRef
+	Complete           bool
+	Priority           Priority
+	Labels             []string
+	Dependencies       []PlanningDependency
+	ExternalReferences []ExternalReference
+	QueuedAtUnixMillis int64
 	Attention          *execution.NeedsYou
 	Version            uint64
 }

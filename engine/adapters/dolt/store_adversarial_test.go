@@ -49,6 +49,7 @@ func faultPortCalls(t *testing.T) []portCall {
 	task := domain.Task{
 		ID: "fault-task", ProjectID: project.ID, Title: "Fault task",
 		Objective: "Exercise failures", AcceptanceCriteria: "Every error is typed",
+		WorkspaceIDs: []string{workspace.ID},
 	}
 	run := domain.Run{
 		ID: "fault-run", TaskID: task.ID, Number: 1, BaseSHA: baseSHA,
@@ -151,6 +152,30 @@ func faultPortCalls(t *testing.T) []portCall {
 			)
 			return err
 		}},
+		{name: "CreateEpic", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			epic := domain.Epic{ID: "new-epic", ProjectID: project.ID, Key: "EPIC", Title: "New Epic"}
+			_, err := store.CreateEpic(
+				ctx, command("fault-create-epic", "epic.create", epic.ID, 0, `{}`), epic,
+				event("fault-create-epic-event", "", 1, epic.ID, 0, "epic.created"),
+			)
+			return err
+		}},
+		{name: "Epic", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			_, err := store.Epic(ctx, "fault-epic")
+			return err
+		}},
+		{name: "Epics", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			_, err := store.Epics(ctx, project.ID)
+			return err
+		}},
+		{name: "UpdateEpic", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			epic := domain.Epic{ID: "fault-epic", ProjectID: project.ID, Key: "EPIC", Title: "Updated Epic", Version: 1}
+			_, err := store.UpdateEpic(
+				ctx, command("fault-update-epic", "epic.update", epic.ID, 0, `{}`), epic,
+				event("fault-update-epic-event", "", 2, epic.ID, 1, "epic.updated"),
+			)
+			return err
+		}},
 		{name: "CreateTask", invoke: func(ctx context.Context, store storeport.TaskStore) error {
 			_, err := store.CreateTask(
 				ctx,
@@ -158,9 +183,32 @@ func faultPortCalls(t *testing.T) []portCall {
 				domain.Task{
 					ID: "new-task", ProjectID: project.ID, Title: "New task",
 					Objective: "Create", AcceptanceCriteria: "Created",
+					WorkspaceIDs: []string{workspace.ID},
 				},
 				event("fault-create-task-event", "", 1, "new-task", 0, "task.created"),
 			)
+			return err
+		}},
+		{name: "GrantDependencyOverride", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			grant := domain.HumanDependencyOverrideGrant{
+				ID: "fault-override", TaskID: task.ID, ExpectedTaskVersion: task.Version,
+				Dependency: domain.PlanningDependency{
+					From: domain.PlanningNodeRef{Kind: domain.PlanningNodeTask, ID: task.ID},
+					On:   domain.PlanningNodeRef{Kind: domain.PlanningNodeEpic, ID: "fault-epic"},
+				},
+				HumanActorID: "human-fault", AuditID: "audit-fault",
+			}
+			_, err := store.GrantDependencyOverride(
+				ctx, typedCommand(t, "fault-grant-override", "task.dependency_override.grant", grant.ID, 0, grant), grant,
+			)
+			return err
+		}},
+		{name: "DependencyOverride", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			_, err := store.DependencyOverride(ctx, "fault-override")
+			return err
+		}},
+		{name: "DependencyOverrides", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			_, err := store.DependencyOverrides(ctx, project.ID)
 			return err
 		}},
 		{name: "Task", invoke: func(ctx context.Context, store storeport.TaskStore) error {
@@ -257,6 +305,7 @@ func seedFaultStore(t *testing.T, store storeport.TaskStore) {
 	task := domain.Task{
 		ID: "fault-task", ProjectID: project.ID, Title: "Fault task",
 		Objective: "Exercise failures", AcceptanceCriteria: "Every error is typed",
+		WorkspaceIDs: []string{domain.WorkspaceID(project.ID, "workspace-"+project.ID)},
 	}
 	result, err = store.CreateTask(
 		ctx,
@@ -992,7 +1041,8 @@ func TestInvalidUnicodeCannotCollideWithCommandIdentity(t *testing.T) {
 	task := domain.Task{
 		ID: "fault-task", ProjectID: "fault-project", Title: "Dir�ector",
 		Objective: "Exercise failures", AcceptanceCriteria: "Every error is typed",
-		Version: 1,
+		WorkspaceIDs: []string{domain.WorkspaceID("fault-project", "workspace-fault-project")},
+		Version:      1,
 	}
 	request := command(
 		"unicode-command", "task.update", task.ID, 0,
@@ -1337,7 +1387,8 @@ func TestInvalidJSONErrorsAreBoundedAndRedacted(t *testing.T) {
 	task := domain.Task{
 		ID: "fault-task", ProjectID: "fault-project", Title: "Must not apply",
 		Objective: "Exercise failures", AcceptanceCriteria: "Every error is typed",
-		Version: 1,
+		WorkspaceIDs: []string{domain.WorkspaceID("fault-project", "workspace-fault-project")},
+		Version:      1,
 	}
 	_, err := store.UpdateTask(
 		context.Background(),

@@ -36,7 +36,7 @@ func TestDeriveBoardTaskIsPureAndFactBound(t *testing.T) {
 		t.Fatalf("validating = %#v, %v", validating, err)
 	}
 
-	attention := execution.NeedsYou{Code: "operational_limit_exceeded"}
+	attention := execution.NeedsYou{Code: "operational_limit_exceeded", WakeCondition: "human approval is recorded"}
 	task.Attention = &attention
 	run.CurrentCandidateID = ""
 	needsYou, err := DeriveBoardTask(BoardFacts{Project: project, Task: task, Run: &run})

@@ -437,6 +437,7 @@ func runPortContract(t *testing.T, store storeport.TaskStore) {
 	task := domain.Task{
 		ID: "task-1", ProjectID: project.ID, Title: "Persist skeleton",
 		Objective: "Persist the walking skeleton", AcceptanceCriteria: "Reload exact records",
+		WorkspaceIDs: []string{workspace.ID},
 	}
 	result, err = store.CreateTask(
 		ctx,
