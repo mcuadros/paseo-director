@@ -25,6 +25,7 @@ const descriptorSchema = z.strictObject({
       z.ZodLiteral<(typeof HOST_CAPABILITIES)[5]>,
       z.ZodLiteral<(typeof HOST_CAPABILITIES)[6]>,
       z.ZodLiteral<(typeof HOST_CAPABILITIES)[7]>,
+      z.ZodLiteral<(typeof HOST_CAPABILITIES)[8]>,
     ],
   ),
 });

@@ -1,6 +1,7 @@
 # ADR-0017: Bound the standalone engine connector authority on Paseo 0.7.2
 
 - **Status:** Accepted
+- **Amended by:** [ADR-0020](0020-zero-work-bootstrap-and-terminal-event-dispatch.md)
 - **Date:** 2026-09-07
 - **Beads Task:** `dir-m1.12`
 - **Plan gate:** M1 engine/process/host boundary before scaffolding
@@ -130,8 +131,9 @@ The one engine-owned host port has this closed capability vocabulary:
 
 ```text
 executionWorkspace.createManaged / observe / archive
-taskAgent.createWithInitialPrompt
-reviewerAgent.createWithInitialPrompt
+taskAgent.createWithBootstrap
+reviewerAgent.createWithBootstrap
+send_agent_prompt
 helperAgent.observe
 agent.observe / archive
 ```

@@ -60,7 +60,7 @@ This is a complete minimal document:
     "launchPolicy": "manual",
     "deliveryMode": "pull_request",
     "limits": {
-      "maxActiveTasks": 4,
+      "maxActiveTasks": 6,
       "maxActiveTasksPerWorkspace": 2,
       "maxConcurrentAgents": 8,
       "maxSubagentsPerTask": 3

@@ -9,8 +9,10 @@ import (
 
 const testBoardQuery = `"boardQuery":{"name":"board.snapshot","method":"GET","path":"/v1/board","schemaVersion":1,"maximumTasks":1000,"maximumBytes":2097152,"states":["needs_you","queued","building","validating","in_review","ready"]}`
 
+const testWorkerRegistry = `"workerRegistry":{"schemaVersion":1,"roles":["task-agent","reviewer"],"labels":{"project":"director.project","rootWorkspace":"director.root-workspace","workspace":"director.workspace","executionWorkspace":"director.execution-workspace","task":"director.task","run":"director.run","role":"director.role","phase":"director.phase","candidate":"director.candidate","base":"director.base","registeredAt":"director.registered-at","startedAt":"director.started-at"}}`
+
 func TestRenderIsDeterministicAndCarriesContract(t *testing.T) {
-	schema := []byte("{\n  \"schemaVersion\": 1,\n  \"contractVersion\": \"test/v1\",\n  \"credentialScope\": \"scope\",\n  \"capabilities\": [\"one\", \"two\"],\n  " + testBoardQuery + "\n}\n")
+	schema := []byte("{\n  \"schemaVersion\": 1,\n  \"contractVersion\": \"test/v1\",\n  \"credentialScope\": \"scope\",\n  \"capabilities\": [\"one\", \"two\"],\n  " + testBoardQuery + ",\n  " + testWorkerRegistry + "\n}\n")
 	first, err := render(schema)
 	if err != nil {
 		t.Fatal(err)
@@ -31,6 +33,12 @@ func TestRenderIsDeterministicAndCarriesContract(t *testing.T) {
 		[]byte(`interface HostObservationResult`),
 		[]byte(`BOARD_QUERY_PATH = "/v1/board"`),
 		[]byte(`assertBoardSnapshot`),
+		[]byte(`WORKER_REGISTRY_SCHEMA_VERSION = 1`),
+		[]byte(`rootWorkspace: "director.root-workspace"`),
+		[]byte(`"task-agent"`),
+		[]byte(`labels?: Readonly<Record<string, string>>`),
+		[]byte(`notifyOnFinish?: boolean`),
+		[]byte(`| "agent.send_prompt"`),
 	} {
 		if !bytes.Contains(first, expected) {
 			t.Fatalf("render output does not contain %q", expected)
@@ -42,8 +50,9 @@ func TestRenderIsDeterministicAndCarriesContract(t *testing.T) {
 }
 
 func TestRenderIgnoresSchemaWhitespaceAndObjectKeyOrder(t *testing.T) {
-	first := []byte(`{"schemaVersion":1,"contractVersion":"test/v1","credentialScope":"scope","capabilities":["one","two"],` + testBoardQuery + `}`)
+	first := []byte(`{"schemaVersion":1,"contractVersion":"test/v1","credentialScope":"scope","capabilities":["one","two"],` + testBoardQuery + `,` + testWorkerRegistry + `}`)
 	second := []byte(`{
+		"workerRegistry": {"labels":{"startedAt":"director.started-at","registeredAt":"director.registered-at","base":"director.base","candidate":"director.candidate","phase":"director.phase","role":"director.role","run":"director.run","task":"director.task","executionWorkspace":"director.execution-workspace","workspace":"director.workspace","rootWorkspace":"director.root-workspace","project":"director.project"},"roles":["task-agent","reviewer"],"schemaVersion":1},
 		"boardQuery": {"states":["needs_you","queued","building","validating","in_review","ready"],"maximumBytes":2097152,"maximumTasks":1000,"schemaVersion":1,"path":"/v1/board","method":"GET","name":"board.snapshot"},
 		"capabilities": ["one", "two"],
 		"credentialScope": "scope",
@@ -64,7 +73,7 @@ func TestRenderIgnoresSchemaWhitespaceAndObjectKeyOrder(t *testing.T) {
 }
 
 func TestRenderRejectsDuplicateSchemaKeys(t *testing.T) {
-	schema := []byte(`{"schemaVersion":1,"schemaVersion":1,"contractVersion":"test/v1","credentialScope":"scope","capabilities":["one"],` + testBoardQuery + `}`)
+	schema := []byte(`{"schemaVersion":1,"schemaVersion":1,"contractVersion":"test/v1","credentialScope":"scope","capabilities":["one"],` + testBoardQuery + `,` + testWorkerRegistry + `}`)
 	if _, err := render(schema); err == nil {
 		t.Fatal("render() accepted duplicate schema keys")
 	}

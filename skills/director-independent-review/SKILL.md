@@ -21,7 +21,11 @@ Stop if the Candidate is missing, the checkout is dirty, the SHA moved, or the T
 
 ## Isolate the review
 
-1. Run as a normal top-level Reviewer Agent with no Organizer or Task Agent parent; never run as the Task Agent's helper or child.
+1. Run as a normal top-level Reviewer Agent with no Organizer or Task Agent
+   parent; never run as the Task Agent's helper or child. The coordinator
+   creates it with only the zero-work bootstrap, persists its native
+   agent/workspace identities and frozen labels, then starts Review solely
+   through the separate prompt with terminal notification enabled.
 2. Use a detached disposable checkout of the exact Candidate.
 3. Do not reuse or mutate the Task Agent's checkout.
 4. Do not receive hidden conclusions or conversational context from the Task Agent.
@@ -31,17 +35,15 @@ Stop if the Candidate is missing, the checkout is dirty, the SHA moved, or the T
    non-authoritative and is never review evidence.
 7. Run `director-review-harness` with the exact manifest, detached checkout,
    Reviewer Agent identity/actor, and a private state file outside the
-   checkout. It mechanically proves unchanged Candidate/base/tree/diff and
-   durable-context identity while running independent non-conflicting checks
-   concurrently and collecting them deterministically.
-8. Before the harness, run
-   `npm ci --ignore-scripts --no-audit --no-fund` and prove `node`, `npm`,
-   `git`, and `go` are on `PATH`. The harness checks these without consuming a
-   complete-CI attempt; do not classify missing preparation as a Candidate
-   failure.
-9. Allow at most one complete maintained CI run for this exact review. A
-   second requires the harness's recorded `invalid_environment` or
-   `failure_confirmation` reason; never run a third.
+   checkout, plus the exact authoritative remote-CI observation. Harness v2
+   mechanically proves unchanged Candidate/base/tree/diff and durable-context
+   identity while consuming that observation; it starts no complete CI.
+8. Prove `git` is on `PATH`. The remote-only harness needs no dependency
+   installation in the detached checkout and must not classify missing local
+   build preparation as a Candidate failure.
+9. Allow exactly one authoritative complete remote Linux CI observation for
+   this Candidate. Refuse a changed/second observation or another complete-CI
+   source; there is no Reviewer-started retry exception.
 10. Use the versioned maintained adversarial harnesses. Do not reconstruct an
    equivalent probe in `/tmp`; promote any novel probe finding to Candidate
    regression coverage or a scheduled follow-up.

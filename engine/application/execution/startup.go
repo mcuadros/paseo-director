@@ -156,6 +156,7 @@ func validateExecutionGraph(run domain.Run) error {
 		{state.Boundary, domainexecution.EffectBoundaryMaterialize, 2, true},
 		{state.Setup, domainexecution.EffectSetupRun, 2, setupRequired(state.LifecycleSurfaces)},
 		{state.Agent, domainexecution.EffectAgentCreate, 2, false},
+		{state.AgentPrompt, domainexecution.EffectAgentPrompt, 2, false},
 		{state.AgentArchive, domainexecution.EffectAgentArchive, 2, false},
 		{state.HostViewArchive, domainexecution.EffectHostViewArchive, 2, false},
 		{state.WorktreeRemove, domainexecution.EffectWorktreeRemove, 1, false},
@@ -186,8 +187,37 @@ func validateExecutionGraph(run domain.Run) error {
 	if state.Agent.ID != "" && !state.PreparationReady {
 		return errors.New("Task Agent intent precedes preparation_ready")
 	}
-	if state.Claim != nil && (state.Agent.Phase != domainexecution.EffectComplete || !validClaim(*state.Claim, run)) {
+	if state.WorkerVisibility != nil && state.WorkerVisibility.AgentID != "" &&
+		(state.Agent.Phase != domainexecution.EffectComplete || state.WorkerVisibility.AgentID != state.Agent.ExternalID) {
+		return errors.New("persisted worker identity is not bound to completed bootstrap creation")
+	}
+	if state.AgentPrompt.ID != "" && (state.Agent.Phase != domainexecution.EffectComplete ||
+		state.WorkerVisibility == nil || state.WorkerVisibility.AgentID != state.Agent.ExternalID) {
+		return errors.New("real prompt precedes persisted worker identity")
+	}
+	if state.Claim != nil && (state.AgentPrompt.Phase != domainexecution.EffectComplete || !validClaim(*state.Claim, run)) {
 		return errors.New("Run completed claim is not bound to its execution")
+	}
+	seenCompletionEvents := make(map[string]string, len(state.CompletionEventReceipts))
+	for _, receipt := range state.CompletionEventReceipts {
+		if receipt.EventID == "" || receipt.EventFactHash == "" || receipt.Cursor == 0 ||
+			receipt.Event.ID != receipt.EventID || receipt.Event.FactHash != receipt.EventFactHash ||
+			receipt.Event.Cursor != receipt.Cursor || !domainexecution.ValidCompletionEvent(receipt.Event) ||
+			(receipt.Phase != domainexecution.CompletionReceiptIntent && receipt.Phase != domainexecution.CompletionReceiptComplete) {
+			return errors.New("completion-event receipt ledger is invalid")
+		}
+		if prior, duplicate := seenCompletionEvents[receipt.EventID]; duplicate || prior != "" {
+			return errors.New("completion-event receipt ledger contains a duplicate identity")
+		}
+		seenCompletionEvents[receipt.EventID] = receipt.EventFactHash
+		if receipt.Phase == domainexecution.CompletionReceiptComplete &&
+			(receipt.EnqueuedAtMillis < 0 || receipt.DispatchLatencyMillis < 0 ||
+				receipt.DispatchLatencyMillis >= domainexecution.CompletionDispatchTargetMillis) {
+			return errors.New("completion-event dispatch receipt is invalid or late")
+		}
+	}
+	if len(state.CompletionEventReceipts) > domainexecution.MaximumCompletionEventReceipts {
+		return errors.New("completion-event receipt ledger exceeds its bound")
 	}
 	if state.CandidateObservation != nil {
 		if state.Claim == nil || state.CandidateObservation.ClaimID != state.Claim.ID ||
@@ -371,7 +401,16 @@ func startupFrontier(run domain.Run) domainexecution.EffectKind {
 	if state.Agent.ID == "" {
 		return ""
 	}
-	return domainexecution.EffectAgentCreate
+	if state.Agent.Phase != domainexecution.EffectComplete {
+		return domainexecution.EffectAgentCreate
+	}
+	if state.AgentPrompt.ID == "" {
+		return ""
+	}
+	if state.AgentPrompt.Phase != domainexecution.EffectComplete {
+		return domainexecution.EffectAgentPrompt
+	}
+	return ""
 }
 
 func resourceStillExpected(closeEffect domainexecution.Effect) bool {

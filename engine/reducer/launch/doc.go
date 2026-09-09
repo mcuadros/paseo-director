@@ -8,7 +8,10 @@ import "github.com/mcuadros/director-engine/domain/execution"
 
 const SchemaVersion = "director.reducer.launch/v1"
 
-// Facts is the closed input for one M1 launch reduction.
+// Facts is the closed input for one M1 launch reduction. WorkerVisibilityDigest
+// is the frozen root-workspace launch registration: it is present only when the
+// host port admitted the exact published label set, so an agent that could not
+// be found from its root workspace is never created.
 type Facts struct {
 	SchemaVersion             string           `json:"schemaVersion"`
 	EligibilityDecisionID     string           `json:"eligibilityDecisionId"`
@@ -27,11 +30,14 @@ type Facts struct {
 	PreparationPlanValid      bool             `json:"preparationPlanValid"`
 	PreparationBarrierHash    string           `json:"preparationBarrierHash"`
 	PreparationReady          bool             `json:"preparationReady"`
+	WorkerVisibilityDigest    string           `json:"workerVisibilityDigest"`
 	Worktree                  execution.Effect `json:"worktree"`
 	HostView                  execution.Effect `json:"hostView"`
 	Boundary                  execution.Effect `json:"boundary"`
 	Setup                     execution.Effect `json:"setup"`
 	Agent                     execution.Effect `json:"agent"`
+	AgentPrompt               execution.Effect `json:"agentPrompt"`
+	WorkerIdentityPersisted   bool             `json:"workerIdentityPersisted"`
 }
 
 // DecisionKind is the finite launch action vocabulary.
@@ -42,7 +48,11 @@ const (
 	DecisionDispatch                 DecisionKind = "dispatch"
 	DecisionAdopt                    DecisionKind = "adopt"
 	DecisionCommitPreparationReady   DecisionKind = "commit_preparation_ready"
+	DecisionCommitWorkerVisibility   DecisionKind = "commit_worker_visibility"
+	DecisionCommitWorkerIdentity     DecisionKind = "commit_worker_identity"
 	DecisionCreateAgentIntent        DecisionKind = "create_agent_intent"
+	DecisionCreateAgentPromptIntent  DecisionKind = "create_agent_prompt_intent"
+	DecisionWaitTerminalEvent        DecisionKind = "wait_terminal_event"
 	DecisionLaunched                 DecisionKind = "launched"
 	DecisionObserveOperationalLimits DecisionKind = "observe_operational_limits"
 	DecisionRetry                    DecisionKind = "retry"
@@ -94,6 +104,15 @@ func reduceEffect(effect execution.Effect, nowMillis int64) Decision {
 			return needs("launch_effect_attempts_exhausted")
 		}
 		return Decision{SchemaVersion: SchemaVersion, Kind: DecisionDispatch, EffectKind: effect.Kind}
+	case execution.ObservationOwnedPresent:
+		if effect.Kind == execution.EffectAgentCreate || effect.Kind == execution.EffectAgentPrompt {
+			return Decision{SchemaVersion: SchemaVersion, Kind: DecisionWaitTerminalEvent, EffectKind: effect.Kind}
+		}
+		return needs("launch_effect_observation_unsafe")
+	case execution.ObservationErrored:
+		return needs("agent_terminal_error")
+	case execution.ObservationPermission:
+		return needs("agent_terminal_permission")
 	case execution.ObservationDifferent, execution.ObservationAmbiguous, execution.ObservationUnavailable:
 		return needs("launch_effect_observation_unsafe")
 	default:
@@ -145,10 +164,28 @@ func Reduce(facts Facts) Decision {
 	if facts.PreparationBarrierHash == "" {
 		return needs("preparation_barrier_missing")
 	}
+	if facts.WorkerVisibilityDigest == "" {
+		if facts.Agent.ID != "" {
+			return needs("worker_visibility_registration_missing")
+		}
+		return Decision{SchemaVersion: SchemaVersion, Kind: DecisionCommitWorkerVisibility}
+	}
 	if facts.Agent.ID == "" {
 		return Decision{SchemaVersion: SchemaVersion, Kind: DecisionCreateAgentIntent}
 	}
 	if decision := reduceEffect(facts.Agent, facts.TaskStoreNowMillis); decision.Kind != "" {
+		return decision
+	}
+	if !facts.WorkerIdentityPersisted {
+		if facts.AgentPrompt.ID != "" {
+			return needs("worker_identity_not_persisted")
+		}
+		return Decision{SchemaVersion: SchemaVersion, Kind: DecisionCommitWorkerIdentity}
+	}
+	if facts.AgentPrompt.ID == "" {
+		return Decision{SchemaVersion: SchemaVersion, Kind: DecisionCreateAgentPromptIntent}
+	}
+	if decision := reduceEffect(facts.AgentPrompt, facts.TaskStoreNowMillis); decision.Kind != "" {
 		return decision
 	}
 	return Decision{SchemaVersion: SchemaVersion, Kind: DecisionLaunched}

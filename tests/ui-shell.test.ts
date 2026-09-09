@@ -27,9 +27,11 @@ test("Director for Paseo retains every planned top-level UI shell", () => {
   const entry = readFileSync(resolve("index.ts"), "utf8");
   for (const registration of [
     'addSurface("home", DirectorHome)',
+    'id: "director-workers"',
     'id: "project-board"',
     'id: "task-inspector"',
     'id: "open-project-board"',
+    'id: "open-director-workers"',
     'id: "open-task-inspector"',
   ]) {
     assert.ok(entry.includes(registration), `missing ${registration}`);
@@ -58,6 +60,25 @@ test("Director for Paseo retains every planned top-level UI shell", () => {
   for (const column of ["Task", "Project", "State", "Run"]) {
     assert.ok(shells.includes(`>${column}</Text>`), `missing ${column} List column`);
   }
+
+  const workers = readFileSync(
+    resolve("ui/director-workers-panel.client.tsx"),
+    "utf8",
+  );
+  for (const token of [
+    "Director Workers",
+    "Open agent",
+    "useRpc(directorWorkersRpc)",
+    'loadWorkers({ rootWorkspaceId: workspaceId })',
+    "navigation?.openAgent({ agentId: worker.agentId })",
+    "paseo.agents.subscribe(",
+  ]) {
+    assert.ok(workers.includes(token), `missing ${token}`);
+  }
+  // Worker liveness is event-driven: no active-turn refetch interval.
+  assert.doesNotMatch(workers, /refetchInterval|setInterval/i);
+  // The aggregate reaches Paseo through the connector, never from the client.
+  assert.doesNotMatch(workers, /@getpaseo\/client/);
 });
 
 test("the exact Paseo refresh measurement remains bound to ProjectBoard", () => {

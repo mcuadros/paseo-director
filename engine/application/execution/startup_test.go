@@ -33,7 +33,7 @@ func TestStartupRejectsExecutionIdentityAliasingAcrossRuns(t *testing.T) {
 func TestEffectHandoffErrorRetainsUnknownAdapterResult(t *testing.T) {
 	underlying := errors.New("adapter result lost")
 	failure := &EffectHandoffError{Kind: domainexecution.EffectAgentCreate, err: underlying}
-	if !errors.Is(failure, underlying) || failure.Error() != "task_agent.create_with_initial_prompt outcome requires reconciliation" {
+	if !errors.Is(failure, underlying) || failure.Error() != "task_agent.create_with_bootstrap outcome requires reconciliation" {
 		t.Fatalf("handoff failure = %v", failure)
 	}
 }

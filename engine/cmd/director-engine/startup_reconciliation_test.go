@@ -22,7 +22,7 @@ import (
 func dispatchingEffect(run domain.Run) execution.EffectKind {
 	for _, effect := range []execution.Effect{
 		run.Execution.Worktree, run.Execution.HostView, run.Execution.Boundary,
-		run.Execution.Setup, run.Execution.Agent, run.Execution.AgentArchive,
+		run.Execution.Setup, run.Execution.Agent, run.Execution.AgentPrompt, run.Execution.AgentArchive,
 		run.Execution.HostViewArchive, run.Execution.WorktreeRemove,
 	} {
 		if effect.Phase == execution.EffectDispatching {
@@ -54,7 +54,7 @@ func TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect(t
 		LoseEveryMutationResponse: true,
 	})
 	t.Cleanup(environment.RemoveFixture)
-	controller := executionapp.NewController(store, environment, environment)
+	controller := executionapp.NewController(store, environment, environment, environment)
 	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, facts)); err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +63,7 @@ func TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect(t
 	maximumCleanupIntents := 0
 	candidateRecovered := false
 	claimRecorded := false
+	var pendingClaim *execution.CompletedClaim
 	for restart := 1; restart <= 200; restart++ {
 		run, err := store.Run(context.Background(), scope.RunID)
 		if err != nil {
@@ -71,7 +72,17 @@ func TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect(t
 		if run.Execution.Terminal {
 			break
 		}
-		if run.Execution.Agent.Phase == execution.EffectComplete && run.Execution.Claim == nil {
+		if run.Execution.AgentPrompt.Phase == execution.EffectComplete && pendingClaim != nil && run.Execution.Claim == nil {
+			restarted := environment.Restart()
+			if err := executionapp.NewController(store, restarted, restarted, restarted).RecordCompletedClaim(context.Background(), run.ID, *pendingClaim); err != nil {
+				t.Fatal(err)
+			}
+			claimRecorded = true
+			continue
+		}
+		if run.Execution.AgentPrompt.Observation != nil &&
+			run.Execution.AgentPrompt.Observation.Status == execution.ObservationOwnedPresent &&
+			run.Execution.Claim == nil {
 			claim, err := environment.ProduceCandidate(context.Background(), fake.CandidateRequest{
 				ClaimID: "claim-startup-boundaries", AgentID: run.Execution.Agent.ExternalID,
 				BaseSHA: base, CriteriaResults: map[string]string{"criterion-1": "claimed_satisfied"},
@@ -80,15 +91,33 @@ func TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect(t
 				t.Fatal(err)
 			}
 			restarted := environment.Restart()
-			if err := executionapp.NewController(store, restarted, restarted).RecordCompletedClaim(context.Background(), run.ID, claim); err != nil {
+			restartedController := executionapp.NewController(store, restarted, restarted, restarted)
+			completion, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.AgentPrompt.ID, 1_001)
+			if err != nil {
 				t.Fatal(err)
 			}
-			claimRecorded = true
+			if err := restartedController.RecordCompletionEvent(context.Background(), run.ID, completion, 1_001); err != nil {
+				t.Fatal(err)
+			}
+			pending := claim
+			pendingClaim = &pending
+			continue
+		}
+		if run.Execution.Agent.Observation != nil &&
+			run.Execution.Agent.Observation.Status == execution.ObservationOwnedPresent {
+			completion, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.Agent.ID, 1_001)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restarted := environment.Restart()
+			if err := executionapp.NewController(store, restarted, restarted, restarted).RecordCompletionEvent(context.Background(), run.ID, completion, 1_001); err != nil {
+				t.Fatal(err)
+			}
 			continue
 		}
 
 		restarted := environment.Restart()
-		result, err := executionapp.NewController(store, restarted, restarted).ReconcileStartup(
+		result, err := executionapp.NewController(store, restarted, restarted, restarted).ReconcileStartup(
 			context.Background(), executionapp.StartupCommand{
 				SchemaVersion: executionapp.StartupCommandSchemaVersion,
 				RequestID:     fmt.Sprintf("startup-boundary-%03d", restart), NowMillis: 1_001,
@@ -134,7 +163,7 @@ func TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect(t
 	for _, kind := range []execution.EffectKind{
 		execution.EffectWorktreeCreate, execution.EffectHostViewCreate,
 		execution.EffectBoundaryMaterialize, execution.EffectSetupRun,
-		execution.EffectAgentCreate, execution.EffectAgentArchive,
+		execution.EffectAgentCreate, execution.EffectAgentPrompt, execution.EffectAgentArchive,
 		execution.EffectHostViewArchive, execution.EffectWorktreeRemove,
 	} {
 		if !unknownHandoffs[kind] {
@@ -225,7 +254,7 @@ func TestStartupReconciliationRejectsCommandConflictBeforeExternalMutation(t *te
 		BaseSHA: base, Operational: operationalObservation("startup-command-conflict"),
 	})
 	t.Cleanup(environment.RemoveFixture)
-	controller := executionapp.NewController(store, environment, environment)
+	controller := executionapp.NewController(store, environment, environment, environment)
 	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +264,7 @@ func TestStartupReconciliationRejectsCommandConflictBeforeExternalMutation(t *te
 	}
 	faulted := commandFaultStore{TaskStore: store, key: runBefore.Execution.StartCommandID}
 	restarted := environment.Restart()
-	_, err = executionapp.NewController(faulted, restarted, restarted).ReconcileStartup(
+	_, err = executionapp.NewController(faulted, restarted, restarted, restarted).ReconcileStartup(
 		context.Background(), executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-command-conflict", NowMillis: 1_001},
 	)
 	if err == nil || !strings.Contains(err.Error(), "command outcome") {
@@ -265,7 +294,7 @@ func TestStartupReconciliationScansEveryRunBeforeAnyEffect(t *testing.T) {
 		BaseSHA: baseOne, Operational: operationalObservation("global-first"),
 	})
 	t.Cleanup(environmentOne.RemoveFixture)
-	controllerOne := executionapp.NewController(store, environmentOne, environmentOne)
+	controllerOne := executionapp.NewController(store, environmentOne, environmentOne, environmentOne)
 	if _, err := controllerOne.Start(context.Background(), startCommand(taskOne, scopeOne, sourceOne, worktreeOne, baseOne, eligibilityFacts(scopeOne, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +311,7 @@ func TestStartupReconciliationScansEveryRunBeforeAnyEffect(t *testing.T) {
 		BaseSHA: baseTwo, Operational: operationalObservation("global-second"),
 	})
 	t.Cleanup(environmentTwo.RemoveFixture)
-	controllerTwo := executionapp.NewController(store, environmentTwo, environmentTwo)
+	controllerTwo := executionapp.NewController(store, environmentTwo, environmentTwo, environmentTwo)
 	if _, err := controllerTwo.Start(context.Background(), startCommand(taskTwo, scopeTwo, sourceTwo, worktreeTwo, baseTwo, eligibilityFacts(scopeTwo, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +325,7 @@ func TestStartupReconciliationScansEveryRunBeforeAnyEffect(t *testing.T) {
 	}
 	faulted := commandFaultStore{TaskStore: store, key: runTwo.Execution.StartCommandID}
 	restarted := environmentOne.Restart()
-	_, err = executionapp.NewController(faulted, restarted, restarted).ReconcileStartup(
+	_, err = executionapp.NewController(faulted, restarted, restarted, restarted).ReconcileStartup(
 		context.Background(), executionapp.StartupCommand{
 			SchemaVersion: executionapp.StartupCommandSchemaVersion,
 			RequestID:     "startup-global-scan", NowMillis: 1_001,
@@ -338,14 +367,14 @@ func TestStartupReconciliationRequestReplayIsIdempotent(t *testing.T) {
 		LoseEveryMutationResponse: true,
 	})
 	t.Cleanup(environment.RemoveFixture)
-	controller := executionapp.NewController(store, environment, environment)
+	controller := executionapp.NewController(store, environment, environment, environment)
 	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
 	command := executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-replay-same", NowMillis: 1_001}
 	for attempt := 0; attempt < 2; attempt++ {
 		restarted := environment.Restart()
-		if _, err := executionapp.NewController(store, restarted, restarted).ReconcileStartup(context.Background(), command); err != nil {
+		if _, err := executionapp.NewController(store, restarted, restarted, restarted).ReconcileStartup(context.Background(), command); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -382,12 +411,13 @@ func TestStartupReconciliationParksAdmittedCandidateDriftWithoutCleanup(t *testi
 		BaseSHA: base, Operational: operationalObservation("startup-candidate-drift"),
 	})
 	t.Cleanup(environment.RemoveFixture)
-	controller := executionapp.NewController(store, environment, environment)
+	controller := executionapp.NewController(store, environment, environment, environment)
 	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
 	run := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
-		return run.Execution.Agent.Phase == execution.EffectComplete
+		return run.Execution.AgentPrompt.Observation != nil &&
+			run.Execution.AgentPrompt.Observation.Status == execution.ObservationOwnedPresent
 	})
 	claim, err := environment.ProduceCandidate(context.Background(), fake.CandidateRequest{
 		ClaimID: "claim-startup-candidate-drift", AgentID: run.Execution.Agent.ExternalID,
@@ -396,6 +426,16 @@ func TestStartupReconciliationParksAdmittedCandidateDriftWithoutCleanup(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	completion, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.AgentPrompt.ID, 1_001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.RecordCompletionEvent(context.Background(), run.ID, completion, 1_001); err != nil {
+		t.Fatal(err)
+	}
+	run = runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
+		return run.Execution.AgentPrompt.Phase == execution.EffectComplete
+	})
 	if err := controller.RecordCompletedClaim(context.Background(), run.ID, claim); err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +446,7 @@ func TestStartupReconciliationParksAdmittedCandidateDriftWithoutCleanup(t *testi
 		t.Fatal(err)
 	}
 	restarted := environment.Restart()
-	result, err := executionapp.NewController(store, restarted, restarted).ReconcileStartup(
+	result, err := executionapp.NewController(store, restarted, restarted, restarted).ReconcileStartup(
 		context.Background(), executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-candidate-drift", NowMillis: 1_001},
 	)
 	if err != nil {
@@ -445,7 +485,7 @@ func TestStartupReconciliationRejectsAReplacementConnectorStaleCursor(t *testing
 		LoseEveryMutationResponse: true,
 	})
 	t.Cleanup(environment.RemoveFixture)
-	controller := executionapp.NewController(store, environment, environment)
+	controller := executionapp.NewController(store, environment, environment, environment)
 	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
@@ -453,7 +493,7 @@ func TestStartupReconciliationRejectsAReplacementConnectorStaleCursor(t *testing
 		return run.Execution.HostView.Phase == execution.EffectDispatching
 	})
 	restarted := environment.Restart()
-	if _, err := executionapp.NewController(store, restarted, restarted).ReconcileStartup(
+	if _, err := executionapp.NewController(store, restarted, restarted, restarted).ReconcileStartup(
 		context.Background(), executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-cursor-baseline", NowMillis: 1_001},
 	); err != nil {
 		t.Fatal(err)
@@ -467,7 +507,7 @@ func TestStartupReconciliationRejectsAReplacementConnectorStaleCursor(t *testing
 	priorCursor := run.Execution.LastStartupReconciliation.HostCursor
 	restarted = environment.Restart()
 	result, err := executionapp.NewController(
-		store, restarted, staleCursorHost{Port: restarted, cursor: priorCursor},
+		store, restarted, staleCursorHost{Port: restarted, cursor: priorCursor}, restarted,
 	).ReconcileStartup(
 		context.Background(), executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-cursor-stale", NowMillis: 1_001},
 	)
@@ -502,7 +542,7 @@ func TestStartupReconciliationRejectsPriorLiveResourceIdentityDrift(t *testing.T
 		BaseSHA: base, Operational: operationalObservation("startup-identity-drift"),
 	})
 	t.Cleanup(environment.RemoveFixture)
-	controller := executionapp.NewController(store, environment, environment)
+	controller := executionapp.NewController(store, environment, environment, environment)
 	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +551,7 @@ func TestStartupReconciliationRejectsPriorLiveResourceIdentityDrift(t *testing.T
 	})
 	restarted := environment.Restart()
 	result, err := executionapp.NewController(
-		store, mismatchedWorktreeRuntime{Port: restarted}, restarted,
+		store, mismatchedWorktreeRuntime{Port: restarted}, restarted, restarted,
 	).ReconcileStartup(
 		context.Background(), executionapp.StartupCommand{
 			SchemaVersion: executionapp.StartupCommandSchemaVersion,

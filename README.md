@@ -346,5 +346,7 @@ policy-free boundary rather than a second execution engine.
 - [Approved product and engineering plan](docs/PLAN.md)
 - [Contributing workflow](CONTRIBUTING.md)
 - [Deterministic coordinator CLI](docs/coordinator-cli.md)
+- [Event-driven delivery fast path](docs/delivery-fast-path.md)
+- [Director Workers visibility contract](docs/director-workers.md)
 
 Development is tracked with Beads. Run `bd ready` to inspect unblocked work.

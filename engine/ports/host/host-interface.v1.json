@@ -8,8 +8,9 @@
     "executionWorkspace.createManaged",
     "executionWorkspace.observe",
     "executionWorkspace.archive",
-    "taskAgent.createWithInitialPrompt",
-    "reviewerAgent.createWithInitialPrompt",
+    "taskAgent.createWithBootstrap",
+    "reviewerAgent.createWithBootstrap",
+    "send_agent_prompt",
     "helperAgent.observe",
     "agent.observe",
     "agent.archive"
@@ -30,6 +31,24 @@
       "ready"
     ]
   },
+  "workerRegistry": {
+    "schemaVersion": 1,
+    "roles": ["task-agent", "reviewer"],
+    "labels": {
+      "project": "director.project",
+      "rootWorkspace": "director.root-workspace",
+      "workspace": "director.workspace",
+      "executionWorkspace": "director.execution-workspace",
+      "task": "director.task",
+      "run": "director.run",
+      "role": "director.role",
+      "phase": "director.phase",
+      "candidate": "director.candidate",
+      "base": "director.base",
+      "registeredAt": "director.registered-at",
+      "startedAt": "director.started-at"
+    }
+  },
   "command": {
     "required": [
       "requestId",
@@ -45,7 +64,8 @@
       "scopeRequired": ["projectId", "workspaceId", "taskId", "runId"],
       "effectKinds": [
         "host_view.create",
-        "task_agent.create_with_initial_prompt",
+        "task_agent.create_with_bootstrap",
+        "agent.send_prompt",
         "task_agent.archive",
         "host_view.archive"
       ],
@@ -60,7 +80,9 @@
         "lifecycleDigest",
         "isolationDigest",
         "preparationReady",
-        "preparationBarrierHash"
+        "preparationBarrierHash",
+        "notifyOnFinish",
+        "labels"
       ]
     }
   },
@@ -85,6 +107,8 @@
         "desired",
         "absent",
         "owned_present",
+        "errored",
+        "permission",
         "different",
         "ambiguous",
         "unavailable"

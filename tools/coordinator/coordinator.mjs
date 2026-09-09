@@ -84,10 +84,16 @@ const COMMON_OPTIONS = [
   "pr",
 ];
 
-const MUTATING_COMMANDS = new Set(["publish", "integrate", "cleanup-apply"]);
+// A handoff manifest stays usable while its lifecycle binding only ever loses
+// live facts: active may become restored, and either may become historical.
+const LIVE_LIFECYCLE_STATES = new Set(["active", "restored"]);
+
+const MUTATING_COMMANDS = new Set(["publish-draft", "remote-ci", "publish", "integrate", "cleanup-apply"]);
 const COMMANDS = new Set([
   "snapshot",
   "review-handoff",
+  "publish-draft",
+  "remote-ci",
   "publish",
   "gate",
   "integrate",
@@ -119,9 +125,71 @@ function paseoLifecycleOperation(args) {
   return args[0] === "inspect" ? "agent.inspect" : "workspace.list";
 }
 
+/**
+ * Splits a Paseo host into the credential-free address every child process may
+ * see and the credential only the two public lifecycle reads may receive. The
+ * documented local secret profile exports the password inside the connection
+ * URI as well as in its own variable, and refusing that form forced every Task
+ * to wrap this CLI in a per-Task shell script. Normalizing it here removes the
+ * script without weakening the invariant: the raw host never reaches a child.
+ */
+/**
+ * A credential-free Paseo address carries no userinfo and no password
+ * parameter. Anything still matching this shape after normalization is refused
+ * rather than forwarded, so an unparsed or unexpected credential location can
+ * never reach a child process.
+ */
+function credentialShapedHost(value) {
+  return /password/iu.test(value) || /^[^/?#]*@/u.test(value.replace(/^[a-z][a-z0-9+.-]*:\/\//iu, ""));
+}
+
+/**
+ * Best-effort split of a Paseo host into its address and any credential it
+ * carries. It never refuses, because the redaction guard runs on every output
+ * path and must be total.
+ */
+function splitPaseoHost(host) {
+  if (host === undefined) return { host: undefined, query: null, embedded: null };
+  try {
+    const parsed = new URL(host);
+    const query = parsed.searchParams.get("password");
+    const embedded = parsed.password.length > 0 ? parsed.password : null;
+    parsed.searchParams.delete("password");
+    parsed.password = "";
+    parsed.username = "";
+    return { host: parsed.toString(), query, embedded };
+  } catch {
+    return { host, query: null, embedded: null };
+  }
+}
+
+/**
+ * The address a child process may see. Unlike splitPaseoHost this refuses a
+ * host whose credential this CLI cannot separate, so an unexpected credential
+ * location fails closed instead of being forwarded.
+ */
+function normalizedPaseoHost(host) {
+  const split = splitPaseoHost(host);
+  if (split.host === undefined) return { host: undefined, password: null };
+  refuse(
+    split.query !== null && split.embedded !== null && split.query !== split.embedded,
+    "PASEO_AUTH_LOCATION_UNSUPPORTED",
+    "Paseo host declares two different credentials",
+  );
+  refuse(
+    credentialShapedHost(split.host),
+    "PASEO_AUTH_LOCATION_UNSUPPORTED",
+    "Paseo host carries a credential this CLI cannot separate",
+  );
+  return { host: split.host, password: split.query ?? split.embedded };
+}
+
 function selectedPaseoPassword() {
   const password = process.env.PASEO_PASSWORD;
-  return password !== undefined && password.length > 0 ? password : null;
+  if (password !== undefined && password.length > 0) return password;
+  const split = splitPaseoHost(process.env.PASEO_HOST);
+  const embedded = split.query ?? split.embedded;
+  return embedded !== null && embedded.length > 0 ? embedded : null;
 }
 
 function containsSelectedPaseoPassword(value) {
@@ -136,25 +204,10 @@ function containsSelectedPaseoPassword(value) {
   return visit(value);
 }
 
-function paseoHostEmbedsPassword(host) {
-  try {
-    const parsed = new URL(host);
-    return parsed.searchParams.has("password") ||
-      parsed.password.length > 0;
-  } catch {
-    return /(?:[?&]password)(?:=|&|$)/iu.test(host);
-  }
-}
-
 function selectedEnvironment(executable, args) {
   const selected = {};
   const password = selectedPaseoPassword();
-  refuse(
-    process.env.PASEO_HOST !== undefined &&
-      paseoHostEmbedsPassword(process.env.PASEO_HOST),
-    "PASEO_AUTH_LOCATION_UNSUPPORTED",
-    "Paseo authentication must use the dedicated password environment variable",
-  );
+  const host = normalizedPaseoHost(process.env.PASEO_HOST);
   for (const key of [
     "PATH",
     "LANG",
@@ -164,7 +217,6 @@ function selectedEnvironment(executable, args) {
     "XDG_CONFIG_HOME",
     "GH_CONFIG_DIR",
     "GH_HOST",
-    "PASEO_HOST",
   ]) {
     const value = process.env[key];
     if (
@@ -173,6 +225,14 @@ function selectedEnvironment(executable, args) {
     ) {
       selected[key] = value;
     }
+  }
+  if (host.host !== undefined) {
+    refuse(
+      password !== null && host.host.includes(password),
+      "PASEO_AUTH_LOCATION_UNSUPPORTED",
+      "Paseo host still carries a credential after normalization",
+    );
+    selected.PASEO_HOST = host.host;
   }
   if (isPaseoLifecycleRead(executable, args) && password !== null) {
     selected.PASEO_PASSWORD = password;
@@ -328,7 +388,50 @@ function optionValues(argv) {
 export function parseCli(argv) {
   const [command, ...rest] = argv;
   refuse(!COMMANDS.has(command), "COMMAND_INVALID", "unknown coordinator command");
-  return { command, options: optionValues(rest) };
+  const options = optionValues(rest);
+  refuse(
+    options.ownership !== undefined,
+    "OWNERSHIP_ARG_FORBIDDEN",
+    "use --ownership-file so the ownership token never enters argv or command logs",
+  );
+  refuse(
+    options["ownership-file"] === undefined,
+    "OPTION_REQUIRED",
+    "--ownership-file is required",
+  );
+  const ownershipPath = options["ownership-file"];
+  refuse(
+    !isAbsolute(ownershipPath),
+    "PATH_NOT_ABSOLUTE",
+    "ownership file must be absolute",
+  );
+  let ownershipStatus;
+  try {
+    ownershipStatus = lstatSync(ownershipPath);
+  } catch {
+    throw new CoordinatorError("OWNERSHIP_FILE_UNAVAILABLE", "ownership file is unavailable");
+  }
+  refuse(
+    !ownershipStatus.isFile() || ownershipStatus.isSymbolicLink() ||
+      (ownershipStatus.mode & 0o077) !== 0 ||
+      (typeof process.getuid === "function" && ownershipStatus.uid !== process.getuid()),
+    "OWNERSHIP_FILE_INVALID",
+    "ownership file must be an owner-only regular file with mode 0600",
+  );
+  refuse(
+    ownershipStatus.size < 16 || ownershipStatus.size > 128,
+    "OWNERSHIP_FILE_INVALID",
+    "ownership file has an invalid size",
+  );
+  const ownership = readFileSync(ownershipPath, "utf8");
+  refuse(
+    !OWNERSHIP_PATTERN.test(ownership),
+    "OWNERSHIP_FILE_INVALID",
+    "ownership file contains an invalid token",
+  );
+  options.ownership = ownership;
+  delete options["ownership-file"];
+  return { command, options };
 }
 
 function validateOptions(command, rawOptions) {
@@ -344,6 +447,9 @@ function validateOptions(command, rawOptions) {
     "title",
     "body-file",
     "plan-file",
+    "ci-workflow",
+    "remote-ci-file",
+    "handoff-file",
   ]);
   const unknown = Object.keys(rawOptions).filter((key) => !allowed.has(key));
   refuse(
@@ -413,7 +519,7 @@ function validateOptions(command, rawOptions) {
       : requireString(rawOptions["workspace-id"], ID_PATTERN, "workspace ID");
   const lifecycleState = requireString(
     rawOptions["lifecycle-state"],
-    /^(?:active|reclaimed|none)$/u,
+    /^(?:active|restored|reclaimed|none)$/u,
     "lifecycle state",
   );
   refuse(
@@ -423,10 +529,11 @@ function validateOptions(command, rawOptions) {
     "lifecycle state requires two exact IDs or an explicit none binding",
   );
   refuse(
-    (lifecycleState === "active" && checkoutState !== "present") ||
+    ((lifecycleState === "active" || lifecycleState === "restored") &&
+      checkoutState !== "present") ||
       (lifecycleState === "reclaimed" && checkoutState !== "reclaimed"),
     "LIFECYCLE_CHECKOUT_STATE_MISMATCH",
-    "active/reclaimed lifecycle and checkout states must agree",
+    "active/restored/reclaimed lifecycle and checkout states must agree",
   );
   const pr =
     rawOptions.pr === "absent"
@@ -481,6 +588,8 @@ function validateOptions(command, rawOptions) {
     "validation-file",
     "body-file",
     "plan-file",
+    "remote-ci-file",
+    "handoff-file",
   ]) {
     if (rawOptions[key] !== undefined) {
       refuse(!isAbsolute(rawOptions[key]), "PATH_NOT_ABSOLUTE", `--${key} must be absolute`);
@@ -488,6 +597,19 @@ function validateOptions(command, rawOptions) {
         rawOptions[key],
       );
     }
+  }
+  if (options.handoffFile !== undefined) {
+    refuse(
+      command !== "review-handoff",
+      "OPTION_INVALID",
+      "--handoff-file is valid only for review-handoff",
+    );
+    refuse(
+      pathIsWithin(checkout, options.handoffFile) ||
+        pathIsWithin(controlRepo, options.handoffFile),
+      "HANDOFF_INSIDE_REPOSITORY",
+      "handoff file must be outside the Task and control Git checkouts",
+    );
   }
   if (rawOptions["required-check"] !== undefined) {
     options.requiredChecks = rawOptions["required-check"].map((value) =>
@@ -504,6 +626,13 @@ function validateOptions(command, rawOptions) {
       rawOptions["expected-remote-head"] === "absent"
         ? null
         : exactSha(rawOptions["expected-remote-head"], "expected remote head");
+  }
+  if (rawOptions["ci-workflow"] !== undefined) {
+    options.ciWorkflow = requireString(
+      rawOptions["ci-workflow"],
+      /^[a-zA-Z0-9][a-zA-Z0-9 ._:/()-]{0,199}$/u,
+      "CI workflow",
+    );
   }
   if (rawOptions.title !== undefined) {
     refuse(
@@ -1069,6 +1198,34 @@ function paseoFacts(run, options, task) {
     runJson(run, "paseo", ["workspace", "ls", "--json"]),
   );
   const matches = workspaces.filter((workspace) => workspace.workspaceId === options.workspaceId);
+  // A restored, renamed, or re-created Execution Workspace card no longer
+  // resolves at its recorded ID while the Task Agent keeps running in the same
+  // checkout. The delivery lane still needs the exact worktree, which the local
+  // Git facts already prove, so the workspace is reported as recorded rather
+  // than verified instead of failing the whole handoff closed.
+  if (options.lifecycleState === "restored") {
+    refuse(
+      matches.length === 1,
+      "PASEO_WORKSPACE_RESTORATION_NOT_OBSERVED",
+      "recorded Paseo workspace is still active once and must be bound as active",
+    );
+    refuse(
+      matches.length > 1,
+      "PASEO_WORKSPACE_AMBIGUOUS",
+      "recorded Paseo workspace identity is duplicated",
+    );
+    return {
+      binding: "restored",
+      agent: {
+        archived: false,
+        archivedAt: null,
+        id: agent.Id,
+        status: agent.Status,
+      },
+      workspace: { id: options.workspaceId, verified: false },
+      verified: true,
+    };
+  }
   refuse(matches.length !== 1, "PASEO_WORKSPACE_AMBIGUOUS", "exact Paseo workspace is not active once");
   const workspace = matches[0];
   refuse(
@@ -1301,8 +1458,10 @@ function validateReviewManifestEvidence(options) {
       manifest.ownership?.repositoryId !== options.repoId ||
       !(
         manifest.ownership?.lifecycleState === options.lifecycleState ||
+        (LIVE_LIFECYCLE_STATES.has(manifest.ownership?.lifecycleState) &&
+          options.lifecycleState === "reclaimed") ||
         (manifest.ownership?.lifecycleState === "active" &&
-          options.lifecycleState === "reclaimed")
+          options.lifecycleState === "restored")
       ) ||
       manifest.ownership?.workspaceId !== options.workspaceId,
     "REVIEW_MANIFEST_OWNERSHIP_MISMATCH",
@@ -1337,7 +1496,7 @@ function validateReviewHarnessEvidence(options, manifest) {
     harness?.schemaVersion !== 1 ||
       harness?.command !== "review-harness" ||
       harness?.outcome !== "complete" ||
-      result?.harnessVersion !== 1 ||
+      result?.harnessVersion !== 2 ||
       result?.authoritative !== false ||
       !ID_PATTERN.test(result?.reviewId ?? "") ||
       result?.manifestHash !== manifest.digest ||
@@ -1347,11 +1506,8 @@ function validateReviewHarnessEvidence(options, manifest) {
     "review harness result is not bound to the exact manifest/Candidate/base",
   );
   refuse(
-    ![1, 2].includes(result.attempt) ||
-      (result.attempt === 1 && result.reason !== "initial") ||
-      (result.attempt === 2 &&
-        !["invalid_environment", "failure_confirmation"].includes(result.reason)) ||
-      (result.attempt === 2 && !/^[0-9a-f]{64}$/u.test(result.reasonRecordHash ?? "")),
+    result.attempt !== 1 || result.reason !== "initial" ||
+      result.reasonRecordHash !== null,
     "REVIEW_HARNESS_ATTEMPT_INVALID",
     "review harness attempt violates the full-CI latency contract",
   );
@@ -1363,12 +1519,60 @@ function validateReviewHarnessEvidence(options, manifest) {
     "REVIEW_HARNESS_NOT_PASSED",
     "review harness results are incomplete or non-passing",
   );
+  const completeCi = result.completeCi;
+  refuse(
+    !isObject(completeCi) ||
+      completeCi.source !== "authoritative-remote" ||
+      typeof completeCi.observationId !== "string" ||
+      completeCi.observationId.length === 0 ||
+      completeCi.startedByReview !== false,
+    "REVIEW_HARNESS_CI_SOURCE_INVALID",
+    "review harness did not consume the authoritative remote CI",
+  );
   return {
     attempt: result.attempt,
+    completeCi: {
+      observationId: completeCi.observationId ?? null,
+      source: completeCi.source,
+    },
     digest: digest(harness),
     harnessVersion: result.harnessVersion,
     reason: result.reason,
     reviewId: result.reviewId,
+  };
+}
+
+/** Binds every post-review gate to the one remote CI the Review consumed. */
+function requireAuthoritativeRemoteCi(options, harness) {
+  refuse(
+    !options.remoteCiFile,
+    "OPTION_REQUIRED",
+    "--remote-ci-file is required when review consumed the authoritative remote CI",
+  );
+  const document = readJsonFile(options.remoteCiFile, "remote CI observation");
+  const observation =
+    document?.schemaVersion === OUTPUT_SCHEMA_VERSION &&
+    document?.command === "remote-ci" &&
+    document?.outcome === "ready"
+      ? document.result
+      : document;
+  refuse(
+    !isObject(observation) ||
+      observation.authoritative !== true ||
+      observation.task !== options.task ||
+      observation.candidate !== options.candidate ||
+      observation.base !== options.base,
+    "REMOTE_CI_BINDING_MISMATCH",
+    "remote CI observation is not bound to the exact Task/Candidate/base",
+  );
+  refuse(
+    observation.observationId !== harness.completeCi.observationId,
+    "REMOTE_CI_OBSERVATION_MISMATCH",
+    "review consumed a different authoritative remote CI observation",
+  );
+  return {
+    observationId: observation.observationId,
+    workflowRunId: observation.remote?.workflow?.id ?? null,
   };
 }
 
@@ -1540,6 +1744,144 @@ function checkFacts(run, options) {
   };
 }
 
+/**
+ * Observes the one authoritative complete remote Linux CI for the exact
+ * Candidate. GitHub is the single execution site: proving exactly one workflow
+ * run per Candidate is what lets an independent Review consume this result
+ * concurrently instead of starting a second complete CI of its own.
+ */
+function remoteCiFacts(run, options) {
+  refuse(
+    !Array.isArray(options.requiredChecks) || options.requiredChecks.length === 0,
+    "REQUIRED_CHECKS_MISSING",
+    "at least one explicit --required-check is required",
+  );
+  refuse(!options.ciWorkflow, "OPTION_REQUIRED", "--ci-workflow is required");
+  const runs = runJson(run, "gh", [
+    "api",
+    `repos/${options.repo}/actions/runs?head_sha=${options.candidate}&per_page=100`,
+  ]);
+  refuse(!Array.isArray(runs.workflow_runs), "REMOTE_CI_RUNS_INVALID", "GitHub workflow run list is invalid");
+  refuse(
+    runs.total_count !== runs.workflow_runs.length,
+    "REMOTE_CI_RUNS_INCOMPLETE",
+    "GitHub workflow runs were not complete in one bounded page",
+  );
+  refuse(
+    runs.workflow_runs.some((entry) => entry?.head_sha !== options.candidate),
+    "REMOTE_CI_SHA_MISMATCH",
+    "a workflow run is bound to another SHA",
+  );
+  const authoritative = runs.workflow_runs.filter((entry) => entry?.name === options.ciWorkflow);
+  refuse(
+    authoritative.length === 0,
+    "REMOTE_CI_ABSENT",
+    "the authoritative complete CI workflow has not run for this Candidate",
+  );
+  refuse(
+    authoritative.length > 1,
+    "REMOTE_CI_NOT_AUTHORITATIVE",
+    "more than one complete CI workflow run exists for this Candidate",
+    { runs: authoritative.length },
+  );
+  const [authoritativeRun] = authoritative;
+  refuse(
+    authoritativeRun.status !== "completed",
+    "REMOTE_CI_PENDING",
+    "the authoritative complete CI workflow is still running",
+    { status: boundedText(String(authoritativeRun.status ?? ""), 40) },
+  );
+  refuse(
+    authoritativeRun.conclusion !== "success",
+    "REMOTE_CI_FAILED",
+    "the authoritative complete CI workflow did not pass",
+    { conclusion: boundedText(String(authoritativeRun.conclusion ?? ""), 40) },
+  );
+  const checks = runJson(run, "gh", [
+    "api",
+    `repos/${options.repo}/commits/${options.candidate}/check-runs?filter=latest&per_page=100`,
+  ]);
+  refuse(!Array.isArray(checks.check_runs), "CHECKS_INVALID", "GitHub check runs are invalid");
+  refuse(
+    checks.total_count !== checks.check_runs.length,
+    "CHECKS_INCOMPLETE",
+    "GitHub check run result was not complete in one bounded page",
+  );
+  const observed = [];
+  for (const name of options.requiredChecks) {
+    const matches = checks.check_runs.filter((check) => check.name === name);
+    refuse(matches.length !== 1, "REQUIRED_CHECK_AMBIGUOUS", "required check is missing or ambiguous", { check: name });
+    const [check] = matches;
+    refuse(check.head_sha !== options.candidate, "CHECK_SHA_MISMATCH", "check run is bound to another SHA");
+    refuse(
+      check.status !== "completed",
+      "REMOTE_CI_PENDING",
+      "a required remote check is still running",
+      { check: boundedText(name, 200) },
+    );
+    refuse(
+      check.conclusion !== "success",
+      "REMOTE_CI_FAILED",
+      "a required remote check did not pass",
+      { check: boundedText(name, 200) },
+    );
+    observed.push({ id: check.id, name: check.name });
+  }
+  return {
+    checkRuns: observed,
+    required: options.requiredChecks,
+    workflow: {
+      conclusion: authoritativeRun.conclusion,
+      headSha: authoritativeRun.head_sha,
+      id: authoritativeRun.id,
+      name: authoritativeRun.name,
+      runAttempt: authoritativeRun.run_attempt ?? null,
+      status: authoritativeRun.status,
+    },
+  };
+}
+
+/**
+ * Records the single authoritative remote CI observation for one Candidate.
+ * A second call with the same facts is idempotent; a call whose facts differ
+ * refuses rather than replacing the recorded authority, so no second complete
+ * CI can quietly become the one the gate trusts.
+ */
+function remoteCi(run, options) {
+  const validation = validateValidation(options);
+  const state = loadState(options);
+  persistState(options.stateFile, state);
+  const snapshot = baseSnapshot(run, options, { includePaseo: false });
+  requireRemoteCandidate(snapshot, options);
+  const facts = remoteCiFacts(run, options);
+  const observation = {
+    authoritative: true,
+    base: options.base,
+    candidate: options.candidate,
+    checks: [
+      {
+        command: ["github-actions", options.ciWorkflow],
+        id: "maintained-linux-ci",
+        status: "passed",
+      },
+    ],
+    remote: facts,
+    task: options.task,
+  };
+  const observationId = digest(observation);
+  const record = effectRecord(state, "remote_ci.observe", "store_only");
+  refuse(
+    record.phase === "complete" && record.evidence?.observationId !== observationId,
+    "REMOTE_CI_OBSERVATION_CHANGED",
+    "another authoritative remote CI observation is already recorded for this Candidate",
+  );
+  markEffect(options.stateFile, state, "remote_ci.observe", "store_only", "complete", {
+    observationId,
+    workflowRunId: facts.workflow.id,
+  });
+  return { ...observation, observationId, validation };
+}
+
 const REVIEW_THREADS_QUERY = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved comments(first:20){nodes{author{login __typename}} pageInfo{hasNextPage}}}pageInfo{hasNextPage}}}}}`;
 
 function feedbackFacts(run, options, pull) {
@@ -1636,12 +1978,14 @@ function gateCore(run, options) {
     "PULL_REQUEST_NOT_MERGEABLE",
     "pull request is not freshly mergeable and clean",
   );
+  const remoteCiBinding = requireAuthoritativeRemoteCi(options, routing.harness);
   const checks = checkFacts(run, options);
   const feedback = feedbackFacts(run, options, pull);
   return {
     checks,
     feedback,
     pullRequest: { number, url: pull.html_url },
+    remoteCi: remoteCiBinding,
     review,
     routing,
     snapshot,
@@ -1793,7 +2137,7 @@ function cleanupFacts(run, options, task, { allowAbsentWorkspace = false } = {})
       observation: "recorded_reclaimed",
       verified: false,
     };
-  } else if (options.lifecycleState === "active") {
+  } else if (options.lifecycleState === "active" || options.lifecycleState === "restored") {
     const inspected = validatedPaseoAgent(
       runJson(run, "paseo", ["inspect", options.agentId, "--json"]),
       options,
@@ -1819,6 +2163,11 @@ function cleanupFacts(run, options, task, { allowAbsentWorkspace = false } = {})
     const matches = workspaces.filter((item) => item.workspaceId === options.workspaceId);
     refuse(matches.length > 1, "PASEO_WORKSPACE_AMBIGUOUS", "Paseo workspace identity is ambiguous");
     if (matches.length === 1) {
+      refuse(
+        options.lifecycleState === "restored",
+        "PASEO_WORKSPACE_RESTORATION_NOT_OBSERVED",
+        "recorded Paseo workspace is active and must be bound as active",
+      );
       const item = matches[0];
       refuse(
         canonicalExistingDirectory(item.cwd, "Paseo workspace cwd") !== options.checkout || item.isolation !== "worktree",
@@ -1826,6 +2175,14 @@ function cleanupFacts(run, options, task, { allowAbsentWorkspace = false } = {})
         "Paseo workspace ownership facts changed",
       );
       workspace = { id: item.workspaceId, isolation: item.isolation };
+    } else if (options.lifecycleState === "restored") {
+      // A restored card cannot be archived by identity, so cleanup records the
+      // recorded binding instead of claiming a verified workspace resource.
+      workspace = {
+        id: options.workspaceId,
+        observation: "recorded_restored",
+        verified: false,
+      };
     } else {
       refuse(
         !allowAbsentWorkspace,
@@ -1935,127 +2292,176 @@ async function dispatchHook(deps, phase, effect, context) {
   if (deps.hook) await deps.hook(phase, effect, context);
 }
 
-async function publish(run, options, deps) {
-  refuse(!options.reviewFile, "OPTION_REQUIRED", "--review-file is required");
+/**
+ * Publishes the owned Task ref at the exact Candidate under a lease on its
+ * expected old head. `refresh` re-reads and re-asserts the caller's own
+ * pre-push context immediately before the mutation, so publication and
+ * draft publication share one push contract without sharing an evidence set.
+ */
+async function publishLeasedRef(run, options, deps, state, effect, refresh) {
+  const pushRecord = effectRecord(state, effect, "conditional_update");
+  let snapshot = refresh();
+  if (snapshot.refs.head === options.candidate) {
+    markEffect(options.stateFile, state, effect, "conditional_update", "complete", {
+      head: options.candidate,
+    });
+    return refresh();
+  }
+  refuse(
+    snapshot.refs.head !== options.expectedRemoteHead,
+    "REMOTE_HEAD_CHANGED",
+    "remote Task branch changed before publication",
+  );
+  refuse(
+    pushRecord.phase === "complete",
+    "TERMINAL_DRIFT",
+    "completed publication branch later changed",
+  );
+  markDispatch(options.stateFile, state, effect, "conditional_update");
+  await dispatchHook(deps, "before", effect, { options, state });
+  snapshot = refresh();
+  refuse(
+    snapshot.refs.head !== options.expectedRemoteHead,
+    "REMOTE_HEAD_CHANGED",
+    "remote Task branch changed immediately before publication",
+  );
+  const ref = `refs/heads/${options.branch}`;
+  const pushed = gitRaw(run, options.controlRepo, [
+    "push",
+    "--porcelain",
+    `--force-with-lease=${ref}:${options.expectedRemoteHead ?? ""}`,
+    options.remote,
+    `${options.candidate}:${ref}`,
+  ]);
+  await dispatchHook(deps, "after", effect, { options, result: pushed, state });
+  const observed = observeRemoteRef(run, options, options.branch, true);
+  if (observed !== options.candidate) {
+    markEffect(options.stateFile, state, effect, "conditional_update", "unknown", {
+      observed,
+    });
+    throw new CoordinatorError("PUSH_RESULT_UNKNOWN", "branch publication was not proven");
+  }
+  markEffect(options.stateFile, state, effect, "conditional_update", "complete", {
+    head: options.candidate,
+  });
+  return refresh();
+}
+
+function publicationBody(options) {
+  const bodyStatus = lstatSync(options.bodyFile);
+  refuse(!bodyStatus.isFile() || bodyStatus.isSymbolicLink(), "BODY_FILE_INVALID", "PR body must be a regular non-symlink file");
+  refuse(bodyStatus.size > 131_072, "BODY_FILE_OVERSIZE", "PR body is too large");
+  const body = readFileSync(options.bodyFile, "utf8");
+  refuse(body.includes("\0"), "BODY_FILE_INVALID", "PR body contains a NUL byte");
+  refuse(
+    containsSelectedPaseoPassword(body),
+    "PROTECTED_MATERIAL_REDACTED",
+    "pull request body contained protected material",
+  );
+  return `${body.trimEnd()}\n\n${marker(options)}\n`;
+}
+
+/**
+ * Leaves an adopted draft ready for integration. Only the post-review
+ * publication path calls this, and only after an approved exact-SHA Review, so
+ * the early draft published before review can never reach the merge gate on
+ * its own: the gate refuses a draft outright.
+ */
+async function markReadyForReview(run, options, deps, state, pull, refresh) {
+  const record = effectRecord(state, "publish.ready", "conditional_update");
+  if (pull.draft !== true) {
+    refuse(
+      record.phase !== "dispatching" && record.phase !== "complete",
+      "PULL_REQUEST_READINESS_UNOWNED",
+      "non-draft pull request lacks an owned readiness effect",
+    );
+    markEffect(options.stateFile, state, "publish.ready", "conditional_update", "complete", {
+      number: pull.number,
+    });
+    return pull;
+  }
+  markDispatch(options.stateFile, state, "publish.ready", "conditional_update");
+  await dispatchHook(deps, "before", "publish.ready", { options, state });
+  refresh();
+  pull = exactPullRequests(run, options);
+  refuse(
+    !pull || pull.state !== "open" || pull.draft !== true ||
+      pull.head?.sha !== options.candidate,
+    "PULL_REQUEST_CHANGED",
+    "owned draft changed immediately before publication readiness",
+  );
+  const result = run("gh", ["pr", "ready", String(pull.number), "--repo", options.repo], {
+    cwd: options.controlRepo,
+  });
+  await dispatchHook(deps, "after", "publish.ready", { options, result, state });
+  const observed = pullFacts(run, options, pull.number);
+  refuse(
+    observed.draft !== false || observed.state !== "open" ||
+      observed.head?.sha !== options.candidate,
+    "PULL_REQUEST_STILL_DRAFT",
+    "owned pull request did not leave draft at the exact Candidate",
+  );
+  markEffect(options.stateFile, state, "publish.ready", "conditional_update", "complete", {
+    number: observed.number,
+  });
+  return observed;
+}
+
+/**
+ * Publishes the exact Candidate as one owned draft pull request before review.
+ * A draft carries no merge authority: the gate refuses a draft outright, so the
+ * only way to integrate this PR is the post-review publication path, which
+ * marks it ready after an approved exact-SHA Review and a passing CI. Running
+ * it again with the same Candidate-bound state adopts the same draft.
+ */
+async function publishDraft(run, options, deps) {
   refuse(!options.validationFile, "OPTION_REQUIRED", "--validation-file is required");
   refuse(options.expectedRemoteHead === undefined, "OPTION_REQUIRED", "--expected-remote-head is required");
   refuse(!options.title, "OPTION_REQUIRED", "--title is required");
   refuse(!options.bodyFile, "OPTION_REQUIRED", "--body-file is required");
-  const routing = validateReviewRoutingEvidence(options);
-  const review = validateReview(options, routing);
-  const validation = validateValidation(options);
-  let state = loadState(options);
-  persistState(options.stateFile, state);
-  let snapshot = baseSnapshot(run, options);
-  requireCurrentReviewContext(
-    run,
-    options,
-    routing,
-    snapshot.task,
-    validation,
+  refuse(
+    options.reviewFile !== undefined,
+    "DRAFT_PUBLICATION_CANNOT_CONSUME_REVIEW",
+    "draft publication precedes review and refuses review evidence",
   );
-  const pushRecord = effectRecord(state, "publish.push", "conditional_update");
-  if (snapshot.refs.head === options.candidate) {
-    markEffect(options.stateFile, state, "publish.push", "conditional_update", "complete", {
-      head: options.candidate,
-    });
-  } else {
+  const manifest = validateReviewManifestEvidence(options);
+  const validation = validateValidation(options);
+  const state = loadState(options);
+  persistState(options.stateFile, state);
+  const refresh = () => {
+    const snapshot = baseSnapshot(run, options);
     refuse(
-      snapshot.refs.head !== options.expectedRemoteHead,
-      "REMOTE_HEAD_CHANGED",
-      "remote Task branch changed before publication",
+      snapshot.task.assignee !== manifest.taskAssignee,
+      "TASK_ASSIGNEE_CHANGED",
+      "Task assignee changed after the bound handoff",
     );
-    refuse(
-      pushRecord.phase === "complete",
-      "TERMINAL_DRIFT",
-      "completed publication branch later changed",
-    );
-    markDispatch(options.stateFile, state, "publish.push", "conditional_update");
-  }
-
-  if (snapshot.refs.head !== options.candidate) {
-    await dispatchHook(deps, "before", "publish.push", { options, state });
-    snapshot = baseSnapshot(run, options);
-    requireCurrentReviewContext(
-      run,
-      options,
-      routing,
-      snapshot.task,
-      validation,
-    );
-    refuse(
-      snapshot.refs.head !== options.expectedRemoteHead,
-      "REMOTE_HEAD_CHANGED",
-      "remote Task branch changed immediately before publication",
-    );
-    const ref = `refs/heads/${options.branch}`;
-    const pushed = gitRaw(run, options.controlRepo, [
-      "push",
-      "--porcelain",
-      `--force-with-lease=${ref}:${options.expectedRemoteHead ?? ""}`,
-      options.remote,
-      `${options.candidate}:${ref}`,
-    ]);
-    await dispatchHook(deps, "after", "publish.push", { options, result: pushed, state });
-    const observed = observeRemoteRef(run, options, options.branch, true);
-    if (observed === options.candidate) {
-      markEffect(options.stateFile, state, "publish.push", "conditional_update", "complete", {
-        head: options.candidate,
-      });
-    } else {
-      markEffect(options.stateFile, state, "publish.push", "conditional_update", "unknown", {
-        observed,
-      });
-      throw new CoordinatorError("PUSH_RESULT_UNKNOWN", "branch publication was not proven");
-    }
-  }
-
-  snapshot = baseSnapshot(run, options);
-  requireCurrentReviewContext(
-    run,
-    options,
-    routing,
-    snapshot.task,
-    validation,
+    return snapshot;
+  };
+  let snapshot = await publishLeasedRef(
+    run, options, deps, state, "publish_draft.push", refresh,
   );
   requireRemoteCandidate(snapshot, options);
   let pull = exactPullRequests(run, options);
   if (pull) {
     refuse(pull.state !== "open", "PULL_REQUEST_NOT_OPEN", "owned pull request is not open");
-    refuse(pull.head?.sha !== options.candidate, "PULL_REQUEST_HEAD_CHANGED", "owned pull request head changed");
-    markEffect(options.stateFile, state, "publish.pr", "unique_create", "complete", {
-      number: pull.number,
-      url: pull.html_url,
-    });
-    bindPullRequest(options.stateFile, state, pull.number);
-  } else {
-    const bodyStatus = lstatSync(options.bodyFile);
-    refuse(!bodyStatus.isFile() || bodyStatus.isSymbolicLink(), "BODY_FILE_INVALID", "PR body must be a regular non-symlink file");
-    refuse(bodyStatus.size > 131_072, "BODY_FILE_OVERSIZE", "PR body is too large");
-    const body = readFileSync(options.bodyFile, "utf8");
-    refuse(body.includes("\0"), "BODY_FILE_INVALID", "PR body contains a NUL byte");
     refuse(
-      containsSelectedPaseoPassword(body),
-      "PROTECTED_MATERIAL_REDACTED",
-      "pull request body contained protected material",
+      pull.draft !== true,
+      "PULL_REQUEST_NOT_DRAFT",
+      "owned pull request already left draft and cannot be republished as one",
     );
-    const completeBody = `${body.trimEnd()}\n\n${marker(options)}\n`;
-    markDispatch(options.stateFile, state, "publish.pr", "unique_create");
-    await dispatchHook(deps, "before", "publish.pr", { options, state });
-    snapshot = baseSnapshot(run, options);
-    requireCurrentReviewContext(
-      run,
-      options,
-      routing,
-      snapshot.task,
-      validation,
-    );
+    refuse(pull.head?.sha !== options.candidate, "PULL_REQUEST_HEAD_CHANGED", "owned draft head changed");
+  } else {
+    const completeBody = publicationBody(options);
+    markDispatch(options.stateFile, state, "publish_draft.pr", "unique_create");
+    await dispatchHook(deps, "before", "publish_draft.pr", { options, state });
+    snapshot = refresh();
     requireRemoteCandidate(snapshot, options);
     pull = exactPullRequests(run, options);
     if (!pull) {
       const created = run("gh", [
         "pr",
         "create",
+        "--draft",
         "--repo",
         options.repo,
         "--base",
@@ -2067,24 +2473,78 @@ async function publish(run, options, deps) {
         "--body-file",
         "-",
       ], { cwd: options.controlRepo, input: completeBody });
-      await dispatchHook(deps, "after", "publish.pr", { options, result: created, state });
+      await dispatchHook(deps, "after", "publish_draft.pr", { options, result: created, state });
       pull = exactPullRequests(run, options);
     }
     if (!pull) {
-      markEffect(options.stateFile, state, "publish.pr", "unique_create", "unknown");
-      throw new CoordinatorError("PULL_REQUEST_RESULT_UNKNOWN", "pull request creation was not proven");
+      markEffect(options.stateFile, state, "publish_draft.pr", "unique_create", "unknown");
+      throw new CoordinatorError("PULL_REQUEST_RESULT_UNKNOWN", "draft pull request creation was not proven");
     }
-    refuse(pull.state !== "open" || pull.head?.sha !== options.candidate, "PULL_REQUEST_INVALID", "created pull request is not open at the Candidate");
-    markEffect(options.stateFile, state, "publish.pr", "unique_create", "complete", {
-      number: pull.number,
-      url: pull.html_url,
-    });
-    bindPullRequest(options.stateFile, state, pull.number);
+    refuse(
+      pull.state !== "open" || pull.draft !== true || pull.head?.sha !== options.candidate,
+      "PULL_REQUEST_INVALID",
+      "created pull request is not an open draft at the Candidate",
+    );
   }
+  markEffect(options.stateFile, state, "publish_draft.pr", "unique_create", "complete", {
+    draft: true,
+    number: pull.number,
+    url: pull.html_url,
+  });
+  bindPullRequest(options.stateFile, state, pull.number);
   return {
     candidate: options.candidate,
+    draft: true,
+    manifest,
+    mergeAuthorized: false,
+    pendingGates: ["independent_review", "remote_ci", "publication", "feedback", "integration"],
     pullRequest: { number: pull.number, url: pull.html_url },
     remoteHead: options.candidate,
+    validation,
+  };
+}
+
+async function publish(run, options, deps) {
+  refuse(!options.reviewFile, "OPTION_REQUIRED", "--review-file is required");
+  refuse(!options.validationFile, "OPTION_REQUIRED", "--validation-file is required");
+  refuse(options.expectedRemoteHead === undefined, "OPTION_REQUIRED", "--expected-remote-head is required");
+  refuse(!options.title, "OPTION_REQUIRED", "--title is required");
+  refuse(!options.bodyFile, "OPTION_REQUIRED", "--body-file is required");
+  const routing = validateReviewRoutingEvidence(options);
+  const review = validateReview(options, routing);
+  const remoteCi = requireAuthoritativeRemoteCi(options, routing.harness);
+  const validation = validateValidation(options);
+  const state = loadState(options);
+  persistState(options.stateFile, state);
+  const refresh = () => {
+    const snapshot = baseSnapshot(run, options);
+    requireCurrentReviewContext(run, options, routing, snapshot.task, validation);
+    return snapshot;
+  };
+  const snapshot = await publishLeasedRef(
+    run, options, deps, state, "publish.push", refresh,
+  );
+  requireRemoteCandidate(snapshot, options);
+  let pull = exactPullRequests(run, options);
+  refuse(
+    !pull,
+    "DRAFT_PULL_REQUEST_REQUIRED",
+    "post-review publication requires the owned draft created before Review",
+  );
+  refuse(pull.state !== "open", "PULL_REQUEST_NOT_OPEN", "owned pull request is not open");
+  refuse(pull.head?.sha !== options.candidate, "PULL_REQUEST_HEAD_CHANGED", "owned pull request head changed");
+  pull = await markReadyForReview(run, options, deps, state, pull, refresh);
+  markEffect(options.stateFile, state, "publish.pr", "conditional_update", "complete", {
+    number: pull.number,
+    url: pull.html_url,
+  });
+  bindPullRequest(options.stateFile, state, pull.number);
+  return {
+    candidate: options.candidate,
+    draft: false,
+    pullRequest: { number: pull.number, url: pull.html_url },
+    remoteHead: options.candidate,
+    remoteCi,
     review,
     routing,
     validation,
@@ -2334,6 +2794,10 @@ export async function execute(command, rawOptions, dependencies = {}) {
         reviewerCheckout: { detached: true, commit: options.candidate },
         snapshot,
       };
+    } else if (command === "publish-draft") {
+      result = await publishDraft(run, options, deps);
+    } else if (command === "remote-ci") {
+      result = remoteCi(run, options);
     } else if (command === "publish") {
       result = await publish(run, options, deps);
     } else if (command === "gate") {
@@ -2359,7 +2823,10 @@ export async function execute(command, rawOptions, dependencies = {}) {
     const output = {
       schemaVersion: OUTPUT_SCHEMA_VERSION,
       command,
-      outcome: command === "gate" || command === "review-handoff" ? "ready" : "complete",
+      outcome:
+        command === "gate" || command === "review-handoff" || command === "remote-ci"
+          ? "ready"
+          : "complete",
       result,
     };
     refuse(
@@ -2367,6 +2834,12 @@ export async function execute(command, rawOptions, dependencies = {}) {
       "PROTECTED_MATERIAL_REDACTED",
       "coordinator output contained protected material",
     );
+    if (command === "review-handoff" && options.handoffFile !== undefined) {
+      persistPrivateJson(options.handoffFile, output, {
+        identityCode: "HANDOFF_IDENTITY_INVALID",
+        temporaryCode: "HANDOFF_TEMP_EXISTS",
+      });
+    }
     return output;
   };
   return MUTATING_COMMANDS.has(command)

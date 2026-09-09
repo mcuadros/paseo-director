@@ -20,6 +20,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/ports/host"
+	reconciliationport "github.com/mcuadros/director-engine/ports/reconciliation"
 	runtimeport "github.com/mcuadros/director-engine/ports/runtime"
 )
 
@@ -38,35 +39,45 @@ type Options struct {
 }
 
 type world struct {
-	worktreeID       string
-	boundaryID       string
-	hostViewID       string
-	agentID          string
-	boundaryReady    bool
-	setupComplete    bool
-	hostViewActive   bool
-	agentActive      bool
-	agentArchived    bool
-	hostViewArchived bool
+	worktreeID        string
+	boundaryID        string
+	hostViewID        string
+	agentID           string
+	boundaryReady     bool
+	setupComplete     bool
+	hostViewActive    bool
+	agentActive       bool
+	agentArchived     bool
+	hostViewArchived  bool
+	bootstrapEffectID string
+	promptEffectID    string
+	bootstrapStatus   execution.ObservationStatus
+	promptStatus      execution.ObservationStatus
+	bindingHash       string
 }
 
 // Environment implements both the non-host runtime port and the one host port
 // with fake, observable effects over an owned disposable Git repository.
 type Environment struct {
-	mu             sync.Mutex
-	options        Options
-	world          world
-	operational    execution.OperationalObservation
-	observationSeq uint64
-	mutations      map[execution.EffectKind]int
-	mutationOrder  []string
-	lost           map[execution.EffectKind]bool
-	hostCalls      int
-	agentRequest   host.Arguments
+	mu                  sync.Mutex
+	options             Options
+	world               world
+	operational         execution.OperationalObservation
+	observationSeq      uint64
+	mutations           map[execution.EffectKind]int
+	mutationOrder       []string
+	lost                map[execution.EffectKind]bool
+	hostCalls           int
+	agentRequest        host.Arguments
+	promptRequest       host.Arguments
+	reconciliations     map[string]reconciliationport.Receipt
+	reconciliationCount int
+	eventSeq            uint64
 }
 
 var _ runtimeport.Port = (*Environment)(nil)
 var _ host.Port = (*Environment)(nil)
+var _ reconciliationport.Queue = (*Environment)(nil)
 
 // RestartedEnvironment is a new policy-free adapter instance over the same
 // fake external world. It models a connector/engine process replacement:
@@ -77,14 +88,16 @@ type RestartedEnvironment struct {
 
 var _ runtimeport.Port = (*RestartedEnvironment)(nil)
 var _ host.Port = (*RestartedEnvironment)(nil)
+var _ reconciliationport.Queue = (*RestartedEnvironment)(nil)
 
 // NewEnvironment creates an empty fake world. All mutations remain scoped to
 // Options.WorktreePath and the disposable source repository.
 func NewEnvironment(options Options) *Environment {
 	return &Environment{
 		options: options, operational: options.Operational,
-		mutations: make(map[execution.EffectKind]int),
-		lost:      make(map[execution.EffectKind]bool),
+		mutations:       make(map[execution.EffectKind]int),
+		lost:            make(map[execution.EffectKind]bool),
+		reconciliations: make(map[string]reconciliationport.Receipt),
 	}
 }
 
@@ -115,6 +128,10 @@ func (environment *RestartedEnvironment) ObserveOperational(ctx context.Context,
 
 func (environment *RestartedEnvironment) ObserveCandidate(ctx context.Context, request runtimeport.CandidateRequest) (execution.CandidateObservation, error) {
 	return environment.world.ObserveCandidate(ctx, request)
+}
+
+func (environment *RestartedEnvironment) Enqueue(ctx context.Context, request reconciliationport.Request) (reconciliationport.Receipt, error) {
+	return environment.world.Enqueue(ctx, request)
 }
 
 func digest(value any) string {
@@ -347,13 +364,34 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 	case host.CapabilityTaskAgentCreate:
 		if !environment.world.hostViewActive || !environment.world.boundaryReady || !arguments.PreparationReady ||
 			arguments.PreparationBarrierHash == "" ||
-			arguments.ParentAgentID != nil || arguments.Title == "" || arguments.InitialPrompt == "" ||
+			arguments.ParentAgentID != nil || arguments.Title == "" ||
 			arguments.IsolationDigest == "" || arguments.WorkspaceID != environment.world.hostViewID {
 			return host.Observation{}, errors.New("fake Task Agent create contract is incomplete")
+		}
+		if _, err := host.AdmitAgentCreateLabels(command); err != nil {
+			return host.Observation{}, fmt.Errorf("fake Task Agent create is not registered for root-workspace visibility: %w", err)
 		}
 		environment.agentRequest = arguments
 		environment.world.agentID = externalID("agent", arguments.EffectID)
 		environment.world.agentActive = true
+		environment.world.bootstrapEffectID = arguments.EffectID
+		environment.world.bootstrapStatus = execution.ObservationOwnedPresent
+		environment.world.bindingHash = arguments.BindingHash
+		return host.Observation{}, environment.recordMutation(arguments.EffectKind)
+	case host.CapabilityAgentPrompt:
+		registration, err := host.ParseWorkerLabels(environment.agentRequest.Labels)
+		if err != nil {
+			return host.Observation{}, err
+		}
+		if environment.world.bootstrapStatus != execution.ObservationDesired {
+			return host.Observation{}, errors.New("fake real prompt precedes completed bootstrap")
+		}
+		if err := host.AdmitAgentPrompt(command, registration, environment.world.agentID); err != nil {
+			return host.Observation{}, err
+		}
+		environment.promptRequest = arguments
+		environment.world.promptEffectID = arguments.EffectID
+		environment.world.promptStatus = execution.ObservationOwnedPresent
 		return host.Observation{}, environment.recordMutation(arguments.EffectKind)
 	case host.CapabilityAgentObserve:
 		if arguments.EffectKind == execution.EffectAgentArchive {
@@ -365,10 +403,19 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 			}
 			return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq), nil
 		}
-		if environment.world.agentActive {
-			return hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq), nil
+		if arguments.EffectKind == execution.EffectAgentCreate {
+			if !environment.world.agentActive {
+				return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq), nil
+			}
+			return hostObservation(command, environment.world.bootstrapStatus, environment.world.agentID, environment.observationSeq), nil
 		}
-		return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq), nil
+		if arguments.EffectKind == execution.EffectAgentPrompt {
+			if environment.world.promptEffectID == "" {
+				return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq), nil
+			}
+			return hostObservation(command, environment.world.promptStatus, environment.world.agentID, environment.observationSeq), nil
+		}
+		return host.Observation{}, errors.New("fake agent observation effect is unsupported")
 	case host.CapabilityAgentArchive:
 		if arguments.AgentID != environment.world.agentID || !environment.world.agentActive {
 			return host.Observation{}, errors.New("fake agent archive identity mismatch")
@@ -401,7 +448,8 @@ type CandidateRequest struct {
 func (environment *Environment) ProduceCandidate(_ context.Context, request CandidateRequest) (execution.CompletedClaim, error) {
 	environment.mu.Lock()
 	defer environment.mu.Unlock()
-	if !environment.world.agentActive || request.AgentID != environment.world.agentID || !environment.world.boundaryReady {
+	if !environment.world.agentActive || request.AgentID != environment.world.agentID || !environment.world.boundaryReady ||
+		environment.world.promptStatus != execution.ObservationOwnedPresent {
 		return execution.CompletedClaim{}, errors.New("fake provider is not inside the admitted active Task Agent")
 	}
 	if err := os.WriteFile(filepath.Join(environment.options.WorktreePath, "RESULT.md"), []byte("fake Candidate\n"), 0o600); err != nil {
@@ -443,6 +491,74 @@ func (environment *Environment) AgentRequest() host.Arguments {
 	environment.mu.Lock()
 	defer environment.mu.Unlock()
 	return environment.agentRequest
+}
+
+// PromptRequest returns the only request allowed to start real Task work.
+func (environment *Environment) PromptRequest() host.Arguments {
+	environment.mu.Lock()
+	defer environment.mu.Unlock()
+	return environment.promptRequest
+}
+
+// TerminalEvent atomically changes the fake daemon fact before producing the
+// callback which wakes reconciliation.
+func (environment *Environment) TerminalEvent(kind execution.CompletionEventKind, effectID string, observedAtMillis int64) (execution.CompletionEvent, error) {
+	environment.mu.Lock()
+	defer environment.mu.Unlock()
+	status := execution.ObservationStatus("")
+	switch kind {
+	case execution.CompletionEventFinished:
+		status = execution.ObservationDesired
+	case execution.CompletionEventError:
+		status = execution.ObservationErrored
+	case execution.CompletionEventPermission:
+		status = execution.ObservationPermission
+	default:
+		return execution.CompletionEvent{}, errors.New("fake terminal event kind is invalid")
+	}
+	switch effectID {
+	case environment.world.bootstrapEffectID:
+		environment.world.bootstrapStatus = status
+	case environment.world.promptEffectID:
+		environment.world.promptStatus = status
+	default:
+		return execution.CompletionEvent{}, errors.New("fake terminal event effect is unknown")
+	}
+	environment.eventSeq++
+	event := execution.CompletionEvent{
+		ID: fmt.Sprintf("completion-event-%d", environment.eventSeq), Kind: kind,
+		AgentID: environment.world.agentID, DispatchEffectID: effectID,
+		Cursor: environment.eventSeq, ObservedAtMillis: observedAtMillis,
+		BindingHash: environment.world.bindingHash,
+	}
+	event.FactHash = execution.CompletionEventHash(event)
+	return event, nil
+}
+
+// Enqueue implements the idempotent synchronous coordinator-wake port.
+func (environment *Environment) Enqueue(_ context.Context, request reconciliationport.Request) (reconciliationport.Receipt, error) {
+	environment.mu.Lock()
+	defer environment.mu.Unlock()
+	if prior, exists := environment.reconciliations[request.EventID]; exists {
+		if prior.EventFactHash != request.EventFactHash {
+			return reconciliationport.Receipt{}, errors.New("fake reconciliation deduplication conflict")
+		}
+		prior.Deduplicated = true
+		return prior, nil
+	}
+	receipt := reconciliationport.Receipt{
+		EventID: request.EventID, EventFactHash: request.EventFactHash,
+		EnqueuedAtMillis: request.ReceivedAtMillis + 25,
+	}
+	environment.reconciliations[request.EventID] = receipt
+	environment.reconciliationCount++
+	return receipt, nil
+}
+
+func (environment *Environment) QueueWakeCount() int {
+	environment.mu.Lock()
+	defer environment.mu.Unlock()
+	return environment.reconciliationCount
 }
 
 func (environment *Environment) MutationCount(kind execution.EffectKind) int {

@@ -42,16 +42,29 @@ When new work is discovered, create a sibling Task under the same milestone Epic
 3. Run `director-coordinator review-handoff` with the exact Task, actor,
    repository ID, base, Candidate, branch, checkout, ownership, and Paseo
    resource bindings plus explicit checkout/lifecycle states and the structured
-   author-validation file. The handoff actor must be the Task assignee. Hand its
-   automatic non-authoritative Candidate/base/tree/diff/evidence manifest to
-   the coordinator; do not substitute a prose snapshot or a sequence of
-   unbound Git reads.
-4. Require `$director-independent-review` to approve the exact final Candidate SHA.
-5. Address every blocking finding through the same Task Agent only in an authorized correction turn, and obtain a fresh review for a changed SHA.
-6. After each work or correction turn, submit a structured Candidate/outcome claim and hand the exact Candidate to the authorized coordinator; `$director-pull-request` is coordinator-only after independent approval.
-7. The Task Agent may produce Candidate/outcome claims and perform authorized correction turns, but it cannot decide or perform publication, pull-request creation or update, integration, lifecycle cleanup, or Task closure.
-8. Update Beads with the Candidate SHA, validation evidence, correction disposition, residual risks, and exact handoff. The Reviewer and authorized coordinator separately record review and post-handoff lifecycle evidence under their own identities.
-9. Only the Director Engine or authorized coordinator reconciles and executes publication, integration, cleanup, and Task closure through the repository coordinator CLI. It preserves the exact remote-head, relevant-base, configured/required-check, mergeability, feedback, and atomic expected-head gates, and closes only after integration and owned-resource cleanup are verified.
+   author-validation file. Pass ownership only through an absolute owner-only
+   mode-`0600` file, and use `--handoff-file` to atomically maintain the private
+   JSON outside every Git checkout. The handoff actor must be the Task assignee.
+   Hand its automatic non-authoritative Candidate/base/tree/diff/evidence
+   manifest to the coordinator; do not substitute a prose snapshot or a
+   sequence of unbound Git reads.
+4. The authorized coordinator creates or updates the one owned draft, then
+   records one authoritative complete remote Linux CI and starts the independent
+   Reviewer as sibling obligations. It creates that parentless Reviewer with
+   only the zero-work bootstrap, persists native identity and labels, and then
+   starts Review solely through the separate prompt with terminal notification
+   enabled. This does not give the Task Agent
+   publication authority.
+5. Require `$director-independent-review` to approve the exact final Candidate SHA.
+6. Address every blocking finding through the same Task Agent only in an
+   authorized correction turn. Reuse PLAN/skill material only while its frozen
+   digest is unchanged; refresh current decisions and diff, batch every current
+   finding, and reject acknowledgement-only output once. Obtain a fresh draft
+   update, CI observation, and review for a changed SHA.
+7. After each work or correction turn, submit a structured Candidate/outcome claim and hand the exact Candidate to the authorized coordinator; `$director-pull-request` is coordinator-only after independent approval.
+8. The Task Agent may produce Candidate/outcome claims and perform authorized correction turns, but it cannot decide or perform publication, pull-request creation or update, integration, lifecycle cleanup, or Task closure.
+9. Update Beads with the Candidate SHA, validation evidence, correction disposition, residual risks, and exact handoff. Never copy the raw ownership token or its path into Beads. The Reviewer and authorized coordinator separately record review and post-handoff lifecycle evidence under their own identities.
+10. Only the Director Engine or authorized coordinator reconciles and executes publication, integration, cleanup, and Task closure through the repository coordinator CLI. It preserves the exact remote-head, relevant-base, authoritative remote-CI, configured/required-check, mergeability, feedback, and atomic expected-head gates, and closes only after integration and owned-resource cleanup are verified.
 
 Candidate approval is not Task completion. The Task Agent keeps every reviewer-listed post-review gate pending in its claim; only the Director Engine or authorized coordinator may verify and complete push, PR, CI, integration, synchronization, cleanup, and closure gates.
 
@@ -63,8 +76,9 @@ repository plus exact Task ref; it never fabricates `none` for previously
 created lifecycle resources.
 
 The Task Agent does not ask a Reviewer to reconstruct maintained adversarial
-probes in `/tmp` or to rerun complete CI repeatedly. The authorized coordinator
-supplies the versioned review harness and its exact private run-state record.
+probes in `/tmp` or to run complete CI. The authorized coordinator supplies the
+versioned review harness, its exact private run-state record, and the one
+authoritative remote CI observation consumed by that harness.
 A novel probe which establishes a finding must become regression coverage in
 the Candidate or discovered sibling work.
 

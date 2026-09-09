@@ -57,6 +57,11 @@ func TestReduceOrdersWorktreeHostViewBoundaryPreparationAndTopLevelAgent(t *test
 
 	facts.PreparationReady = true
 	facts.PreparationBarrierHash = "barrier-1"
+	if decision := Reduce(facts); decision.Kind != DecisionCommitWorkerVisibility {
+		t.Fatalf("worker-visibility decision = %#v", decision)
+	}
+
+	facts.WorkerVisibilityDigest = "worker-visibility-1"
 	if decision := Reduce(facts); decision.Kind != DecisionCreateAgentIntent {
 		t.Fatalf("agent-intent decision = %#v", decision)
 	}
@@ -87,5 +92,79 @@ func TestReduceParksBeforeWorkspaceWhenAdmissionFactsAreMissing(t *testing.T) {
 	facts.OperationalObservationID = ""
 	if decision := Reduce(facts); decision.Kind != DecisionObserveOperationalLimits {
 		t.Fatalf("missing observation did not request a fresh read: %#v", decision)
+	}
+}
+
+// A worker the owner cannot find from its root workspace must never start.
+// Registration is therefore ordered before the agent-creation intent, and a
+// registration lost after that intent exists parks instead of launching.
+func TestReduceRefusesAgentCreationWithoutFrozenWorkerVisibility(t *testing.T) {
+	facts := launchFacts()
+	facts.Worktree = execution.Effect{ID: "worktree-intent", Kind: execution.EffectWorktreeCreate, Phase: execution.EffectComplete, AttemptLimit: 2, ExternalID: "worktree-1"}
+	facts.HostView = execution.Effect{ID: "host-view-intent", Kind: execution.EffectHostViewCreate, Phase: execution.EffectComplete, AttemptLimit: 2, ExternalID: "paseo-workspace-1"}
+	facts.Boundary = execution.Effect{ID: "boundary-intent", Kind: execution.EffectBoundaryMaterialize, Phase: execution.EffectComplete, AttemptLimit: 2, ExternalID: "boundary-1"}
+	facts.PreparationReady = true
+
+	if decision := Reduce(facts); decision.Kind != DecisionCommitWorkerVisibility {
+		t.Fatalf("unregistered launch decision = %#v", decision)
+	}
+
+	facts.Agent = execution.Effect{ID: "agent-intent", Kind: execution.EffectAgentCreate, Phase: execution.EffectIntentRecorded, AttemptLimit: 2}
+	decision := Reduce(facts)
+	if decision.Kind != DecisionEscalate ||
+		decision.Code != "worker_visibility_registration_missing" || decision.CleanupAuthorized {
+		t.Fatalf("lost registration decision = %#v", decision)
+	}
+}
+
+func TestReduceWaitsForTerminalEventsAndOrdersIdentityBeforeRealPrompt(t *testing.T) {
+	facts := launchFacts()
+	facts.Worktree = execution.Effect{ID: "worktree", Kind: execution.EffectWorktreeCreate, Phase: execution.EffectComplete, AttemptLimit: 2, ExternalID: "worktree-1"}
+	facts.HostView = execution.Effect{ID: "workspace", Kind: execution.EffectHostViewCreate, Phase: execution.EffectComplete, AttemptLimit: 2, ExternalID: "workspace-1"}
+	facts.Boundary = execution.Effect{ID: "boundary", Kind: execution.EffectBoundaryMaterialize, Phase: execution.EffectComplete, AttemptLimit: 2, ExternalID: "boundary-1"}
+	facts.PreparationReady = true
+	facts.WorkerVisibilityDigest = "visibility-1"
+	facts.Agent = execution.Effect{
+		ID: "bootstrap", Kind: execution.EffectAgentCreate, Phase: execution.EffectDispatching,
+		Attempt: 1, AttemptLimit: 2, Observation: &execution.EffectObservation{
+			ID: "bootstrap-running", EffectID: "bootstrap", Status: execution.ObservationOwnedPresent,
+			ObservedAtMillis: 1_000, MaximumAgeMillis: 30_000,
+		},
+	}
+	facts.Agent.Observation.FactHash = execution.EffectObservationHash(*facts.Agent.Observation)
+	if decision := Reduce(facts); decision.Kind != DecisionWaitTerminalEvent || decision.EffectKind != execution.EffectAgentCreate {
+		t.Fatalf("active bootstrap decision = %#v", decision)
+	}
+	facts.Agent = execution.Effect{ID: "bootstrap", Kind: execution.EffectAgentCreate, Phase: execution.EffectComplete, Attempt: 1, AttemptLimit: 2, ExternalID: "agent-1"}
+	if decision := Reduce(facts); decision.Kind != DecisionCommitWorkerIdentity {
+		t.Fatalf("post-bootstrap decision = %#v", decision)
+	}
+	facts.WorkerIdentityPersisted = true
+	if decision := Reduce(facts); decision.Kind != DecisionCreateAgentPromptIntent {
+		t.Fatalf("persisted-identity decision = %#v", decision)
+	}
+	facts.AgentPrompt = execution.Effect{
+		ID: "real-prompt", Kind: execution.EffectAgentPrompt, Phase: execution.EffectDispatching,
+		Attempt: 1, AttemptLimit: 2, Observation: &execution.EffectObservation{
+			ID: "prompt-running", EffectID: "real-prompt", Status: execution.ObservationOwnedPresent,
+			ObservedAtMillis: 1_000, MaximumAgeMillis: 30_000,
+		},
+	}
+	facts.AgentPrompt.Observation.FactHash = execution.EffectObservationHash(*facts.AgentPrompt.Observation)
+	if decision := Reduce(facts); decision.Kind != DecisionWaitTerminalEvent || decision.EffectKind != execution.EffectAgentPrompt {
+		t.Fatalf("active real prompt decision = %#v", decision)
+	}
+	for status, code := range map[execution.ObservationStatus]string{
+		execution.ObservationErrored:    "agent_terminal_error",
+		execution.ObservationPermission: "agent_terminal_permission",
+	} {
+		changed := facts
+		observation := *facts.AgentPrompt.Observation
+		observation.Status = status
+		observation.FactHash = execution.EffectObservationHash(observation)
+		changed.AgentPrompt.Observation = &observation
+		if decision := Reduce(changed); decision.Kind != DecisionEscalate || decision.Code != code {
+			t.Fatalf("terminal %s decision = %#v", status, decision)
+		}
 	}
 }

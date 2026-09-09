@@ -22,11 +22,12 @@ var embeddedSchema []byte
 
 // Definition is the generator-facing portion of the engine-owned host schema.
 type Definition struct {
-	SchemaVersion   int                  `json:"schemaVersion"`
-	ContractVersion string               `json:"contractVersion"`
-	CredentialScope string               `json:"credentialScope"`
-	Capabilities    []string             `json:"capabilities"`
-	BoardQuery      BoardQueryDefinition `json:"boardQuery"`
+	SchemaVersion   int                      `json:"schemaVersion"`
+	ContractVersion string                   `json:"contractVersion"`
+	CredentialScope string                   `json:"credentialScope"`
+	Capabilities    []string                 `json:"capabilities"`
+	BoardQuery      BoardQueryDefinition     `json:"boardQuery"`
+	WorkerRegistry  WorkerRegistryDefinition `json:"workerRegistry"`
 }
 
 // BoardQueryDefinition is the transport metadata for the engine-computed
@@ -39,6 +40,33 @@ type BoardQueryDefinition struct {
 	MaximumTasks  int      `json:"maximumTasks"`
 	MaximumBytes  int      `json:"maximumBytes"`
 	States        []string `json:"states"`
+}
+
+// WorkerRegistryDefinition is the engine-owned label vocabulary which makes
+// parentless workers observable from their root workspace without joining
+// through an execution-workspace card.
+type WorkerRegistryDefinition struct {
+	SchemaVersion int                  `json:"schemaVersion"`
+	Roles         []string             `json:"roles"`
+	Labels        WorkerRegistryLabels `json:"labels"`
+}
+
+// WorkerRegistryLabels names every fixed public Paseo label in the launch
+// registry. The native agent ID and current workspace ID remain public agent
+// facts and are not duplicated into caller-controlled labels.
+type WorkerRegistryLabels struct {
+	Project            string `json:"project"`
+	RootWorkspace      string `json:"rootWorkspace"`
+	Workspace          string `json:"workspace"`
+	ExecutionWorkspace string `json:"executionWorkspace"`
+	Task               string `json:"task"`
+	Run                string `json:"run"`
+	Role               string `json:"role"`
+	Phase              string `json:"phase"`
+	Candidate          string `json:"candidate"`
+	Base               string `json:"base"`
+	RegisteredAt       string `json:"registeredAt"`
+	StartedAt          string `json:"startedAt"`
 }
 
 // Descriptor is the complete information a connector may advertise at handshake.
@@ -56,12 +84,17 @@ const (
 	CapabilityWorkspaceCreate     Capability = "executionWorkspace.createManaged"
 	CapabilityWorkspaceObserve    Capability = "executionWorkspace.observe"
 	CapabilityWorkspaceArchive    Capability = "executionWorkspace.archive"
-	CapabilityTaskAgentCreate     Capability = "taskAgent.createWithInitialPrompt"
-	CapabilityReviewerAgentCreate Capability = "reviewerAgent.createWithInitialPrompt"
+	CapabilityTaskAgentCreate     Capability = "taskAgent.createWithBootstrap"
+	CapabilityReviewerAgentCreate Capability = "reviewerAgent.createWithBootstrap"
+	CapabilityAgentPrompt         Capability = "send_agent_prompt"
 	CapabilityHelperAgentObserve  Capability = "helperAgent.observe"
 	CapabilityAgentObserve        Capability = "agent.observe"
 	CapabilityAgentArchive        Capability = "agent.archive"
 )
+
+// ZeroWorkBootstrapPrompt is the complete first turn for every Director-created
+// parentless worker. It deliberately authorizes no Task or Review activity.
+const ZeroWorkBootstrapPrompt = "Director bootstrap only. Do not inspect files, call tools, or perform Task or Review work. Finish this turn immediately."
 
 // Arguments is the typed M1 subset of the host command union. ParentAgentID is
 // a pointer so a top-level Task Agent request proves the field was omitted.
@@ -80,6 +113,8 @@ type Arguments struct {
 	IsolationDigest        string               `json:"isolationDigest,omitempty"`
 	PreparationReady       bool                 `json:"preparationReady,omitempty"`
 	PreparationBarrierHash string               `json:"preparationBarrierHash,omitempty"`
+	NotifyOnFinish         bool                 `json:"notifyOnFinish,omitempty"`
+	Labels                 map[string]string    `json:"labels,omitempty"`
 	BindingHash            string               `json:"bindingHash"`
 }
 
@@ -146,7 +181,8 @@ func ValidateObservation(command Command, observation Observation) error {
 	switch observation.Result.Status {
 	case execution.ObservationDesired, execution.ObservationAbsent,
 		execution.ObservationOwnedPresent, execution.ObservationDifferent,
-		execution.ObservationAmbiguous, execution.ObservationUnavailable:
+		execution.ObservationAmbiguous, execution.ObservationUnavailable,
+		execution.ObservationErrored, execution.ObservationPermission:
 		return nil
 	default:
 		return errors.New("host observation status is invalid")
@@ -223,6 +259,20 @@ func ParseDefinition(schema []byte) (Definition, error) {
 		}
 		seenStates[state] = struct{}{}
 	}
+	if definition.WorkerRegistry.SchemaVersion != 1 ||
+		!slices.Equal(definition.WorkerRegistry.Roles, []string{"task-agent", "reviewer"}) {
+		return Definition{}, errors.New("host worker registry identity does not match")
+	}
+	expectedLabels := WorkerRegistryLabels{
+		Project: "director.project", RootWorkspace: "director.root-workspace",
+		Workspace: "director.workspace", ExecutionWorkspace: "director.execution-workspace",
+		Task: "director.task", Run: "director.run", Role: "director.role",
+		Phase: "director.phase", Candidate: "director.candidate", Base: "director.base",
+		RegisteredAt: "director.registered-at", StartedAt: "director.started-at",
+	}
+	if definition.WorkerRegistry.Labels != expectedLabels {
+		return Definition{}, errors.New("host worker registry labels do not match")
+	}
 	return definition, nil
 }
 
@@ -234,6 +284,7 @@ func EmbeddedDefinition() (Definition, error) {
 	}
 	definition.Capabilities = slices.Clone(definition.Capabilities)
 	definition.BoardQuery.States = slices.Clone(definition.BoardQuery.States)
+	definition.WorkerRegistry.Roles = slices.Clone(definition.WorkerRegistry.Roles)
 	return definition, nil
 }
 

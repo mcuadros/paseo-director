@@ -45,7 +45,7 @@ func uniqueCreate(kind execution.EffectKind) bool {
 	switch kind {
 	case execution.EffectWorktreeCreate, execution.EffectHostViewCreate,
 		execution.EffectBoundaryMaterialize, execution.EffectSetupRun,
-		execution.EffectAgentCreate:
+		execution.EffectAgentCreate, execution.EffectAgentPrompt:
 		return true
 	default:
 		return false

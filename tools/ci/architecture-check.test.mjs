@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import {
   architectureErrors,
   goDependencyErrors,
+  goListFailureMessage,
   hostContractErrors,
   policyOwnershipErrors,
   policyPathErrors,
@@ -673,4 +674,37 @@ test("required reducer, outcome-schema, and split-host homes fail closed when ab
   assert.ok(errors.some((error) => error.includes("required configuration boundary")));
   assert.ok(errors.some((error) => error.includes("application/organizer")));
   assert.ok(errors.some((error) => error.includes("generated engine client")));
+});
+
+test("a missing or failing go toolchain fails closed with a bounded reason", () => {
+  assert.equal(
+    goListFailureMessage({
+      status: null,
+      signal: null,
+      stdout: null,
+      stderr: null,
+      error: Object.assign(new Error("spawnSync go ENOENT"), { code: "ENOENT" }),
+    }),
+    "go list failed: go is required but was not found on PATH",
+  );
+
+  assert.equal(
+    goListFailureMessage({ status: 1, stderr: "  engine/x: broken import  " }),
+    "engine/x: broken import",
+  );
+
+  const flood = goListFailureMessage({ status: 1, stderr: "e".repeat(9_000) });
+  assert.ok(flood.length < 2_100, "the diagnostic must stay bounded");
+  assert.match(flood, /\(truncated\)$/u);
+
+  assert.equal(
+    goListFailureMessage({ status: 2, stderr: "", error: undefined }),
+    "go list failed with exit status 2",
+  );
+  assert.equal(
+    goListFailureMessage({ status: null, signal: "SIGKILL", stderr: null }),
+    "go list failed: terminated by signal SIGKILL",
+  );
+  assert.equal(goListFailureMessage({}), "go list failed");
+  assert.equal(goListFailureMessage(undefined), "go list failed");
 });

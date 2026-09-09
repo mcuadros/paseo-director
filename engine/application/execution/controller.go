@@ -21,6 +21,7 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/ports/host"
+	reconciliationport "github.com/mcuadros/director-engine/ports/reconciliation"
 	runtimeport "github.com/mcuadros/director-engine/ports/runtime"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 	"github.com/mcuadros/director-engine/reducer/closure"
@@ -41,11 +42,12 @@ type Controller struct {
 	store   storeport.TaskStore
 	runtime runtimeport.Port
 	host    host.Port
+	queue   reconciliationport.Queue
 }
 
 // NewController wires the engine-owned ports without importing an adapter.
-func NewController(store storeport.TaskStore, runtime runtimeport.Port, hostPort host.Port) *Controller {
-	return &Controller{store: store, runtime: runtime, host: hostPort}
+func NewController(store storeport.TaskStore, runtime runtimeport.Port, hostPort host.Port, queue reconciliationport.Queue) *Controller {
+	return &Controller{store: store, runtime: runtime, host: hostPort, queue: queue}
 }
 
 // StartCommand freezes every identity and fact needed by the fake M1 Run.
@@ -60,6 +62,7 @@ type StartCommand struct {
 	TaskTitle        string
 	CriterionIDs     []string
 	InitialPrompt    string
+	RootWorkspaceID  string
 	EligibilityFacts eligibility.Facts
 }
 
@@ -244,8 +247,9 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		LifecycleSurfaces: command.EligibilityFacts.LifecycleSurfaces,
 		SourcePath:        command.SourcePath, WorktreePath: command.WorktreePath,
 		Branch: command.Branch, TaskTitle: command.TaskTitle,
-		CriterionIDs:  append([]string(nil), command.CriterionIDs...),
-		InitialPrompt: command.InitialPrompt, InitialPromptHash: hashText(command.InitialPrompt),
+		RootWorkspaceID: command.RootWorkspaceID,
+		CriterionIDs:    append([]string(nil), command.CriterionIDs...),
+		InitialPrompt:   command.InitialPrompt, InitialPromptHash: hashText(command.InitialPrompt),
 		Worktree:                         newEffect(command.Scope.RunID, domainexecution.EffectWorktreeCreate, 2),
 		HostView:                         newEffect(command.Scope.RunID, domainexecution.EffectHostViewCreate, 2),
 		Boundary:                         newEffect(command.Scope.RunID, domainexecution.EffectBoundaryMaterialize, 2),
@@ -340,6 +344,7 @@ func allCriteriaClaimedSatisfied(claim *domainexecution.CompletedClaim) bool {
 func validClaim(claim domainexecution.CompletedClaim, run domain.Run) bool {
 	if !identifierPattern.MatchString(claim.ID) ||
 		claim.SchemaVersion != "director.agent-outcome.completed/v1" || claim.Outcome != "completed" ||
+		run.Execution.AgentPrompt.Phase != domainexecution.EffectComplete ||
 		claim.AgentID != run.Execution.Agent.ExternalID || !shaPattern.MatchString(claim.CandidateSHA) ||
 		claim.BaseSHA != run.BaseSHA || len(claim.CriteriaResults) == 0 || len(claim.CriteriaResults) > 128 ||
 		len(claim.ResidualRiskCodes) > 32 {
@@ -395,6 +400,136 @@ func (controller *Controller) RecordCompletedClaim(ctx context.Context, runID st
 	return controller.persistRun(ctx, run, next, "agent.claim.recorded")
 }
 
+// RecordCompletionEvent durably deduplicates one daemon terminal callback and
+// synchronously enqueues coordinator reconciliation. The callback is only a
+// wake signal; the reconciler must freshly observe the terminal host state.
+func (controller *Controller) RecordCompletionEvent(
+	ctx context.Context, runID string, event domainexecution.CompletionEvent, nowMillis int64,
+) error {
+	run, err := controller.store.Run(ctx, runID)
+	if err != nil {
+		return err
+	}
+	receiptIndex := -1
+	for index := range run.Execution.CompletionEventReceipts {
+		receipt := run.Execution.CompletionEventReceipts[index]
+		if receipt.EventID != event.ID {
+			continue
+		}
+		if receipt.EventFactHash != event.FactHash || receipt.Event != event {
+			return errors.New("completion event identity was reused with conflicting facts")
+		}
+		if receipt.Phase == domainexecution.CompletionReceiptComplete {
+			return nil
+		}
+		receiptIndex = index
+		break
+	}
+	if receiptIndex < 0 {
+		effect := effectPointer(&run.Execution, completionEffectKind(event, run.Execution))
+		if effect == nil || effect.ID != event.DispatchEffectID || effect.Observation == nil ||
+			effect.Observation.Status != domainexecution.ObservationOwnedPresent {
+			return errors.New("completion event is not bound to a pending notified turn")
+		}
+		agentID := run.Execution.Agent.ExternalID
+		if agentID == "" {
+			agentID = effect.Observation.ExternalID
+		}
+		admission := domainexecution.AdmitCompletionEvent(
+			event, agentID, run.Execution.RepositoryBindingHash,
+			run.Execution.CompletionEventCursor, nowMillis,
+		)
+		if admission.Kind != domainexecution.AdmissionAllow {
+			return fmt.Errorf("completion event refused: %s", admission.Code)
+		}
+		if len(run.Execution.CompletionEventReceipts) >= domainexecution.MaximumCompletionEventReceipts {
+			return fmt.Errorf("completion event refused: %s", domainexecution.NeedCompletionLedgerFull)
+		}
+		next := run
+		recorded := event
+		next.Execution.LastCompletionEvent = &recorded
+		next.Execution.CompletionEventCursor = event.Cursor
+		next.Execution.CompletionEventReceipts = append(next.Execution.CompletionEventReceipts, domainexecution.CompletionEventReceipt{
+			EventID: event.ID, EventFactHash: event.FactHash, Event: event, Cursor: event.Cursor,
+			Phase: domainexecution.CompletionReceiptIntent,
+		})
+		pending := effectPointer(&next.Execution, completionEffectKind(event, next.Execution))
+		pending.Observation = nil
+		next.Execution.OperationalObservationConsumed = true
+		if err := controller.persistRun(ctx, run, next, "agent.terminal_event.recorded"); err != nil {
+			return err
+		}
+		next.Version = run.Version + 1
+		run = next
+		receiptIndex = len(run.Execution.CompletionEventReceipts) - 1
+	}
+	request := reconciliationport.Request{
+		EventID: event.ID, EventFactHash: event.FactHash, RunID: run.ID,
+		AgentID: event.AgentID, DispatchEffectID: event.DispatchEffectID, Kind: event.Kind,
+		ReceivedAtMillis: event.ObservedAtMillis,
+		DeadlineAtMillis: event.ObservedAtMillis + domainexecution.CompletionDispatchTargetMillis,
+	}
+	if controller.queue == nil {
+		return errors.New("coordinator reconciliation queue is unavailable")
+	}
+	receipt, err := controller.queue.Enqueue(ctx, request)
+	if err != nil {
+		return fmt.Errorf("enqueue coordinator reconciliation: %w", err)
+	}
+	if err := reconciliationport.ValidateReceipt(request, receipt); err != nil {
+		return err
+	}
+	next := run
+	next.Execution.CompletionEventReceipts[receiptIndex].Phase = domainexecution.CompletionReceiptComplete
+	next.Execution.CompletionEventReceipts[receiptIndex].EnqueuedAtMillis = receipt.EnqueuedAtMillis
+	next.Execution.CompletionEventReceipts[receiptIndex].DispatchLatencyMillis = receipt.EnqueuedAtMillis - event.ObservedAtMillis
+	return controller.persistRun(ctx, run, next, "agent.reconciliation_enqueued")
+}
+
+// RecoverLostCompletionEvent is the PLAN watchdog's only launch wake path. It
+// accepts the full multi-source five-minute stall proof and merely invalidates
+// the replaceable host sample so the next reconciliation freshly observes it.
+func (controller *Controller) RecoverLostCompletionEvent(
+	ctx context.Context, runID string, facts domainexecution.StallRecoveryFacts,
+) error {
+	run, err := controller.store.Run(ctx, runID)
+	if err != nil {
+		return err
+	}
+	kind := domainexecution.EffectKind("")
+	for _, candidate := range []domainexecution.EffectKind{
+		domainexecution.EffectAgentCreate, domainexecution.EffectAgentPrompt,
+	} {
+		effect := effectPointer(&run.Execution, candidate)
+		if effect.ID == facts.PendingTerminalEffectID && effect.Observation != nil &&
+			effect.Observation.Status == domainexecution.ObservationOwnedPresent {
+			kind = candidate
+			break
+		}
+	}
+	if kind == "" {
+		return fmt.Errorf("lost-event recovery refused: %s", domainexecution.NeedStallRecoveryInvalid)
+	}
+	admission := domainexecution.AdmitLostCompletionEventRecovery(facts, facts.PendingTerminalEffectID)
+	if admission.Kind != domainexecution.AdmissionAllow {
+		return fmt.Errorf("lost-event recovery refused: %s", admission.Code)
+	}
+	next := run
+	effectPointer(&next.Execution, kind).Observation = nil
+	next.Execution.OperationalObservationConsumed = true
+	return controller.persistRun(ctx, run, next, "agent.lost_event_recovery")
+}
+
+// dispatchEffectIDKind returns the durable notified effect for one callback.
+func completionEffectKind(event domainexecution.CompletionEvent, state domainexecution.State) domainexecution.EffectKind {
+	for _, effect := range []domainexecution.Effect{state.Agent, state.AgentPrompt} {
+		if effect.ID == event.DispatchEffectID {
+			return effect.Kind
+		}
+	}
+	return ""
+}
+
 func (controller *Controller) persistRun(ctx context.Context, current, next domain.Run, transition string) error {
 	next.Version = current.Version + 1
 	commandID := stableID("command", current.ID, fmt.Sprintf("version-%d", next.Version), transition)
@@ -429,7 +564,7 @@ func hashState(state domainexecution.State) string {
 
 func currentEffectObservation(state domainexecution.State) *domainexecution.EffectObservation {
 	for _, effect := range []domainexecution.Effect{
-		state.Worktree, state.HostView, state.Boundary, state.Setup, state.Agent,
+		state.Worktree, state.HostView, state.Boundary, state.Setup, state.Agent, state.AgentPrompt,
 		state.AgentArchive, state.HostViewArchive, state.WorktreeRemove,
 	} {
 		if effect.Observation != nil {
@@ -448,6 +583,7 @@ func durableTransitionPayload(transition string, state domainexecution.State) js
 		OperationalObservation *domainexecution.OperationalObservation `json:"operationalObservation,omitempty"`
 		Claim                  *domainexecution.CompletedClaim         `json:"claim,omitempty"`
 		NeedsYou               *domainexecution.NeedsYou               `json:"needsYou,omitempty"`
+		CompletionReceipt      *domainexecution.CompletionEventReceipt `json:"completionReceipt,omitempty"`
 	}{
 		Transition: transition, StateHash: hashState(state),
 		EffectObservation: currentEffectObservation(state),
@@ -458,6 +594,11 @@ func durableTransitionPayload(transition string, state domainexecution.State) js
 	}
 	if transition == "agent.claim.recorded" {
 		payload.Claim = state.Claim
+	}
+	if (transition == "agent.terminal_event.recorded" || transition == "agent.reconciliation_enqueued") &&
+		len(state.CompletionEventReceipts) > 0 {
+		receipt := state.CompletionEventReceipts[len(state.CompletionEventReceipts)-1]
+		payload.CompletionReceipt = &receipt
 	}
 	return eventPayload(payload)
 }
@@ -474,6 +615,8 @@ func effectPointer(state *domainexecution.State, kind domainexecution.EffectKind
 		return &state.Setup
 	case domainexecution.EffectAgentCreate:
 		return &state.Agent
+	case domainexecution.EffectAgentPrompt:
+		return &state.AgentPrompt
 	case domainexecution.EffectAgentArchive:
 		return &state.AgentArchive
 	case domainexecution.EffectHostViewArchive:
@@ -491,7 +634,7 @@ func effectBindingExact(effect domainexecution.Effect, bindingHash string) bool 
 
 func launchBindingsExact(state domainexecution.State) bool {
 	for _, effect := range []domainexecution.Effect{
-		state.Worktree, state.HostView, state.Boundary, state.Setup, state.Agent,
+		state.Worktree, state.HostView, state.Boundary, state.Setup, state.Agent, state.AgentPrompt,
 	} {
 		if effect.ID != "" && !effectBindingExact(effect, state.RepositoryBindingHash) {
 			return false
@@ -535,7 +678,7 @@ func preparationBarrier(state domainexecution.State) string {
 
 func isHostEffect(kind domainexecution.EffectKind) bool {
 	switch kind {
-	case domainexecution.EffectHostViewCreate, domainexecution.EffectAgentCreate,
+	case domainexecution.EffectHostViewCreate, domainexecution.EffectAgentCreate, domainexecution.EffectAgentPrompt,
 		domainexecution.EffectAgentArchive, domainexecution.EffectHostViewArchive:
 		return true
 	default:
@@ -555,6 +698,11 @@ func hostCapability(kind domainexecution.EffectKind, observe bool) host.Capabili
 			return host.CapabilityAgentObserve
 		}
 		return host.CapabilityTaskAgentCreate
+	case domainexecution.EffectAgentPrompt:
+		if observe {
+			return host.CapabilityAgentObserve
+		}
+		return host.CapabilityAgentPrompt
 	case domainexecution.EffectAgentArchive:
 		if observe {
 			return host.CapabilityAgentObserve
@@ -572,16 +720,35 @@ func hostCapability(kind domainexecution.EffectKind, observe bool) host.Capabili
 
 func hostArguments(run domain.Run, effect domainexecution.Effect) host.Arguments {
 	state := run.Execution
-	return host.Arguments{
+	arguments := host.Arguments{
 		Scope: state.Scope, EffectKind: effect.Kind, EffectID: effect.ID,
 		WorktreeID: state.Worktree.ExternalID, WorktreePath: state.WorktreePath,
 		WorkspaceID: state.HostView.ExternalID, AgentID: state.Agent.ExternalID,
-		Title: state.TaskTitle, InitialPrompt: state.InitialPrompt,
+		Title:         state.TaskTitle,
 		ParentAgentID: nil, LifecycleDigest: state.LifecycleDigest,
 		IsolationDigest: state.IsolationDigest, PreparationReady: state.PreparationReady,
 		PreparationBarrierHash: state.PreparationBarrierHash,
 		BindingHash:            state.RepositoryBindingHash,
 	}
+	if effect.Kind == domainexecution.EffectAgentCreate {
+		arguments.InitialPrompt = host.ZeroWorkBootstrapPrompt
+	}
+	if effect.Kind == domainexecution.EffectAgentPrompt {
+		arguments.InitialPrompt = state.InitialPrompt
+		arguments.NotifyOnFinish = true
+	}
+	// The agent-create command carries the frozen registry labels so the host
+	// creates a worker that is already discoverable from its root workspace.
+	// The launch reducer has already refused this effect without them.
+	if effect.Kind == domainexecution.EffectAgentCreate && state.WorkerVisibility != nil {
+		registration, err := host.RegistrationFromVisibility(state.Scope, *state.WorkerVisibility)
+		if err == nil {
+			if labels, labelErr := host.WorkerLabels(registration); labelErr == nil {
+				arguments.Labels = labels
+			}
+		}
+	}
+	return arguments
 }
 
 func hostResumeCursor(state domainexecution.State) uint64 {
@@ -590,7 +757,7 @@ func hostResumeCursor(state domainexecution.State) uint64 {
 		cursor = state.LastStartupReconciliation.HostCursor
 	}
 	for _, effect := range []domainexecution.Effect{
-		state.HostView, state.Agent, state.AgentArchive, state.HostViewArchive,
+		state.HostView, state.Agent, state.AgentPrompt, state.AgentArchive, state.HostViewArchive,
 	} {
 		if effect.Observation != nil && effect.Observation.Cursor > cursor {
 			cursor = effect.Observation.Cursor
@@ -810,6 +977,80 @@ func (controller *Controller) applyRetryDecision(
 	}
 }
 
+// admittedWorkerVisibilityDigest re-derives the launch registration digest from
+// the durable Run and returns it only when it still matches the frozen record.
+// A registration that was never admitted, or whose stored labels no longer
+// produce the frozen digest, yields the empty string and the launch reducer
+// refuses to create the agent.
+func admittedWorkerVisibilityDigest(state domainexecution.State) string {
+	if state.WorkerVisibility == nil {
+		return ""
+	}
+	registration, err := host.RegistrationFromVisibility(state.Scope, *state.WorkerVisibility)
+	if err != nil {
+		return ""
+	}
+	digest, err := host.RegistrationDigest(registration)
+	if err != nil || digest != state.WorkerVisibility.Digest {
+		return ""
+	}
+	return digest
+}
+
+// commitWorkerVisibility freezes the root-workspace launch registration once
+// the Execution Workspace exists and before any agent-creation intent. The
+// engine owns the record; the host port owns the label vocabulary and admits
+// the exact set. A registration the host port refuses parks the Run rather
+// than launching a worker the owner could not find from its root workspace.
+func (controller *Controller) commitWorkerVisibility(
+	ctx context.Context, run domain.Run, nowMillis int64,
+) (StepResult, error) {
+	instant := time.UnixMilli(nowMillis).UTC().Format(time.RFC3339Nano)
+	visibility := domainexecution.WorkerVisibility{
+		RootWorkspaceID:      run.Execution.RootWorkspaceID,
+		ExecutionWorkspaceID: run.Execution.HostView.ExternalID,
+		Role:                 string(host.WorkerRoleTaskAgent),
+		Phase:                host.WorkerPhaseBuilding,
+		BaseSHA:              run.BaseSHA,
+		RegisteredAt:         instant,
+		StartedAt:            instant,
+		Digest:               "pending",
+	}
+	registration, err := host.RegistrationFromVisibility(run.Execution.Scope, visibility)
+	if err != nil {
+		return StepResult{Run: run, Progressed: true}, controller.parkRun(
+			ctx, run, domainexecution.NeedWorkerVisibilityMissing,
+		)
+	}
+	digest, err := host.RegistrationDigest(registration)
+	if err != nil {
+		return StepResult{Run: run, Progressed: true}, controller.parkRun(
+			ctx, run, domainexecution.NeedWorkerVisibilityMissing,
+		)
+	}
+	visibility.Digest = digest
+	next := run
+	next.Execution.WorkerVisibility = &visibility
+	next.Execution.OperationalObservationConsumed = true
+	return StepResult{Run: next, Progressed: true}, controller.persistRun(
+		ctx, run, next, "run.worker_visibility_registered",
+	)
+}
+
+func (controller *Controller) commitWorkerIdentity(ctx context.Context, run domain.Run) (StepResult, error) {
+	if run.Execution.WorkerVisibility == nil || run.Execution.Agent.ExternalID == "" {
+		return StepResult{Run: run, Progressed: true}, controller.parkRun(
+			ctx, run, domainexecution.NeedWorkerVisibilityMissing,
+		)
+	}
+	next := run
+	next.Execution.WorkerVisibility.AgentID = run.Execution.Agent.ExternalID
+	next.Execution.OperationalObservationConsumed = true
+	return StepResult{Run: next, Progressed: true}, controller.persistRun(
+		ctx, run, next, "run.worker_identity_persisted",
+	)
+}
+
 func (controller *Controller) stepLaunch(ctx context.Context, run domain.Run, nowMillis int64) (StepResult, error) {
 	operational := operationalResult(run, nowMillis)
 	lifecycle := domainexecution.AdmitLifecycle(
@@ -851,9 +1092,14 @@ func (controller *Controller) stepLaunch(ctx context.Context, run domain.Run, no
 		PreparationPlanValid:      domainexecution.ValidPreparationPlan(run.Execution.PreparationPlan),
 		PreparationBarrierHash:    barrierFact,
 		PreparationReady:          run.Execution.PreparationReady,
-		TaskStoreNowMillis:        nowMillis,
-		Worktree:                  run.Execution.Worktree, HostView: run.Execution.HostView,
+		WorkerVisibilityDigest:    admittedWorkerVisibilityDigest(run.Execution),
+		WorkerIdentityPersisted: run.Execution.WorkerVisibility != nil &&
+			run.Execution.WorkerVisibility.AgentID != "" &&
+			run.Execution.WorkerVisibility.AgentID == run.Execution.Agent.ExternalID,
+		TaskStoreNowMillis: nowMillis,
+		Worktree:           run.Execution.Worktree, HostView: run.Execution.HostView,
 		Boundary: run.Execution.Boundary, Setup: run.Execution.Setup, Agent: run.Execution.Agent,
+		AgentPrompt: run.Execution.AgentPrompt,
 	}
 	if run.Execution.OperationalObservation != nil && !run.Execution.OperationalObservationConsumed &&
 		run.Execution.OperationalObservationRunVersion == run.Version {
@@ -884,11 +1130,22 @@ func (controller *Controller) stepLaunch(ctx context.Context, run domain.Run, no
 		next.Execution.PreparationBarrierHash = decision.PreparationBarrierHash
 		next.Execution.OperationalObservationConsumed = true
 		return StepResult{Run: next, Progressed: true}, controller.persistRun(ctx, run, next, "run.preparation_ready")
+	case launch.DecisionCommitWorkerVisibility:
+		return controller.commitWorkerVisibility(ctx, run, nowMillis)
+	case launch.DecisionCommitWorkerIdentity:
+		return controller.commitWorkerIdentity(ctx, run)
 	case launch.DecisionCreateAgentIntent:
 		next := run
 		next.Execution.Agent = newEffect(run.ID, domainexecution.EffectAgentCreate, 2)
 		next.Execution.OperationalObservationConsumed = true
 		return StepResult{Run: next, Progressed: true}, controller.persistRun(ctx, run, next, "run.agent_intent_recorded")
+	case launch.DecisionCreateAgentPromptIntent:
+		next := run
+		next.Execution.AgentPrompt = newEffect(run.ID, domainexecution.EffectAgentPrompt, 2)
+		next.Execution.OperationalObservationConsumed = true
+		return StepResult{Run: next, Progressed: true}, controller.persistRun(ctx, run, next, "run.agent_prompt_intent_recorded")
+	case launch.DecisionWaitTerminalEvent:
+		return StepResult{Run: run}, nil
 	case launch.DecisionLaunched:
 		return StepResult{Run: run}, nil
 	default:
@@ -1045,7 +1302,7 @@ func (controller *Controller) Step(ctx context.Context, runID string, nowMillis 
 	if run.CurrentCandidateID != "" {
 		return controller.stepClosure(ctx, run, nowMillis)
 	}
-	if run.Execution.Agent.Phase == domainexecution.EffectComplete {
+	if run.Execution.AgentPrompt.Phase == domainexecution.EffectComplete {
 		return controller.stepRouting(ctx, run, nowMillis)
 	}
 	return controller.stepLaunch(ctx, run, nowMillis)
