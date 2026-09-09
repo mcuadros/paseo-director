@@ -29,7 +29,12 @@ positions, canonicalizes valid IPs and default ports, normalizes the repository
 path and `.git` suffix, and maps equivalent transport spellings to one host/path
 key and stable hash ID. Percent escapes are decoded exactly once and literal
 percent data is re-encoded, so even nested percent input has an idempotent
-canonical output and stable key. A terminal chain containing two or more
+canonical output and stable key. Both submitted and emitted canonical remotes
+are limited to 2,048 UTF-8 bytes, and every accepted canonical output reparses
+to the exact same canonical value, repository key, and repository ID. An
+expanding normalization which would cross the bound is rejected, never
+truncated. A
+terminal chain containing two or more
 case-insensitive `.git` suffixes, including percent-encoded spellings, is
 rejected rather than creating a new alias class. Non-default ports remain
 distinct. Credentials, helper dispatch, local paths, query/fragment

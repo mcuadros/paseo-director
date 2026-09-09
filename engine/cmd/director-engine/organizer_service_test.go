@@ -20,6 +20,7 @@ import (
 	app "github.com/mcuadros/director-engine/application/organizer"
 	"github.com/mcuadros/director-engine/domain"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
+	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 	repoport "github.com/mcuadros/director-engine/ports/organizer"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
@@ -195,6 +196,77 @@ type productFacts struct {
 	head   string
 	tree   string
 	status string
+}
+
+type organizerRemoteLengthCase struct {
+	name           string
+	remote         string
+	canonicalBytes int
+	wantAccepted   bool
+}
+
+func organizerPaddedRemote(t *testing.T, prefix, suffix string, totalBytes int) string {
+	t.Helper()
+	padding := totalBytes - len(prefix) - len(suffix)
+	if padding < 1 {
+		t.Fatalf("remote fixture length %d is too short", totalBytes)
+	}
+	return prefix + strings.Repeat("a", padding) + suffix
+}
+
+func organizerRemoteLengthCases(t *testing.T) []organizerRemoteLengthCase {
+	t.Helper()
+	cases := make([]organizerRemoteLengthCase, 0, 24)
+	for _, target := range []int{
+		repositorydomain.MaximumRemoteBytes - 1,
+		repositorydomain.MaximumRemoteBytes,
+		repositorydomain.MaximumRemoteBytes + 1,
+	} {
+		accepted := target <= repositorydomain.MaximumRemoteBytes
+		name := fmt.Sprintf("canonical-%d", target)
+		scpCanonicalPrefix := "ssh://git@a/"
+		scpPath := strings.Repeat("a", target-len(scpCanonicalPrefix))
+		urlCanonicalPrefix := "ssh://git@[0:0:0:0:0:0:0:1]/"
+		urlPath := strings.Repeat("a", target-len(urlCanonicalPrefix))
+		cases = append(cases,
+			organizerRemoteLengthCase{
+				name: "raw-url/" + name, remote: organizerPaddedRemote(t, "https://a.example/", "", target),
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			organizerRemoteLengthCase{
+				name: "scp-expansion/" + name, remote: "git@a:" + scpPath,
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			organizerRemoteLengthCase{
+				name:           "scp-raw-input/" + name,
+				remote:         "git@a:" + strings.Repeat("a", target-len("git@a:")),
+				canonicalBytes: target + len(scpCanonicalPrefix) - len("git@a:"), wantAccepted: false,
+			},
+			organizerRemoteLengthCase{
+				name: "ipv6-url-expansion/" + name, remote: "ssh://git@[::1]/" + urlPath,
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			organizerRemoteLengthCase{
+				name:           "ipv6-url-raw-input/" + name,
+				remote:         "ssh://git@[::1]/" + strings.Repeat("a", target-len("ssh://git@[::1]/")),
+				canonicalBytes: target + len(urlCanonicalPrefix) - len("ssh://git@[::1]/"), wantAccepted: false,
+			},
+			organizerRemoteLengthCase{
+				name: "percent-encoded/" + name, remote: organizerPaddedRemote(t, "https://a.example/", "%25z", target),
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			organizerRemoteLengthCase{
+				name: "utf8-byte-boundary/" + name, remote: organizerPaddedRemote(t, "https://a.example/", "é", target),
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			organizerRemoteLengthCase{
+				name:           "repeated-git-suffix/" + name,
+				remote:         organizerPaddedRemote(t, "https://a.example/", ".git.git", target),
+				canonicalBytes: target, wantAccepted: false,
+			},
+		)
+	}
+	return cases
 }
 
 func newProductRepository(t *testing.T, root string) (string, string, productFacts) {
@@ -462,6 +534,144 @@ func TestCreatePreviewAndApplyShareSinglePassRemoteIdentity(t *testing.T) {
 	}
 	if after := readProductFacts(t, productPath); after != before {
 		t.Fatalf("Preview/Apply changed product repository: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestCreateAndAdoptEnforceCanonicalRemoteLengthBeforePersistence(t *testing.T) {
+	for index, test := range organizerRemoteLengthCases(t) {
+		t.Run(test.name, func(t *testing.T) {
+			root := privateTempDir(t)
+			productPath, _, _ := newProductRepository(t, root)
+			runGit(t, productPath, "remote", "set-url", "origin", test.remote)
+			productBefore := readProductFacts(t, productPath)
+			projectID := fmt.Sprintf("remote-boundary-%02d", index)
+			projectName := fmt.Sprintf("Remote Boundary %02d", index)
+			repositoryPath := filepath.Join(root, "organizer")
+			document := configurationJSON(projectID, projectName, productPath, test.remote)
+			request := createRequest(projectID, projectName, repositoryPath, document)
+			createStore := newMemoryProjectStore()
+			createService := app.New(createStore, organizergit.New(), nil)
+			preview, err := createService.PreviewCreate(context.Background(), request)
+
+			if !test.wantAccepted {
+				if err != nil || preview.Valid || preview.ID == "" {
+					t.Fatalf("PreviewCreate() = %#v, %v; want bounded invalid Preview", preview, err)
+				}
+				encoded, marshalErr := json.Marshal(preview)
+				if marshalErr != nil || strings.Contains(string(encoded), test.remote) {
+					t.Fatalf("Create Preview propagated rejected remote: %s, %v", encoded, marshalErr)
+				}
+				_, err = createService.ApplyCreate(context.Background(), app.ApplyCreateCommand{
+					RequestID: request.RequestID, PreviewID: preview.ID, Request: request, Confirmation: confirmed(),
+				})
+				if !errors.Is(err, app.ErrPreviewInvalid) || strings.Contains(err.Error(), test.remote) {
+					t.Fatalf("ApplyCreate() rejected remote error = %v", err)
+				}
+				if len(createStore.projects) != 0 || len(createStore.commands) != 0 {
+					t.Fatalf("rejected Create reached TaskStore: projects=%#v commands=%#v", createStore.projects, createStore.commands)
+				}
+				if _, err := os.Stat(repositoryPath); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("rejected Create changed Organizer target: %v", err)
+				}
+
+				validRemote := "https://github.com/example/product.git"
+				runGit(t, productPath, "remote", "set-url", "origin", validRemote)
+				seedDocument := configurationJSON(projectID, projectName, productPath, validRemote)
+				seedRequest := createRequest(projectID, projectName, repositoryPath, seedDocument)
+				seedService := app.New(newMemoryProjectStore(), organizergit.New(), nil)
+				seedPreview, err := seedService.PreviewCreate(context.Background(), seedRequest)
+				if err != nil || !seedPreview.Valid {
+					t.Fatalf("seed PreviewCreate() = %#v, %v", seedPreview, err)
+				}
+				if _, err := seedService.ApplyCreate(context.Background(), app.ApplyCreateCommand{
+					RequestID: seedRequest.RequestID, PreviewID: seedPreview.ID,
+					Request: seedRequest, Confirmation: confirmed(),
+				}); err != nil {
+					t.Fatalf("seed ApplyCreate() = %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(repositoryPath, "paseo-director.json"), document, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, repositoryPath, "add", "--", "paseo-director.json")
+				runGit(t, repositoryPath, "commit", "-m", "inject rejected remote boundary")
+				organizerBefore := readProductFacts(t, repositoryPath)
+				adoptStore := newMemoryProjectStore()
+				adoptService := app.New(adoptStore, organizergit.New(), nil)
+				adopt := app.AdoptRequest{
+					RequestID: "request-adopt-" + projectID, ProjectID: projectID,
+					ProjectName: projectName, RepositoryPath: repositoryPath,
+				}
+				adoptPreview, err := adoptService.PreviewAdopt(context.Background(), adopt)
+				if err != nil || adoptPreview.Valid || adoptPreview.ID == "" {
+					t.Fatalf("PreviewAdopt() = %#v, %v; want bounded invalid Preview", adoptPreview, err)
+				}
+				encoded, marshalErr = json.Marshal(adoptPreview)
+				if marshalErr != nil || strings.Contains(string(encoded), test.remote) {
+					t.Fatalf("Adopt Preview propagated rejected remote: %s, %v", encoded, marshalErr)
+				}
+				_, err = adoptService.ApplyAdopt(context.Background(), app.ApplyAdoptCommand{
+					RequestID: adopt.RequestID, PreviewID: adoptPreview.ID,
+					Request: adopt, Confirmation: confirmed(),
+				})
+				if !errors.Is(err, app.ErrPreviewInvalid) || strings.Contains(err.Error(), test.remote) {
+					t.Fatalf("ApplyAdopt() rejected remote error = %v", err)
+				}
+				if len(adoptStore.projects) != 0 || len(adoptStore.commands) != 0 {
+					t.Fatalf("rejected Adopt reached TaskStore: projects=%#v commands=%#v", adoptStore.projects, adoptStore.commands)
+				}
+				if after := readProductFacts(t, repositoryPath); after != organizerBefore {
+					t.Fatalf("rejected Adopt changed Organizer: before=%#v after=%#v", organizerBefore, after)
+				}
+				return
+			}
+
+			if err != nil || !preview.Valid {
+				t.Fatalf("PreviewCreate() = %#v, %v", preview, err)
+			}
+			if _, err := createService.ApplyCreate(context.Background(), app.ApplyCreateCommand{
+				RequestID: request.RequestID, PreviewID: preview.ID, Request: request, Confirmation: confirmed(),
+			}); err != nil {
+				t.Fatalf("ApplyCreate() = %v", err)
+			}
+			created := createStore.workspaces[projectID]
+			if len(created) != 1 || len(created[0].Repository.CanonicalRemote) != test.canonicalBytes ||
+				len(created[0].Repository.CanonicalRemote) > repositorydomain.MaximumRemoteBytes ||
+				created[0].ID != domain.WorkspaceID(projectID, "product") {
+				t.Fatalf("created durable Workspace = %#v", created)
+			}
+			identity, err := repositorydomain.CanonicalRemote(created[0].Repository.CanonicalRemote)
+			if err != nil || identity.Canonical != created[0].Repository.CanonicalRemote ||
+				identity.Key != created[0].Repository.Key || identity.ID != created[0].Repository.ID {
+				t.Fatalf("created Workspace identity fixed point = %#v, %v", identity, err)
+			}
+
+			organizerBefore := readProductFacts(t, repositoryPath)
+			adoptStore := newMemoryProjectStore()
+			adoptService := app.New(adoptStore, organizergit.New(), nil)
+			adopt := app.AdoptRequest{
+				RequestID: "request-adopt-" + projectID, ProjectID: projectID,
+				ProjectName: projectName, RepositoryPath: repositoryPath,
+			}
+			adoptPreview, err := adoptService.PreviewAdopt(context.Background(), adopt)
+			if err != nil || !adoptPreview.Valid {
+				t.Fatalf("PreviewAdopt() = %#v, %v", adoptPreview, err)
+			}
+			if _, err := adoptService.ApplyAdopt(context.Background(), app.ApplyAdoptCommand{
+				RequestID: adopt.RequestID, PreviewID: adoptPreview.ID, Request: adopt, Confirmation: confirmed(),
+			}); err != nil {
+				t.Fatalf("ApplyAdopt() = %v", err)
+			}
+			adopted := adoptStore.workspaces[projectID]
+			if !reflect.DeepEqual(adopted, created) {
+				t.Fatalf("Create/Adopt Workspace mismatch: created=%#v adopted=%#v", created, adopted)
+			}
+			if after := readProductFacts(t, repositoryPath); after != organizerBefore {
+				t.Fatalf("accepted Adopt changed Organizer: before=%#v after=%#v", organizerBefore, after)
+			}
+			if after := readProductFacts(t, productPath); after != productBefore {
+				t.Fatalf("accepted flow changed product repository: before=%#v after=%#v", productBefore, after)
+			}
+		})
 	}
 }
 

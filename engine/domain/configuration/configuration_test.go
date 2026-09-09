@@ -9,7 +9,80 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 )
+
+type configurationRemoteLengthCase struct {
+	name           string
+	remote         string
+	canonicalBytes int
+	wantAccepted   bool
+}
+
+func configurationPaddedRemote(t *testing.T, prefix, suffix string, totalBytes int) string {
+	t.Helper()
+	padding := totalBytes - len(prefix) - len(suffix)
+	if padding < 1 {
+		t.Fatalf("remote fixture length %d is too short", totalBytes)
+	}
+	return prefix + strings.Repeat("a", padding) + suffix
+}
+
+func configurationRemoteLengthCases(t *testing.T) []configurationRemoteLengthCase {
+	t.Helper()
+	cases := make([]configurationRemoteLengthCase, 0, 24)
+	for _, target := range []int{
+		repositorydomain.MaximumRemoteBytes - 1,
+		repositorydomain.MaximumRemoteBytes,
+		repositorydomain.MaximumRemoteBytes + 1,
+	} {
+		accepted := target <= repositorydomain.MaximumRemoteBytes
+		name := fmt.Sprintf("canonical-%d", target)
+		scpCanonicalPrefix := "ssh://git@a/"
+		scpPath := strings.Repeat("a", target-len(scpCanonicalPrefix))
+		urlCanonicalPrefix := "ssh://git@[0:0:0:0:0:0:0:1]/"
+		urlPath := strings.Repeat("a", target-len(urlCanonicalPrefix))
+		cases = append(cases,
+			configurationRemoteLengthCase{
+				name: "raw-url/" + name, remote: configurationPaddedRemote(t, "https://a.example/", "", target),
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			configurationRemoteLengthCase{
+				name: "scp-expansion/" + name, remote: "git@a:" + scpPath,
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			configurationRemoteLengthCase{
+				name:           "scp-raw-input/" + name,
+				remote:         "git@a:" + strings.Repeat("a", target-len("git@a:")),
+				canonicalBytes: target + len(scpCanonicalPrefix) - len("git@a:"), wantAccepted: false,
+			},
+			configurationRemoteLengthCase{
+				name: "ipv6-url-expansion/" + name, remote: "ssh://git@[::1]/" + urlPath,
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			configurationRemoteLengthCase{
+				name:           "ipv6-url-raw-input/" + name,
+				remote:         "ssh://git@[::1]/" + strings.Repeat("a", target-len("ssh://git@[::1]/")),
+				canonicalBytes: target + len(urlCanonicalPrefix) - len("ssh://git@[::1]/"), wantAccepted: false,
+			},
+			configurationRemoteLengthCase{
+				name: "percent-encoded/" + name, remote: configurationPaddedRemote(t, "https://a.example/", "%25z", target),
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			configurationRemoteLengthCase{
+				name: "utf8-byte-boundary/" + name, remote: configurationPaddedRemote(t, "https://a.example/", "é", target),
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			configurationRemoteLengthCase{
+				name:           "repeated-git-suffix/" + name,
+				remote:         configurationPaddedRemote(t, "https://a.example/", ".git.git", target),
+				canonicalBytes: target, wantAccepted: false,
+			},
+		)
+	}
+	return cases
+}
 
 func validConfigurationJSON() []byte {
 	return []byte(`{
@@ -284,6 +357,46 @@ func TestRemoteValidationAllowsOnlySafeExplicitGitTransports(t *testing.T) {
 		t.Run(remote, func(t *testing.T) {
 			if _, err := Parse([]byte(strings.Replace(valid, original, remote, 1))); err != nil {
 				t.Fatalf("Parse(%q) error = %v", remote, err)
+			}
+		})
+	}
+}
+
+func TestConfigurationEnforcesCanonicalRemoteLengthAndFixedPoint(t *testing.T) {
+	const original = "https://github.com/example/product.git"
+	for _, test := range configurationRemoteLengthCases(t) {
+		t.Run(test.name, func(t *testing.T) {
+			input := bytes.Replace(validConfigurationJSON(), []byte(original), []byte(test.remote), 1)
+			document, err := Parse(input)
+			if !test.wantAccepted {
+				issues, ok := ValidationIssues(err)
+				if err == nil || !ok || len(issues) == 0 {
+					t.Fatalf("Parse() = %#v, %v; want bounded remote rejection", document, err)
+				}
+				wantCode := "remote_format_invalid"
+				if len(test.remote) > repositorydomain.MaximumRemoteBytes {
+					wantCode = "remote_invalid"
+				}
+				if !containsIssue(issues, wantCode) {
+					t.Fatalf("issues = %#v, want %q", issues, wantCode)
+				}
+				encoded, marshalErr := json.Marshal(issues)
+				if marshalErr != nil || bytes.Contains(encoded, []byte(test.remote)) || strings.Contains(err.Error(), test.remote) {
+					t.Fatalf("rejected remote reached diagnostics: %s, %v, %v", encoded, err, marshalErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			workspace := document.Configuration().Workspaces[0]
+			identity, err := repositorydomain.CanonicalRemote(workspace.Remote)
+			if err != nil || len(identity.Canonical) != test.canonicalBytes || len(identity.Canonical) > repositorydomain.MaximumRemoteBytes {
+				t.Fatalf("configuration identity bytes = %d, error = %v", len(identity.Canonical), err)
+			}
+			roundTrip, err := repositorydomain.CanonicalRemote(identity.Canonical)
+			if err != nil || roundTrip != identity {
+				t.Fatalf("configuration identity fixed point = %#v, %v; want %#v", roundTrip, err, identity)
 			}
 		})
 	}
