@@ -12,8 +12,13 @@ import {
 } from "./scaffold-check.mjs";
 
 const ENGINE_MODULE = "github.com/mcuadros/director-engine";
-const PLANNING_TESTKIT_IMPORT =
-  `${ENGINE_MODULE}/internal/planningtestkit`;
+const TESTKIT_IMPORTS = new Set([
+  `${ENGINE_MODULE}/internal/planningtestkit`,
+  `${ENGINE_MODULE}/internal/testkit/projectionoracle`,
+]);
+const TESTKIT_RELATIVE_PATHS = new Set(
+  [...TESTKIT_IMPORTS].map((path) => path.slice(ENGINE_MODULE.length + 1)),
+);
 const GO_ROOTS = [
   "domain",
   "reducer",
@@ -109,7 +114,7 @@ export function classifyGoPackage(importPath) {
   if (!importPath.startsWith(`${ENGINE_MODULE}/`)) return null;
   const relativePath = importPath.slice(ENGINE_MODULE.length + 1);
   if (relativePath === "cmd" || relativePath.startsWith("cmd/")) return "cmd";
-  if (relativePath === "internal/planningtestkit") return "testkit";
+  if (TESTKIT_RELATIVE_PATHS.has(relativePath)) return "testkit";
   return GO_ROOTS.find(
     (root) => relativePath === root || relativePath.startsWith(`${root}/`),
   ) ?? null;
@@ -170,7 +175,7 @@ function goImportErrors(current, role, imports, testSource) {
     if (
       testSource &&
       role !== "testkit" &&
-      imported === PLANNING_TESTKIT_IMPORT
+      TESTKIT_IMPORTS.has(imported)
     ) {
       continue;
     }
@@ -214,6 +219,15 @@ function goImportErrors(current, role, imports, testSource) {
     if (!GO_ALLOWED_DEPENDENCIES[role].has(importedRole)) {
       errors.push(
         `${current.importPath}: ${role} boundary cannot import ${importedRole} package ${imported}`,
+      );
+    }
+    if (
+      role === "testkit" &&
+      importedRole === "testkit" &&
+      imported !== current.importPath
+    ) {
+      errors.push(
+        `${current.importPath}: one independent testkit cannot import another testkit package ${imported}`,
       );
     }
     if (

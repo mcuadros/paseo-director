@@ -61,6 +61,7 @@ const ENGINE_ALLOWED_PREFIXES = [
   "engine/cmd/generate-host-client/",
   "engine/domain/",
   "engine/internal/planningtestkit/",
+  "engine/internal/testkit/projectionoracle/",
   "engine/ports/",
   "engine/projection/",
   "engine/reducer/",

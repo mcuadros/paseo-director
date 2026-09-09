@@ -214,6 +214,70 @@ test("product tests alone may import the exact planning testkit", () => {
   );
 });
 
+test("projection oracle is an exact independent testkit boundary", () => {
+  const planningTestkit = `${modulePath}/internal/planningtestkit`;
+  const projectionOracle =
+    `${modulePath}/internal/testkit/projectionoracle`;
+
+  assert.deepEqual(
+    goDependencyErrors([
+      {
+        importPath: projectionOracle,
+        imports: [
+          "encoding/base64",
+          "encoding/json",
+          "errors",
+          "slices",
+          "strconv",
+        ],
+        testImports: ["testing"],
+      },
+      {
+        importPath: `${modulePath}/projection`,
+        imports: [`${modulePath}/domain`],
+        testImports: ["testing", projectionOracle],
+      },
+      {
+        importPath: `${modulePath}/application/board`,
+        imports: [`${modulePath}/projection`],
+        xTestImports: ["testing", projectionOracle],
+      },
+    ]),
+    [],
+  );
+
+  for (const current of [
+    {
+      importPath: `${modulePath}/projection`,
+      imports: [projectionOracle],
+    },
+    {
+      importPath: projectionOracle,
+      imports: [`${modulePath}/projection`],
+    },
+    {
+      importPath: projectionOracle,
+      imports: [planningTestkit],
+    },
+    {
+      importPath: planningTestkit,
+      imports: [projectionOracle],
+    },
+  ]) {
+    assert.ok(goDependencyErrors([current]).length > 0);
+  }
+
+  assert.ok(
+    goDependencyErrors([
+      {
+        importPath: `${modulePath}/projection`,
+        imports: [],
+        testImports: [`${projectionOracle}/other`],
+      },
+    ]).some((error) => error.includes("imports unclassified engine package")),
+  );
+});
+
 test("adapters and agent runtime cannot declare lifecycle policy", () => {
   assert.deepEqual(
     policyOwnershipErrors(
