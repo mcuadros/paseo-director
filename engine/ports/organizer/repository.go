@@ -36,6 +36,20 @@ type Snapshot struct {
 	ConfigurationJSON []byte
 }
 
+// WorkspaceSnapshot is the canonical read-only repository identity observed
+// by the engine adapter. It contains no credential or raw Git output.
+type WorkspaceSnapshot struct {
+	SourcePath         string
+	SourceDevice       uint64
+	SourceInode        uint64
+	GitCommonDirectory string
+	GitCommonDevice    uint64
+	GitCommonInode     uint64
+	CanonicalRemote    string
+	RepositoryKey      string
+	RepositoryID       string
+}
+
 // Repository performs bounded direct-argv Git and atomic filesystem effects.
 // Every Ensure method adopts an exact desired result and refuses any conflict.
 type Repository interface {
@@ -47,5 +61,6 @@ type Repository interface {
 	EnsureCommit(context.Context, string, []string, string) (string, error)
 	Read(context.Context, string) (Snapshot, error)
 	VerifyFiles(context.Context, string, []string) error
+	ResolveWorkspace(context.Context, string, string) (WorkspaceSnapshot, error)
 	VerifyWorkspace(context.Context, string, string) error
 }

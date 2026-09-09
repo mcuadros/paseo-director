@@ -273,15 +273,13 @@ func TestRemoteValidationAllowsOnlySafeExplicitGitTransports(t *testing.T) {
 	original := "https://github.com/example/product.git"
 	for _, remote := range []string{
 		"https://github.com/example/product.git",
-		"https://alice@github.com/example/product.git",
 		"ssh://git@github.com/example/product.git",
 		"ssh://git@host.example:2222/example/product.git",
 		"ssh://git@[2001:db8::1]/example/product.git",
 		"git://github.com/example/product.git",
 		"git@github.com:example/product.git",
-		"deploy.user@build-host:example/product.git",
-		"user@ext::sh",
 		"github.com:example/product.git",
+		"https://github.com/example/repo%252egit",
 	} {
 		t.Run(remote, func(t *testing.T) {
 			if _, err := Parse([]byte(strings.Replace(valid, original, remote, 1))); err != nil {
@@ -301,6 +299,22 @@ func TestRemoteValidationRejectsCredentialsUnsafeSchemesAndCommands(t *testing.T
 		"HTTPS password": {
 			remote: "https://alice:redacted@github.com/example/product.git",
 			code:   "remote_userinfo_password",
+		},
+		"HTTPS username token": {
+			remote: "https://token-shaped-username-0123456789abcdef@github.com/example/product.git",
+			code:   "remote_userinfo_forbidden",
+		},
+		"Git username": {
+			remote: "git://git@github.com/example/product.git",
+			code:   "remote_userinfo_forbidden",
+		},
+		"SSH non-git username": {
+			remote: "ssh://deploy.user@github.com/example/product.git",
+			code:   "remote_username_unsupported",
+		},
+		"SCP non-git username": {
+			remote: "deploy.user@github.com:example/product.git",
+			code:   "remote_username_unsupported",
 		},
 		"SSH password": {
 			remote: "ssh://git:redacted@github.com/example/product.git",
@@ -366,6 +380,34 @@ func TestRemoteValidationRejectsCredentialsUnsafeSchemesAndCommands(t *testing.T
 			remote: "/srv/repository",
 			code:   "remote_format_invalid",
 		},
+		"malformed IPv6 repeated compression": {
+			remote: "ssh://git@[::::]/example/product.git",
+			code:   "remote_format_invalid",
+		},
+		"malformed IPv6 group count": {
+			remote: "ssh://git@[2001:db8:1]/example/product.git",
+			code:   "remote_format_invalid",
+		},
+		"invalid IPv4 octet": {
+			remote: "ssh://git@999.1.1.1/example/product.git",
+			code:   "remote_format_invalid",
+		},
+		"ambiguous IPv4 leading zero": {
+			remote: "ssh://git@192.168.001.010/example/product.git",
+			code:   "remote_format_invalid",
+		},
+		"embedded IPv4 before compression": {
+			remote: "ssh://git@[192.168.1.1::]/example/product.git",
+			code:   "remote_format_invalid",
+		},
+		"repeated Git suffix": {
+			remote: "https://github.com/example/repository.git.git",
+			code:   "remote_format_invalid",
+		},
+		"percent encoded repeated Git suffix": {
+			remote: "https://github.com/example/repository%2egit.git",
+			code:   "remote_format_invalid",
+		},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -374,6 +416,75 @@ func TestRemoteValidationRejectsCredentialsUnsafeSchemesAndCommands(t *testing.T
 				t.Fatalf("issues = %#v, want %q", issues, test.code)
 			}
 		})
+	}
+}
+
+func TestRepeatedGitSuffixValidationDoesNotPropagateInput(t *testing.T) {
+	for _, remote := range []string{
+		"https://github.com/example/repository.git.git",
+		"https://github.com/example/repository.GIT.git",
+		"https://github.com/example/repository%2egit.git",
+		"https://github.com/example/repository.git%2egit",
+		"https://github.com/example/repository%2Egit%2egit%2EGIT",
+	} {
+		input := bytes.Replace(
+			validConfigurationJSON(),
+			[]byte("https://github.com/example/product.git"),
+			[]byte(remote),
+			1,
+		)
+		issues := issuesFor(t, input)
+		if !containsIssue(issues, "remote_format_invalid") {
+			t.Fatalf("issues for %q = %#v", remote, issues)
+		}
+		encoded, err := json.Marshal(issues)
+		if err != nil || bytes.Contains(encoded, []byte(remote)) {
+			t.Fatalf("issues propagated %q: %s, %v", remote, encoded, err)
+		}
+		_, err = Parse(input)
+		if err == nil || strings.Contains(err.Error(), remote) {
+			t.Fatalf("Parse(%q) error = %v", remote, err)
+		}
+	}
+}
+
+func TestRemoteValidationDoesNotDecodeNestedPercentTwice(t *testing.T) {
+	const remote = "https://github.com/example/repo%252egit"
+	input := bytes.Replace(
+		validConfigurationJSON(),
+		[]byte("https://github.com/example/product.git"),
+		[]byte(remote),
+		1,
+	)
+	document, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := document.Configuration()
+	if len(configuration.Workspaces) != 1 || configuration.Workspaces[0].Remote != remote {
+		t.Fatalf("parsed remote = %#v", configuration.Workspaces)
+	}
+}
+
+func TestRemoteValidationDoesNotPropagateRejectedCredential(t *testing.T) {
+	const secret = "token-shaped-username-0123456789abcdef"
+	input := bytes.Replace(
+		validConfigurationJSON(),
+		[]byte("https://github.com/example/product.git"),
+		[]byte("https://"+secret+"@github.com/example/product.git"),
+		1,
+	)
+	issues := issuesFor(t, input)
+	encoded, err := json.Marshal(issues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(secret)) {
+		t.Fatalf("validation issues propagated credential material: %s", encoded)
+	}
+	_, err = Parse(input)
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("Parse() error propagated credential material: %v", err)
 	}
 }
 
@@ -444,6 +555,31 @@ func TestParseRejectsSemanticConflicts(t *testing.T) {
 	}{
 		input: strings.Replace(valid, workspaceObject, workspaceObject+",\n    "+workspaceObject, 1),
 		code:  "workspace_duplicate",
+	}
+	aliasWorkspace := `{
+      "id": "product-alias",
+      "name": "Product alias",
+      "remote": "git@github.com:example/product.git",
+      "sourcePath": "/srv/director/product-alias",
+      "defaultBaseBranch": "main"
+    }`
+	tests["canonical repository alias"] = struct {
+		input string
+		code  string
+	}{
+		input: strings.Replace(valid, workspaceObject, workspaceObject+",\n    "+aliasWorkspace, 1),
+		code:  "workspace_repository_duplicate",
+	}
+	sourceAliasWorkspace := strings.ReplaceAll(aliasWorkspace,
+		`"remote": "git@github.com:example/product.git"`,
+		`"remote": "https://github.com/example/other.git"`)
+	sourceAliasWorkspace = strings.Replace(sourceAliasWorkspace, "/srv/director/product-alias", "/srv/director/product", 1)
+	tests["canonical source path"] = struct {
+		input string
+		code  string
+	}{
+		input: strings.Replace(valid, workspaceObject, workspaceObject+",\n    "+sourceAliasWorkspace, 1),
+		code:  "workspace_source_duplicate",
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {

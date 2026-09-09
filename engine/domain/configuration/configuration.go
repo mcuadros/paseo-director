@@ -24,6 +24,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mcuadros/director-engine/domain/jsondocument"
+	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 )
 
 const (
@@ -90,6 +91,7 @@ type Project struct {
 // absolute source checkout on the Project daemon, not an execution worktree.
 type Workspace struct {
 	ID                string `json:"id"`
+	Name              string `json:"name,omitempty"`
 	Remote            string `json:"remote"`
 	SourcePath        string `json:"sourcePath"`
 	DefaultBaseBranch string `json:"defaultBaseBranch"`
@@ -328,118 +330,6 @@ func hasGitRemoteHelperDispatch(value string) bool {
 	return usernameSeparator < 0 || usernameSeparator > separator
 }
 
-func validRemoteUsername(value string) bool {
-	if value == "" {
-		return false
-	}
-	return strings.IndexFunc(value, func(r rune) bool {
-		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || strings.ContainsRune("._-", r))
-	}) < 0
-}
-
-func validRemoteHost(value string) bool {
-	if value == "" || strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") ||
-		strings.HasPrefix(value, "-") || strings.HasSuffix(value, "-") || strings.Contains(value, "..") {
-		return false
-	}
-	return strings.IndexFunc(value, func(r rune) bool {
-		return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '.' || r == '-')
-	}) < 0
-}
-
-func validRemoteHostPort(value string) bool {
-	if strings.HasPrefix(value, "[") {
-		closing := strings.IndexByte(value, ']')
-		if closing < 2 {
-			return false
-		}
-		address := value[1:closing]
-		if strings.IndexFunc(address, func(r rune) bool {
-			return !((r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') ||
-				(r >= '0' && r <= '9') || r == ':' || r == '.')
-		}) >= 0 {
-			return false
-		}
-		value = value[closing+1:]
-		if value == "" {
-			return true
-		}
-		if !strings.HasPrefix(value, ":") {
-			return false
-		}
-		value = value[1:]
-		return value != "" && strings.IndexFunc(value, func(r rune) bool { return r < '0' || r > '9' }) < 0
-	}
-	if strings.Count(value, ":") > 1 {
-		return false
-	}
-	host := value
-	if colon := strings.LastIndexByte(value, ':'); colon >= 0 {
-		host = value[:colon]
-		port := value[colon+1:]
-		if port == "" || strings.IndexFunc(port, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
-			return false
-		}
-	}
-	return validRemoteHost(host)
-}
-
-func validURLRemote(value string) bool {
-	separator := strings.Index(value, "://")
-	if separator <= 0 {
-		return false
-	}
-	rest := value[separator+3:]
-	authority := rest
-	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
-		authority = rest[:slash]
-	}
-	if authority == "" || strings.ContainsAny(authority, "?#") || strings.Count(authority, "@") > 1 {
-		return false
-	}
-	hostPort := authority
-	if at := strings.LastIndexByte(authority, '@'); at >= 0 {
-		if !validRemoteUsername(authority[:at]) {
-			return false
-		}
-		hostPort = authority[at+1:]
-	}
-	return validRemoteHostPort(hostPort) && !strings.ContainsAny(rest, "?#")
-}
-
-func validSCPLikeRemote(value string) bool {
-	if strings.Contains(value, "://") || strings.Count(value, "@") > 1 {
-		return false
-	}
-	hostStart := 0
-	hasUsername := false
-	if at := strings.LastIndexByte(value, '@'); at >= 0 {
-		if !validRemoteUsername(value[:at]) {
-			return false
-		}
-		hasUsername = true
-		hostStart = at + 1
-	}
-	separatorOffset := strings.IndexByte(value[hostStart:], ':')
-	if separatorOffset <= 0 {
-		return false
-	}
-	separator := hostStart + separatorOffset
-	host := value[hostStart:separator]
-	remotePath := value[separator+1:]
-	if hostStart == 0 {
-		switch strings.ToLower(host) {
-		case "ext", "file", "ftp", "git", "git+ssh", "http", "https", "rsync", "ssh":
-			return false
-		}
-	}
-	hostIsExplicit := hasUsername || strings.EqualFold(host, "localhost") || strings.ContainsRune(host, '.')
-	return hostIsExplicit && validRemoteHost(host) && remotePath != "" && !strings.HasPrefix(remotePath, "-") &&
-		!strings.Contains(remotePath, "::")
-}
-
 func validateRemote(value string) (string, string) {
 	if len(value) == 0 || len(value) > 2048 || strings.HasPrefix(value, "-") {
 		return "remote_invalid", "remote must be bounded and cannot begin with an option prefix"
@@ -465,13 +355,21 @@ func validateRemote(value string) (string, string) {
 		if scheme != "https" && scheme != "ssh" && scheme != "git" {
 			return "remote_scheme_unsupported", "remote scheme must be https, ssh, or git"
 		}
-		if !validURLRemote(decoded) {
-			return "remote_format_invalid", "remote URL structure is invalid"
+		authority := remoteAuthority(decoded)
+		if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+			if scheme != "ssh" {
+				return "remote_userinfo_forbidden", "remote userinfo is forbidden for this transport"
+			}
+			if authority[:at] != "git" {
+				return "remote_username_unsupported", "SSH remote username must be the closed non-secret git identity"
+			}
 		}
-		return "", ""
+	} else if at := strings.LastIndexByte(remoteAuthority(decoded), '@'); at >= 0 &&
+		remoteAuthority(decoded)[:at] != "git" {
+		return "remote_username_unsupported", "SCP remote username must be the closed non-secret git identity"
 	}
-	if !validSCPLikeRemote(decoded) {
-		return "remote_format_invalid", "remote must use https, ssh, git, or safe scp-like syntax"
+	if _, err := repositorydomain.CanonicalRemote(value); err != nil {
+		return "remote_format_invalid", "remote authority, address, port, or repository path is invalid"
 	}
 	return "", ""
 }
@@ -567,6 +465,8 @@ func validate(value Configuration) error {
 		issues = append(issues, issue("workspace_count", "$.workspaces", "between 1 and 128 Workspaces are required"))
 	}
 	workspaceIDs := make(map[string]struct{}, len(value.Workspaces))
+	workspaceRepositories := make(map[string]struct{}, len(value.Workspaces))
+	workspacePaths := make(map[string]struct{}, len(value.Workspaces))
 	for index, workspace := range value.Workspaces {
 		base := fmt.Sprintf("$.workspaces[%d]", index)
 		if !validIdentifier(workspace.ID) {
@@ -575,11 +475,24 @@ func validate(value Configuration) error {
 			issues = append(issues, issue("workspace_duplicate", base+".id", "workspace id must be unique"))
 		}
 		workspaceIDs[workspace.ID] = struct{}{}
+		if workspace.Name != "" && !validBoundedName(workspace.Name, 128) {
+			issues = append(issues, issue("name_invalid", base+".name", "Workspace name must be trimmed and at most 128 bytes"))
+		}
 		if code, message := validateRemote(workspace.Remote); code != "" {
 			issues = append(issues, issue(code, base+".remote", message))
+		} else if remote, err := repositorydomain.CanonicalRemote(workspace.Remote); err != nil {
+			issues = append(issues, issue("remote_format_invalid", base+".remote", "remote cannot be mapped to a canonical repository identity"))
+		} else if _, duplicate := workspaceRepositories[remote.Key]; duplicate {
+			issues = append(issues, issue("workspace_repository_duplicate", base+".remote", "one canonical repository can map to only one Workspace in a Project"))
+		} else {
+			workspaceRepositories[remote.Key] = struct{}{}
 		}
 		if !validSourcePath(workspace.SourcePath) {
 			issues = append(issues, issue("source_path_invalid", base+".sourcePath", "source path must be a clean absolute Linux path"))
+		} else if _, duplicate := workspacePaths[workspace.SourcePath]; duplicate {
+			issues = append(issues, issue("workspace_source_duplicate", base+".sourcePath", "one canonical source path can map to only one Workspace in a Project"))
+		} else {
+			workspacePaths[workspace.SourcePath] = struct{}{}
 		}
 		if !validGitBranch(workspace.DefaultBaseBranch) {
 			issues = append(issues, issue("base_branch_invalid", base+".defaultBaseBranch", "default base branch is not a safe Git branch name"))

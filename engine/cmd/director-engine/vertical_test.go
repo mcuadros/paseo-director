@@ -22,6 +22,7 @@ import (
 	executionapp "github.com/mcuadros/director-engine/application/execution"
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/execution"
+	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 	"github.com/mcuadros/director-engine/reducer/eligibility"
 )
 
@@ -137,6 +138,27 @@ func createVerticalRecords(t *testing.T, store *dolt.DoltTaskStore, suffix strin
 	t.Helper()
 	ctx := context.Background()
 	project := domain.Project{ID: "project-" + suffix, Name: "Vertical fixture", State: "active"}
+	project.Organizer = &domain.Organizer{
+		ID: domain.OrganizerID(project.ID), Mode: domain.OrganizerModeAdopt, Phase: domain.OrganizerPhaseActive,
+		RepositoryPath: "/srv/organizers/" + project.ID, PreviewID: "preview-identity",
+		OperationID: "operation-identity", HumanActorID: "human:test",
+		ConfigurationSHA256: strings.Repeat("a", 64), OrganizerRevision: strings.Repeat("b", 40),
+	}
+	remote, err := repositorydomain.CanonicalRemote("https://github.com/example/" + project.ID + ".git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspacePath := "/srv/workspaces/" + project.ID
+	workspace := domain.Workspace{
+		ID: domain.WorkspaceID(project.ID, "workspace-"+suffix), ProjectID: project.ID,
+		Key: "workspace-" + suffix, Name: "Vertical Workspace",
+		Repository: domain.RepositoryIdentity{
+			ID: remote.ID, Key: remote.Key, CanonicalRemote: remote.Canonical,
+			SourcePath: workspacePath, SourceDevice: 1, SourceInode: 2,
+			GitCommonDirectory: workspacePath + "/.git", GitCommonDevice: 1, GitCommonInode: 3,
+		},
+		DefaultBaseBranch: "main", Policy: domain.WorkspacePolicy{LaunchPolicy: "inherit", DeliveryMode: "inherit"},
+	}
 	task := domain.Task{
 		ID: "task-" + suffix, ProjectID: project.ID, Title: "Implement the fake execution vertical path",
 		Objective: "Produce one fake Candidate", AcceptanceCriteria: "criterion-1",
@@ -147,7 +169,7 @@ func createVerticalRecords(t *testing.T, store *dolt.DoltTaskStore, suffix strin
 	event := func(id, aggregate, kind string) domain.Event {
 		return domain.Event{ID: id, Sequence: 1, AggregateID: aggregate, Type: kind, Payload: json.RawMessage(`{}`)}
 	}
-	if result, err := store.CreateProject(ctx, command("create-project-"+suffix, "project.create", project.ID), project, event("project-created-"+suffix, project.ID, "project.created")); err != nil || result.Outcome != domain.CommandApplied {
+	if result, err := store.CreateProject(ctx, command("create-project-"+suffix, "project.create", project.ID), project, []domain.Workspace{workspace}, event("project-created-"+suffix, project.ID, "project.created")); err != nil || result.Outcome != domain.CommandApplied {
 		t.Fatalf("create Project: %#v, %v", result, err)
 	}
 	if result, err := store.CreateTask(ctx, command("create-task-"+suffix, "task.create", task.ID), task, event("task-created-"+suffix, task.ID, "task.created")); err != nil || result.Outcome != domain.CommandApplied {

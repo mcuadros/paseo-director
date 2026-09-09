@@ -35,6 +35,7 @@ const (
 // Project. PendingConfiguration exists only while an approved Create is being
 // recovered; active configuration remains canonical in Organizer Git.
 type Organizer struct {
+	ID                   string
 	Mode                 OrganizerMode
 	Phase                OrganizerPhase
 	RepositoryPath       string
@@ -46,14 +47,19 @@ type Organizer struct {
 	PendingConfiguration json.RawMessage
 }
 
-// Project is the minimal mutable Project aggregate persisted by the walking
-// skeleton. Version is advanced only by an expected-version TaskStore write.
+// Project is the mutable M2 Project aggregate. It owns exactly one Organizer,
+// one optional daemon execution lease, its independently durable monotonic
+// fencing epoch, and one or more separately persisted Workspaces. Version
+// advances only through an expected-version TaskStore write.
 type Project struct {
-	ID        string
-	Name      string
-	State     string
-	Version   uint64
-	Organizer *Organizer
+	ID               string
+	Name             string
+	State            string
+	Version          uint64
+	Organizer        *Organizer
+	LastLeaseEpoch   uint64
+	Lease            *ProjectLease
+	LeaseObservation *ProjectLeaseObservation
 }
 
 // Task is the minimal mutable Task aggregate persisted by the walking

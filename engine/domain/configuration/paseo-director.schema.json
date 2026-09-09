@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/mcuadros/paseo-director/engine/domain/configuration/paseo-director.schema.json",
   "title": "Director Organizer Configuration",
-  "description": "Closed M1 schema for the engine-owned paseo-director.json discovery marker.",
+  "description": "Closed engine-owned version 1 schema for the paseo-director.json discovery marker.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -76,6 +76,7 @@
       "required": ["id", "remote", "sourcePath", "defaultBaseBranch"],
       "properties": {
         "id": { "$ref": "#/$defs/identifier" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
         "remote": { "type": "string", "minLength": 1, "maxLength": 2048 },
         "sourcePath": {
           "type": "string",

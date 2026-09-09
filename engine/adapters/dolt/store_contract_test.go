@@ -4,7 +4,9 @@ package dolt_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,7 @@ import (
 	"github.com/mcuadros/director-engine/adapters/dolt"
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/execution"
+	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
 
@@ -225,6 +228,18 @@ func command(key, commandType, aggregateID string, expectedVersion uint64, paylo
 	}
 }
 
+func typedCommand(t *testing.T, key, commandType, aggregateID string, expectedVersion uint64, payload any) domain.CommandRequest {
+	t.Helper()
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return domain.CommandRequest{
+		IdempotencyKey: key, Type: commandType, AggregateID: aggregateID,
+		ExpectedVersion: expectedVersion, Payload: encoded,
+	}
+}
+
 func event(id, runID string, sequence uint64, aggregateID string, version uint64, eventType string) domain.Event {
 	return domain.Event{
 		ID: id, RunID: runID, Sequence: sequence, AggregateID: aggregateID,
@@ -243,17 +258,102 @@ func requireApplied(t *testing.T, result domain.CommandResult, err error) {
 	}
 }
 
+func testOrganizer(projectID string) *domain.Organizer {
+	return &domain.Organizer{
+		ID: domain.OrganizerID(projectID), Mode: domain.OrganizerModeAdopt,
+		Phase: domain.OrganizerPhaseActive, RepositoryPath: "/srv/organizers/" + projectID,
+		PreviewID: "preview-identity", OperationID: "operation-identity",
+		HumanActorID: "human:test", ConfigurationSHA256: strings.Repeat("a", 64),
+		OrganizerRevision: strings.Repeat("b", 40),
+	}
+}
+
+func testWorkspace(t *testing.T, projectID, workspaceID, sourcePath, remote string) domain.Workspace {
+	t.Helper()
+	identity, err := repositorydomain.CanonicalRemote(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(projectID + "\x1f" + workspaceID))
+	sourceInode := binary.BigEndian.Uint64(digest[:8]) | 1
+	commonInode := binary.BigEndian.Uint64(digest[8:16]) | 1
+	return domain.Workspace{
+		ID: domain.WorkspaceID(projectID, workspaceID), ProjectID: projectID,
+		Key: workspaceID, Name: "Workspace " + workspaceID,
+		Repository: domain.RepositoryIdentity{
+			ID: identity.ID, Key: identity.Key, CanonicalRemote: identity.Canonical,
+			SourcePath: sourcePath, SourceDevice: 1, SourceInode: sourceInode,
+			GitCommonDirectory: sourcePath + "/.git", GitCommonDevice: 1, GitCommonInode: commonInode,
+		},
+		DefaultBaseBranch: "main",
+		Policy:            domain.WorkspacePolicy{LaunchPolicy: "inherit", DeliveryMode: "inherit"},
+	}
+}
+
+func storedWorkspaceJSON(t *testing.T, workspace domain.Workspace) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(struct {
+		Key               string                    `json:"key"`
+		Name              string                    `json:"name"`
+		Repository        domain.RepositoryIdentity `json:"repository"`
+		DefaultBaseBranch string                    `json:"defaultBaseBranch"`
+		Policy            domain.WorkspacePolicy    `json:"policy"`
+	}{workspace.Key, workspace.Name, workspace.Repository, workspace.DefaultBaseBranch, workspace.Policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func validObservationInputForStore() domain.ProjectLeaseObservationInput {
+	return domain.ProjectLeaseObservationInput{
+		AdapterKind: "linux-process-supervisor", AdapterVersion: "v1",
+		FactHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+}
+
 func runPortContract(t *testing.T, store storeport.TaskStore) {
 	t.Helper()
 	ctx := context.Background()
-	project := domain.Project{ID: "project-1", Name: "Director", State: "active"}
+	project := domain.Project{
+		ID: "project-1", Name: "Director", State: "active", Organizer: testOrganizer("project-1"),
+	}
+	workspace := testWorkspace(
+		t, project.ID, "workspace-1", "/srv/workspaces/project-1", "https://github.com/example/project-1.git",
+	)
 	result, err := store.CreateProject(
 		ctx,
 		command("command-project-create", "project.create", project.ID, 0, `{"name":"Director"}`),
 		project,
+		[]domain.Workspace{workspace},
 		event("event-project-create", "", 1, project.ID, 0, "project.created"),
 	)
 	requireApplied(t, result, err)
+	workspace.Name = "Renamed product repository"
+	workspace.Repository.SourcePath = "/srv/moved/project-1"
+	workspace.Repository.GitCommonDirectory = "/srv/moved/project-1/.git"
+	alias, err := repositorydomain.CanonicalRemote("git@github.com:example/project-1.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace.Repository.CanonicalRemote = alias.Canonical
+	workspace.Version = 1
+	workspaceUpdate := command(
+		"command-workspace-update", "workspace.update", workspace.ID, 0,
+		`{"name":"Renamed product repository","sourcePath":"/srv/moved/project-1"}`,
+	)
+	result, err = store.UpdateWorkspace(
+		ctx, workspaceUpdate, workspace,
+		event("event-workspace-update", "", 1, workspace.ID, 1, "workspace.updated"),
+	)
+	requireApplied(t, result, err)
+	replayedWorkspace, err := store.UpdateWorkspace(
+		ctx, workspaceUpdate, workspace,
+		event("event-workspace-update", "", 1, workspace.ID, 1, "workspace.updated"),
+	)
+	if err != nil || !replayedWorkspace.Replay || replayedWorkspace.ObservedVersion != 1 {
+		t.Fatalf("Workspace update did not replay: %#v, %v", replayedWorkspace, err)
+	}
 	task := domain.Task{
 		ID: "task-1", ProjectID: project.ID, Title: "Persist skeleton",
 		Objective: "Persist the walking skeleton", AcceptanceCriteria: "Reload exact records",
@@ -270,7 +370,7 @@ func runPortContract(t *testing.T, store storeport.TaskStore) {
 		Execution: execution.State{
 			SchemaVersion: "director.execution/v1",
 			Scope: execution.Scope{
-				ProjectID: "project-1", WorkspaceID: "workspace-1",
+				ProjectID: "project-1", WorkspaceID: workspace.ID,
 				TaskID: "task-1", RunID: "run-1",
 			},
 			EligibilityDecisionID: "eligibility-1",
@@ -403,8 +503,19 @@ func TestDoltStoreContract(t *testing.T) {
 	t.Cleanup(func() { _ = reloaded.Close() })
 	ctx := context.Background()
 	project, err := reloaded.Project(ctx, "project-1")
-	if err != nil || project.Name != "Director" || project.Version != 0 {
+	if err != nil || project.Name != "Director" || project.Version != 0 || project.Organizer == nil ||
+		project.Organizer.ID != domain.OrganizerID(project.ID) {
 		t.Fatalf("Project did not reload: %#v, %v", project, err)
+	}
+	workspace, err := reloaded.Workspace(ctx, domain.WorkspaceID("project-1", "workspace-1"))
+	if err != nil || workspace.Version != 1 || workspace.Name != "Renamed product repository" ||
+		workspace.Repository.SourcePath != "/srv/moved/project-1" ||
+		workspace.Repository.Key != "github.com/example/project-1" {
+		t.Fatalf("Workspace did not reload with stable identity: %#v, %v", workspace, err)
+	}
+	workspaces, err := reloaded.Workspaces(ctx, project.ID)
+	if err != nil || len(workspaces) != 1 || workspaces[0].ID != workspace.ID {
+		t.Fatalf("Project Workspace mapping did not reload: %#v, %v", workspaces, err)
 	}
 	task, err := reloaded.Task(ctx, "task-1")
 	if err != nil || task.Version != 2 || !strings.HasPrefix(task.Title, "Concurrent ") ||
@@ -459,6 +570,810 @@ func TestDoltStoreContract(t *testing.T) {
 	}
 }
 
+func TestDoltProjectLeaseUsesStoreClockAndImmutableObservation(t *testing.T) {
+	fixture := startDoltFixture(t)
+	const storeID = "project-lease-store"
+	store := openContractStore(t, fixture, storeID, true)
+	ctx := context.Background()
+	nowMillis := int64(1_000)
+	dolt.UseTransactionTimestampForTest(store, &nowMillis)
+	project := domain.Project{
+		ID: "lease-project", Name: "Lease Project", State: "active", Organizer: testOrganizer("lease-project"),
+	}
+	workspace := testWorkspace(
+		t, project.ID, "product", "/srv/workspaces/lease-project",
+		"https://github.com/example/lease-project.git",
+	)
+	result, err := store.CreateProject(
+		ctx, command("lease-project-create", "project.create", project.ID, 0, `{}`), project,
+		[]domain.Workspace{workspace},
+		event("lease-project-created-event", "", 1, project.ID, 0, "project.created"),
+	)
+	requireApplied(t, result, err)
+
+	acquire := domain.ProjectLeaseMutation{
+		Kind: domain.ProjectLeaseAcquire, ProjectID: project.ID,
+		HolderInstance: "engine-a", HolderProcessIdentity: "pid-100:start-1", DurationMillis: 1_000,
+	}
+	forged := typedCommand(
+		t, "lease-clock-forgery", "project.lease.acquire", project.ID, 0,
+		map[string]any{
+			"kind": acquire.Kind, "projectId": project.ID, "expectedLeaseEpoch": 0,
+			"holderInstance": acquire.HolderInstance, "holderProcessIdentity": acquire.HolderProcessIdentity,
+			"durationMillis": 1_000, "taskStoreNowMillis": 9_999_999_999,
+		},
+	)
+	if _, err := store.ApplyProjectLease(ctx, forged, acquire); !errors.Is(err, storeport.ErrInvalidRecord) {
+		t.Fatalf("forged clock payload error = %v", err)
+	}
+	if _, err := store.Command(ctx, forged.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("forged clock command persisted: %v", err)
+	}
+
+	acquireCommand := typedCommand(t, "lease-acquire-request-001", "project.lease.acquire", project.ID, 0, acquire)
+	result, err = store.ApplyProjectLease(ctx, acquireCommand, acquire)
+	requireApplied(t, result, err)
+	project, err = store.Project(ctx, project.ID)
+	if err != nil || project.Lease == nil || project.Lease.AcquiredAtMillis != 1_000 ||
+		project.Lease.ExpiresAtMillis != 2_000 || !project.Lease.DispatchAllowed || project.LastLeaseEpoch != 1 {
+		t.Fatalf("stored authoritative lease = %#v, %v", project.Lease, err)
+	}
+
+	takeover := domain.ProjectLeaseMutation{
+		Kind: domain.ProjectLeaseTakeover, ProjectID: project.ID, ExpectedLeaseEpoch: 1,
+		HolderInstance: "engine-b", HolderProcessIdentity: "pid-200:start-2", DurationMillis: 100_000,
+	}
+	nowMillis = 1_999
+	preExpiry := typedCommand(t, "lease-takeover-too-early", "project.lease.takeover", project.ID, 1, takeover)
+	if _, err := store.ApplyProjectLease(ctx, preExpiry, takeover); !errors.Is(err, domain.ErrLeaseHeld) {
+		t.Fatalf("pre-expiry takeover error = %v", err)
+	}
+	if _, err := store.Command(ctx, preExpiry.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("pre-expiry refusal persisted as success: %v", err)
+	}
+
+	nowMillis = 2_000
+	takeoverCommand := typedCommand(t, "lease-takeover-exact-001", "project.lease.takeover", project.ID, 1, takeover)
+	result, err = store.ApplyProjectLease(ctx, takeoverCommand, takeover)
+	requireApplied(t, result, err)
+	project, err = store.Project(ctx, project.ID)
+	if err != nil || project.Lease == nil || project.Lease.Epoch != 2 || project.Lease.DispatchAllowed ||
+		project.Lease.AcquiredAtMillis != 2_000 || project.LastLeaseEpoch != 2 {
+		t.Fatalf("exact-expiry takeover = %#v, %v", project, err)
+	}
+
+	observationInput := domain.ProjectLeaseObservationInput{
+		AdapterKind: "linux-process-supervisor", AdapterVersion: "v1",
+		FactHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+	observationPayload := struct {
+		ProjectID string                              `json:"projectId"`
+		Input     domain.ProjectLeaseObservationInput `json:"input"`
+	}{project.ID, observationInput}
+	observationCommand := typedCommand(
+		t, "lease-observe-request-001", "project.lease.observe_takeover",
+		project.ID, 2, observationPayload,
+	)
+	fabricatedEvidenceCommand := typedCommand(
+		t, "lease-observe-fabricated", "project.lease.observe_takeover", project.ID, 2,
+		map[string]any{
+			"projectId": project.ID,
+			"input": map[string]any{
+				"adapterKind": observationInput.AdapterKind, "adapterVersion": observationInput.AdapterVersion,
+				"factHash": observationInput.FactHash, "priorProcessAbsent": true,
+				"dispatchChildrenAbsent": true, "fullReconciliation": true, "oneDaemonIdentity": true,
+			},
+		},
+	)
+	if _, err := store.RecordProjectLeaseObservation(
+		ctx, fabricatedEvidenceCommand, project.ID, observationInput,
+	); !errors.Is(err, storeport.ErrInvalidRecord) {
+		t.Fatalf("fabricated authority fields error = %v", err)
+	}
+	if _, err := store.Command(ctx, fabricatedEvidenceCommand.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("fabricated authority command persisted: %v", err)
+	}
+
+	interruptedContext, cancelObservation := context.WithCancel(ctx)
+	cancelObservation()
+	if _, err := store.RecordProjectLeaseObservation(
+		interruptedContext, observationCommand, project.ID, observationInput,
+	); err == nil {
+		t.Fatal("interrupted observation unexpectedly succeeded")
+	}
+	if _, err := store.Command(ctx, observationCommand.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("interrupted observation command persisted: %v", err)
+	}
+	project, err = store.Project(ctx, project.ID)
+	if err != nil || project.Version != 2 || project.LeaseObservation != nil {
+		t.Fatalf("interrupted observation changed Project = %#v, %v", project, err)
+	}
+
+	result, err = store.RecordProjectLeaseObservation(ctx, observationCommand, project.ID, observationInput)
+	requireApplied(t, result, err)
+	project, err = store.Project(ctx, project.ID)
+	if err != nil || project.Version != 3 || project.LeaseObservation == nil ||
+		project.LeaseObservation.RecordedAtMillis != 2_000 ||
+		project.LeaseObservation.MaximumAgeMillis != domain.ProjectLeaseObservationMaximumAgeMillis {
+		t.Fatalf("stored observation = %#v, %v", project.LeaseObservation, err)
+	}
+	events, err := store.Events(ctx, domain.EventQuery{AggregateID: project.ID, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var immutableObservation domain.ProjectLeaseObservation
+	for _, current := range events {
+		if current.ID == "event-"+observationCommand.IdempotencyKey {
+			if err := json.Unmarshal(current.Payload, &immutableObservation); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if immutableObservation != *project.LeaseObservation {
+		t.Fatalf("immutable observation event = %#v, want %#v", immutableObservation, *project.LeaseObservation)
+	}
+
+	fabricatedPayload := struct {
+		ProjectID     string `json:"projectId"`
+		ObservationID string `json:"observationId"`
+	}{project.ID, "fabricated-observation"}
+	fabricatedCommand := typedCommand(
+		t, "lease-enable-fabricated", "project.lease.enable_dispatch",
+		project.ID, 3, fabricatedPayload,
+	)
+	if _, err := store.EnableProjectLeaseDispatch(
+		ctx, fabricatedCommand, project.ID, fabricatedPayload.ObservationID,
+	); !errors.Is(err, domain.ErrLeaseProofInvalid) {
+		t.Fatalf("fabricated observation error = %v", err)
+	}
+	if _, err := store.Command(ctx, fabricatedCommand.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("fabricated observation command persisted: %v", err)
+	}
+
+	enablePayload := struct {
+		ProjectID     string `json:"projectId"`
+		ObservationID string `json:"observationId"`
+	}{project.ID, project.LeaseObservation.ID}
+	nowMillis = project.LeaseObservation.RecordedAtMillis + domain.ProjectLeaseObservationMaximumAgeMillis + 1
+	staleObservationCommand := typedCommand(
+		t, "lease-enable-stale-observation", "project.lease.enable_dispatch",
+		project.ID, 3, enablePayload,
+	)
+	if _, err := store.EnableProjectLeaseDispatch(
+		ctx, staleObservationCommand, project.ID, enablePayload.ObservationID,
+	); !errors.Is(err, domain.ErrLeaseProofInvalid) {
+		t.Fatalf("stale observation error = %v", err)
+	}
+
+	nowMillis = 2_100
+	enableCommand := typedCommand(
+		t, "lease-enable-request-001", "project.lease.enable_dispatch",
+		project.ID, 3, enablePayload,
+	)
+	result, err = store.EnableProjectLeaseDispatch(ctx, enableCommand, project.ID, enablePayload.ObservationID)
+	requireApplied(t, result, err)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := openContractStore(t, fixture, storeID, true)
+	dolt.UseTransactionTimestampForTest(reloaded, &nowMillis)
+	t.Cleanup(func() { _ = reloaded.Close() })
+	replay, err := reloaded.EnableProjectLeaseDispatch(ctx, enableCommand, project.ID, enablePayload.ObservationID)
+	if err != nil || !replay.Replay || replay.Outcome != domain.CommandApplied {
+		t.Fatalf("enable replay after reopen = %#v, %v", replay, err)
+	}
+	observationReplay, err := reloaded.RecordProjectLeaseObservation(
+		ctx, observationCommand, project.ID, observationInput,
+	)
+	if err != nil || !observationReplay.Replay || observationReplay.Outcome != domain.CommandApplied {
+		t.Fatalf("observation replay after reopen = %#v, %v", observationReplay, err)
+	}
+	project, err = reloaded.Project(ctx, project.ID)
+	if err != nil || project.Version != 4 || project.Lease == nil || !project.Lease.DispatchAllowed ||
+		project.LeaseObservation == nil || project.Lease.TakeoverObservationID != project.LeaseObservation.ID ||
+		project.LastLeaseEpoch != 2 {
+		t.Fatalf("reopened consumed observation = %#v, %v", project, err)
+	}
+	nowMillis = 2_500
+	release := domain.ProjectLeaseMutation{
+		Kind: domain.ProjectLeaseRelease, ProjectID: project.ID, ExpectedLeaseEpoch: 2,
+		HolderInstance: project.Lease.HolderInstance, HolderProcessIdentity: project.Lease.HolderProcessIdentity,
+	}
+	releaseCommand := typedCommand(t, "lease-release-request-001", "project.lease.release", project.ID, 4, release)
+	result, err = reloaded.ApplyProjectLease(ctx, releaseCommand, release)
+	requireApplied(t, result, err)
+	reacquire := domain.ProjectLeaseMutation{
+		Kind: domain.ProjectLeaseAcquire, ProjectID: project.ID, ExpectedLeaseEpoch: 2,
+		HolderInstance: "engine-b", HolderProcessIdentity: "pid-200:start-2", DurationMillis: 10_000,
+	}
+	reacquireCommand := typedCommand(t, "lease-reacquire-request-01", "project.lease.acquire", project.ID, 5, reacquire)
+	result, err = reloaded.ApplyProjectLease(ctx, reacquireCommand, reacquire)
+	requireApplied(t, result, err)
+	oldObservationCommand := typedCommand(
+		t, "lease-old-observation-001", "project.lease.enable_dispatch", project.ID, 6, enablePayload,
+	)
+	if _, err := reloaded.EnableProjectLeaseDispatch(
+		ctx, oldObservationCommand, project.ID, enablePayload.ObservationID,
+	); !errors.Is(err, domain.ErrLeaseProofInvalid) {
+		t.Fatalf("prior epoch observation error = %v", err)
+	}
+	if _, err := reloaded.Command(ctx, oldObservationCommand.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("prior epoch observation command persisted: %v", err)
+	}
+	project, err = reloaded.Project(ctx, project.ID)
+	if err != nil || project.Version != 6 || project.Lease == nil || project.Lease.Epoch != 3 ||
+		project.LastLeaseEpoch != 3 || !project.Lease.DispatchAllowed || project.LeaseObservation != nil {
+		t.Fatalf("reacquired Project = %#v, %v", project, err)
+	}
+}
+
+func TestDoltProjectLeaseEpochSurvivesReleaseRestartAndConcurrentReacquire(t *testing.T) {
+	fixture := startDoltFixture(t)
+	const storeID = "project-lease-monotonic-store"
+	store := openContractStore(t, fixture, storeID, true)
+	ctx := context.Background()
+	nowMillis := int64(1_000)
+	dolt.UseTransactionTimestampForTest(store, &nowMillis)
+	project := domain.Project{
+		ID: "monotonic-project", Name: "Monotonic Project", State: "active", Organizer: testOrganizer("monotonic-project"),
+	}
+	workspace := testWorkspace(
+		t, project.ID, "product", "/srv/workspaces/monotonic-project",
+		"https://github.com/example/monotonic-project.git",
+	)
+	result, err := store.CreateProject(
+		ctx, command("monotonic-project-create", "project.create", project.ID, 0, `{}`), project,
+		[]domain.Workspace{workspace}, event("monotonic-project-created", "", 1, project.ID, 0, "project.created"),
+	)
+	requireApplied(t, result, err)
+
+	acquire := domain.ProjectLeaseMutation{
+		Kind: domain.ProjectLeaseAcquire, ProjectID: project.ID, ExpectedLeaseEpoch: 0,
+		HolderInstance: "engine-a", HolderProcessIdentity: "pid-100:start-1", DurationMillis: 10_000,
+	}
+	acquireCommand := typedCommand(t, "monotonic-acquire-001", "project.lease.acquire", project.ID, 0, acquire)
+	result, err = store.ApplyProjectLease(ctx, acquireCommand, acquire)
+	requireApplied(t, result, err)
+
+	nowMillis = 2_000
+	release := domain.ProjectLeaseMutation{
+		Kind: domain.ProjectLeaseRelease, ProjectID: project.ID, ExpectedLeaseEpoch: 1,
+		HolderInstance: "engine-a", HolderProcessIdentity: "pid-100:start-1",
+	}
+	releaseCommand := typedCommand(t, "monotonic-release-001", "project.lease.release", project.ID, 1, release)
+	interrupted, cancelRelease := context.WithCancel(ctx)
+	cancelRelease()
+	if _, err := store.ApplyProjectLease(interrupted, releaseCommand, release); err == nil {
+		t.Fatal("interrupted release unexpectedly succeeded")
+	}
+	if _, err := store.Command(ctx, releaseCommand.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("interrupted release command persisted: %v", err)
+	}
+	project, err = store.Project(ctx, project.ID)
+	if err != nil || project.Version != 1 || project.Lease == nil || project.Lease.Epoch != 1 || project.LastLeaseEpoch != 1 {
+		t.Fatalf("interrupted release changed Project = %#v, %v", project, err)
+	}
+	result, err = store.ApplyProjectLease(ctx, releaseCommand, release)
+	requireApplied(t, result, err)
+	project, err = store.Project(ctx, project.ID)
+	if err != nil || project.Version != 2 || project.Lease != nil || project.LastLeaseEpoch != 1 {
+		t.Fatalf("released Project = %#v, %v", project, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := openContractStore(t, fixture, storeID, true)
+	dolt.UseTransactionTimestampForTest(restarted, &nowMillis)
+	project, err = restarted.Project(ctx, project.ID)
+	if err != nil || project.Version != 2 || project.Lease != nil || project.LastLeaseEpoch != 1 {
+		t.Fatalf("reopened release tombstone = %#v, %v", project, err)
+	}
+
+	mutations := []domain.ProjectLeaseMutation{
+		{Kind: domain.ProjectLeaseAcquire, ProjectID: project.ID, ExpectedLeaseEpoch: 1, HolderInstance: "engine-b", HolderProcessIdentity: "pid-200:start-2", DurationMillis: 10_000},
+		{Kind: domain.ProjectLeaseAcquire, ProjectID: project.ID, ExpectedLeaseEpoch: 1, HolderInstance: "engine-c", HolderProcessIdentity: "pid-300:start-3", DurationMillis: 10_000},
+	}
+	commands := []domain.CommandRequest{
+		typedCommand(t, "monotonic-reacquire-b", "project.lease.acquire", project.ID, 2, mutations[0]),
+		typedCommand(t, "monotonic-reacquire-c", "project.lease.acquire", project.ID, 2, mutations[1]),
+	}
+	type attempt struct {
+		result domain.CommandResult
+		err    error
+	}
+	attempts := make([]attempt, len(commands))
+	var wait sync.WaitGroup
+	for index := range commands {
+		index := index
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			attempts[index].result, attempts[index].err = restarted.ApplyProjectLease(ctx, commands[index], mutations[index])
+		}()
+	}
+	wait.Wait()
+	outcomes := []domain.CommandOutcome{attempts[0].result.Outcome, attempts[1].result.Outcome}
+	sort.Slice(outcomes, func(left, right int) bool { return outcomes[left] < outcomes[right] })
+	if attempts[0].err != nil || attempts[1].err != nil || len(outcomes) != 2 ||
+		outcomes[0] != domain.CommandApplied || outcomes[1] != domain.CommandRejectedVersionConflict {
+		t.Fatalf("concurrent reacquire attempts = %#v outcomes=%v", attempts, outcomes)
+	}
+	project, err = restarted.Project(ctx, project.ID)
+	if err != nil || project.Version != 3 || project.Lease == nil || project.Lease.Epoch != 2 ||
+		project.LastLeaseEpoch != 2 || !project.Lease.DispatchAllowed {
+		t.Fatalf("concurrent reacquire Project = %#v, %v", project, err)
+	}
+	staleRenew := domain.ProjectLeaseMutation{
+		Kind: domain.ProjectLeaseRenew, ProjectID: project.ID, ExpectedLeaseEpoch: 1,
+		HolderInstance: "engine-a", HolderProcessIdentity: "pid-100:start-1", DurationMillis: 10_000,
+	}
+	staleCommand := typedCommand(t, "monotonic-stale-epoch", "project.lease.renew", project.ID, 3, staleRenew)
+	if _, err := restarted.ApplyProjectLease(ctx, staleCommand, staleRenew); !errors.Is(err, domain.ErrLeaseExpired) {
+		t.Fatalf("stale epoch renew error = %v", err)
+	}
+	if _, err := restarted.Command(ctx, staleCommand.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("stale epoch command persisted: %v", err)
+	}
+	if err := restarted.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	final := openContractStore(t, fixture, storeID, true)
+	dolt.UseTransactionTimestampForTest(final, &nowMillis)
+	t.Cleanup(func() { _ = final.Close() })
+	for index := range commands {
+		replay, err := final.ApplyProjectLease(ctx, commands[index], mutations[index])
+		if err != nil || !replay.Replay || replay.Outcome != attempts[index].result.Outcome {
+			t.Fatalf("reacquire replay %d = %#v, %v", index, replay, err)
+		}
+	}
+	releaseReplay, err := final.ApplyProjectLease(ctx, releaseCommand, release)
+	if err != nil || !releaseReplay.Replay || releaseReplay.Outcome != domain.CommandApplied {
+		t.Fatalf("release replay after reopen = %#v, %v", releaseReplay, err)
+	}
+	project, err = final.Project(ctx, project.ID)
+	if err != nil || project.Lease == nil || project.Lease.Epoch != 2 || project.LastLeaseEpoch != 2 {
+		t.Fatalf("final monotonic Project = %#v, %v", project, err)
+	}
+}
+
+func TestDoltProjectLeaseEpochOverflowFailsClosedAcrossReopen(t *testing.T) {
+	fixture := startDoltFixture(t)
+	const storeID = "project-lease-overflow-store"
+	store := openContractStore(t, fixture, storeID, true)
+	ctx := context.Background()
+	nowMillis := int64(1_000)
+	dolt.UseTransactionTimestampForTest(store, &nowMillis)
+	project := domain.Project{
+		ID: "overflow-project", Name: "Overflow Project", State: "active", Organizer: testOrganizer("overflow-project"),
+	}
+	workspace := testWorkspace(
+		t, project.ID, "product", "/srv/workspaces/overflow-project",
+		"https://github.com/example/overflow-project.git",
+	)
+	preallocated := project
+	preallocated.LastLeaseEpoch = 1
+	preallocatedCommand := command("overflow-preallocated-create", "project.create", project.ID, 0, `{}`)
+	if _, err := store.CreateProject(
+		ctx, preallocatedCommand, preallocated, []domain.Workspace{workspace},
+		event("overflow-preallocated-event", "", 1, project.ID, 0, "project.created"),
+	); !errors.Is(err, storeport.ErrInvalidRecord) {
+		t.Fatalf("caller-preallocated epoch error = %v", err)
+	}
+	if _, err := store.Command(ctx, preallocatedCommand.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("caller-preallocated epoch command persisted: %v", err)
+	}
+	result, err := store.CreateProject(
+		ctx, command("overflow-project-create", "project.create", project.ID, 0, `{}`), project,
+		[]domain.Workspace{workspace}, event("overflow-project-created", "", 1, project.ID, 0, "project.created"),
+	)
+	requireApplied(t, result, err)
+	inspection := rootDatabase(t, fixture, fixture.database)
+	var rawData []byte
+	if err := inspection.QueryRowContext(ctx, `SELECT data FROM aggregates WHERE id = ?`, project.ID).Scan(&rawData); err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(rawData, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["lastLeaseEpoch"] = json.RawMessage(`18446744073709551615`)
+	rawData, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspection.ExecContext(ctx, `UPDATE aggregates SET data = ? WHERE id = ?`, rawData, project.ID); err != nil {
+		t.Fatal(err)
+	}
+	inspection.Close()
+	project, err = store.Project(ctx, project.ID)
+	if err != nil || project.Lease != nil || project.LastLeaseEpoch != ^uint64(0) {
+		t.Fatalf("maximum lease epoch Project = %#v, %v", project, err)
+	}
+	mutation := domain.ProjectLeaseMutation{
+		Kind: domain.ProjectLeaseAcquire, ProjectID: project.ID, ExpectedLeaseEpoch: ^uint64(0),
+		HolderInstance: "engine-overflow", HolderProcessIdentity: "pid-max:start-max", DurationMillis: 1_000,
+	}
+	request := typedCommand(t, "overflow-acquire-request", "project.lease.acquire", project.ID, 0, mutation)
+	if _, err := store.ApplyProjectLease(ctx, request, mutation); !errors.Is(err, domain.ErrLeaseTransitionInvalid) {
+		t.Fatalf("maximum lease epoch acquire error = %v", err)
+	}
+	if _, err := store.Command(ctx, request.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("overflow command persisted: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened := openContractStore(t, fixture, storeID, true)
+	t.Cleanup(func() { _ = reopened.Close() })
+	project, err = reopened.Project(ctx, project.ID)
+	if err != nil || project.Lease != nil || project.LastLeaseEpoch != ^uint64(0) {
+		t.Fatalf("reopened maximum lease epoch Project = %#v, %v", project, err)
+	}
+}
+
+func TestDoltProjectLeaseUsesServerTimeWithoutCallerClock(t *testing.T) {
+	fixture := startDoltFixture(t)
+	store := openContractStore(t, fixture, "project-lease-server-clock", true)
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	project := domain.Project{
+		ID: "clock-project", Name: "Clock Project", State: "active", Organizer: testOrganizer("clock-project"),
+	}
+	workspace := testWorkspace(
+		t, project.ID, "product", "/srv/workspaces/clock-project",
+		"https://github.com/example/clock-project.git",
+	)
+	result, err := store.CreateProject(
+		ctx, command("clock-project-create", "project.create", project.ID, 0, `{}`), project,
+		[]domain.Workspace{workspace}, event("clock-project-created", "", 1, project.ID, 0, "project.created"),
+	)
+	requireApplied(t, result, err)
+	mutation := domain.ProjectLeaseMutation{
+		Kind: domain.ProjectLeaseAcquire, ProjectID: project.ID,
+		HolderInstance: "engine-clock", HolderProcessIdentity: "pid-300:start-1", DurationMillis: 60_000,
+	}
+	request := typedCommand(t, "clock-lease-acquire", "project.lease.acquire", project.ID, 0, mutation)
+	before := time.Now().UnixMilli()
+	result, err = store.ApplyProjectLease(ctx, request, mutation)
+	after := time.Now().UnixMilli()
+	requireApplied(t, result, err)
+	project, err = store.Project(ctx, project.ID)
+	if err != nil || project.Lease == nil || project.Lease.AcquiredAtMillis < before-1_000 ||
+		project.Lease.AcquiredAtMillis > after+1_000 ||
+		project.Lease.ExpiresAtMillis-project.Lease.AcquiredAtMillis != mutation.DurationMillis ||
+		project.LastLeaseEpoch != 1 {
+		t.Fatalf("server-clock lease = %#v before=%d after=%d error=%v", project.Lease, before, after, err)
+	}
+}
+
+func TestDoltStaleWorkspaceReplacementConflictsBeforeMappingAndReplays(t *testing.T) {
+	fixture := startDoltFixture(t)
+	const storeID = "workspace-stale-store"
+	store := openContractStore(t, fixture, storeID, true)
+	ctx := context.Background()
+	project := domain.Project{
+		ID: "stale-project", Name: "Stale Project", State: "active", Organizer: testOrganizer("stale-project"),
+	}
+	first := testWorkspace(
+		t, project.ID, "first", "/srv/workspaces/stale-first", "https://github.com/example/stale-first.git",
+	)
+	second := testWorkspace(
+		t, project.ID, "second", "/srv/workspaces/stale-second", "https://github.com/example/stale-second.git",
+	)
+	result, err := store.CreateProject(
+		ctx, command("stale-project-create", "project.create", project.ID, 0, `{}`), project,
+		[]domain.Workspace{first, second}, event("stale-project-created", "", 1, project.ID, 0, "project.created"),
+	)
+	requireApplied(t, result, err)
+	second.Name = "Current second"
+	second.Version = 1
+	result, err = store.UpdateWorkspace(
+		ctx, command("stale-workspace-current", "workspace.update", second.ID, 0, `{}`), second,
+		event("stale-workspace-current-event", "", 1, second.ID, 1, "workspace.updated"),
+	)
+	requireApplied(t, result, err)
+
+	rebound := second
+	repository, err := repositorydomain.CanonicalRemote("https://github.com/example/rebound.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebound.Repository.ID = repository.ID
+	rebound.Repository.Key = repository.Key
+	rebound.Repository.CanonicalRemote = repository.Canonical
+	rebindCommand := command("stale-workspace-rebind", "workspace.update", second.ID, 0, `{}`)
+	rebindEvent := event("stale-workspace-rebind-event", "", 2, second.ID, 1, "workspace.updated")
+	rebindResult, err := store.UpdateWorkspace(ctx, rebindCommand, rebound, rebindEvent)
+	if err != nil || rebindResult.Outcome != domain.CommandRejectedVersionConflict || rebindResult.ObservedVersion != 1 {
+		t.Fatalf("stale rebind = %#v, %v", rebindResult, err)
+	}
+
+	aliasConflict := second
+	aliasConflict.Repository.SourcePath = first.Repository.SourcePath
+	aliasConflict.Repository.SourceDevice = first.Repository.SourceDevice
+	aliasConflict.Repository.SourceInode = first.Repository.SourceInode
+	aliasConflict.Repository.GitCommonDirectory = first.Repository.GitCommonDirectory
+	aliasConflict.Repository.GitCommonDevice = first.Repository.GitCommonDevice
+	aliasConflict.Repository.GitCommonInode = first.Repository.GitCommonInode
+	aliasCommand := command("stale-workspace-alias", "workspace.update", second.ID, 0, `{}`)
+	aliasEvent := event("stale-workspace-alias-event", "", 3, second.ID, 1, "workspace.updated")
+	aliasResult, err := store.UpdateWorkspace(ctx, aliasCommand, aliasConflict, aliasEvent)
+	if err != nil || aliasResult.Outcome != domain.CommandRejectedVersionConflict || aliasResult.ObservedVersion != 1 {
+		t.Fatalf("stale alias conflict = %#v, %v", aliasResult, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := openContractStore(t, fixture, storeID, true)
+	t.Cleanup(func() { _ = reloaded.Close() })
+	for name, replay := range map[string]func() (domain.CommandResult, error){
+		"rebind": func() (domain.CommandResult, error) {
+			return reloaded.UpdateWorkspace(ctx, rebindCommand, rebound, rebindEvent)
+		},
+		"alias": func() (domain.CommandResult, error) {
+			return reloaded.UpdateWorkspace(ctx, aliasCommand, aliasConflict, aliasEvent)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result, err := replay()
+			if err != nil || !result.Replay || result.Outcome != domain.CommandRejectedVersionConflict || result.ObservedVersion != 1 {
+				t.Fatalf("%s replay = %#v, %v", name, result, err)
+			}
+		})
+	}
+}
+
+func TestDoltCanonicalRemoteSinglePassPersistenceAndRejection(t *testing.T) {
+	fixture := startDoltFixture(t)
+	const storeID = "canonical-remote-store"
+	store := openContractStore(t, fixture, storeID, true)
+	ctx := context.Background()
+	project := domain.Project{
+		ID: "percent-project", Name: "Percent Project", State: "active", Organizer: testOrganizer("percent-project"),
+	}
+	const remote = "https://github.com/acme/repo%252egit"
+	workspace := testWorkspace(t, project.ID, "product", "/srv/workspaces/percent-project", remote)
+	result, err := store.CreateProject(
+		ctx, command("percent-project-create", "project.create", project.ID, 0, `{}`), project,
+		[]domain.Workspace{workspace}, event("percent-project-created", "", 1, project.ID, 0, "project.created"),
+	)
+	requireApplied(t, result, err)
+	persisted, err := store.Workspace(ctx, workspace.ID)
+	if err != nil || persisted.Repository.CanonicalRemote != remote ||
+		persisted.Repository.Key != "github.com/acme/repo%2egit" {
+		t.Fatalf("persisted percent Workspace = %#v, %v", persisted, err)
+	}
+	roundTrip, err := repositorydomain.CanonicalRemote(persisted.Repository.CanonicalRemote)
+	if err != nil || roundTrip.Canonical != persisted.Repository.CanonicalRemote ||
+		roundTrip.Key != persisted.Repository.Key || roundTrip.ID != persisted.Repository.ID {
+		t.Fatalf("persisted canonical round trip = %#v, %v", roundTrip, err)
+	}
+
+	for name, rejected := range map[string]string{
+		"malformed embedded IPv4": "ssh://git@[192.168.1.1::]/example/product.git",
+		"token-shaped username":   "https://token-shaped-username-0123456789abcdef@github.com/example/product.git",
+		"raw repeated suffix":     "https://github.com/example/repository.git.git",
+		"case repeated suffix":    "https://github.com/example/repository.GIT.git",
+		"encoded prefix suffix":   "https://github.com/example/repository%2egit.git",
+		"encoded terminal suffix": "https://github.com/example/repository.git%2egit",
+		"deeper suffix chain":     "https://github.com/example/repository%2Egit%2egit%2EGIT",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rejectedProject := domain.Project{
+				ID: "rejected-" + strings.ReplaceAll(name, " ", "-"), Name: "Rejected Remote", State: "active",
+			}
+			rejectedProject.Organizer = testOrganizer(rejectedProject.ID)
+			rejectedWorkspace := testWorkspace(
+				t, rejectedProject.ID, "product", "/srv/workspaces/"+rejectedProject.ID,
+				"https://github.com/example/"+rejectedProject.ID+".git",
+			)
+			rejectedWorkspace.Repository.CanonicalRemote = rejected
+			request := command("canonical-rejected-"+strings.ReplaceAll(name, " ", "-"), "project.create", rejectedProject.ID, 0, `{}`)
+			_, err := store.CreateProject(
+				ctx, request, rejectedProject, []domain.Workspace{rejectedWorkspace},
+				event("canonical-rejected-event-"+strings.ReplaceAll(name, " ", "-"), "", 1, rejectedProject.ID, 0, "project.created"),
+			)
+			if !errors.Is(err, storeport.ErrInvalidRecord) || strings.Contains(err.Error(), rejected) {
+				t.Fatalf("rejected remote error = %v", err)
+			}
+			if _, err := store.Command(ctx, request.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+				t.Fatalf("rejected remote command persisted: %v", err)
+			}
+		})
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := openContractStore(t, fixture, storeID, true)
+	t.Cleanup(func() { _ = reloaded.Close() })
+	persisted, err = reloaded.Workspace(ctx, workspace.ID)
+	if err != nil || persisted.Repository.CanonicalRemote != remote || persisted.Repository.Key != "github.com/acme/repo%2egit" {
+		t.Fatalf("reopened percent Workspace = %#v, %v", persisted, err)
+	}
+}
+
+func TestDoltWorkspaceMappingIsIdempotentConcurrentAndProjectScoped(t *testing.T) {
+	fixture := startDoltFixture(t)
+	store := openContractStore(t, fixture, "workspace-mapping-store", true)
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	project := domain.Project{
+		ID: "mapping-project", Name: "Mapping Project", State: "active", Organizer: testOrganizer("mapping-project"),
+	}
+	initial := testWorkspace(
+		t, project.ID, "workspace-initial", "/srv/workspaces/mapping-initial",
+		"https://github.com/example/initial.git",
+	)
+	const secretRemoteUser = "token-shaped-username-0123456789abcdef"
+	credentialWorkspace := initial
+	credentialWorkspace.Repository.CanonicalRemote = "https://" + secretRemoteUser + "@github.com/example/initial.git"
+	credentialCommand := command("mapping-credential-remote", "project.create", project.ID, 0, `{}`)
+	if _, err := store.CreateProject(
+		ctx, credentialCommand, project, []domain.Workspace{credentialWorkspace},
+		event("mapping-credential-remote-event", "", 1, project.ID, 0, "project.created"),
+	); !errors.Is(err, storeport.ErrInvalidRecord) || strings.Contains(err.Error(), secretRemoteUser) {
+		t.Fatalf("credential remote error = %v", err)
+	}
+	if _, err := store.Command(ctx, credentialCommand.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+		t.Fatalf("credential-bearing command persisted: %v", err)
+	}
+	wrongOrganizer := project
+	wrongOrganizer.ID = "mapping-project-invalid"
+	wrongOrganizer.Organizer = testOrganizer(wrongOrganizer.ID)
+	wrongOrganizer.Organizer.ID = domain.OrganizerID("another-project")
+	wrongWorkspace := testWorkspace(
+		t, wrongOrganizer.ID, "product", "/srv/workspaces/mapping-invalid",
+		"https://github.com/example/mapping-invalid.git",
+	)
+	if _, err := store.CreateProject(
+		ctx, command("mapping-invalid-organizer", "project.create", wrongOrganizer.ID, 0, `{}`), wrongOrganizer,
+		[]domain.Workspace{wrongWorkspace},
+		event("mapping-invalid-organizer-event", "", 1, wrongOrganizer.ID, 0, "project.created"),
+	); !errors.Is(err, storeport.ErrInvalidRecord) {
+		t.Fatalf("wrong Organizer identity error = %v", err)
+	}
+	if _, err := store.CreateProject(
+		ctx, command("mapping-empty-workspaces", "project.create", project.ID, 0, `{}`), project, nil,
+		event("mapping-empty-workspaces-event", "", 1, project.ID, 0, "project.created"),
+	); !errors.Is(err, storeport.ErrInvalidRecord) {
+		t.Fatalf("empty Workspace set error = %v", err)
+	}
+	result, err := store.CreateProject(
+		ctx, command("mapping-project-create", "project.create", project.ID, 0, `{}`), project,
+		[]domain.Workspace{initial}, event("mapping-project-created-event", "", 1, project.ID, 0, "project.created"),
+	)
+	requireApplied(t, result, err)
+
+	added := testWorkspace(
+		t, project.ID, "workspace-added", "/srv/workspaces/mapping-added",
+		"https://github.com/example/shared.git",
+	)
+	createAdded := command("mapping-workspace-create", "workspace.create", added.ID, 0, `{}`)
+	createAddedEvent := event("mapping-workspace-created-event", "", 1, added.ID, 0, "workspace.created")
+	result, err = store.CreateWorkspace(ctx, createAdded, added, createAddedEvent)
+	requireApplied(t, result, err)
+	replay, err := store.CreateWorkspace(ctx, createAdded, added, createAddedEvent)
+	if err != nil || !replay.Replay || replay.Outcome != domain.CommandApplied {
+		t.Fatalf("Workspace create replay = %#v, %v", replay, err)
+	}
+	conflictingReplay := createAdded
+	conflictingReplay.Payload = json.RawMessage(`{"different":true}`)
+	if _, err := store.CreateWorkspace(ctx, conflictingReplay, added, createAddedEvent); !errors.Is(err, storeport.ErrIdempotencyConflict) {
+		t.Fatalf("Workspace conflicting replay error = %v", err)
+	}
+
+	rebound := added
+	differentRemote, err := repositorydomain.CanonicalRemote("https://github.com/example/different.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebound.Repository.ID, rebound.Repository.Key = differentRemote.ID, differentRemote.Key
+	rebound.Repository.CanonicalRemote = differentRemote.Canonical
+	rebound.Version = 1
+	if _, err := store.UpdateWorkspace(
+		ctx, command("mapping-workspace-rebind", "workspace.update", rebound.ID, 0, `{}`), rebound,
+		event("mapping-workspace-rebind-event", "", 1, rebound.ID, 1, "workspace.updated"),
+	); !errors.Is(err, storeport.ErrInvalidRecord) {
+		t.Fatalf("Workspace repository rebind error = %v", err)
+	}
+	collidingPath := added
+	collidingPath.Repository.SourcePath = initial.Repository.SourcePath
+	collidingPath.Repository.GitCommonDirectory = initial.Repository.GitCommonDirectory
+	collidingPath.Version = 1
+	if _, err := store.UpdateWorkspace(
+		ctx, command("mapping-workspace-path-conflict", "workspace.update", collidingPath.ID, 0, `{}`), collidingPath,
+		event("mapping-workspace-path-conflict-event", "", 1, collidingPath.ID, 1, "workspace.updated"),
+	); !errors.Is(err, storeport.ErrWorkspaceConflict) {
+		t.Fatalf("Workspace path conflict error = %v", err)
+	}
+
+	alias := testWorkspace(
+		t, project.ID, "workspace-alias", "/srv/workspaces/mapping-alias",
+		"git@github.com:example/shared.git",
+	)
+	if _, err := store.CreateWorkspace(
+		ctx, command("mapping-workspace-alias", "workspace.create", alias.ID, 0, `{}`), alias,
+		event("mapping-workspace-alias-event", "", 1, alias.ID, 0, "workspace.created"),
+	); !errors.Is(err, storeport.ErrWorkspaceConflict) {
+		t.Fatalf("canonical alias conflict error = %v", err)
+	}
+
+	raceCandidates := []domain.Workspace{
+		testWorkspace(t, project.ID, "workspace-race-a", "/srv/workspaces/race-a", "https://github.com/example/race.git"),
+		testWorkspace(t, project.ID, "workspace-race-b", "/srv/workspaces/race-b", "git@github.com:example/race.git"),
+	}
+	start := make(chan struct{})
+	raceResults := make(chan domain.CommandResult, 2)
+	raceErrors := make(chan error, 2)
+	var wait sync.WaitGroup
+	for index := 0; index < len(raceCandidates); index++ {
+		candidate := raceCandidates[index]
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			result, err := store.CreateWorkspace(
+				ctx,
+				command("mapping-race-"+candidate.ID, "workspace.create", candidate.ID, 0, `{}`),
+				candidate,
+				event("mapping-race-event-"+candidate.ID, "", 1, candidate.ID, 0, "workspace.created"),
+			)
+			raceResults <- result
+			raceErrors <- err
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(raceResults)
+	close(raceErrors)
+	applied, conflicts := 0, 0
+	for result := range raceResults {
+		if result.Outcome == domain.CommandApplied {
+			applied++
+		}
+	}
+	for err := range raceErrors {
+		switch {
+		case err == nil:
+		case errors.Is(err, storeport.ErrWorkspaceConflict):
+			conflicts++
+		default:
+			t.Fatalf("concurrent Workspace create error = %v", err)
+		}
+	}
+	if applied != 1 || conflicts != 1 {
+		t.Fatalf("concurrent Workspace results applied=%d conflicts=%d", applied, conflicts)
+	}
+
+	workspaces, err := store.Workspaces(ctx, project.ID)
+	if err != nil || len(workspaces) != 3 {
+		t.Fatalf("Workspaces() = %#v, %v", workspaces, err)
+	}
+
+	secondProject := domain.Project{
+		ID: "mapping-project-2", Name: "Second Mapping Project", State: "active",
+		Organizer: testOrganizer("mapping-project-2"),
+	}
+	secondWorkspace := testWorkspace(
+		t, secondProject.ID, "workspace-second-project", "/srv/workspaces/second-project",
+		"git@github.com:example/shared.git",
+	)
+	result, err = store.CreateProject(
+		ctx, command("mapping-project-2-create", "project.create", secondProject.ID, 0, `{}`), secondProject,
+		[]domain.Workspace{secondWorkspace},
+		event("mapping-project-2-created-event", "", 1, secondProject.ID, 0, "project.created"),
+	)
+	requireApplied(t, result, err)
+	projects, err := store.Projects(ctx)
+	if err != nil || len(projects) != 2 {
+		t.Fatalf("Projects() = %#v, %v", projects, err)
+	}
+}
+
 func TestDoltSchemaGuardsAndExternalInspection(t *testing.T) {
 	fixture := startDoltFixture(t)
 	store := openContractStore(t, fixture, "director-guard-store", true)
@@ -484,7 +1399,7 @@ func TestDoltSchemaGuardsAndExternalInspection(t *testing.T) {
 	).Scan(&aggregateCount, &commandCount, &eventCount); err != nil {
 		t.Fatalf("inspect plain TaskStore tables: %v", err)
 	}
-	if aggregateCount != 3 || commandCount != 8 || eventCount != 6 {
+	if aggregateCount != 4 || commandCount != 9 || eventCount != 7 {
 		t.Fatalf("unexpected externally inspectable counts: aggregates=%d commands=%d events=%d", aggregateCount, commandCount, eventCount)
 	}
 	if _, err := inspection.ExecContext(ctx,

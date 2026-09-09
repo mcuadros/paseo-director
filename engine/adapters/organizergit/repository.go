@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"unicode"
 
+	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 	repoport "github.com/mcuadros/director-engine/ports/organizer"
 )
 
@@ -830,18 +831,67 @@ func (*Adapter) VerifyFiles(ctx context.Context, root string, relativePaths []st
 	return nil
 }
 
-// VerifyWorkspace reads the exact product checkout root and origin only.
-func (*Adapter) VerifyWorkspace(ctx context.Context, root, expectedRemote string) error {
+// ResolveWorkspace reads the exact product checkout root, Git common
+// directory, and origin and returns their canonical identity.
+func (*Adapter) ResolveWorkspace(ctx context.Context, root, expectedRemote string) (repoport.WorkspaceSnapshot, error) {
 	path, err := exactRoot(root, true)
 	if err != nil {
-		return repoport.ErrWorkspaceMismatch
+		return repoport.WorkspaceSnapshot{}, repoport.ErrWorkspaceMismatch
 	}
 	if err := gitRoot(ctx, path); err != nil {
-		return repoport.ErrWorkspaceMismatch
+		return repoport.WorkspaceSnapshot{}, repoport.ErrWorkspaceMismatch
+	}
+	sourceInfo, err := os.Lstat(path)
+	if err != nil {
+		return repoport.WorkspaceSnapshot{}, repoport.ErrWorkspaceMismatch
+	}
+	sourceIdentity, sourceOK := sourceInfo.Sys().(*syscall.Stat_t)
+	if !sourceOK || sourceIdentity.Dev == 0 || sourceIdentity.Ino == 0 {
+		return repoport.WorkspaceSnapshot{}, repoport.ErrWorkspaceMismatch
+	}
+	commonDirectory, err := gitCommand(ctx, path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return repoport.WorkspaceSnapshot{}, repoport.ErrWorkspaceMismatch
+	}
+	commonDirectory = filepath.Clean(filepath.FromSlash(commonDirectory))
+	resolvedCommon, err := filepath.EvalSymlinks(commonDirectory)
+	relativeCommon, relativeErr := filepath.Rel(path, commonDirectory)
+	if err != nil || relativeErr != nil || !filepath.IsAbs(commonDirectory) || resolvedCommon != commonDirectory ||
+		relativeCommon == ".." || strings.HasPrefix(relativeCommon, ".."+string(filepath.Separator)) {
+		return repoport.WorkspaceSnapshot{}, repoport.ErrWorkspaceMismatch
+	}
+	commonInfo, err := os.Lstat(commonDirectory)
+	if err != nil {
+		return repoport.WorkspaceSnapshot{}, repoport.ErrWorkspaceMismatch
+	}
+	commonIdentity, commonOK := commonInfo.Sys().(*syscall.Stat_t)
+	if !commonOK || commonIdentity.Dev == 0 || commonIdentity.Ino == 0 {
+		return repoport.WorkspaceSnapshot{}, repoport.ErrWorkspaceMismatch
 	}
 	remote, err := gitCommand(ctx, path, "remote", "get-url", "origin")
-	if err != nil || remote != expectedRemote {
-		return repoport.ErrWorkspaceMismatch
+	if err != nil {
+		return repoport.WorkspaceSnapshot{}, repoport.ErrWorkspaceMismatch
 	}
-	return nil
+	expectedIdentity, err := repositorydomain.CanonicalRemote(expectedRemote)
+	if err != nil {
+		return repoport.WorkspaceSnapshot{}, repoport.ErrWorkspaceMismatch
+	}
+	observedIdentity, err := repositorydomain.CanonicalRemote(remote)
+	if err != nil || observedIdentity.Key != expectedIdentity.Key {
+		return repoport.WorkspaceSnapshot{}, repoport.ErrWorkspaceMismatch
+	}
+	return repoport.WorkspaceSnapshot{
+		SourcePath: path, SourceDevice: uint64(sourceIdentity.Dev), SourceInode: sourceIdentity.Ino,
+		GitCommonDirectory: commonDirectory,
+		GitCommonDevice:    uint64(commonIdentity.Dev), GitCommonInode: commonIdentity.Ino,
+		CanonicalRemote: observedIdentity.Canonical, RepositoryKey: observedIdentity.Key,
+		RepositoryID: observedIdentity.ID,
+	}, nil
+}
+
+// VerifyWorkspace preserves the M1 observation surface while delegating to
+// the canonical M2 resolver.
+func (adapter *Adapter) VerifyWorkspace(ctx context.Context, root, expectedRemote string) error {
+	_, err := adapter.ResolveWorkspace(ctx, root, expectedRemote)
+	return err
 }

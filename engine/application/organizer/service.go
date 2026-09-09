@@ -65,8 +65,9 @@ type BoundaryHook func(Boundary) error
 
 // ProjectStore is the narrow Project subset of the selected TaskStore port.
 type ProjectStore interface {
-	CreateProject(context.Context, domain.CommandRequest, domain.Project, domain.Event) (domain.CommandResult, error)
+	CreateProject(context.Context, domain.CommandRequest, domain.Project, []domain.Workspace, domain.Event) (domain.CommandResult, error)
 	Project(context.Context, string) (domain.Project, error)
+	Workspaces(context.Context, string) ([]domain.Workspace, error)
 	UpdateProject(context.Context, domain.CommandRequest, domain.Project, domain.Event) (domain.CommandResult, error)
 }
 
@@ -115,6 +116,7 @@ type Preview struct {
 	readme            []byte
 	ownership         []byte
 	references        []referenceFile
+	workspaces        []domain.Workspace
 }
 
 type referenceFile struct {
@@ -284,6 +286,12 @@ func (service *Service) validateDocument(
 	if configuration.Project.Name != preview.ProjectName {
 		preview.Issues = append(preview.Issues, issue("project.name_mismatch", "project.name", "configuration Project name differs from the requested Project"))
 	}
+	overrides := make(map[string]domain.WorkspacePolicy, len(configuration.WorkspaceOverrides))
+	for _, override := range configuration.WorkspaceOverrides {
+		overrides[override.WorkspaceID] = domain.WorkspacePolicy{
+			LaunchPolicy: string(override.LaunchPolicy), DeliveryMode: string(override.DeliveryMode),
+		}
+	}
 	for index, workspace := range configuration.Workspaces {
 		if pathContains(workspace.SourcePath, preview.RepositoryPath) || pathContains(preview.RepositoryPath, workspace.SourcePath) {
 			preview.Issues = append(preview.Issues, issue(
@@ -293,12 +301,34 @@ func (service *Service) validateDocument(
 			continue
 		}
 		if verifyExternal {
-			if err := service.repository.VerifyWorkspace(ctx, workspace.SourcePath, workspace.Remote); err != nil {
+			resolved, err := service.repository.ResolveWorkspace(ctx, workspace.SourcePath, workspace.Remote)
+			if err != nil {
 				preview.Issues = append(preview.Issues, issue(
 					"workspace.identity_mismatch", fmt.Sprintf("workspaces[%d]", index),
 					"Workspace path or origin remote does not match the configuration",
 				))
+				continue
 			}
+			name := workspace.Name
+			if name == "" {
+				name = workspace.ID
+			}
+			policy, overridden := overrides[workspace.ID]
+			if !overridden {
+				policy = domain.WorkspacePolicy{LaunchPolicy: "inherit", DeliveryMode: "inherit"}
+			}
+			preview.workspaces = append(preview.workspaces, domain.Workspace{
+				ID: domain.WorkspaceID(preview.ProjectID, workspace.ID), ProjectID: preview.ProjectID,
+				Key: workspace.ID, Name: name,
+				Repository: domain.RepositoryIdentity{
+					ID: resolved.RepositoryID, Key: resolved.RepositoryKey,
+					CanonicalRemote: resolved.CanonicalRemote, SourcePath: resolved.SourcePath,
+					SourceDevice: resolved.SourceDevice, SourceInode: resolved.SourceInode,
+					GitCommonDirectory: resolved.GitCommonDirectory,
+					GitCommonDevice:    resolved.GitCommonDevice, GitCommonInode: resolved.GitCommonInode,
+				},
+				DefaultBaseBranch: workspace.DefaultBaseBranch, Policy: policy,
+			})
 		}
 	}
 	if verifyExternal && preview.Kind != "create" {
@@ -530,6 +560,14 @@ func cloneProject(project domain.Project) domain.Project {
 		organizer.PendingConfiguration = slices.Clone(organizer.PendingConfiguration)
 		project.Organizer = &organizer
 	}
+	if project.Lease != nil {
+		lease := *project.Lease
+		project.Lease = &lease
+	}
+	if project.LeaseObservation != nil {
+		observation := *project.LeaseObservation
+		project.LeaseObservation = &observation
+	}
 	return project
 }
 
@@ -538,6 +576,7 @@ func initialCreateProject(command ApplyCreateCommand, preview Preview) domain.Pr
 		ID: command.Request.ProjectID, Name: command.Request.ProjectName,
 		State: "paused", Version: 0,
 		Organizer: &domain.Organizer{
+			ID:   domain.OrganizerID(command.Request.ProjectID),
 			Mode: domain.OrganizerModeCreate, Phase: domain.OrganizerPhaseIntentRecorded,
 			RepositoryPath: command.Request.RepositoryPath, PreviewID: preview.ID,
 			OperationID: command.RequestID, HumanActorID: command.Confirmation.ActorID,
@@ -571,7 +610,7 @@ func (service *Service) createIntent(
 		ID: request.IdempotencyKey, Sequence: 1, AggregateID: project.ID,
 		AggregateVersion: 0, Type: "organizer.intent", Payload: payload,
 	}
-	result, err := service.store.CreateProject(ctx, request, project, event)
+	result, err := service.store.CreateProject(ctx, request, project, preview.workspaces, event)
 	if err != nil {
 		return domain.Project{}, err
 	}
@@ -846,6 +885,7 @@ func (service *Service) ApplyAdopt(ctx context.Context, command ApplyAdoptComman
 	project := domain.Project{
 		ID: command.Request.ProjectID, Name: command.Request.ProjectName, State: "active", Version: 0,
 		Organizer: &domain.Organizer{
+			ID:   domain.OrganizerID(command.Request.ProjectID),
 			Mode: domain.OrganizerModeAdopt, Phase: domain.OrganizerPhaseActive,
 			RepositoryPath: command.Request.RepositoryPath, PreviewID: preview.ID,
 			OperationID: command.RequestID, HumanActorID: command.Confirmation.ActorID,
@@ -873,7 +913,7 @@ func (service *Service) ApplyAdopt(ctx context.Context, command ApplyAdoptComman
 		ID: request.IdempotencyKey, Sequence: 1, AggregateID: project.ID,
 		AggregateVersion: 0, Type: "organizer.adopted", Payload: payload,
 	}
-	result, err := service.store.CreateProject(ctx, request, project, event)
+	result, err := service.store.CreateProject(ctx, request, project, preview.workspaces, event)
 	if err != nil {
 		return Projection{}, err
 	}
@@ -924,6 +964,18 @@ func (service *Service) verifyActiveRepository(ctx context.Context, project doma
 	document, valid := service.validateDocument(ctx, &preview, snapshot.ConfigurationJSON, true)
 	if !valid || document.SHA256() != project.Organizer.ConfigurationSHA256 {
 		return ErrOrganizerDrift
+	}
+	durable, err := service.store.Workspaces(ctx, project.ID)
+	if err != nil || len(durable) != len(preview.workspaces) {
+		return ErrOrganizerDrift
+	}
+	slices.SortFunc(durable, func(left, right domain.Workspace) int { return strings.Compare(left.ID, right.ID) })
+	slices.SortFunc(preview.workspaces, func(left, right domain.Workspace) int { return strings.Compare(left.ID, right.ID) })
+	for index := range durable {
+		durable[index].Version = 0
+		if durable[index] != preview.workspaces[index] {
+			return ErrOrganizerDrift
+		}
 	}
 	return nil
 }

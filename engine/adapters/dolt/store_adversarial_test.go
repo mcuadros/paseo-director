@@ -21,18 +21,31 @@ import (
 
 	"github.com/mcuadros/director-engine/adapters/dolt"
 	"github.com/mcuadros/director-engine/domain"
+	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
 
 const faultStoreID = "director-fault-store"
+
+func faultProject(id, name string) domain.Project {
+	return domain.Project{ID: id, Name: name, State: "active", Organizer: testOrganizer(id)}
+}
+
+func faultWorkspace(t *testing.T, projectID string) domain.Workspace {
+	return testWorkspace(
+		t, projectID, "workspace-"+projectID, "/srv/workspaces/"+projectID,
+		"https://github.com/example/"+projectID+".git",
+	)
+}
 
 type portCall struct {
 	name   string
 	invoke func(context.Context, storeport.TaskStore) error
 }
 
-func faultPortCalls() []portCall {
-	project := domain.Project{ID: "fault-project", Name: "Fault project", State: "active"}
+func faultPortCalls(t *testing.T) []portCall {
+	project := faultProject("fault-project", "Fault project")
+	workspace := faultWorkspace(t, project.ID)
 	task := domain.Task{
 		ID: "fault-task", ProjectID: project.ID, Title: "Fault task",
 		Objective: "Exercise failures", AcceptanceCriteria: "Every error is typed",
@@ -50,7 +63,8 @@ func faultPortCalls() []portCall {
 			_, err := store.CreateProject(
 				ctx,
 				command("fault-create-project", "project.create", "new-project", 0, `{"name":"New"}`),
-				domain.Project{ID: "new-project", Name: "New", State: "active"},
+				faultProject("new-project", "New"),
+				[]domain.Workspace{faultWorkspace(t, "new-project")},
 				event("fault-create-project-event", "", 1, "new-project", 0, "project.created"),
 			)
 			return err
@@ -72,6 +86,68 @@ func faultPortCalls() []portCall {
 				command("fault-update-project", "project.update", project.ID, 0, `{"name":"Updated"}`),
 				replacement,
 				event("fault-update-project-event", "", 2, project.ID, 1, "project.updated"),
+			)
+			return err
+		}},
+		{name: "ApplyProjectLease", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			mutation := domain.ProjectLeaseMutation{
+				Kind: domain.ProjectLeaseAcquire, ProjectID: project.ID,
+				HolderInstance: "engine-a", HolderProcessIdentity: "pid-100:start-1", DurationMillis: 1_000,
+			}
+			_, err := store.ApplyProjectLease(
+				ctx, typedCommand(t, "fault-lease-apply", "project.lease.acquire", project.ID, 0, mutation), mutation,
+			)
+			return err
+		}},
+		{name: "RecordProjectLeaseObservation", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			input := validObservationInputForStore()
+			payload := struct {
+				ProjectID string                              `json:"projectId"`
+				Input     domain.ProjectLeaseObservationInput `json:"input"`
+			}{project.ID, input}
+			_, err := store.RecordProjectLeaseObservation(
+				ctx, typedCommand(t, "fault-lease-observe", "project.lease.observe_takeover", project.ID, 0, payload),
+				project.ID, input,
+			)
+			return err
+		}},
+		{name: "EnableProjectLeaseDispatch", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			payload := struct {
+				ProjectID     string `json:"projectId"`
+				ObservationID string `json:"observationId"`
+			}{project.ID, "observation-fault"}
+			_, err := store.EnableProjectLeaseDispatch(
+				ctx, typedCommand(t, "fault-lease-enable", "project.lease.enable_dispatch", project.ID, 0, payload),
+				project.ID, payload.ObservationID,
+			)
+			return err
+		}},
+		{name: "CreateWorkspace", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			candidate := testWorkspace(
+				t, project.ID, "new-workspace", "/srv/workspaces/new-workspace",
+				"https://github.com/example/new-workspace.git",
+			)
+			_, err := store.CreateWorkspace(
+				ctx, command("fault-create-workspace", "workspace.create", candidate.ID, 0, `{}`), candidate,
+				event("fault-create-workspace-event", "", 1, candidate.ID, 0, "workspace.created"),
+			)
+			return err
+		}},
+		{name: "Workspace", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			_, err := store.Workspace(ctx, workspace.ID)
+			return err
+		}},
+		{name: "Workspaces", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			_, err := store.Workspaces(ctx, project.ID)
+			return err
+		}},
+		{name: "UpdateWorkspace", invoke: func(ctx context.Context, store storeport.TaskStore) error {
+			replacement := workspace
+			replacement.Name = "Updated fault Workspace"
+			replacement.Version = 1
+			_, err := store.UpdateWorkspace(
+				ctx, command("fault-update-workspace", "workspace.update", replacement.ID, 0, `{}`), replacement,
+				event("fault-update-workspace-event", "", 1, replacement.ID, 1, "workspace.updated"),
 			)
 			return err
 		}},
@@ -169,11 +245,12 @@ func faultPortCalls() []portCall {
 func seedFaultStore(t *testing.T, store storeport.TaskStore) {
 	t.Helper()
 	ctx := context.Background()
-	project := domain.Project{ID: "fault-project", Name: "Fault project", State: "active"}
+	project := faultProject("fault-project", "Fault project")
 	result, err := store.CreateProject(
 		ctx,
 		command("fault-project-create", "project.create", project.ID, 0, `{"name":"Fault project"}`),
 		project,
+		[]domain.Workspace{faultWorkspace(t, project.ID)},
 		event("fault-project-create-event", "", 1, project.ID, 0, "project.created"),
 	)
 	requireApplied(t, result, err)
@@ -232,6 +309,17 @@ func requireRedactedPortFailure(t *testing.T, err error, forbidden ...string) {
 	}
 }
 
+func requireStoredRecordHealth(t *testing.T, err error) {
+	t.Helper()
+	var failure *storeport.HealthError
+	if !errors.As(err, &failure) || failure.Code != storeport.HealthStoredRecordInvalid {
+		t.Fatalf("stored-state error = %T %v", err, err)
+	}
+	if err.Error() != "taskstore unhealthy: STORED_RECORD_INVALID" {
+		t.Fatalf("stored-state error was not closed and redacted: %q", err.Error())
+	}
+}
+
 func rootDatabase(t *testing.T, fixture *doltFixture, database string) *sql.DB {
 	t.Helper()
 	connector, err := mysql.NewConnector(&mysql.Config{
@@ -273,7 +361,7 @@ func TestEveryPortMethodRedactsWrongCredentials(t *testing.T) {
 		t.Fatalf("construct wrong-credential store: %v", err)
 	}
 	defer badStore.Close()
-	for _, call := range faultPortCalls() {
+	for _, call := range faultPortCalls(t) {
 		t.Run(call.name, func(t *testing.T) {
 			requireRedactedPortFailure(t, call.invoke(context.Background(), badStore), password, badEndpoint.User)
 		})
@@ -289,7 +377,7 @@ func TestEveryPortMethodRedactsBackendShutdown(t *testing.T) {
 	defer store.Close()
 	seedFaultStore(t, store)
 	stopDoltFixture(t, fixture, syscall.SIGKILL)
-	for _, call := range faultPortCalls() {
+	for _, call := range faultPortCalls(t) {
 		t.Run(call.name, func(t *testing.T) {
 			requireRedactedPortFailure(t, call.invoke(context.Background(), store), fixture.address)
 		})
@@ -360,7 +448,7 @@ func TestEveryPortMethodRedactsMissingTables(t *testing.T) {
 	}
 	backupURL := createFaultBackup(t, fixture)
 	calls := make(map[string]portCall)
-	for _, call := range faultPortCalls() {
+	for _, call := range faultPortCalls(t) {
 		calls[call.name] = call
 	}
 	groups := []struct {
@@ -584,6 +672,15 @@ func TestSingularAndCollectionReloadsRejectInvalidRecords(t *testing.T) {
 	inspection := rootDatabase(t, fixture, fixture.database)
 	defer inspection.Close()
 	ctx := context.Background()
+	var validProjectData []byte
+	if err := inspection.QueryRowContext(ctx, `SELECT data FROM aggregates WHERE id = 'fault-project'`).Scan(&validProjectData); err != nil {
+		t.Fatalf("capture valid Project: %v", err)
+	}
+	workspaceID := faultWorkspace(t, "fault-project").ID
+	var validWorkspaceData []byte
+	if err := inspection.QueryRowContext(ctx, `SELECT data FROM aggregates WHERE id = ?`, workspaceID).Scan(&validWorkspaceData); err != nil {
+		t.Fatalf("capture valid Workspace: %v", err)
+	}
 
 	if _, err := inspection.ExecContext(ctx,
 		`UPDATE aggregates SET data = JSON_OBJECT('name', '', 'state', 'bogus') WHERE id = 'fault-project'`,
@@ -596,9 +693,40 @@ func TestSingularAndCollectionReloadsRejectInvalidRecords(t *testing.T) {
 		requireRedactedPortFailure(t, err)
 	}
 	if _, err := inspection.ExecContext(ctx,
-		`UPDATE aggregates SET data = JSON_OBJECT('name', 'Fault project', 'state', 'active') WHERE id = 'fault-project'`,
+		`UPDATE aggregates SET data = ? WHERE id = 'fault-project'`, validProjectData,
 	); err != nil {
 		t.Fatalf("restore Project: %v", err)
+	}
+
+	if _, err := inspection.ExecContext(ctx,
+		`UPDATE aggregates SET data = JSON_OBJECT('key', 'fault', 'name', '', 'repository', JSON_OBJECT()) WHERE id = ?`,
+		workspaceID,
+	); err != nil {
+		t.Fatalf("inject invalid Workspace: %v", err)
+	}
+	_, singularWorkspace := store.Workspace(ctx, workspaceID)
+	_, collectionWorkspace := store.Workspaces(ctx, "fault-project")
+	for _, err := range []error{singularWorkspace, collectionWorkspace} {
+		requireRedactedPortFailure(t, err)
+	}
+	if _, err := inspection.ExecContext(ctx,
+		`UPDATE aggregates SET data = ? WHERE id = ?`, validWorkspaceData, workspaceID,
+	); err != nil {
+		t.Fatalf("restore Workspace: %v", err)
+	}
+
+	if _, err := inspection.ExecContext(ctx, `UPDATE aggregates SET data = JSON_SET(data, '$.lease', JSON_OBJECT(
+		'holderInstance', 'engine-a', 'holderProcessIdentity', 'pid-1:start-1', 'epoch', 0,
+		'acquiredAtMillis', 1000, 'renewedAtMillis', 1000, 'expiresAtMillis', 2000,
+		'dispatchAllowed', true)) WHERE id = 'fault-project'`); err != nil {
+		t.Fatalf("inject invalid Project lease: %v", err)
+	}
+	_, malformedLease := store.Project(ctx, "fault-project")
+	requireRedactedPortFailure(t, malformedLease)
+	if _, err := inspection.ExecContext(ctx,
+		`UPDATE aggregates SET data = ? WHERE id = 'fault-project'`, validProjectData,
+	); err != nil {
+		t.Fatalf("restore Project after lease fault: %v", err)
 	}
 
 	if _, err := inspection.ExecContext(ctx,
@@ -646,6 +774,118 @@ func TestSingularAndCollectionReloadsRejectInvalidRecords(t *testing.T) {
 	}
 }
 
+func TestProjectWorkspaceReloadsRejectCompleteSetTampering(t *testing.T) {
+	fixture := startDoltFixture(t)
+	store := openContractStore(t, fixture, "workspace-reload-tamper-store", true)
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	project := faultProject("reload-project", "Reload Project")
+	first := testWorkspace(
+		t, project.ID, "first", "/srv/workspaces/reload-first",
+		"https://github.com/example/reload-first.git",
+	)
+	second := testWorkspace(
+		t, project.ID, "second", "/srv/workspaces/reload-second",
+		"https://github.com/example/reload-second.git",
+	)
+	result, err := store.CreateProject(
+		ctx, command("reload-project-create", "project.create", project.ID, 0, `{}`), project,
+		[]domain.Workspace{first, second},
+		event("reload-project-create-event", "", 1, project.ID, 0, "project.created"),
+	)
+	requireApplied(t, result, err)
+	inspection := rootDatabase(t, fixture, fixture.database)
+	defer inspection.Close()
+	validSecond := storedWorkspaceJSON(t, second)
+
+	assertAll := func(includeWorkspace bool) {
+		_, projectErr := store.Project(ctx, project.ID)
+		_, projectsErr := store.Projects(ctx)
+		_, workspacesErr := store.Workspaces(ctx, project.ID)
+		failures := []error{projectErr, projectsErr, workspacesErr}
+		if includeWorkspace {
+			_, workspaceErr := store.Workspace(ctx, first.ID)
+			failures = append(failures, workspaceErr)
+		}
+		for _, failure := range failures {
+			requireStoredRecordHealth(t, failure)
+		}
+	}
+
+	tamperSecond := func(name string, replacement domain.Workspace) {
+		t.Run(name, func(t *testing.T) {
+			if _, err := inspection.ExecContext(ctx,
+				`UPDATE aggregates SET data = ? WHERE id = ?`, storedWorkspaceJSON(t, replacement), second.ID,
+			); err != nil {
+				t.Fatalf("tamper Workspace: %v", err)
+			}
+			assertAll(true)
+			if _, err := inspection.ExecContext(ctx,
+				`UPDATE aggregates SET data = ? WHERE id = ?`, validSecond, second.ID,
+			); err != nil {
+				t.Fatalf("restore Workspace: %v", err)
+			}
+		})
+	}
+
+	duplicateKey := second
+	duplicateKey.Key = first.Key
+	tamperSecond("duplicate stable key", duplicateKey)
+	remoteAlias := second
+	alias, err := repositorydomain.CanonicalRemote("git@github.com:example/reload-first.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteAlias.Repository.ID = alias.ID
+	remoteAlias.Repository.Key = alias.Key
+	remoteAlias.Repository.CanonicalRemote = alias.Canonical
+	tamperSecond("duplicate remote alias", remoteAlias)
+	sourceIdentity := second
+	sourceIdentity.Repository.SourceDevice = first.Repository.SourceDevice
+	sourceIdentity.Repository.SourceInode = first.Repository.SourceInode
+	tamperSecond("duplicate source identity", sourceIdentity)
+	commonIdentity := second
+	commonIdentity.Repository.GitCommonDevice = first.Repository.GitCommonDevice
+	commonIdentity.Repository.GitCommonInode = first.Repository.GitCommonInode
+	tamperSecond("duplicate common-directory identity", commonIdentity)
+
+	t.Run("129 Workspaces", func(t *testing.T) {
+		extraIDs := make([]string, 0, 127)
+		for index := 0; index < 127; index++ {
+			key := fmt.Sprintf("extra-%03d", index)
+			workspace := testWorkspace(
+				t, project.ID, key, "/srv/workspaces/"+key,
+				fmt.Sprintf("https://git-%03d.example/repository.git", index),
+			)
+			if _, err := inspection.ExecContext(ctx,
+				`INSERT INTO aggregates (id, kind, parent_id, version, data) VALUES (?, 'workspace', ?, 0, ?)`,
+				workspace.ID, project.ID, storedWorkspaceJSON(t, workspace),
+			); err != nil {
+				t.Fatalf("insert extra Workspace %d: %v", index, err)
+			}
+			extraIDs = append(extraIDs, workspace.ID)
+		}
+		assertAll(true)
+		for _, id := range extraIDs {
+			if _, err := inspection.ExecContext(ctx, `DELETE FROM aggregates WHERE id = ?`, id); err != nil {
+				t.Fatalf("remove extra Workspace: %v", err)
+			}
+		}
+	})
+
+	if workspaces, err := store.Workspaces(ctx, project.ID); err != nil || len(workspaces) != 2 {
+		t.Fatalf("restored Workspace set = %#v, %v", workspaces, err)
+	}
+	t.Run("zero Workspaces", func(t *testing.T) {
+		if _, err := inspection.ExecContext(ctx,
+			`DELETE FROM aggregates WHERE id IN (?, ?)`, first.ID, second.ID,
+		); err != nil {
+			t.Fatalf("delete Workspaces: %v", err)
+		}
+		assertAll(false)
+	})
+}
+
 func TestPortInputsRejectInvalidRecordsBeforeBackendAccess(t *testing.T) {
 	fixture := startDoltFixture(t)
 	store := openContractStore(t, fixture, faultStoreID, true)
@@ -657,11 +897,19 @@ func TestPortInputsRejectInvalidRecordsBeforeBackendAccess(t *testing.T) {
 		err  error
 	}{
 		{name: "CreateProject", err: func() error {
-			_, err := store.CreateProject(ctx, command("invalid-create-project", "project.create", "invalid", 0, `{}`), domain.Project{}, invalidEvent)
+			_, err := store.CreateProject(ctx, command("invalid-create-project", "project.create", "invalid", 0, `{}`), domain.Project{}, nil, invalidEvent)
 			return err
 		}()},
 		{name: "UpdateProject", err: func() error {
 			_, err := store.UpdateProject(ctx, command("invalid-update-project", "project.update", "invalid", 0, `{}`), domain.Project{ID: "invalid", Name: "Invalid", State: "bogus", Version: 1}, invalidEvent)
+			return err
+		}()},
+		{name: "CreateWorkspace", err: func() error {
+			_, err := store.CreateWorkspace(ctx, command("invalid-create-workspace", "workspace.create", "invalid", 0, `{}`), domain.Workspace{}, invalidEvent)
+			return err
+		}()},
+		{name: "UpdateWorkspace", err: func() error {
+			_, err := store.UpdateWorkspace(ctx, command("invalid-update-workspace", "workspace.update", "invalid", 0, `{}`), domain.Workspace{}, invalidEvent)
 			return err
 		}()},
 		{name: "CreateTask", err: func() error {
@@ -692,6 +940,8 @@ func TestPortInputsRejectInvalidRecordsBeforeBackendAccess(t *testing.T) {
 	}
 	for name, err := range map[string]error{
 		"Project":    func() error { _, err := store.Project(ctx, "bad id"); return err }(),
+		"Workspace":  func() error { _, err := store.Workspace(ctx, "bad id"); return err }(),
+		"Workspaces": func() error { _, err := store.Workspaces(ctx, "bad id"); return err }(),
 		"Task":       func() error { _, err := store.Task(ctx, "bad id"); return err }(),
 		"Tasks":      func() error { _, err := store.Tasks(ctx, "bad id"); return err }(),
 		"Run":        func() error { _, err := store.Run(ctx, "bad id"); return err }(),
@@ -833,11 +1083,12 @@ func TestRuntimeWriterGrantProtectsGuardRowsAndExcludesDDL(t *testing.T) {
 		t.Fatalf("open restricted-writer store: %v", err)
 	}
 	defer store.Close()
-	project := domain.Project{ID: "grant-project", Name: "Grant project", State: "active"}
+	project := faultProject("grant-project", "Grant project")
 	result, err := store.CreateProject(
 		context.Background(),
 		command("grant-project-create", "project.create", project.ID, 0, `{}`),
 		project,
+		[]domain.Workspace{faultWorkspace(t, project.ID)},
 		event("grant-project-create-event", "", 1, project.ID, 0, "project.created"),
 	)
 	requireApplied(t, result, err)
@@ -971,9 +1222,8 @@ func TestDuplicateEventAndCommandIdentitiesAreRecordConflicts(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	seedFaultStore(t, store)
 	ctx := context.Background()
-	replacement := domain.Project{
-		ID: "fault-project", Name: "Must not be applied", State: "active", Version: 1,
-	}
+	replacement := faultProject("fault-project", "Must not be applied")
+	replacement.Version = 1
 	for _, duplicate := range []struct {
 		name    string
 		command string
@@ -1132,7 +1382,8 @@ func TestFullCapNormalizedPayloadFailsWithinPortBudget(t *testing.T) {
 			IdempotencyKey: "bounded-payload", Type: "project.create",
 			AggregateID: "bounded-payload", Payload: payload,
 		},
-		domain.Project{ID: "bounded-payload", Name: "Bounded payload", State: "active"},
+		faultProject("bounded-payload", "Bounded payload"),
+		[]domain.Workspace{faultWorkspace(t, "bounded-payload")},
 		event("bounded-payload-event", "", 1, "bounded-payload", 0, "project.created"),
 	)
 	runtime.ReadMemStats(&after)
@@ -1203,7 +1454,8 @@ func TestConcurrentStrictEventResumeObservesEveryCommit(t *testing.T) {
 				_, err := store.CreateProject(
 					ctx,
 					command("command-"+identity, "project.create", identity, 0, fmt.Sprintf(`{"round":%d,"writer":%d}`, round, writer)),
-					domain.Project{ID: identity, Name: identity, State: "active"},
+					faultProject(identity, identity),
+					[]domain.Workspace{faultWorkspace(t, identity)},
 					event("event-"+identity, "", 1, identity, 0, "project.created"),
 				)
 				results <- err

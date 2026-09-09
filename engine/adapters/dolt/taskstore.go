@@ -21,6 +21,7 @@ import (
 
 const (
 	aggregateProject        = "project"
+	aggregateWorkspace      = "workspace"
 	aggregateTask           = "task"
 	aggregateRun            = "run"
 	maximumJSONBytes        = 64 * 1024
@@ -44,6 +45,12 @@ func boundedMutationError(err error) error {
 		storeport.ErrAlreadyExists,
 		storeport.ErrInvalidRecord,
 		storeport.ErrReferentialIntegrity,
+		storeport.ErrWorkspaceConflict,
+		domain.ErrLeaseHeld,
+		domain.ErrLeaseExpired,
+		domain.ErrLeaseIdentityMismatch,
+		domain.ErrLeaseProofInvalid,
+		domain.ErrLeaseTransitionInvalid,
 		storeport.ErrIdempotencyConflict,
 		storeport.ErrSchemaVersion,
 		storeport.ErrUnhealthy,
@@ -58,10 +65,11 @@ func boundedMutationError(err error) error {
 // DoltTaskStore is the direct-Dolt implementation of the engine-owned typed
 // port. Its SQL pools and identity checks are not exposed through that port.
 type DoltTaskStore struct {
-	control  *sql.DB
-	writer   *sql.DB
-	database string
-	storeID  string
+	control       *sql.DB
+	writer        *sql.DB
+	database      string
+	storeID       string
+	testNowMillis func() int64
 }
 
 var _ storeport.TaskStore = (*DoltTaskStore)(nil)
@@ -80,6 +88,7 @@ type preparedEvent struct {
 type mutationResult struct {
 	outcome         domain.CommandOutcome
 	observedVersion uint64
+	event           *domain.Event
 }
 
 type transactionMutation func(context.Context, *sql.Tx) (mutationResult, error)
@@ -471,8 +480,14 @@ func (store *DoltTaskStore) apply(
 		}
 		eventID := any(nil)
 		if mutationErr == nil && mutationResult.outcome == domain.CommandApplied {
-			mutationErr = appendEvent(ctx, tx, preparedDomainEvent, mutationResult.observedVersion)
-			eventID = event.ID
+			eventToAppend := preparedDomainEvent
+			if mutationResult.event != nil {
+				eventToAppend, mutationErr = prepareEvent(*mutationResult.event, request)
+			}
+			if mutationErr == nil {
+				mutationErr = appendEvent(ctx, tx, eventToAppend, mutationResult.observedVersion)
+				eventID = eventToAppend.event.ID
+			}
 		}
 		if mutationErr == nil {
 			mutationErr = insertOutcome(ctx, tx, command, mutationResult, eventID)
@@ -488,6 +503,9 @@ func (store *DoltTaskStore) apply(
 			resultEventID := ""
 			if mutationResult.outcome == domain.CommandApplied {
 				resultEventID = event.ID
+				if mutationResult.event != nil {
+					resultEventID = mutationResult.event.ID
+				}
 			}
 			return domain.CommandResult{
 				Outcome:         mutationResult.outcome,
