@@ -365,10 +365,7 @@ func parseSCPRemote(value string) (Remote, error) {
 	return Remote{Canonical: canonical, Key: key, ID: repositoryID(key)}, nil
 }
 
-// CanonicalRemote parses one supported credential-free Git remote. It
-// rejects option-like, command-bearing, local-path, helper, traversal, query,
-// and fragment forms before deriving a stable repository identity.
-func CanonicalRemote(value string) (Remote, error) {
+func canonicalRemoteOnce(value string) (Remote, error) {
 	if len(value) == 0 || len(value) > MaximumRemoteBytes || strings.HasPrefix(value, "-") || !utf8.ValidString(value) {
 		return Remote{}, ErrInvalidRemote
 	}
@@ -383,4 +380,21 @@ func CanonicalRemote(value string) (Remote, error) {
 		return Remote{}, ErrInvalidRemote
 	}
 	return parseSCPRemote(decoded)
+}
+
+// CanonicalRemote parses one supported credential-free Git remote. It
+// rejects option-like, command-bearing, local-path, helper, traversal, query,
+// and fragment forms before deriving a stable repository identity. Every
+// returned canonical value is itself within MaximumRemoteBytes and reparses
+// to the exact same canonical value, key, and ID.
+func CanonicalRemote(value string) (Remote, error) {
+	remote, err := canonicalRemoteOnce(value)
+	if err != nil || len(remote.Canonical) > MaximumRemoteBytes {
+		return Remote{}, ErrInvalidRemote
+	}
+	fixedPoint, err := canonicalRemoteOnce(remote.Canonical)
+	if err != nil || fixedPoint != remote {
+		return Remote{}, ErrInvalidRemote
+	}
+	return remote, nil
 }

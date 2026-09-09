@@ -33,6 +33,86 @@ import (
 
 const baseSHA = "0123456789abcdef0123456789abcdef01234567"
 
+type doltRemoteLengthCase struct {
+	name           string
+	input          string
+	canonical      string
+	canonicalBytes int
+	wantAccepted   bool
+}
+
+func doltPaddedRemote(t *testing.T, prefix, suffix string, totalBytes int) string {
+	t.Helper()
+	padding := totalBytes - len(prefix) - len(suffix)
+	if padding < 1 {
+		t.Fatalf("remote fixture length %d is too short", totalBytes)
+	}
+	return prefix + strings.Repeat("a", padding) + suffix
+}
+
+func doltRemoteLengthCases(t *testing.T) []doltRemoteLengthCase {
+	t.Helper()
+	cases := make([]doltRemoteLengthCase, 0, 24)
+	for _, target := range []int{
+		repositorydomain.MaximumRemoteBytes - 1,
+		repositorydomain.MaximumRemoteBytes,
+		repositorydomain.MaximumRemoteBytes + 1,
+	} {
+		accepted := target <= repositorydomain.MaximumRemoteBytes
+		name := fmt.Sprintf("canonical-%d", target)
+		raw := doltPaddedRemote(t, "https://a.example/", "", target)
+		scpCanonicalPrefix := "ssh://git@a/"
+		scpPath := strings.Repeat("a", target-len(scpCanonicalPrefix))
+		scpCanonical := scpCanonicalPrefix + scpPath
+		scpRawPath := strings.Repeat("a", target-len("git@a:"))
+		urlCanonicalPrefix := "ssh://git@[0:0:0:0:0:0:0:1]/"
+		urlPath := strings.Repeat("a", target-len(urlCanonicalPrefix))
+		urlCanonical := urlCanonicalPrefix + urlPath
+		urlRawPrefix := "ssh://git@[::1]/"
+		urlRawPath := strings.Repeat("a", target-len(urlRawPrefix))
+		percent := doltPaddedRemote(t, "https://a.example/", "%25z", target)
+		unicode := doltPaddedRemote(t, "https://a.example/", "é", target)
+		repeated := doltPaddedRemote(t, "https://a.example/", ".git.git", target)
+		cases = append(cases,
+			doltRemoteLengthCase{
+				name: "raw-url/" + name, input: raw, canonical: raw,
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			doltRemoteLengthCase{
+				name: "scp-expansion/" + name, input: "git@a:" + scpPath, canonical: scpCanonical,
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			doltRemoteLengthCase{
+				name: "scp-raw-input/" + name, input: "git@a:" + scpRawPath,
+				canonical:      scpCanonicalPrefix + scpRawPath,
+				canonicalBytes: target + len(scpCanonicalPrefix) - len("git@a:"), wantAccepted: false,
+			},
+			doltRemoteLengthCase{
+				name: "ipv6-url-expansion/" + name, input: "ssh://git@[::1]/" + urlPath, canonical: urlCanonical,
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			doltRemoteLengthCase{
+				name: "ipv6-url-raw-input/" + name, input: urlRawPrefix + urlRawPath,
+				canonical:      urlCanonicalPrefix + urlRawPath,
+				canonicalBytes: target + len(urlCanonicalPrefix) - len(urlRawPrefix), wantAccepted: false,
+			},
+			doltRemoteLengthCase{
+				name: "percent-encoded/" + name, input: percent, canonical: percent,
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			doltRemoteLengthCase{
+				name: "utf8-byte-boundary/" + name, input: unicode, canonical: unicode,
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			doltRemoteLengthCase{
+				name: "repeated-git-suffix/" + name, input: repeated, canonical: repeated,
+				canonicalBytes: target, wantAccepted: false,
+			},
+		)
+	}
+	return cases
+}
+
 type doltFixture struct {
 	address  string
 	database string
@@ -1127,7 +1207,7 @@ func TestDoltStaleWorkspaceReplacementConflictsBeforeMappingAndReplays(t *testin
 	}
 }
 
-func TestDoltCanonicalRemoteSinglePassPersistenceAndRejection(t *testing.T) {
+func TestDoltCanonicalRemoteFixedPointPersistenceAndRejection(t *testing.T) {
 	fixture := startDoltFixture(t)
 	const storeID = "canonical-remote-store"
 	store := openContractStore(t, fixture, storeID, true)
@@ -1185,6 +1265,59 @@ func TestDoltCanonicalRemoteSinglePassPersistenceAndRejection(t *testing.T) {
 			}
 		})
 	}
+
+	acceptedBoundaries := make(map[string]repositorydomain.Remote)
+	for index, test := range doltRemoteLengthCases(t) {
+		t.Run("length/"+test.name, func(t *testing.T) {
+			projectID := fmt.Sprintf("remote-boundary-%02d", index)
+			boundaryProject := domain.Project{
+				ID: projectID, Name: "Remote Boundary", State: "active", Organizer: testOrganizer(projectID),
+			}
+			boundaryWorkspace := testWorkspace(
+				t, projectID, "product", "/srv/workspaces/"+projectID,
+				"https://github.com/example/"+projectID+".git",
+			)
+			request := command("canonical-length-"+projectID, "project.create", projectID, 0, `{}`)
+			event := event("canonical-length-event-"+projectID, "", 1, projectID, 0, "project.created")
+
+			if !test.wantAccepted {
+				boundaryWorkspace.Repository.CanonicalRemote = test.canonical
+				_, err := store.CreateProject(ctx, request, boundaryProject, []domain.Workspace{boundaryWorkspace}, event)
+				if !errors.Is(err, storeport.ErrInvalidRecord) || strings.Contains(err.Error(), test.input) ||
+					strings.Contains(err.Error(), test.canonical) {
+					t.Fatalf("rejected canonical remote error = %v", err)
+				}
+				if _, err := store.Command(ctx, request.IdempotencyKey); !errors.Is(err, storeport.ErrNotFound) {
+					t.Fatalf("rejected canonical remote command persisted: %v", err)
+				}
+				if _, err := store.Project(ctx, projectID); !errors.Is(err, storeport.ErrNotFound) {
+					t.Fatalf("rejected canonical remote Project persisted: %v", err)
+				}
+				return
+			}
+
+			identity, err := repositorydomain.CanonicalRemote(test.input)
+			if err != nil || identity.Canonical != test.canonical || len(identity.Canonical) != test.canonicalBytes {
+				t.Fatalf("canonical boundary identity bytes = %d, error = %v", len(identity.Canonical), err)
+			}
+			boundaryWorkspace.Repository.ID = identity.ID
+			boundaryWorkspace.Repository.Key = identity.Key
+			boundaryWorkspace.Repository.CanonicalRemote = identity.Canonical
+			result, err := store.CreateProject(
+				ctx, request, boundaryProject, []domain.Workspace{boundaryWorkspace}, event,
+			)
+			requireApplied(t, result, err)
+			persistedBoundary, err := store.Workspace(ctx, boundaryWorkspace.ID)
+			if err != nil || persistedBoundary.Repository != boundaryWorkspace.Repository {
+				t.Fatalf("persisted canonical boundary = %#v, %v", persistedBoundary, err)
+			}
+			roundTrip, err := repositorydomain.CanonicalRemote(persistedBoundary.Repository.CanonicalRemote)
+			if err != nil || roundTrip != identity || len(roundTrip.Canonical) > repositorydomain.MaximumRemoteBytes {
+				t.Fatalf("persisted canonical boundary fixed point = %#v, %v", roundTrip, err)
+			}
+			acceptedBoundaries[boundaryWorkspace.ID] = identity
+		})
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1193,6 +1326,17 @@ func TestDoltCanonicalRemoteSinglePassPersistenceAndRejection(t *testing.T) {
 	persisted, err = reloaded.Workspace(ctx, workspace.ID)
 	if err != nil || persisted.Repository.CanonicalRemote != remote || persisted.Repository.Key != "github.com/acme/repo%2egit" {
 		t.Fatalf("reopened percent Workspace = %#v, %v", persisted, err)
+	}
+	for workspaceID, identity := range acceptedBoundaries {
+		persistedBoundary, err := reloaded.Workspace(ctx, workspaceID)
+		if err != nil || persistedBoundary.Repository.CanonicalRemote != identity.Canonical ||
+			persistedBoundary.Repository.Key != identity.Key || persistedBoundary.Repository.ID != identity.ID {
+			t.Fatalf("reopened canonical boundary %q = %#v, %v", workspaceID, persistedBoundary, err)
+		}
+		roundTrip, err := repositorydomain.CanonicalRemote(persistedBoundary.Repository.CanonicalRemote)
+		if err != nil || roundTrip != identity {
+			t.Fatalf("reopened canonical boundary fixed point %q = %#v, %v", workspaceID, roundTrip, err)
+		}
 	}
 }
 

@@ -330,48 +330,49 @@ func hasGitRemoteHelperDispatch(value string) bool {
 	return usernameSeparator < 0 || usernameSeparator > separator
 }
 
-func validateRemote(value string) (string, string) {
-	if len(value) == 0 || len(value) > 2048 || strings.HasPrefix(value, "-") {
-		return "remote_invalid", "remote must be bounded and cannot begin with an option prefix"
+func validateRemote(value string) (repositorydomain.Remote, string, string) {
+	if len(value) == 0 || len(value) > repositorydomain.MaximumRemoteBytes || strings.HasPrefix(value, "-") {
+		return repositorydomain.Remote{}, "remote_invalid", "remote must be bounded and cannot begin with an option prefix"
 	}
 	decoded, ok := decodeRemoteEscapes(value)
 	if !ok {
-		return "remote_format_invalid", "remote contains invalid percent-encoding or Unicode"
+		return repositorydomain.Remote{}, "remote_format_invalid", "remote contains invalid percent-encoding or Unicode"
 	}
 	if hasUnsafeRemoteWhitespace(decoded) {
-		return "remote_whitespace_unsafe", "remote cannot contain whitespace or control characters"
+		return repositorydomain.Remote{}, "remote_whitespace_unsafe", "remote cannot contain whitespace or control characters"
 	}
 	if hasPasswordUserinfo(decoded) {
-		return "remote_userinfo_password", "remote userinfo cannot contain a password"
+		return repositorydomain.Remote{}, "remote_userinfo_password", "remote userinfo cannot contain a password"
 	}
 	if hasUnsafeRemoteCommandSyntax(decoded) {
-		return "remote_command_unsafe", "remote cannot contain command-bearing syntax"
+		return repositorydomain.Remote{}, "remote_command_unsafe", "remote cannot contain command-bearing syntax"
 	}
 	if hasGitRemoteHelperDispatch(decoded) {
-		return "remote_helper_unsupported", "Git remote-helper dispatch is not permitted"
+		return repositorydomain.Remote{}, "remote_helper_unsupported", "Git remote-helper dispatch is not permitted"
 	}
 	if separator := strings.Index(decoded, "://"); separator >= 0 {
 		scheme := strings.ToLower(decoded[:separator])
 		if scheme != "https" && scheme != "ssh" && scheme != "git" {
-			return "remote_scheme_unsupported", "remote scheme must be https, ssh, or git"
+			return repositorydomain.Remote{}, "remote_scheme_unsupported", "remote scheme must be https, ssh, or git"
 		}
 		authority := remoteAuthority(decoded)
 		if at := strings.LastIndexByte(authority, '@'); at >= 0 {
 			if scheme != "ssh" {
-				return "remote_userinfo_forbidden", "remote userinfo is forbidden for this transport"
+				return repositorydomain.Remote{}, "remote_userinfo_forbidden", "remote userinfo is forbidden for this transport"
 			}
 			if authority[:at] != "git" {
-				return "remote_username_unsupported", "SSH remote username must be the closed non-secret git identity"
+				return repositorydomain.Remote{}, "remote_username_unsupported", "SSH remote username must be the closed non-secret git identity"
 			}
 		}
 	} else if at := strings.LastIndexByte(remoteAuthority(decoded), '@'); at >= 0 &&
 		remoteAuthority(decoded)[:at] != "git" {
-		return "remote_username_unsupported", "SCP remote username must be the closed non-secret git identity"
+		return repositorydomain.Remote{}, "remote_username_unsupported", "SCP remote username must be the closed non-secret git identity"
 	}
-	if _, err := repositorydomain.CanonicalRemote(value); err != nil {
-		return "remote_format_invalid", "remote authority, address, port, or repository path is invalid"
+	remote, err := repositorydomain.CanonicalRemote(value)
+	if err != nil {
+		return repositorydomain.Remote{}, "remote_format_invalid", "remote authority, address, port, or repository path is invalid"
 	}
-	return "", ""
+	return remote, "", ""
 }
 
 func validGitBranch(value string) bool {
@@ -478,10 +479,8 @@ func validate(value Configuration) error {
 		if workspace.Name != "" && !validBoundedName(workspace.Name, 128) {
 			issues = append(issues, issue("name_invalid", base+".name", "Workspace name must be trimmed and at most 128 bytes"))
 		}
-		if code, message := validateRemote(workspace.Remote); code != "" {
+		if remote, code, message := validateRemote(workspace.Remote); code != "" {
 			issues = append(issues, issue(code, base+".remote", message))
-		} else if remote, err := repositorydomain.CanonicalRemote(workspace.Remote); err != nil {
-			issues = append(issues, issue("remote_format_invalid", base+".remote", "remote cannot be mapped to a canonical repository identity"))
 		} else if _, duplicate := workspaceRepositories[remote.Key]; duplicate {
 			issues = append(issues, issue("workspace_repository_duplicate", base+".remote", "one canonical repository can map to only one Workspace in a Project"))
 		} else {

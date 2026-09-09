@@ -102,10 +102,13 @@ while the non-secret SSH form
 `git@github.com:owner/repository.git` remains valid and maps to the same
 repository identity as an equivalent HTTPS or SSH URL. Remote percent escapes
 are decoded once and canonical output re-encodes literal percent data, while
-repeated `.git` suffix chains, ambiguous IPv4, and malformed embedded-IPv4 IPv6
-forms are rejected; profile tokens and provider families are closed; capacity
-and Run budgets are finite and internally consistent; Workspace overrides name
-a declared Workspace and select `inherit`
+both submitted and canonical output are limited to 2,048 UTF-8 bytes. Every
+accepted canonical output reparses to the identical canonical value, key, and
+repository ID; an expanding normalization which would cross the limit is
+rejected rather than truncated. Repeated `.git` suffix chains, ambiguous IPv4,
+and malformed embedded-IPv4 IPv6 forms are rejected; profile tokens and provider families
+are closed; capacity and Run budgets are finite and internally consistent;
+Workspace overrides name a declared Workspace and select `inherit`
 or a concrete value; and skill/template paths are clean relative paths in their
 declared Organizer directories. Source and reference paths reject whitespace
 and control characters. Directory scanning never turns an unreferenced file

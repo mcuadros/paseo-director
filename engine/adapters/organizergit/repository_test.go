@@ -5,6 +5,7 @@ package organizergit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,8 +13,80 @@ import (
 	"strings"
 	"testing"
 
+	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 	repoport "github.com/mcuadros/director-engine/ports/organizer"
 )
+
+type organizerGitRemoteLengthCase struct {
+	name           string
+	remote         string
+	canonicalBytes int
+	wantAccepted   bool
+}
+
+func organizerGitPaddedRemote(t *testing.T, prefix, suffix string, totalBytes int) string {
+	t.Helper()
+	padding := totalBytes - len(prefix) - len(suffix)
+	if padding < 1 {
+		t.Fatalf("remote fixture length %d is too short", totalBytes)
+	}
+	return prefix + strings.Repeat("a", padding) + suffix
+}
+
+func organizerGitRemoteLengthCases(t *testing.T) []organizerGitRemoteLengthCase {
+	t.Helper()
+	cases := make([]organizerGitRemoteLengthCase, 0, 24)
+	for _, target := range []int{
+		repositorydomain.MaximumRemoteBytes - 1,
+		repositorydomain.MaximumRemoteBytes,
+		repositorydomain.MaximumRemoteBytes + 1,
+	} {
+		accepted := target <= repositorydomain.MaximumRemoteBytes
+		name := fmt.Sprintf("canonical-%d", target)
+		scpCanonicalPrefix := "ssh://git@a/"
+		scpPath := strings.Repeat("a", target-len(scpCanonicalPrefix))
+		urlCanonicalPrefix := "ssh://git@[0:0:0:0:0:0:0:1]/"
+		urlPath := strings.Repeat("a", target-len(urlCanonicalPrefix))
+		cases = append(cases,
+			organizerGitRemoteLengthCase{
+				name: "raw-url/" + name, remote: organizerGitPaddedRemote(t, "https://a.example/", "", target),
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			organizerGitRemoteLengthCase{
+				name: "scp-expansion/" + name, remote: "git@a:" + scpPath,
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			organizerGitRemoteLengthCase{
+				name:           "scp-raw-input/" + name,
+				remote:         "git@a:" + strings.Repeat("a", target-len("git@a:")),
+				canonicalBytes: target + len(scpCanonicalPrefix) - len("git@a:"), wantAccepted: false,
+			},
+			organizerGitRemoteLengthCase{
+				name: "ipv6-url-expansion/" + name, remote: "ssh://git@[::1]/" + urlPath,
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			organizerGitRemoteLengthCase{
+				name:           "ipv6-url-raw-input/" + name,
+				remote:         "ssh://git@[::1]/" + strings.Repeat("a", target-len("ssh://git@[::1]/")),
+				canonicalBytes: target + len(urlCanonicalPrefix) - len("ssh://git@[::1]/"), wantAccepted: false,
+			},
+			organizerGitRemoteLengthCase{
+				name: "percent-encoded/" + name, remote: organizerGitPaddedRemote(t, "https://a.example/", "%25z", target),
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			organizerGitRemoteLengthCase{
+				name: "utf8-byte-boundary/" + name, remote: organizerGitPaddedRemote(t, "https://a.example/", "é", target),
+				canonicalBytes: target, wantAccepted: accepted,
+			},
+			organizerGitRemoteLengthCase{
+				name:           "repeated-git-suffix/" + name,
+				remote:         organizerGitPaddedRemote(t, "https://a.example/", ".git.git", target),
+				canonicalBytes: target, wantAccepted: false,
+			},
+		)
+	}
+	return cases
+}
 
 func runTestGit(t *testing.T, directory string, arguments ...string) {
 	t.Helper()
@@ -179,6 +252,36 @@ func TestResolveWorkspaceCanonicalizesRemoteAliases(t *testing.T) {
 		snapshot.RepositoryKey != "github.com/example/product" ||
 		snapshot.CanonicalRemote != "ssh://git@github.com/example/product" || snapshot.RepositoryID == "" {
 		t.Fatalf("Workspace snapshot = %#v", snapshot)
+	}
+}
+
+func TestResolveWorkspaceEnforcesCanonicalRemoteLengthAndFixedPoint(t *testing.T) {
+	for _, test := range organizerGitRemoteLengthCases(t) {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			runTestGit(t, root, "init", "--initial-branch=main")
+			runTestGit(t, root, "remote", "add", "origin", test.remote)
+
+			snapshot, err := New().ResolveWorkspace(context.Background(), root, test.remote)
+			if !test.wantAccepted {
+				if !errors.Is(err, repoport.ErrWorkspaceMismatch) || strings.Contains(err.Error(), test.remote) {
+					t.Fatalf("ResolveWorkspace() = %#v, %v; want bounded rejection", snapshot, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snapshot.CanonicalRemote) != test.canonicalBytes ||
+				len(snapshot.CanonicalRemote) > repositorydomain.MaximumRemoteBytes ||
+				snapshot.RepositoryKey == "" || snapshot.RepositoryID == "" {
+				t.Fatalf("Workspace snapshot canonical bytes = %d", len(snapshot.CanonicalRemote))
+			}
+			second, err := New().ResolveWorkspace(context.Background(), root, snapshot.CanonicalRemote)
+			if err != nil || second != snapshot {
+				t.Fatalf("canonical Workspace re-resolution = %#v, %v; want %#v", second, err, snapshot)
+			}
+		})
 	}
 }
 

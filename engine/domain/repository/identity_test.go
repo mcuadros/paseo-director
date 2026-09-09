@@ -4,9 +4,88 @@ package repository
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
+
+type canonicalRemoteLengthCase struct {
+	name          string
+	input         string
+	wantCanonical string
+	wantBytes     int
+	wantAccepted  bool
+}
+
+func paddedRemote(t *testing.T, prefix, suffix string, totalBytes int) string {
+	t.Helper()
+	padding := totalBytes - len(prefix) - len(suffix)
+	if padding < 1 {
+		t.Fatalf("remote fixture length %d is too short for %q and %q", totalBytes, prefix, suffix)
+	}
+	return prefix + strings.Repeat("a", padding) + suffix
+}
+
+func canonicalRemoteLengthCases(t *testing.T) []canonicalRemoteLengthCase {
+	t.Helper()
+	cases := make([]canonicalRemoteLengthCase, 0, 24)
+	for _, target := range []int{MaximumRemoteBytes - 1, MaximumRemoteBytes, MaximumRemoteBytes + 1} {
+		accepted := target <= MaximumRemoteBytes
+		suffix := fmt.Sprintf("canonical-%d", target)
+
+		raw := paddedRemote(t, "https://a.example/", "", target)
+		cases = append(cases, canonicalRemoteLengthCase{
+			name: "raw-url/" + suffix, input: raw, wantCanonical: raw,
+			wantBytes: target, wantAccepted: accepted,
+		})
+
+		scpCanonicalPrefix := "ssh://git@a/"
+		scpPath := strings.Repeat("a", target-len(scpCanonicalPrefix))
+		cases = append(cases, canonicalRemoteLengthCase{
+			name: "scp-expansion/" + suffix, input: "git@a:" + scpPath,
+			wantCanonical: scpCanonicalPrefix + scpPath, wantBytes: target, wantAccepted: accepted,
+		})
+		scpRawPath := strings.Repeat("a", target-len("git@a:"))
+		cases = append(cases, canonicalRemoteLengthCase{
+			name: "scp-raw-input/" + suffix, input: "git@a:" + scpRawPath,
+			wantCanonical: scpCanonicalPrefix + scpRawPath,
+			wantBytes:     target + len(scpCanonicalPrefix) - len("git@a:"), wantAccepted: false,
+		})
+
+		urlCanonicalPrefix := "ssh://git@[0:0:0:0:0:0:0:1]/"
+		urlPath := strings.Repeat("a", target-len(urlCanonicalPrefix))
+		cases = append(cases, canonicalRemoteLengthCase{
+			name: "ipv6-url-expansion/" + suffix, input: "ssh://git@[::1]/" + urlPath,
+			wantCanonical: urlCanonicalPrefix + urlPath, wantBytes: target, wantAccepted: accepted,
+		})
+		urlRawPrefix := "ssh://git@[::1]/"
+		urlRawPath := strings.Repeat("a", target-len(urlRawPrefix))
+		cases = append(cases, canonicalRemoteLengthCase{
+			name: "ipv6-url-raw-input/" + suffix, input: urlRawPrefix + urlRawPath,
+			wantCanonical: urlCanonicalPrefix + urlRawPath,
+			wantBytes:     target + len(urlCanonicalPrefix) - len(urlRawPrefix), wantAccepted: false,
+		})
+
+		percent := paddedRemote(t, "https://a.example/", "%25z", target)
+		cases = append(cases, canonicalRemoteLengthCase{
+			name: "percent-encoded/" + suffix, input: percent, wantCanonical: percent,
+			wantBytes: target, wantAccepted: accepted,
+		})
+
+		unicode := paddedRemote(t, "https://a.example/", "é", target)
+		cases = append(cases, canonicalRemoteLengthCase{
+			name: "utf8-byte-boundary/" + suffix, input: unicode, wantCanonical: unicode,
+			wantBytes: target, wantAccepted: accepted,
+		})
+
+		cases = append(cases, canonicalRemoteLengthCase{
+			name:      "repeated-git-suffix/" + suffix,
+			input:     paddedRemote(t, "https://a.example/", ".git.git", target),
+			wantBytes: target, wantAccepted: false,
+		})
+	}
+	return cases
+}
 
 func TestCanonicalRemoteMapsSupportedAliasesToStableIdentity(t *testing.T) {
 	aliases := []string{
@@ -38,6 +117,31 @@ func TestCanonicalRemoteMapsSupportedAliasesToStableIdentity(t *testing.T) {
 	}
 	if otherPort.ID == first.ID || otherPort.Key != "github.com:2222/example/product" {
 		t.Fatalf("non-default port alias collapsed unsafely: %#v", otherPort)
+	}
+}
+
+func TestCanonicalRemoteBoundsCanonicalOutputAndRequiresFixedPoint(t *testing.T) {
+	for _, test := range canonicalRemoteLengthCases(t) {
+		t.Run(test.name, func(t *testing.T) {
+			identity, err := CanonicalRemote(test.input)
+			if !test.wantAccepted {
+				if !errors.Is(err, ErrInvalidRemote) || strings.Contains(err.Error(), test.input) {
+					t.Fatalf("rejected remote result = %#v, error = %v", identity, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if identity.Canonical != test.wantCanonical || len(identity.Canonical) != test.wantBytes ||
+				len(identity.Canonical) > MaximumRemoteBytes {
+				t.Fatalf("canonical identity bytes = %d, want %d", len(identity.Canonical), test.wantBytes)
+			}
+			roundTrip, err := CanonicalRemote(identity.Canonical)
+			if err != nil || roundTrip != identity {
+				t.Fatalf("canonical fixed point = %#v, %v; want %#v", roundTrip, err, identity)
+			}
+		})
 	}
 }
 
