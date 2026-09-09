@@ -13,24 +13,29 @@ The Director Engine or authorized coordinator publishes one independently review
 2. Require either the exact clean Task worktree or a verified reclaimed path/
    registration with the exact local Task ref at the Candidate. Never recreate
    a checkout or change prior lifecycle IDs merely to satisfy the tool.
-3. Require independent approval for that same SHA plus the matching versioned
-   review-harness result. Verify that its complete-CI attempt count and any
-   second-run reason obey the owner-approved latency contract.
+3. Require the coordinator-native handoff, one authoritative complete remote
+   Linux CI observation, independent approval for that same SHA, and the
+   matching version-2 review-harness result. Verify that the harness consumed
+   that exact observation and started no complete CI.
 4. Confirm the branch is not `main` and belongs to the Task.
 5. Inspect the current remote base and invalidate/review again if the relevant base changed.
 6. Require all local Task checks to pass.
-7. Query GitHub for an existing open PR for the branch before creating one.
+7. Query GitHub for the one owned draft PR created after Candidate admission.
+   Adopt or update that exact draft; an open unowned PR fails closed.
 
 ## Publish idempotently
 
-- Use `director-coordinator publish` with the exact review/validation files,
-  review-handoff manifest, expected remote head, repository database ID,
-  ownership token, and one external durable state file. The manifest routes
-  reconciliation but never substitutes for the independent verdict or direct
-  gate reads.
+- Use `director-coordinator publish-draft` before Review, then
+  `director-coordinator publish` with the exact review/validation files,
+  review-handoff manifest, authoritative remote-CI observation, expected remote
+  head, repository database ID, ownership token, and one external durable
+  state file. Supply ownership only through an absolute mode-`0600`
+  `--ownership-file`. The manifest routes reconciliation but never substitutes
+  for the independent verdict or direct gate reads.
 - The command pushes only the owned Task branch with an exact lease, never a
   protected or target branch.
-- Its public marker binds Task, branch, and the ownership-label SHA-256, never
+- The draft carries no merge authority. Its public marker binds Task, branch,
+  and the ownership-label SHA-256, never
   raw ownership input, Candidate, or base. A corrected Candidate updates the
   same branch and adopts the same open PR; closed historical PRs do not block a
   new owned PR.
@@ -55,8 +60,13 @@ Describe observable behavior and evidence. Do not paste full agent transcripts, 
 
 1. As the authorized coordinator, record the structured `publish` result in Beads under the explicit coordinator actor.
 2. Run `director-coordinator gate` with every configured and Task-required
-   check. Observe CI without rerunning the same failed commit automatically.
+   check and the exact authoritative remote-CI file. Observe CI without
+   rerunning the same failed commit automatically.
 3. Route human review feedback back to the same top-level Task Agent as an authorized correction turn; the Task Agent returns a new structured Candidate/outcome claim.
+   Send every current Review, Validation, and human finding in one batch;
+   reuse unchanged frozen PLAN/skill digests and refresh current decisions and
+   diff. Reject acknowledgement-only output once rather than spending serial
+   correction turns.
 4. Do not have agents converse in PR threads or automatically resolve human threads.
 5. Run `director-coordinator integrate`; it repeats the complete gate immediately before integration, refuses a missing expected-head primitive, atomically binds merge to the approved head, and verifies the exact merge parents/tree afterward.
 6. Never replace that command with a refetch followed by an unguarded merge.

@@ -626,7 +626,7 @@ test("the connector descriptor and engine environment never propagate its creden
             taskId: "task-1",
             runId: "run-1",
           },
-          effectKind: "task_agent.create_with_initial_prompt",
+          effectKind: "task_agent.create_with_bootstrap",
           effectId: "effect-1",
           bindingHash: "1".repeat(64),
         },

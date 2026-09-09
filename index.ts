@@ -7,9 +7,12 @@ import {
   ProjectBoard,
   TaskInspector,
 } from "./ui/shells.client";
+import { DirectorWorkers } from "./ui/director-workers-panel.client";
 import { startConnectorShellFromEnvironment } from "./connector/paseo.server";
 import { connectorStartupStatus } from "./rpc/startup.shared";
 import { boardSnapshotRpc } from "./rpc/board.shared";
+import { directorWorkersRpc } from "./rpc/workers.shared";
+import { loadDirectorWorkers } from "./connector/engine-workers.server";
 
 export default function contribute(plugin: PluginContext) {
   const connector = startConnectorShellFromEnvironment();
@@ -20,6 +23,14 @@ export default function contribute(plugin: PluginContext) {
     title: "Director",
     icon: "PanelsTopLeft",
     surface: "home",
+  });
+  plugin.addWorkspacePanel({
+    id: "director-workers",
+    title: "Director Workers",
+    icon: "UsersRound",
+    context: "workspace",
+    locations: ["workspace", "explorer"],
+    Component: DirectorWorkers,
   });
   plugin.addWorkspacePanel({
     id: "project-board",
@@ -34,6 +45,15 @@ export default function contribute(plugin: PluginContext) {
     icon: "ListChecks",
     context: "agent",
     Component: TaskInspector,
+  });
+  plugin.addCommandCenterItem({
+    id: "open-director-workers",
+    title: "Open Director Workers",
+    icon: "UsersRound",
+    context: "workspace",
+    onSelect({ openPanel }) {
+      openPanel("director-workers");
+    },
   });
   plugin.addCommandCenterItem({
     id: "open-project-board",
@@ -55,6 +75,12 @@ export default function contribute(plugin: PluginContext) {
   });
   plugin.handle(connectorStartupStatus, () => connector.status());
   plugin.handle(boardSnapshotRpc, () => connector.loadBoard());
+  plugin.handle(directorWorkersRpc, ({ rootWorkspaceId }, { paseo }) =>
+    loadDirectorWorkers(
+      (query) => paseo.agents.list(query),
+      rootWorkspaceId,
+    ),
+  );
 
   return () => connector.close();
 }

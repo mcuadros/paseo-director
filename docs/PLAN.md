@@ -1,10 +1,10 @@
 # Director for Paseo — Product and Engineering Plan
 
 - **Status:** Approved
-- **Plan version:** 0.4
-- **Last updated:** 2026-09-07
+- **Plan version:** 0.6
+- **Last updated:** 2026-09-09
 - **Approved:** 2026-09-06
-- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope; [ADR-0014](adr/0014-practical-linux-agent-boundary.md) for the human-approved practical trusted-provider Linux boundary; [ADR-0016](adr/0016-defer-taskstore-scale-proof-to-m5.md) for deferring TaskStore agreed-scale proof to `dir-m5.10`; [ADR-0017](adr/0017-standalone-engine-connector-authority-boundary.md) for the standalone Go engine and accepted exact-0.7.2 connector authority; [ADR-0018](adr/0018-deterministic-coordination-boundary.md) for deterministic coordination decisions and structured agent outcome claims
+- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope; [ADR-0014](adr/0014-practical-linux-agent-boundary.md) for the human-approved practical trusted-provider Linux boundary; [ADR-0016](adr/0016-defer-taskstore-scale-proof-to-m5.md) for deferring TaskStore agreed-scale proof to `dir-m5.10`; [ADR-0017](adr/0017-standalone-engine-connector-authority-boundary.md) for the standalone Go engine and accepted exact-0.7.2 connector authority; [ADR-0018](adr/0018-deterministic-coordination-boundary.md) for deterministic coordination decisions and structured agent outcome claims; [ADR-0019](adr/0019-event-driven-delivery-fast-path.md) for the event-driven single-CI delivery fast path, launch visibility, and adaptive delivery capacity; [ADR-0020](adr/0020-zero-work-bootstrap-and-terminal-event-dispatch.md) for zero-work top-level bootstrap, separately notified real work, and synchronous terminal-event reconciliation
 - **Human consolidation record:** Beads Task `dir-m1.14`, comment `01a07a8a-65f2-7755-a7af-bf5239fffffc`, for current worktree ownership, host-view, Organizer, UI, and repository-process rules
 - **Plugin repository:** <https://github.com/mcuadros/paseo-director>
 - **Public name:** Director for Paseo
@@ -340,7 +340,7 @@ This applies to top-level Task Agent and Reviewer Agent creation, prompting, Dir
 
 ### 6.4 Engine-owned host and agent interfaces
 
-- Every Paseo call crosses one engine-owned host interface implemented by the Director for Paseo connector. Its closed exact-0.7.2 capability vocabulary is `executionWorkspace.createManaged`, `executionWorkspace.observe`, `executionWorkspace.archive`, `taskAgent.createWithInitialPrompt`, `reviewerAgent.createWithInitialPrompt`, `helperAgent.observe`, `agent.observe`, and `agent.archive` (ADR-0017). The capability name `executionWorkspace.createManaged` is fixed contract vocabulary, not an ownership claim: for an already admitted Director-owned product worktree it requests registration of a Paseo host view over that exact directory. The connector implementation fixes only an exact-0.7.2 source kind evidenced to preserve Director ownership. Neither the capability name nor host-view registration transfers Git worktree lifecycle or cleanup ownership to the connector (human consolidation record `01a07a8a-65f2-7755-a7af-bf5239fffffc`).
+- Every Paseo call crosses one engine-owned host interface implemented by the Director for Paseo connector. Its closed exact-0.7.2 capability vocabulary is `executionWorkspace.createManaged`, `executionWorkspace.observe`, `executionWorkspace.archive`, `taskAgent.createWithBootstrap`, `reviewerAgent.createWithBootstrap`, `send_agent_prompt`, `helperAgent.observe`, `agent.observe`, and `agent.archive` (ADR-0017 and ADR-0020). The capability name `executionWorkspace.createManaged` is fixed contract vocabulary, not an ownership claim: for an already admitted Director-owned product worktree it requests registration of a Paseo host view over that exact directory. The connector implementation fixes only an exact-0.7.2 source kind evidenced to preserve Director ownership. Neither the capability name nor host-view registration transfers Git worktree lifecycle or cleanup ownership to the connector (human consolidation record `01a07a8a-65f2-7755-a7af-bf5239fffffc`).
 - The connector exposes no generic Paseo operation, raw SDK object, expected-version interpretation, retry choice, or policy field. It advertises only that fixed capability set, the contract version/hash, and its credential scope; missing or stale values fail before mutation (ADR-0017).
 - Commands and queries are separate, mutating commands carry an idempotency key and expected version, reads are engine projections, and changes use a monotonic resumable cursor. The engine owns schemas and generated clients (ADR-0017).
 - Agents receive a session-scoped custom Director MCP in addition to only those applicable built-in Paseo capabilities admitted by the frozen provider policy.
@@ -591,10 +591,19 @@ There is no manual rank or queue drag-and-drop in `1.0`.
 
 ### 10.3 Default capacity
 
-- `maxActiveTasks`: 4.
+- `maxActiveTasks`: 6.
 - `maxActiveTasksPerWorkspace`: 2.
 - `maxConcurrentAgents`: 8.
 - `maxSubagentsPerTask`: 3.
+
+Within those Project limits, the delivery scheduler has separate adaptive
+ceilings of six Task Agents, two Reviewers on non-interfering bases, two
+complete CI processes, and one integration per repository. It requires a
+current machine sample and parks above load `48`, below `24 GiB` available
+memory, or below `50 GiB` free `/tmp`. A load, memory, or temporary-space
+dimension in its reserve band contracts each `6/2/2` ceiling by one, never
+below one. Existing tighter capacity, budget, disk, security, and provider
+limits still apply (ADR-0019).
 
 The agent limit includes top-level Task Agents, top-level Reviewer Agents, and helper subagents created by Task Agents. There is no reserved Organizer execution slot or standing planning agent. Helper subagents also consume the creating Task's helper quota, time/cost budget, and any applicable Workspace or provider capacity (ADR-0018).
 
@@ -620,7 +629,7 @@ Projects may tighten these limits. Expanding any limit requires an explicit huma
 
 If the 900-second dependency aggregate or 1,200-second whole-plan deadline expires, the Director Engine withholds `preparation_ready`. A proven pre-handoff expiry records `preparation_failed` and routes to Needs you. If the active step may have handed off side effects, its Effect first becomes `unknown` and is reconciled under ADR-0015; after that bounded reconciliation the Run records `preparation_failed` and routes to Needs you without retrying blindly. This is the deterministic aggregate-expiry route required by ADR-0018.
 
-Only after `preparation_ready` may the Director Engine persist the uniquely keyed top-level agent-create intent. Agent creation and the initial prompt remain one public host request under ADR-0003. A lost response is reconciled by exact facts rather than repeated blindly.
+Only after `preparation_ready` may the Director Engine persist the uniquely keyed top-level agent-create intent. Creation carries only the exact zero-work bootstrap. After the bootstrap finishes, the engine persists the returned agent/workspace identity and frozen labels, then records a separate real-prompt intent. Task or Review work starts exclusively through `send_agent_prompt` with `notifyOnFinish=true`. A lost response is reconciled by exact facts rather than repeated blindly (ADR-0020).
 
 ## 12. Agent profiles and authority
 
@@ -655,9 +664,9 @@ Every Task Agent turn ends with exactly one schema-versioned `AgentOutcomeClaim`
 
 | Outcome | Claim and reconciled reduction |
 |---|---|
-| `completed` | Claims exact Candidate/base SHAs, one result per criterion ID, and bounded residual-risk codes. The engine proves ended turn, scope/revision, clean worktree, owned/reachable Candidate descending from base, no conflict, and current budgets; it records/adopts the Candidate and queues both Validation and Review, never closure. |
-| `needs_validation` | Claims exact Candidate/base and frozen check IDs. After the same Candidate proof plus current check/environment/capacity facts and absence of current results, queue only configured deterministic checks and also independent Review. |
-| `needs_review` | Claims exact Candidate/base and criterion IDs. After Candidate proof plus reviewer-independence, detached-checkout, model/profile, capacity, and current-review facts, queue one exact-Candidate Review and configured Validation. |
+| `completed` | Claims exact Candidate/base SHAs, one result per criterion ID, and bounded residual-risk codes. The engine proves ended turn, scope/revision, clean worktree, owned/reachable Candidate descending from base, no conflict, and current budgets; it records/adopts the Candidate, queues the owned draft, and then queues Validation and Review as sibling obligations, never closure. |
+| `needs_validation` | Claims exact Candidate/base and frozen check IDs. After the same Candidate proof plus current check/environment/capacity facts and absence of current results, queue the owned draft and then the configured deterministic checks plus independent Review. |
+| `needs_review` | Claims exact Candidate/base and criterion IDs. After Candidate proof plus reviewer-independence, detached-checkout, model/profile, capacity, and current-review facts, queue the owned draft and then one exact-Candidate Review plus configured Validation. |
 | `needs_human_decision` | Claims one typed question code, bounded question, closed options, affected scope, and machine-checkable resume condition. Only if no current decision or frozen policy answers it, persist one human-decision request and route to Needs you. |
 | `blocked_by_dependency` | Claims exact dependency IDs and wake predicate. The TaskStore graph must prove each dependency and absence of an override; keep Queued, or discard a stale claim and recompute. |
 | `blocked_by_access` | Claims a typed capability/resource code, operation code, and redacted fingerprint. Fresh Doctor/preflight/effect observations route transient unavailability to waiting, human-owned credentials/configuration to Needs you, and scope/identity conflict to fail-closed refusal. |
@@ -673,6 +682,10 @@ There is no generic success, failure, retry, stuck, route, close, or free-form f
 - Writer helpers always use isolated checkouts and return commits to the Task Agent. Read-only helpers may share the checkout only when provider and permissions make it safe.
 - The default maximum is three helper subagents per Task. Director reserves and reconciles their capacity, identities, and budgets, requires fixed Project/Task/Run scope and containment, and includes them in interruption, recovery, and cleanup without becoming their launcher. An unknown helper-creation result parks rather than being retried blindly.
 - The mandatory top-level Reviewer Agent does not consume the helper quota, but it does consume global agent capacity.
+- Before any Task Agent or Reviewer starts, the engine records and verifies its
+  root-workspace Worker entry. Missing visibility refuses launch. The Director
+  Workers projection exposes role, Task, phase, duration, Candidate, and Open
+  agent action (ADR-0019).
 
 The Director Engine decides helper admission, capacity, and every later lifecycle transition. The Task Agent may invoke only the one admitted parent-bound creation; an unknown result parks rather than recreating blindly (ADR-0018).
 
@@ -691,8 +704,9 @@ For every Run, the Director Engine (ADR-0017 and ADR-0018):
 1. resolves and records the exact base SHA;
 2. creates or adopts one owned Task branch;
 3. persists a uniquely keyed worktree intent, applies ADR-0014 lifecycle admission, creates or adopts the isolated product worktree through its Git/worktree adapter, verifies ownership, and then has the host connector register/translate that exact directory as the Execution Workspace view without transferring lifecycle or cleanup ownership;
-4. persists a uniquely keyed Task Agent creation intent and commands the Director for Paseo connector to create exactly one normal top-level Task Agent in that registered workspace with the frozen profile, policy, skills, templates, claims, PreparationPlan, and MCP;
-5. omits the parent field from the agent-creation request, sets the visible agent title to the exact Task title without prefixes or suffixes, and records the returned Paseo agent ID before prompting or any later effect.
+4. persists a uniquely keyed Task Agent creation intent and commands the Director for Paseo connector to create exactly one normal top-level Task Agent in that registered workspace, with the parent omitted, the exact Task title, frozen public labels, and only the zero-work bootstrap;
+5. observes bootstrap completion and persists the returned Paseo agent ID, workspace ID, and frozen labels before any later effect; and
+6. persists a separate real-prompt intent and starts Task work only through `send_agent_prompt` with `notifyOnFinish=true`, bound to that persisted identity, frozen profile, policy, skills, templates, claims, PreparationPlan, and MCP (ADR-0020).
 
 One Task has at most one active branch and one active pull request.
 
@@ -707,13 +721,22 @@ The Task Agent must produce a commit and return one closed outcome claim. The Di
 
 ### 13.3 Validation, failure interpretation, and independent review
 
-Every admitted Candidate enters three distinct stages with distinct actors and durable records. Validation and Review are sibling obligations: a passed, failed, timed-out, or unavailable Validation never suppresses Review (ADR-0018).
+Every admitted Candidate first enters one uniquely owned draft-publication
+effect. After the draft is observed at the exact Candidate, the engine records
+one authoritative complete remote Linux CI and one independent Review as
+sibling obligations and dispatches them concurrently when capacity allows.
+Recovery dispatches only a missing sibling intent. A passed, failed, timed-out,
+or unavailable Validation never suppresses Review (ADR-0018 and ADR-0019).
 
-1. **Validation execution is deterministic.** The Director Engine selects only frozen check IDs, runs exact argv in the exact Candidate environment, and records a `ValidationObservation` bound to Candidate/base/configuration hashes, check identity, timestamps, exit status or signal/timeout, and a bounded redacted output digest. Exit zero means only that the declared check passed; any other result means only that it did not pass. The executor cannot explain, waive, retry, reroute, or correct.
+1. **Validation execution is deterministic.** The Director Engine selects only frozen check IDs, runs exact argv in the exact Candidate environment, and records a `ValidationObservation` bound to Candidate/base/configuration hashes, check identity, timestamps, exit status or signal/timeout, and a bounded redacted output digest. Exactly one complete remote Linux CI is authoritative for each Candidate. Its bounded observation identifies the unique workflow run and exact required checks. Exit zero means only that the declared check passed; any other result means only that it did not pass. The executor cannot explain, waive, retry, reroute, or correct.
 2. **Failure interpretation is model work.** After a non-passing Validation, the original Task Agent may receive a separate read-only interpretation turn bound to that Observation and Candidate. It returns exactly one `FailureInterpretationClaim`: `candidate_defect`, `base_failure`, `environment_failure`, or `indeterminate`, with bounded cited facts and proposed correction scope. This claim grants no edit turn. The Director Engine reconciles Git/base/environment/check/budget/attempt facts and alone decides correction, wait, refusal, or escalation.
-3. **Review is always independent model work.** For every admitted Candidate, the Director Engine commands one normal top-level Reviewer Agent through the host connector when capacity permits, with the parent omitted and identity persisted before its prompt. Pause, Emergency-stop, security, identity, and resource gates may delay or forbid all execution; a Validation result may not. The Reviewer receives objective, acceptance/specification, policy, and Candidate/base facts but no author transcript; it uses a detached disposable exact-SHA checkout, has no write tools, and must cover acceptance/specification, correctness, security, maintainability, readability, design, quality, and rigor (ADR-0017 and ADR-0018). It returns exactly one `ReviewClaim` verdict—`approve_candidate`, `changes_requested`, or `needs_human_decision`—with exact Candidate/base bindings and structured cited findings. The engine validates identity, independence, checkout, citations, schema, and current SHA before projection.
+3. **Review is always independent model work.** For every admitted Candidate, the Director Engine commands one normal top-level Reviewer Agent through the host connector when capacity permits, with the parent omitted and only the zero-work bootstrap on create. It persists the native identity and labels before starting Review exclusively through `send_agent_prompt` with `notifyOnFinish=true`. Pause, Emergency-stop, security, identity, and resource gates may delay or forbid all execution; a Validation result may not. The Reviewer receives objective, acceptance/specification, policy, and Candidate/base facts but no author transcript; it uses a detached disposable exact-SHA checkout, has no write tools, and must cover acceptance/specification, correctness, security, maintainability, readability, design, quality, and rigor (ADR-0017, ADR-0018, and ADR-0020). The versioned review harness consumes the one authoritative remote CI observation and does not start another complete CI. It independently rechecks manifest, Task, diff, tree, base, and current durable context. The Reviewer returns exactly one `ReviewClaim` verdict—`approve_candidate`, `changes_requested`, or `needs_human_decision`—with exact Candidate/base bindings and structured cited findings. The engine validates identity, independence, checkout, citations, schema, current SHA, and remote-CI observation binding before projection (ADR-0019).
 
-Independent review occurs before opening a public pull request by default. An explicit Project/Task setting may publish first and review afterward, but cannot waive or short-circuit Review. Changing the Candidate invalidates both previous Validation and Review for readiness purposes.
+The accepted fast path opens or updates its owned draft before Review, without
+merge authority. It marks that same draft ready only after exact Review and CI
+evidence are present. Changing the Candidate invalidates both previous
+Validation and Review for readiness purposes and updates the same owned draft
+under an exact lease (ADR-0019).
 
 ### 13.4 Validation and correction
 
@@ -727,6 +750,13 @@ The correction reducer uses these defaults (ADR-0018):
 - batch all current validation failures, failure interpretation, Review findings, and human feedback before authorizing a correction;
 - corrections are performed by the Task Agent;
 - every new commit requires fresh review and validation.
+
+Correction turns reuse PLAN and skill content only while their digests match
+the frozen Run, refresh current human decisions and the Candidate diff, and
+carry all current Review, Validation, and human-feedback findings in one
+deterministically ordered batch. An acknowledgement-only output is rejected
+once; repetition escalates instead of consuming serial correction turns
+(ADR-0019).
 
 Every Run has mandatory finite time, token, and turn limits, an optional finite cost limit, and an explicit CI budget. For each finite consumptive budget, usage is durable consumption plus outstanding reservations. At 85% of any hard limit, or before a dispatch whose reservation would reach 85%, the Director Engine atomically records one `soft_budget_reached` event, warns with the measured dimension/ratio, and pauses new model-consuming turns, helpers, retries, corrections, and Reviews at the next safe boundary (ADR-0018). Correction, replacement, CI, and effect-attempt counts retain their own integer hard limits rather than fractional soft limits.
 
@@ -759,11 +789,15 @@ Only the Director Engine decides and performs branch, push, PR, integration, and
 ### 14.2 Pull request
 
 - The Director Engine pushes the Task branch and opens at most one PR after its delivery reducer admits the exact effect.
-- Publication occurs after independent review by default; an explicit policy can publish earlier but Review remains mandatory.
+- The accepted fast path creates or updates the one owned draft immediately
+  after Candidate admission, under an exact force-with-lease. Draft creation
+  carries no merge authority. Publication readiness still waits for the exact
+  independent Review and authoritative remote CI observation (ADR-0019).
 - The Director Engine observes GitHub CI and human feedback against the current Candidate.
 - Manual merge is the default.
 - Automatic merge is configurable by Project/Task.
-- Automatic mode requires independent review and configured CI gates but no human approval.
+- Automatic mode requires the exact approved Reviewer UUID, the recorded
+  authoritative remote CI, and configured CI gates but no human approval.
 - The Director Engine performs final merge/integration only after fresh exact-head/base/check/feedback/mergeability reconciliation and an atomic expected-head precondition (ADR-0006, ADR-0015, and ADR-0018).
 
 ### 14.3 Direct
@@ -1051,8 +1085,15 @@ Linux platform rules:
 
 The standalone Director Engine is event-driven and uses two independent clocks plus periodic external reconciliation as a safety net (ADR-0017 and ADR-0018).
 
-- Immediate wake on supported connector events and UI/MCP commands; events are never evidence.
-- Local session liveness every 10 seconds while a local provider turn or owned child process is expected. Three consecutive failures over at least 30 seconds trigger full reconciliation but never prove death, stuckness, or free capacity.
+- The daemon's `finished`, `error`, and `permission` terminal events
+  synchronously enqueue coordinator reconciliation with an exclusive latency
+  target below 1,000 ms. Events are never evidence. Durable event-ID
+  deduplication makes exact replay a no-op; conflicting identity reuse, stale,
+  forged, unknown, or cross-Run events fail closed (ADR-0019 and ADR-0020).
+- Active turns are not polled. Local owned-process observation may still
+  trigger reconciliation, but cannot extend liveness or prove death,
+  stuckness, or free capacity. Only the five-minute compound multi-source
+  stall watchdog may recover a lost terminal event.
 - External fact observation every 30 seconds while any Run is active and every 5 minutes while all Runs are idle.
 - Exponential backoff for unavailable external systems.
 - Full reconciliation at engine startup, connector reload/replacement, reconnect, and lease takeover before resuming effects. The engine process survives connector reload and resumes from the monotonic cursor and durable facts.
@@ -1089,7 +1130,7 @@ No single source declares an agent stuck (ADR-0018). A typed `stalled_or_ambiguo
 | Agent conversations | Paseo-owned; not duplicated |
 | Complete PR/CI data | GitHub-owned; referenced/summarized |
 | Detailed Director technical logs | 14 days and 100 MB per Project |
-| Heartbeats/poll samples | Latest replaceable value only |
+| Process/external poll samples | Latest replaceable value only |
 | Dirty-work recovery refs | Seven days by default |
 | Daily TaskStore backups | Seven days by default |
 
@@ -1104,6 +1145,10 @@ A diagnostic bundle is generated only through a human action, is redacted, and i
 - Exhaustive/model-based/property tests for all six decision reducers, all seven Agent outcome claims, transitions, malformed claims, missing/stale/contradictory facts, and dependency cycles (ADR-0018).
 - Policy inheritance and overrides.
 - Scheduler, 85% soft/100% hard budgets, reservations, acknowledgement revisions, and idempotency.
+- Candidate-before-draft-before-sibling ordering, exactly one authoritative
+  remote Linux CI, concurrent independent Review, adaptive `6/2/2` capacity,
+  Worker pre-start visibility, event replay, and whole-batch correction
+  behavior (ADR-0019).
 - Every PreparationPlan timeout/failure/unknown route, including simultaneous per-step/aggregate/whole-plan ceilings and expiry without `preparation_ready`.
 - Validation/interpretation/Review separation, failed-validation non-short-circuit, exact bindings, and mandatory review coverage for acceptance/specification, correctness, security, maintainability, readability, design, quality, and rigor.
 - Local/external cadence and freshness tests, one-probe non-authority, compound stall detection, and full termination predicates.
@@ -1124,6 +1169,8 @@ Tests use real disposable Git repositories/worktrees and the selected TaskStore.
 - backup, restore, and migrations;
 - standalone engine, connector, and plugin interruption/reload at every effect boundary, including an in-flight connector call and resumable cursor;
 - duplicate and out-of-order events;
+- draft create/update recovery, remote-CI/Review ordering, and refusal of a
+  second complete CI for one Candidate;
 - base changes during validation/review/Ready;
 - dirty worktrees and absent commits;
 - disk pressure, offline systems, and expired credentials;
@@ -1178,6 +1225,9 @@ After this plan is approved, development begins by initializing a new, clean Bea
 - One normal top-level Paseo Task Agent owns one development Task and runs in that Task's isolated Execution Workspace/worktree. Director does not launch it through a planning context or agent-scoped subagent orchestration.
 - A development Task Agent may use internal helper subagents, but they do not claim Tasks, own Beads records, replace the Task Agent, or become development Task owners.
 - Every result is committed and independently reviewed at the exact SHA regardless of deterministic validation success or failure.
+- The Task Agent uses the coordinator-native mode-`0600` handoff contract. Raw
+  ownership input comes only from an owner-only file and never enters argv,
+  public output, logs, PR content, or Beads (ADR-0019).
 - The repository is clean before handoff.
 - Beads records outcome, tests, review, and links.
 - A spike hands off reproducible evidence and an ADR. When evidence obstructs a binding human-decided path, its scoped outcome is Inconclusive with the exact obstacle and owner escalation; an outcome label cannot reinstate a prohibited alternative.
@@ -1228,6 +1278,13 @@ Includes the standalone Go Director Engine scaffold, minimum TypeScript Director
 - Project/Workspace/Task inheritance and overrides.
 - Preview/Apply configuration.
 - Manual/automatic launch and concurrency.
+- Candidate fast-path ordering, adaptive `6/2/2` delivery lanes, event-driven
+  completion wakes, and one authoritative remote CI concurrent with Review
+  (ADR-0019).
+- Registered launch visibility: every top-level Task Agent and Reviewer is
+  recorded against its root workspace before it starts, and is refused a launch
+  when that record cannot be written. See
+  [Director Workers visibility contract](director-workers.md).
 - Agreed planning scale.
 
 **Exit gate:** complete deterministic planning and scheduler behavior with fake adapters.
@@ -1238,7 +1295,9 @@ Includes the standalone Go Director Engine scaffold, minimum TypeScript Director
 - Scoped MCP.
 - Closed Task Agent outcomes and external-fact reconciliation.
 - Top-level Task Agent and helper-subagent lifecycle.
-- Frozen Run configuration, 10-second local/30-second active external/5-minute idle liveness, compound stall detection, and 85% soft/100% hard budgets.
+- Frozen Run configuration, event-driven agent completion wakes,
+  30-second active external/5-minute idle reconciliation, the sole
+  five-minute compound stall watchdog, and 85% soft/100% hard budgets.
 - Pause/Resume/Cancel/Emergency stop.
 - One top-level Task Agent replacement and recovery.
 

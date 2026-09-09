@@ -6,6 +6,7 @@
 - **Plan gate:** M0 governance and Paseo lifecycle
 - **Decision owner:** Human project owner
 - **Amends:** PLAN §§1, 2, 3, 4, 5, 6, 10, 12, 13, 15, 16, 22, and 23; [ADR-0001](0001-automatic-integration-after-review.md), [ADR-0002](0002-paseo-0.7.2-public-surface.md), and [ADR-0008](0008-director-threat-model.md)
+- **Amended by:** [ADR-0020](0020-zero-work-bootstrap-and-terminal-event-dispatch.md)
 
 ## Context
 
@@ -24,7 +25,7 @@ For every active Task Run, Director launches exactly one normal top-level Paseo 
 1. The scheduler submits a durable launch command to the engine. It never asks the Organizer Agent or another agent to create Task work through agent-scoped subagent orchestration.
 2. The engine acts as a top-level Paseo SDK client. It creates the Task Agent in the Task's isolated Execution Workspace and omits the agent-creation parent field rather than supplying an Organizer, scheduler, Task Agent, or synthetic parent ID.
 3. The creation request sets the visible agent title to the exact Task title, with no prefix, suffix, run number, key, or status decoration. Durable Task, Run, Workspace, request, and agent IDs provide correlation instead of overloading the title.
-4. The engine persists a uniquely keyed creation intent before the SDK call. It persists the returned native Workspace and agent IDs immediately after each creation and before prompting or performing any dependent effect. Recovery reconciles those durable IDs and external facts before retry, so it cannot duplicate an agent or workspace.
+4. The engine persists a uniquely keyed creation intent before the SDK call. Creation carries only ADR-0020's zero-work bootstrap. It persists the returned native Workspace and agent IDs immediately after bootstrap completion and before the separate notified prompt or any dependent effect. Recovery reconciles those durable IDs and external facts before retry, so it cannot duplicate an agent, workspace, or work turn.
 5. Several top-level Task Agents may execute concurrently for the same Director Workspace/repository only in distinct Execution Workspaces/worktrees. One active Run still owns at most one active Task Agent, Task branch, and pull request.
 
 A recoverable replacement follows the same top-level, omitted-parent, exact-title, intent/evidence, and workspace-isolation contract. The previous Task Agent must no longer be active, and the replacement receives durable Run facts rather than becoming a child of the previous agent.
@@ -49,7 +50,7 @@ The general mutable Paseo operations that could create arbitrary agents or selec
 
 The engine creates every mandatory Reviewer Agent as a normal independent top-level Paseo agent and omits the parent field. A Reviewer Agent is never a child, helper, or continuation of an Organizer or Task Agent. It receives no Task Agent conversation history, uses a detached disposable checkout of the exact Candidate, has read-only review authority plus structured-verdict submission, and consumes global agent capacity without consuming the Task's helper quota.
 
-The engine persists the Reviewer creation intent and native agent/workspace IDs before prompting or review work. A changed Candidate requires a newly bound review; parentage does not replace any exact-SHA gate.
+The engine creates the Reviewer with only ADR-0020's zero-work bootstrap, then persists the native agent/workspace IDs and labels before starting review through the separate notified prompt. A changed Candidate requires a newly bound review; parentage does not replace any exact-SHA gate.
 
 ### Director development workflow
 

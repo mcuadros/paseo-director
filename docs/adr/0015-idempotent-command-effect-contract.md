@@ -16,6 +16,7 @@
   [ADR-0012](0012-direct-dolt-operational-readiness.md), and
   [ADR-0013](0013-scalable-ignored-tree-recovery-policy.md), and
   [ADR-0014](0014-practical-linux-agent-boundary.md)
+- **Amended by:** [ADR-0020](0020-zero-work-bootstrap-and-terminal-event-dispatch.md)
 
 ## Context
 
@@ -30,9 +31,10 @@ The independently approved M0 evidence supplies effect-specific facts:
 
 - Paseo records and provider sessions survive several plugin and daemon
   interruptions, while `running` without an active turn and `closed` without
-  `archivedAt` are ambiguous. Agent creation includes the initial prompt, and
-  a lost create result must be reconciled by exact labels before another
-  create. Archive is retryable, but termination requires `closed`, non-null
+  `archivedAt` are ambiguous. ADR-0020 limits top-level creation to a zero-work
+  bootstrap; a lost create result must be reconciled by exact labels before
+  another create. The separate notified real prompt is nonrepeatable after a
+  possible handoff. Archive is retryable, but termination requires `closed`, non-null
   `archivedAt`, and reconciled process facts.
 - The admitted native providers accept an exact session-scoped MCP catalog and
   tool policy on the tested tuple. The bridge is fixed to one scope, remains a
@@ -408,15 +410,15 @@ implementation convenience.
 | Class | Examples | Unknown-result rule |
 |---|---|---|
 | `store_only` | Command admission, aggregate/Event/Audit write, lease, helper capacity reservation, schema migration transaction | Query the immutable key and versions. Repeat only the same transaction through the same command identity. |
-| `unique_create` | Workspace; Task/Reviewer Agent with initial prompt; parent-bound helper evidence; PR; verified backup/fresh restore; private recovery artifact; diagnostic bundle | Adopt exactly one matching desired object. Retry only after effect-specific authoritative absence, prior dispatcher/process absence, unchanged binding, and budget. Zero or multiple ambiguous matches parks. |
+| `unique_create` | Workspace; Task/Reviewer Agent with zero-work bootstrap; parent-bound helper evidence; PR; verified backup/fresh restore; private recovery artifact; diagnostic bundle | Adopt exactly one matching desired object. Retry only after effect-specific authoritative absence, prior dispatcher/process absence, unchanged binding, and budget. Zero or multiple ambiguous matches parks. |
 | `conditional_update` | Exact ref create/update/push; direct integration; expected-head PR merge; Organizer commit; Git/Dolt sync; recovery ref; quarantine move | Adopt desired exact state. Retry only while the authoritative current value still equals the persisted expected value and the adapter mutation carries that compare condition. A changed value parks/invalidates. |
 | `idempotent_close` | Agent/workspace archive; close an exact owned unmerged PR | Adopt the full terminal predicate. An exact owned active target may be retried within budget; an identity mismatch or incomplete termination parks. |
 | `nonrepeatable_progress` | Continue/send an already-created agent turn or correction prompt | If downstream facts prove acceptance/completion, adopt. Otherwise any possible handoff parks in Needs you. Never resend automatically. |
 | `destructive_terminal` | Remove worktree; delete/expire local or remote ref; delete recovery artifact; expire diagnostic bundle | Exact absence after a possible handoff completes. Any present, recreated, changed, unowned, or unprovable target parks without another delete. Completion is terminal; later reappearance is an anomaly, not permission to delete. |
 
-Initial Task/Reviewer Agent creation is `unique_create` because ADR-0003
-requires the initial prompt in the same Paseo create request. Later sends are
-`nonrepeatable_progress`. Helper creation is the single launcher exception:
+Initial Task/Reviewer Agent creation with the zero-work bootstrap is
+`unique_create`. ADR-0020's separate real Task/Review send is
+`nonrepeatable_progress` and requires terminal notification. Helper creation is the single launcher exception:
 the engine transactionally reserves scope/capacity and issues a one-use
 parent-bound admission; the Task Agent invokes the admitted mechanism; the
 engine observes the exact helper identity before helper work. An unknown result

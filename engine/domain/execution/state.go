@@ -15,7 +15,8 @@ const (
 	EffectHostViewCreate      EffectKind = "host_view.create"
 	EffectBoundaryMaterialize EffectKind = "rootless_oci.materialize"
 	EffectSetupRun            EffectKind = "lifecycle_setup.run"
-	EffectAgentCreate         EffectKind = "task_agent.create_with_initial_prompt"
+	EffectAgentCreate         EffectKind = "task_agent.create_with_bootstrap"
+	EffectAgentPrompt         EffectKind = "agent.send_prompt"
 	EffectAgentArchive        EffectKind = "task_agent.archive"
 	EffectHostViewArchive     EffectKind = "host_view.archive"
 	EffectWorktreeRemove      EffectKind = "worktree.remove"
@@ -39,6 +40,8 @@ const (
 	ObservationDesired      ObservationStatus = "desired"
 	ObservationAbsent       ObservationStatus = "absent"
 	ObservationOwnedPresent ObservationStatus = "owned_present"
+	ObservationErrored      ObservationStatus = "errored"
+	ObservationPermission   ObservationStatus = "permission"
 	ObservationDifferent    ObservationStatus = "different"
 	ObservationAmbiguous    ObservationStatus = "ambiguous"
 	ObservationUnavailable  ObservationStatus = "unavailable"
@@ -154,46 +157,79 @@ type StartupReconciliation struct {
 // A zero State belongs to pre-execution TaskStore records created by older M1
 // skeletons and remains valid.
 type State struct {
-	SchemaVersion                    string                  `json:"schemaVersion,omitempty"`
-	Scope                            Scope                   `json:"scope,omitempty"`
-	StartCommandID                   string                  `json:"startCommandId,omitempty"`
-	EligibilityDecisionVersion       string                  `json:"eligibilityDecisionVersion,omitempty"`
-	EligibilityDecisionID            string                  `json:"eligibilityDecisionId,omitempty"`
-	EligibilityFactsHash             string                  `json:"eligibilityFactsHash,omitempty"`
-	CapacityReservationID            string                  `json:"capacityReservationId,omitempty"`
-	BudgetReservationID              string                  `json:"budgetReservationId,omitempty"`
-	RepositoryBindingHash            string                  `json:"repositoryBindingHash,omitempty"`
-	LifecycleDigest                  string                  `json:"lifecycleDigest,omitempty"`
-	LifecycleApproval                *LifecycleApproval      `json:"lifecycleApproval,omitempty"`
-	IsolationDigest                  string                  `json:"isolationDigest,omitempty"`
-	Isolation                        IsolationObservation    `json:"isolation,omitempty"`
-	OperationalPolicy                OperationalPolicy       `json:"operationalPolicy,omitempty"`
-	LifecycleSurfaces                LifecycleSurfaces       `json:"lifecycleSurfaces,omitempty"`
-	SourcePath                       string                  `json:"sourcePath,omitempty"`
-	WorktreePath                     string                  `json:"worktreePath,omitempty"`
-	Branch                           string                  `json:"branch,omitempty"`
-	TaskTitle                        string                  `json:"taskTitle,omitempty"`
-	CriterionIDs                     []string                `json:"criterionIds,omitempty"`
-	InitialPrompt                    string                  `json:"initialPrompt,omitempty"`
-	InitialPromptHash                string                  `json:"initialPromptHash,omitempty"`
-	Worktree                         Effect                  `json:"worktree,omitempty"`
-	HostView                         Effect                  `json:"hostView,omitempty"`
-	Boundary                         Effect                  `json:"boundary,omitempty"`
-	Setup                            Effect                  `json:"setup,omitempty"`
-	PreparationPlan                  PreparationPlan         `json:"preparationPlan,omitempty"`
-	PreparationReady                 bool                    `json:"preparationReady,omitempty"`
-	PreparationBarrierHash           string                  `json:"preparationBarrierHash,omitempty"`
-	Agent                            Effect                  `json:"agent,omitempty"`
-	Claim                            *CompletedClaim         `json:"claim,omitempty"`
-	CandidateObservation             *CandidateObservation   `json:"candidateObservation,omitempty"`
-	OperationalObservation           *OperationalObservation `json:"operationalObservation,omitempty"`
-	OperationalObservationRunVersion uint64                  `json:"operationalObservationRunVersion,omitempty"`
-	OperationalObservationConsumed   bool                    `json:"operationalObservationConsumed,omitempty"`
-	FakeTerminalRung                 bool                    `json:"fakeTerminalRung,omitempty"`
-	AgentArchive                     Effect                  `json:"agentArchive,omitempty"`
-	HostViewArchive                  Effect                  `json:"hostViewArchive,omitempty"`
-	WorktreeRemove                   Effect                  `json:"worktreeRemove,omitempty"`
-	NeedsYou                         *NeedsYou               `json:"needsYou,omitempty"`
-	LastStartupReconciliation        *StartupReconciliation  `json:"lastStartupReconciliation,omitempty"`
-	Terminal                         bool                    `json:"terminal,omitempty"`
+	SchemaVersion                    string                   `json:"schemaVersion,omitempty"`
+	Scope                            Scope                    `json:"scope,omitempty"`
+	StartCommandID                   string                   `json:"startCommandId,omitempty"`
+	EligibilityDecisionVersion       string                   `json:"eligibilityDecisionVersion,omitempty"`
+	EligibilityDecisionID            string                   `json:"eligibilityDecisionId,omitempty"`
+	EligibilityFactsHash             string                   `json:"eligibilityFactsHash,omitempty"`
+	CapacityReservationID            string                   `json:"capacityReservationId,omitempty"`
+	BudgetReservationID              string                   `json:"budgetReservationId,omitempty"`
+	RepositoryBindingHash            string                   `json:"repositoryBindingHash,omitempty"`
+	LifecycleDigest                  string                   `json:"lifecycleDigest,omitempty"`
+	LifecycleApproval                *LifecycleApproval       `json:"lifecycleApproval,omitempty"`
+	IsolationDigest                  string                   `json:"isolationDigest,omitempty"`
+	Isolation                        IsolationObservation     `json:"isolation,omitempty"`
+	OperationalPolicy                OperationalPolicy        `json:"operationalPolicy,omitempty"`
+	LifecycleSurfaces                LifecycleSurfaces        `json:"lifecycleSurfaces,omitempty"`
+	SourcePath                       string                   `json:"sourcePath,omitempty"`
+	WorktreePath                     string                   `json:"worktreePath,omitempty"`
+	Branch                           string                   `json:"branch,omitempty"`
+	RootWorkspaceID                  string                   `json:"rootWorkspaceId,omitempty"`
+	TaskTitle                        string                   `json:"taskTitle,omitempty"`
+	CriterionIDs                     []string                 `json:"criterionIds,omitempty"`
+	InitialPrompt                    string                   `json:"initialPrompt,omitempty"`
+	InitialPromptHash                string                   `json:"initialPromptHash,omitempty"`
+	Worktree                         Effect                   `json:"worktree,omitempty"`
+	HostView                         Effect                   `json:"hostView,omitempty"`
+	Boundary                         Effect                   `json:"boundary,omitempty"`
+	Setup                            Effect                   `json:"setup,omitempty"`
+	PreparationPlan                  PreparationPlan          `json:"preparationPlan,omitempty"`
+	PreparationReady                 bool                     `json:"preparationReady,omitempty"`
+	PreparationBarrierHash           string                   `json:"preparationBarrierHash,omitempty"`
+	Agent                            Effect                   `json:"agent,omitempty"`
+	AgentPrompt                      Effect                   `json:"agentPrompt,omitempty"`
+	WorkerVisibility                 *WorkerVisibility        `json:"workerVisibility,omitempty"`
+	LastCompletionEvent              *CompletionEvent         `json:"lastCompletionEvent,omitempty"`
+	CompletionEventCursor            uint64                   `json:"completionEventCursor,omitempty"`
+	CompletionEventReceipts          []CompletionEventReceipt `json:"completionEventReceipts,omitempty"`
+	Claim                            *CompletedClaim          `json:"claim,omitempty"`
+	CandidateObservation             *CandidateObservation    `json:"candidateObservation,omitempty"`
+	OperationalObservation           *OperationalObservation  `json:"operationalObservation,omitempty"`
+	OperationalObservationRunVersion uint64                   `json:"operationalObservationRunVersion,omitempty"`
+	OperationalObservationConsumed   bool                     `json:"operationalObservationConsumed,omitempty"`
+	FakeTerminalRung                 bool                     `json:"fakeTerminalRung,omitempty"`
+	AgentArchive                     Effect                   `json:"agentArchive,omitempty"`
+	HostViewArchive                  Effect                   `json:"hostViewArchive,omitempty"`
+	WorktreeRemove                   Effect                   `json:"worktreeRemove,omitempty"`
+	NeedsYou                         *NeedsYou                `json:"needsYou,omitempty"`
+	LastStartupReconciliation        *StartupReconciliation   `json:"lastStartupReconciliation,omitempty"`
+	Terminal                         bool                     `json:"terminal,omitempty"`
+}
+
+// WorkerVisibility is the frozen root-workspace launch registration a
+// Director-launched Task Agent or Reviewer must already carry before the host
+// may create it. The engine owns this structural shape; the label vocabulary
+// that publishes it lives in the host port, so the domain stays free of any
+// Paseo naming.
+type WorkerVisibility struct {
+	RootWorkspaceID      string `json:"rootWorkspaceId"`
+	ExecutionWorkspaceID string `json:"executionWorkspaceId"`
+	AgentID              string `json:"agentId,omitempty"`
+	Role                 string `json:"role"`
+	Phase                string `json:"phase"`
+	CandidateSHA         string `json:"candidateSha,omitempty"`
+	BaseSHA              string `json:"baseSha"`
+	RegisteredAt         string `json:"registeredAt"`
+	StartedAt            string `json:"startedAt"`
+	Digest               string `json:"digest"`
+}
+
+// ValidWorkerVisibility rejects a structurally incomplete registration. It
+// deliberately proves nothing about the published labels: only the host port
+// can decide that, and the launch reducer consumes the resulting digest.
+func ValidWorkerVisibility(visibility WorkerVisibility) bool {
+	return visibility.RootWorkspaceID != "" && visibility.ExecutionWorkspaceID != "" &&
+		visibility.Role != "" && visibility.Phase != "" && visibility.BaseSHA != "" &&
+		visibility.RegisteredAt != "" && visibility.StartedAt != "" && visibility.Digest != ""
 }

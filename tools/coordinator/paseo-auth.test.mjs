@@ -118,12 +118,15 @@ const forbiddenAmbient = [
 ].filter((key) => process.env[key] !== undefined);
 const passwordInArgv =
   password !== undefined && args.some((value) => value.includes(password));
+const host = process.env.PASEO_HOST;
 appendFileSync(
   logPath,
   JSON.stringify({
     name,
     args,
     hasPassword: password !== undefined,
+    host: host ?? null,
+    hostHasPassword: host !== undefined && /password/iu.test(host),
     forbiddenAmbient,
     passwordInArgv,
   }) + "\\n",
@@ -382,8 +385,36 @@ test("protected Paseo lifecycle reads isolate credentials and fail closed", asyn
     assert.equal(entries.every((entry) => entry.forbiddenAmbient.length === 0), true);
     assert.equal(entries.every((entry) => entry.passwordInArgv === false), true);
 
+    // The documented local secret profile exports the credential inside the
+    // connection URI. The CLI must consume that form natively, so no Task has
+    // to wrap it in a per-Task shell script, while still keeping the raw host
+    // out of every child process.
     delete process.env.PASEO_PASSWORD;
-    process.env.PASEO_HOST = `tcp://127.0.0.1:17693?password=${fixture.password}`;
+    process.env.PASEO_HOST = `tcp://127.0.0.1:17693/?password=${encodeURIComponent(fixture.password)}`;
+    const uriProbe = defaultCommandRunner("git", ["--version"]);
+    assert.equal(uriProbe.status, 0, uriProbe.stderr);
+    const uriHandoff = await execute("review-handoff", fixture.options);
+    assert.equal(uriHandoff.result.snapshot.paseo.verified, true);
+    assert.equal(JSON.stringify(uriHandoff).includes(fixture.password), false);
+    const uriEntries = processLog(fixture).slice(entries.length);
+    assert.equal(uriEntries.length > 0, true);
+    assert.equal(uriEntries.every((entry) => entry.hostHasPassword === false), true);
+    assert.deepEqual(
+      uriEntries
+        .filter((entry) => entry.hasPassword)
+        .map((entry) => [entry.name, entry.args]),
+      [
+        ["paseo", ["inspect", AGENT_ID, "--json"]],
+        ["paseo", ["workspace", "ls", "--json"]],
+      ],
+    );
+
+    // A host the CLI cannot separate from its credential, or one declaring two
+    // different credentials, still fails closed rather than guessing.
+    process.env.PASEO_HOST = `tcp://127.0.0.1:17693/?password=${encodeURIComponent(fixture.password)}`;
+    process.env.PASEO_PASSWORD = fixture.wrongPassword;
+    process.env.PASEO_HOST = `operator:${fixture.password}@127.0.0.1:17693`;
+    delete process.env.PASEO_PASSWORD;
     assert.throws(
       () => defaultCommandRunner("git", ["--version"]),
       (error) =>

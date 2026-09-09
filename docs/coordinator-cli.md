@@ -14,7 +14,7 @@ Every command requires an explicit immutable context:
 
 ```text
 --task --actor --repo --repo-id --remote --base-ref --base
---branch --candidate --head-owner --ownership
+--branch --candidate --head-owner --ownership-file
 --checkout --checkout-state --control-repo
 --agent-id --workspace-id --lifecycle-state --pr
 ```
@@ -23,19 +23,23 @@ Every command requires an explicit immutable context:
 be `task/<task-id>-...` and cannot equal `main`, `master`, or the base ref.
 Repository database ID, Git remote, live base, local/remote Task refs, shared
 Git common directory, Task record, and any available Paseo agent/workspace are
-re-read and matched. `--ownership` is a private opaque label: only its SHA-256
-is written to the non-secret manifest and public PR marker.
+re-read and matched. `--ownership-file` must be an absolute owner-only regular
+file with mode `0600`; raw `--ownership` is refused so the opaque token cannot
+enter argv or command logs. Only its SHA-256 is written to the non-secret
+manifest and public PR marker. Neither the token nor its path belongs in Beads.
 
 Use `--checkout-state present` while the exact owned Task worktree remains.
 Use `--checkout-state reclaimed` only when both its path and Git registration
 are absent but the exact local Task ref remains at the Candidate. Post-handoff
 `publish`, `gate`, `integrate`, `cleanup-plan`, and `cleanup-apply` then operate
 from `--control-repo` without recreating a worktree. Use
-`--lifecycle-state active` with two exact Paseo IDs only while their live facts
-remain observable; use `reclaimed` with those same recorded IDs after the
-one-shot schedule reclaims them. Reclaimed lifecycle bindings are reported as
-recorded inputs with `verified: false`, never as verified archival. The literal
-`none` for both IDs is valid only when the Run never had those resources.
+`--lifecycle-state active` or `restored` with two exact Paseo IDs while the
+current/recovered resource facts remain observable; a handoff recorded active
+may later verify as restored without changing its identity. Use `reclaimed`
+with those same recorded IDs for historical facts after the one-shot schedule
+reclaims them. Reclaimed lifecycle bindings are reported as recorded inputs
+with `verified: false`, never as verified archival. The literal `none` for both
+IDs is valid only when the Run never had those resources.
 
 Mutating commands also require an absolute `--state-file` outside every Git
 checkout. The file is mode `0600`, atomically replaced and filesystem-synced.
@@ -77,19 +81,31 @@ response content.
   human-decision and prior-finding comment hashes, Candidate/base trees, raw
   diff hash and changed paths, author validation references, repository/branch
   ownership, and every pending post-review gate. Its manifest hash accelerates
-  routing but is never review evidence.
+  routing but is never review evidence. Optional `--handoff-file` atomically
+  maintains one mode-`0600` copy outside the Task and control checkouts.
+- `publish-draft` requires `--state-file`, `--manifest-file`,
+  `--validation-file`, `--expected-remote-head`, `--title`, and `--body-file`.
+  It refuses blocked Tasks, pushes only the owned branch under an exact lease,
+  and creates or updates one marked draft. A corrected Candidate updates that
+  same open draft with an exact old-head lease. Its result always reports
+  `mergeAuthorized: false`.
+- `remote-ci` requires `--state-file`, `--validation-file`, `--ci-workflow`,
+  and one or more `--required-check` values. It records the unique completed
+  GitHub workflow run for the exact Candidate/base plus exactly one instance of
+  every passing required check. Missing, duplicate, pending, failed, or
+  incompletely paginated facts fail closed. The observation ID is the sole
+  complete-CI authority for that Candidate.
 - `publish` requires `--state-file`, `--review-file`, `--manifest-file`,
-  `--review-harness-file`, `--validation-file`, `--expected-remote-head`,
-  `--title`, and `--body-file`. The manifest/harness pair must bind the same
-  Task/Candidate/base and prove a latency-contract-compliant passing attempt.
-  It pushes only the owned Task ref with an exact lease, then adopts or creates
-  one PR carrying a Candidate/base-independent Task/branch/ownership-hash
-  marker. A corrected Candidate uses a new Candidate-bound state file, pushes
-  the same Task branch with an exact old-head lease, and adopts the same open
-  PR at its fresh live head. Closed historical PRs do not alias or block a new
+  `--review-harness-file`, `--remote-ci-file`, `--validation-file`,
+  `--expected-remote-head`, `--title`, and `--body-file`. The
+  manifest/harness/CI tuple must bind the same Task/Candidate/base and prove
+  that harness version 2 consumed the exact authoritative remote observation.
+  It pushes only the owned Task ref with an exact lease, adopts the one owned
+  draft, and marks it ready. Closed historical PRs do not alias or block a new
   owned PR; an unmarked open PR still fails closed.
-- `gate` requires the exact PR number, review/manifest/harness/validation
-  files, and one or more repeated `--required-check` values. It requires the live base/head tuple,
+- `gate` requires the exact PR number, review/manifest/harness/remote-CI/
+  validation files, and one or more repeated `--required-check` values. It
+  requires the live base/head tuple,
   open non-draft mergeability, every observed check/status to pass, each named
   check exactly once, and a complete bounded commit-status page. When that
   page contains no legacy status contexts, the successful required Check Runs
@@ -99,7 +115,8 @@ response content.
   ambiguous review, no human issue comment, and no unresolved human review
   thread. It re-reads Beads and refuses if the manifest's binding human-decision
   or prior rejected-review reference set changed. `publish` and the final
-  pre-merge gate apply the same durable-context comparison.
+  pre-merge gate apply the same durable-context comparison. The Reviewer UUID
+  and remote observation ID must match exactly.
 - `integrate` adds `--state-file`, repeats the complete gate immediately before
   mutation, proves that installed `gh` supports `--match-head-commit`, and
   invokes merge mode with that exact Candidate guard. Success requires GitHub
@@ -144,6 +161,8 @@ Run the executable through the repository package:
 
 ```text
 node tools/coordinator/cli.mjs review-handoff <immutable context options>
+node tools/coordinator/cli.mjs publish-draft <immutable context and draft evidence>
+node tools/coordinator/cli.mjs remote-ci <immutable context and CI workflow/checks>
 node tools/coordinator/cli.mjs publish <immutable context options and publication evidence>
 node tools/coordinator/cli.mjs gate <immutable context options and required checks>
 node tools/coordinator/cli.mjs integrate <same gate options plus state file>
@@ -161,39 +180,27 @@ silently changes repository, delivery mode, merge strategy, or authority.
 The versioned `director-review-harness` is the standard entrypoint for an
 exact-Candidate review. Give it the complete `review-handoff` JSON, the
 detached reviewer checkout, a private state file outside that checkout, the
-exact Reviewer Agent ID, its Paseo actor, and `--reason initial`:
-
-Before invoking it in a fresh detached checkout, run exactly:
-
-```text
-npm ci --ignore-scripts --no-audit --no-fund
-```
-
-Ensure `node`, `npm`, `git`, and `go` are all available on `PATH`. The harness
-verifies the root and installed lockfiles plus those four executables before it
-creates the attempt record. Missing preparation or PATH is therefore an
-invalid precondition and does not consume the single complete-CI attempt.
+exact Reviewer Agent ID, its Paseo actor, the authoritative remote-CI JSON, and
+`--reason initial`. Only `git` is required on the harness child `PATH`; the
+remote-only review checkout needs no dependency installation.
 
 ```text
-node tools/coordinator/review-harness.mjs run --manifest /private/control/handoff.json --checkout /exact/detached/reviewer --state-file /private/control/review-state.json --review-id reviewer-agent-id --actor paseo:reviewer-agent-id --reason initial
+node tools/coordinator/review-harness.mjs run --manifest /private/control/handoff.json --checkout /exact/detached/reviewer --state-file /private/control/review-state.json --remote-ci-file /private/control/remote-ci.json --review-id reviewer-agent-id --actor paseo:reviewer-agent-id --reason initial
 ```
 
-Harness version 1 starts the complete maintained Linux CI and mechanical
-manifest-identity check concurrently under a declared parallelism of two, then
-sorts their structured results by check ID. The identity check directly
-re-reads the Beads acceptance/human-decision/finding references, detached
-Candidate and trees, raw diff, clean state, GitHub remote, and live base SHA.
-This mechanically proves unchanged immutable history; it does not turn the
-manifest into evidence.
+Harness version 2 consumes the authoritative complete remote Linux CI and runs
+the mechanical manifest-identity check concurrently, then sorts their
+structured results by check ID. It never starts local or remote CI. The
+identity check directly re-reads the Beads acceptance/human-decision/finding
+references, detached Candidate and trees, raw diff, clean state, GitHub remote,
+and live base SHA. This mechanically proves unchanged immutable history; it
+does not turn the manifest into evidence.
 
-The private review state admits one complete CI run for an exact
-review/Candidate/base/manifest tuple. A second is possible only with
-`--reason invalid_environment` or `--reason failure_confirmation` and a
-non-empty `--reason-record`; the previous recorded result must support that
-classification. A third is refused. An interrupted first run is recorded as
-running and may resume only through the explicit invalid-environment exception.
-The harness uses an exact Linux process-identity lock so concurrent invocations
-cannot consume duplicate full-CI attempts.
+The private review state consumes one observation for an exact
+review/Candidate/base/manifest tuple. Replay by the same Reviewer adopts the
+stored result. A different Reviewer, observation, or complete-CI source is
+refused. The harness uses an exact Linux process-identity lock so concurrent
+invocations cannot consume duplicate observations.
 
 The maintained adversarial probes under `tools/coordinator/*.test.mjs` use
 disposable repositories internally and run through CI. Reviewers invoke these

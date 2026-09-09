@@ -47,8 +47,38 @@ func render(schema []byte) ([]byte, error) {
 		fmt.Fprintf(&output, "  %s,\n", strconv.Quote(state))
 	}
 	output.WriteString("] as const;\n\n")
+	fmt.Fprintf(&output, "export const WORKER_REGISTRY_SCHEMA_VERSION = %d as const;\n", definition.WorkerRegistry.SchemaVersion)
+	output.WriteString("export const WORKER_ROLES = [\n")
+	for _, role := range definition.WorkerRegistry.Roles {
+		fmt.Fprintf(&output, "  %s,\n", strconv.Quote(role))
+	}
+	output.WriteString("] as const;\n\n")
+	output.WriteString("export const WORKER_LABEL = {\n")
+	labels := definition.WorkerRegistry.Labels
+	for _, entry := range []struct {
+		key   string
+		value string
+	}{
+		{"project", labels.Project},
+		{"rootWorkspace", labels.RootWorkspace},
+		{"workspace", labels.Workspace},
+		{"executionWorkspace", labels.ExecutionWorkspace},
+		{"task", labels.Task},
+		{"run", labels.Run},
+		{"role", labels.Role},
+		{"phase", labels.Phase},
+		{"candidate", labels.Candidate},
+		{"base", labels.Base},
+		{"registeredAt", labels.RegisteredAt},
+		{"startedAt", labels.StartedAt},
+	} {
+		fmt.Fprintf(&output, "  %s: %s,\n", entry.key, strconv.Quote(entry.value))
+	}
+	output.WriteString("} as const;\n\n")
 	output.WriteString(`export type HostCapability = (typeof HOST_CAPABILITIES)[number];
 export type BoardState = (typeof BOARD_STATES)[number];
+export type WorkerRole = (typeof WORKER_ROLES)[number];
+export type WorkerLabelKey = keyof typeof WORKER_LABEL;
 
 export interface BoardTask {
   id: string;
@@ -82,7 +112,8 @@ export interface HostScope {
 
 export type HostEffectKind =
   | "host_view.create"
-  | "task_agent.create_with_initial_prompt"
+  | "task_agent.create_with_bootstrap"
+  | "agent.send_prompt"
   | "task_agent.archive"
   | "host_view.archive";
 
@@ -102,6 +133,8 @@ export interface HostCommandArguments {
   isolationDigest?: string;
   preparationReady?: boolean;
   preparationBarrierHash?: string;
+  notifyOnFinish?: boolean;
+  labels?: Readonly<Record<string, string>>;
 }
 
 export interface HostCommand {
@@ -117,6 +150,8 @@ export type HostObservationStatus =
   | "desired"
   | "absent"
   | "owned_present"
+  | "errored"
+  | "permission"
   | "different"
   | "ambiguous"
   | "unavailable";

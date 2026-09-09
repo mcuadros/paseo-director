@@ -4,14 +4,15 @@
 // This generated boundary contains transport types only and owns no policy.
 
 export const HOST_CONTRACT_VERSION = "director-host/v1" as const;
-export const HOST_CONTRACT_SHA256 = "b327fdb713f9ea8726c77f07c8385f6a15f619923781a920b9dae27143ce9ad1" as const;
+export const HOST_CONTRACT_SHA256 = "59487c3e133a28991f027a2762d5079284db5e4f5f635d447688acc6db08ef83" as const;
 export const HOST_CREDENTIAL_SCOPE = "full-daemon-operator" as const;
 export const HOST_CAPABILITIES = [
   "executionWorkspace.createManaged",
   "executionWorkspace.observe",
   "executionWorkspace.archive",
-  "taskAgent.createWithInitialPrompt",
-  "reviewerAgent.createWithInitialPrompt",
+  "taskAgent.createWithBootstrap",
+  "reviewerAgent.createWithBootstrap",
+  "send_agent_prompt",
   "helperAgent.observe",
   "agent.observe",
   "agent.archive",
@@ -32,8 +33,31 @@ export const BOARD_STATES = [
   "ready",
 ] as const;
 
+export const WORKER_REGISTRY_SCHEMA_VERSION = 1 as const;
+export const WORKER_ROLES = [
+  "task-agent",
+  "reviewer",
+] as const;
+
+export const WORKER_LABEL = {
+  project: "director.project",
+  rootWorkspace: "director.root-workspace",
+  workspace: "director.workspace",
+  executionWorkspace: "director.execution-workspace",
+  task: "director.task",
+  run: "director.run",
+  role: "director.role",
+  phase: "director.phase",
+  candidate: "director.candidate",
+  base: "director.base",
+  registeredAt: "director.registered-at",
+  startedAt: "director.started-at",
+} as const;
+
 export type HostCapability = (typeof HOST_CAPABILITIES)[number];
 export type BoardState = (typeof BOARD_STATES)[number];
+export type WorkerRole = (typeof WORKER_ROLES)[number];
+export type WorkerLabelKey = keyof typeof WORKER_LABEL;
 
 export interface BoardTask {
   id: string;
@@ -67,7 +91,8 @@ export interface HostScope {
 
 export type HostEffectKind =
   | "host_view.create"
-  | "task_agent.create_with_initial_prompt"
+  | "task_agent.create_with_bootstrap"
+  | "agent.send_prompt"
   | "task_agent.archive"
   | "host_view.archive";
 
@@ -87,6 +112,8 @@ export interface HostCommandArguments {
   isolationDigest?: string;
   preparationReady?: boolean;
   preparationBarrierHash?: string;
+  notifyOnFinish?: boolean;
+  labels?: Readonly<Record<string, string>>;
 }
 
 export interface HostCommand {
@@ -102,6 +129,8 @@ export type HostObservationStatus =
   | "desired"
   | "absent"
   | "owned_present"
+  | "errored"
+  | "permission"
   | "different"
   | "ambiguous"
   | "unavailable";

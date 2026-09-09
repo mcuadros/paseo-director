@@ -29,6 +29,11 @@ Create discovered work as a sibling Task under the same milestone Epic and link 
 
 Do not edit Beads storage directly. Use `bd` commands. Use `--json` for programmatic reads and writes. At handoff, record commit SHA, tests, review, PR, risks, and cleanup in the Task.
 
+Use the coordinator-native handoff contract. Supply ownership only through an
+absolute owner-only mode-`0600` file; never place the token in argv, logs,
+public output, PR content, or Beads. The coordinator may atomically maintain a
+mode-`0600` handoff file outside every Git checkout.
+
 Beads remains in `no-git-ops` mode: `bd` must not stage, commit, or push repository files automatically. The Git operations explicitly required by the repository skills below are performed separately and remain auditable.
 
 ## Required skills
@@ -44,6 +49,9 @@ Beads remains in `no-git-ops` mode: `bd` must not stage, commit, or push reposit
 - Each Task is owned by one normal top-level Paseo Task Agent in its isolated Execution Workspace/worktree. Its agent-creation parent is omitted and its visible title is the exact Task title.
 - A Task Agent may use internal helper subagents, but they are not Task records or Task owners and must not claim separate Beads work. The Task Agent remains solely accountable for its Task work, branch, Candidate, evidence, structured outcome claim, and authorized correction turns.
 - Independent Reviewer Agents are normal top-level agents in detached disposable checkouts, never children or helpers of the Task Agent or any planning context.
+- Every Task Agent and Reviewer launch is registered and visible in the
+  root-workspace Director Workers projection before start. Missing visibility
+  refuses launch.
 - Never review a dirty worktree or a moving branch instead of an exact SHA.
 - Never self-review or treat author assertions as review evidence.
 - Never push directly to `main` for Task implementation.
@@ -56,6 +64,20 @@ Beads remains in `no-git-ops` mode: `bd` must not stage, commit, or push reposit
 ## Integration policy
 
 A Task Agent produces structured Candidate/outcome claims and may perform correction turns only when authorized. It cannot decide or perform publication, pull-request creation or update, integration, lifecycle cleanup, or Task closure. Only the Director Engine or authorized coordinator reconciles and executes those lifecycle effects.
+
+For an admitted Candidate, the coordinator creates or updates the one owned
+draft first, then records one authoritative remote Linux CI and one independent
+Review as sibling obligations. The review harness consumes that exact CI
+observation and never starts a second complete CI. Correction turns return to
+the same Task Agent with all current findings batched; unchanged PLAN/skill
+digests are reused while current decisions and diff are refreshed.
+
+Every coordinator-launched top-level Task Agent or Reviewer is created
+parentless with only the fixed zero-work bootstrap. The coordinator persists
+the native agent/workspace identities and frozen labels after bootstrap
+completion, then starts real Task or Review work only through the separate
+notified prompt effect. Daemon terminal callbacks synchronously enqueue
+idempotent reconciliation; active turns are not polled.
 
 An `approve_candidate` verdict authorizes the Director Engine or authorized coordinator—not the Task Agent, a model, or a connector—to publish and integrate that exact SHA automatically when all of these remain true immediately before merge:
 

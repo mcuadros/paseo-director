@@ -136,6 +136,33 @@ func TestParseDefinitionRejectsDuplicateCapabilities(t *testing.T) {
 	}
 }
 
+func TestParseDefinitionRequiresTheExactWorkerRegistry(t *testing.T) {
+	const prefix = `{"schemaVersion":1,"contractVersion":"v1","credentialScope":"scope","capabilities":["one"],"boardQuery":{"name":"board.snapshot","method":"GET","path":"/v1/board","schemaVersion":1,"maximumTasks":1000,"maximumBytes":2097152,"states":["needs_you","queued","building","validating","in_review","ready"]}`
+	const labels = `"labels":{"project":"director.project","rootWorkspace":"director.root-workspace","workspace":"director.workspace","executionWorkspace":"director.execution-workspace","task":"director.task","run":"director.run","role":"director.role","phase":"director.phase","candidate":"director.candidate","base":"director.base","registeredAt":"director.registered-at","startedAt":"director.started-at"}`
+
+	for name, registry := range map[string]string{
+		"absent":             "",
+		"wrong version":      `,"workerRegistry":{"schemaVersion":2,"roles":["task-agent","reviewer"],` + labels + `}`,
+		"extra role":         `,"workerRegistry":{"schemaVersion":1,"roles":["task-agent","reviewer","helper"],` + labels + `}`,
+		"reordered roles":    `,"workerRegistry":{"schemaVersion":1,"roles":["reviewer","task-agent"],` + labels + `}`,
+		"renamed root label": `,"workerRegistry":{"schemaVersion":1,"roles":["task-agent","reviewer"],"labels":{"project":"director.project","rootWorkspace":"director.root","workspace":"director.workspace","executionWorkspace":"director.execution-workspace","task":"director.task","run":"director.run","role":"director.role","phase":"director.phase","candidate":"director.candidate","base":"director.base","registeredAt":"director.registered-at","startedAt":"director.started-at"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseDefinition([]byte(prefix + registry + "}")); err == nil {
+				t.Fatal("ParseDefinition() accepted a worker registry outside the contract")
+			}
+		})
+	}
+
+	definition, err := ParseDefinition([]byte(prefix + `,"workerRegistry":{"schemaVersion":1,"roles":["task-agent","reviewer"],` + labels + `}}`))
+	if err != nil {
+		t.Fatalf("ParseDefinition() error = %v", err)
+	}
+	if definition.WorkerRegistry.Labels.RootWorkspace != "director.root-workspace" {
+		t.Fatalf("worker registry labels = %#v", definition.WorkerRegistry.Labels)
+	}
+}
+
 func TestValidateObservationBindsEnvelopeResultAndHash(t *testing.T) {
 	command := Command{
 		RequestID: "request-1", IdempotencyKey: "effect-1", ExpectedVersion: 1,

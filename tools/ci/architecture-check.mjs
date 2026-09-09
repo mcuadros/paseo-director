@@ -470,6 +470,32 @@ export function structureErrors(paths, packagePaths, fileSources = new Map()) {
   return errors;
 }
 
+const GO_LIST_DIAGNOSTIC_MAXIMUM_CHARACTERS = 2_000;
+
+// A missing or failing toolchain must fail closed with an actionable reason.
+// spawnSync reports ENOENT as a null status and null stderr, so reading stderr
+// directly would replace the real cause with an opaque TypeError.
+export function goListFailureMessage(result) {
+  const stderr = typeof result?.stderr === "string" ? result.stderr.trim() : "";
+  if (stderr.length > 0) {
+    return stderr.length > GO_LIST_DIAGNOSTIC_MAXIMUM_CHARACTERS
+      ? `${stderr.slice(0, GO_LIST_DIAGNOSTIC_MAXIMUM_CHARACTERS)} (truncated)`
+      : stderr;
+  }
+  if (result?.error?.code === "ENOENT") {
+    return "go list failed: go is required but was not found on PATH";
+  }
+  const spawnMessage =
+    typeof result?.error?.message === "string" ? result.error.message.trim() : "";
+  if (spawnMessage.length > 0) return `go list failed: ${spawnMessage}`;
+  if (typeof result?.signal === "string" && result.signal.length > 0) {
+    return `go list failed: terminated by signal ${result.signal}`;
+  }
+  return typeof result?.status === "number"
+    ? `go list failed with exit status ${result.status}`
+    : "go list failed";
+}
+
 function listGoPackages(repositoryRoot) {
   const result = spawnSync(
     "go",
@@ -489,7 +515,7 @@ function listGoPackages(repositoryRoot) {
     },
   );
   if (result.status !== 0) {
-    throw new Error(result.stderr.trim() || result.error?.message || "go list failed");
+    throw new Error(goListFailureMessage(result));
   }
   return result.stdout
     .trim()

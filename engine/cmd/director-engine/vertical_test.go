@@ -23,6 +23,7 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/execution"
 	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
+	"github.com/mcuadros/director-engine/ports/host"
 	"github.com/mcuadros/director-engine/reducer/eligibility"
 )
 
@@ -252,6 +253,7 @@ func startCommand(task domain.Task, scope execution.Scope, source, worktree, bas
 		Branch: "task/" + scope.TaskID, BaseSHA: base,
 		TaskTitle: task.Title, InitialPrompt: "Produce the declared fixture Candidate and return one completed claim.",
 		CriterionIDs:     []string{"criterion-1"},
+		RootWorkspaceID:  "wks_root_" + scope.ProjectID,
 		EligibilityFacts: facts,
 	}
 }
@@ -267,7 +269,19 @@ func runSteps(t *testing.T, store *dolt.DoltTaskStore, environment *fake.Environ
 		if stop(run) {
 			return run
 		}
-		controller := executionapp.NewController(store, environment, environment)
+		controller := executionapp.NewController(store, environment, environment, environment)
+		for _, effect := range []execution.Effect{run.Execution.Agent, run.Execution.AgentPrompt} {
+			if effect.Observation != nil && effect.Observation.Status == execution.ObservationOwnedPresent {
+				event, eventErr := environment.TerminalEvent(execution.CompletionEventFinished, effect.ID, 1_001)
+				if eventErr != nil {
+					t.Fatal(eventErr)
+				}
+				if eventErr := controller.RecordCompletionEvent(ctx, runID, event, 1_001); eventErr != nil {
+					t.Fatal(eventErr)
+				}
+				continue
+			}
+		}
 		_, err = controller.Step(ctx, runID, 1_001)
 		if err != nil && !errors.Is(err, fake.ErrResponseLost) {
 			t.Fatalf("step %d: %v", step, err)
@@ -296,12 +310,12 @@ func TestFakeExecutionVerticalPathRecoversEveryLostResponse(t *testing.T) {
 		LoseEveryMutationResponse: true,
 	})
 	t.Cleanup(environment.RemoveFixture)
-	controller := executionapp.NewController(store, environment, environment)
+	controller := executionapp.NewController(store, environment, environment, environment)
 	started, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, facts))
 	if err != nil || started.Decision.Kind != eligibility.DecisionEligible || started.RunID != scope.RunID {
 		t.Fatalf("start = %#v, %v", started, err)
 	}
-	replayed, err := executionapp.NewController(store, environment, environment).Start(
+	replayed, err := executionapp.NewController(store, environment, environment, environment).Start(
 		context.Background(), startCommand(task, scope, source, worktree, base, facts),
 	)
 	if err != nil || replayed.RunID != started.RunID || replayed.Decision.DecisionID != started.Decision.DecisionID || environment.TotalMutationCount() != 0 {
@@ -315,8 +329,17 @@ func TestFakeExecutionVerticalPathRecoversEveryLostResponse(t *testing.T) {
 		t.Fatalf("agent launch state = %#v", run.Execution)
 	}
 	request := environment.AgentRequest()
-	if request.ParentAgentID != nil || request.Title != task.Title || request.InitialPrompt == "" {
+	if request.ParentAgentID != nil || request.Title != task.Title || request.InitialPrompt != host.ZeroWorkBootstrapPrompt || request.NotifyOnFinish {
 		t.Fatalf("top-level Task Agent request = %#v", request)
+	}
+	run = runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
+		return run.Execution.AgentPrompt.Observation != nil &&
+			run.Execution.AgentPrompt.Observation.Status == execution.ObservationOwnedPresent
+	})
+	prompt := environment.PromptRequest()
+	if prompt.AgentID != run.Execution.Agent.ExternalID || prompt.InitialPrompt != startCommand(task, scope, source, worktree, base, facts).InitialPrompt ||
+		!prompt.NotifyOnFinish || len(prompt.Labels) != 0 || run.Execution.WorkerVisibility.AgentID != run.Execution.Agent.ExternalID {
+		t.Fatalf("real Task prompt request = %#v, visibility = %#v", prompt, run.Execution.WorkerVisibility)
 	}
 	claim, err := environment.ProduceCandidate(context.Background(), fake.CandidateRequest{
 		ClaimID: "claim-complete", AgentID: run.Execution.Agent.ExternalID,
@@ -325,11 +348,51 @@ func TestFakeExecutionVerticalPathRecoversEveryLostResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	controller = executionapp.NewController(store, environment, environment)
+	completion, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.AgentPrompt.ID, 1_001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.RecordCompletionEvent(context.Background(), scope.RunID, completion, 1_001); err != nil {
+		t.Fatalf("record completion event: %v", err)
+	}
+	if err := executionapp.NewController(store, environment, environment, environment).RecordCompletionEvent(
+		context.Background(), scope.RunID, completion, 1_001,
+	); err != nil {
+		t.Fatalf("idempotent completion-event replay: %v", err)
+	}
+	conflict := completion
+	conflict.Kind = execution.CompletionEventError
+	conflict.FactHash = execution.CompletionEventHash(conflict)
+	if err := controller.RecordCompletionEvent(context.Background(), scope.RunID, conflict, 1_001); err == nil {
+		t.Fatal("duplicate callback identity with changed facts was accepted")
+	}
+	if environment.QueueWakeCount() != 2 {
+		t.Fatalf("bootstrap plus work reconciliation count = %d", environment.QueueWakeCount())
+	}
+	woken, err := store.Run(context.Background(), scope.RunID)
+	if err != nil || woken.Execution.CompletionEventCursor != completion.Cursor ||
+		woken.Execution.LastCompletionEvent == nil ||
+		woken.Execution.LastCompletionEvent.FactHash != completion.FactHash ||
+		len(woken.Execution.CompletionEventReceipts) != 2 ||
+		woken.Execution.CompletionEventReceipts[1].DispatchLatencyMillis >= 1_000 ||
+		!woken.Execution.OperationalObservationConsumed {
+		t.Fatalf("durable completion wake = %#v, %v", woken.Execution, err)
+	}
+	olderDuplicate := woken.Execution.CompletionEventReceipts[0].Event
+	if err := controller.RecordCompletionEvent(context.Background(), scope.RunID, olderDuplicate, 1_500); err != nil {
+		t.Fatalf("older exact duplicate after later callback: %v", err)
+	}
+	if environment.QueueWakeCount() != 2 {
+		t.Fatalf("older duplicate enqueued another reconciliation: %d", environment.QueueWakeCount())
+	}
+	run = runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
+		return run.Execution.AgentPrompt.Phase == execution.EffectComplete
+	})
+	controller = executionapp.NewController(store, environment, environment, environment)
 	if err := controller.RecordCompletedClaim(context.Background(), scope.RunID, claim); err != nil {
 		t.Fatal(err)
 	}
-	if err := executionapp.NewController(store, environment, environment).RecordCompletedClaim(context.Background(), scope.RunID, claim); err != nil {
+	if err := executionapp.NewController(store, environment, environment, environment).RecordCompletedClaim(context.Background(), scope.RunID, claim); err != nil {
 		t.Fatalf("idempotent claim replay: %v", err)
 	}
 	run = runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
@@ -362,7 +425,7 @@ func TestFakeExecutionVerticalPathRecoversEveryLostResponse(t *testing.T) {
 	for _, kind := range []execution.EffectKind{
 		execution.EffectWorktreeCreate, execution.EffectHostViewCreate,
 		execution.EffectBoundaryMaterialize, execution.EffectSetupRun,
-		execution.EffectAgentCreate, execution.EffectAgentArchive,
+		execution.EffectAgentCreate, execution.EffectAgentPrompt, execution.EffectAgentArchive,
 		execution.EffectHostViewArchive, execution.EffectWorktreeRemove,
 	} {
 		if count := environment.MutationCount(kind); count != 1 {
@@ -372,10 +435,99 @@ func TestFakeExecutionVerticalPathRecoversEveryLostResponse(t *testing.T) {
 	if order := environment.MutationOrder(); strings.Join(order, ",") != strings.Join([]string{
 		string(execution.EffectWorktreeCreate), string(execution.EffectHostViewCreate),
 		string(execution.EffectBoundaryMaterialize), string(execution.EffectSetupRun),
-		string(execution.EffectAgentCreate), string(execution.EffectAgentArchive),
+		string(execution.EffectAgentCreate), string(execution.EffectAgentPrompt), string(execution.EffectAgentArchive),
 		string(execution.EffectHostViewArchive), string(execution.EffectWorktreeRemove),
 	}, ",") {
 		t.Fatalf("mutation order = %v", order)
+	}
+}
+
+func TestTerminalErrorAndPermissionCallbacksSynchronouslyEnqueueThenPark(t *testing.T) {
+	for _, terminal := range []struct {
+		name string
+		kind execution.CompletionEventKind
+		code execution.NeedCode
+	}{
+		{"error", execution.CompletionEventError, "agent_terminal_error"},
+		{"permission", execution.CompletionEventPermission, "agent_terminal_permission"},
+	} {
+		t.Run(terminal.name, func(t *testing.T) {
+			fixture := startVerticalDolt(t)
+			store := openVerticalStore(t, fixture)
+			project, task := createVerticalRecords(t, store, "terminal-"+terminal.name)
+			source, base := initializeRepository(t, "terminal-"+terminal.name)
+			worktree := filepath.Join(filepath.Dir(source), "terminal-"+terminal.name+"-worktree")
+			scope := execution.Scope{ProjectID: project.ID, WorkspaceID: "workspace-terminal-" + terminal.name, TaskID: task.ID, RunID: "run-terminal-" + terminal.name}
+			environment := fake.NewEnvironment(fake.Options{
+				SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID,
+				BaseSHA: base, Operational: operationalObservation("terminal-" + terminal.name),
+			})
+			t.Cleanup(environment.RemoveFixture)
+			controller := executionapp.NewController(store, environment, environment, environment)
+			if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
+				t.Fatal(err)
+			}
+			run := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
+				return run.Execution.AgentPrompt.Observation != nil && run.Execution.AgentPrompt.Observation.Status == execution.ObservationOwnedPresent
+			})
+			event, err := environment.TerminalEvent(terminal.kind, run.Execution.AgentPrompt.ID, 1_001)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := controller.RecordCompletionEvent(context.Background(), run.ID, event, 1_001); err != nil {
+				t.Fatal(err)
+			}
+			if environment.QueueWakeCount() != 2 {
+				t.Fatalf("terminal reconciliation count = %d", environment.QueueWakeCount())
+			}
+			parked := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool { return run.Execution.NeedsYou != nil })
+			if parked.Execution.NeedsYou.Code != terminal.code || parked.Execution.NeedsYou.CleanupAuthorized {
+				t.Fatalf("terminal park = %#v", parked.Execution.NeedsYou)
+			}
+		})
+	}
+}
+
+func TestFiveMinuteMultiSourceWatchdogRecoversOnlyALostTerminalEvent(t *testing.T) {
+	fixture := startVerticalDolt(t)
+	store := openVerticalStore(t, fixture)
+	project, task := createVerticalRecords(t, store, "lost-terminal")
+	source, base := initializeRepository(t, "lost-terminal")
+	worktree := filepath.Join(filepath.Dir(source), "lost-terminal-worktree")
+	scope := execution.Scope{ProjectID: project.ID, WorkspaceID: "workspace-lost-terminal", TaskID: task.ID, RunID: "run-lost-terminal"}
+	environment := fake.NewEnvironment(fake.Options{
+		SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID,
+		BaseSHA: base, Operational: operationalObservation("lost-terminal"),
+	})
+	t.Cleanup(environment.RemoveFixture)
+	controller := executionapp.NewController(store, environment, environment, environment)
+	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
+		t.Fatal(err)
+	}
+	run := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
+		return run.Execution.AgentPrompt.Observation != nil && run.Execution.AgentPrompt.Observation.Status == execution.ObservationOwnedPresent
+	})
+	facts := execution.StallRecoveryFacts{
+		ObservedAtMillis: 301_001, LastProgressAtMillis: 1_001,
+		AgentStateUnchanged: true, NoToolActivity: true, NoWorktreeChange: true,
+		NoUsageMovement: true, PendingTerminalEffectID: run.Execution.AgentPrompt.ID,
+	}
+	early := facts
+	early.ObservedAtMillis--
+	if err := controller.RecoverLostCompletionEvent(context.Background(), run.ID, early); err == nil {
+		t.Fatal("early single-source wake was admitted")
+	}
+	if _, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.AgentPrompt.ID, 1_001); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.RecoverLostCompletionEvent(context.Background(), run.ID, facts); err != nil {
+		t.Fatal(err)
+	}
+	completed := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
+		return run.Execution.AgentPrompt.Phase == execution.EffectComplete
+	})
+	if completed.Execution.AgentPrompt.ExternalID != completed.Execution.Agent.ExternalID || environment.QueueWakeCount() != 1 {
+		t.Fatalf("lost-event recovery = %#v, queue count %d", completed.Execution.AgentPrompt, environment.QueueWakeCount())
 	}
 }
 
@@ -391,7 +543,7 @@ func TestLifecycleAndPeriodicFactsParkWithoutSDKOrCleanupAuthority(t *testing.T)
 		surfaces := execution.LifecycleSurfaces{Setup: []string{"must never execute"}}
 		environment := fake.NewEnvironment(fake.Options{SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID, BaseSHA: base, Operational: operationalObservation("periodic-lifecycle")})
 		t.Cleanup(environment.RemoveFixture)
-		controller := executionapp.NewController(store, environment, environment)
+		controller := executionapp.NewController(store, environment, environment, environment)
 		result, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, surfaces)))
 		if err != nil || result.Decision.Kind != eligibility.DecisionEscalate || result.Decision.CleanupAuthorized {
 			t.Fatalf("unapproved start = %#v, %v", result, err)
@@ -431,7 +583,7 @@ func TestLifecycleAndPeriodicFactsParkWithoutSDKOrCleanupAuthority(t *testing.T)
 			fixture.mutate(&facts)
 			environment := fake.NewEnvironment(fake.Options{SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID, BaseSHA: base, Operational: operationalObservation("periodic-unused")})
 			t.Cleanup(environment.RemoveFixture)
-			controller := executionapp.NewController(store, environment, environment)
+			controller := executionapp.NewController(store, environment, environment, environment)
 			result, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, facts))
 			if err != nil || result.Decision.Kind != eligibility.DecisionEscalate || result.Decision.CleanupAuthorized {
 				t.Fatalf("unsafe launch = %#v, %v", result, err)
@@ -468,7 +620,7 @@ func TestLifecycleAndPeriodicFactsParkWithoutSDKOrCleanupAuthority(t *testing.T)
 			facts := eligibilityFacts(scope, execution.LifecycleSurfaces{})
 			environment := fake.NewEnvironment(fake.Options{SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID, BaseSHA: base, Operational: operationalObservation("periodic-valid")})
 			t.Cleanup(environment.RemoveFixture)
-			controller := executionapp.NewController(store, environment, environment)
+			controller := executionapp.NewController(store, environment, environment, environment)
 			if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, facts)); err != nil {
 				t.Fatal(err)
 			}

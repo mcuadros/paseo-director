@@ -107,6 +107,7 @@ const (
 	NeedElapsedLimit                  NeedCode = "elapsed_time_limit_exceeded"
 	NeedOutputLimit                   NeedCode = "output_limit_exceeded"
 	NeedTemporaryLimit                NeedCode = "temporary_storage_limit_exceeded"
+	NeedWorkerVisibilityMissing       NeedCode = "worker_visibility_registration_missing"
 )
 
 // Admission never grants cleanup authority. Cleanup requires a separate pure
