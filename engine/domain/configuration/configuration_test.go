@@ -125,7 +125,9 @@ func validConfigurationJSON() []byte {
       "tokens": 200000,
       "turns": 32,
       "ciCycles": 4
-    }
+    },
+    "autoFixCiFailures": true,
+    "autoFixReviewFeedback": true
   },
   "workspaceOverrides": [
     {
@@ -298,6 +300,14 @@ func TestParseRejectsNonStrictJSONAndSchemaDrift(t *testing.T) {
 		},
 		"null zero-valued required field": {
 			input: strings.Replace(valid, `"maxSubagentsPerTask": 3`, `"maxSubagentsPerTask": null`, 1),
+			code:  "schema_mismatch",
+		},
+		"missing required boolean": {
+			input: strings.Replace(valid, ",\n    \"autoFixCiFailures\": true", "", 1),
+			code:  "schema_mismatch",
+		},
+		"null optional Workspace override": {
+			input: strings.Replace(valid, `"workspaceId": "product",`, `"workspaceId": "product", "maxActiveTasks": null,`, 1),
 			code:  "schema_mismatch",
 		},
 		"trailing value": {

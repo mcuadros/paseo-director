@@ -53,9 +53,9 @@ func WorkspaceID(projectID, workspaceKey string) string {
 	return "workspace-" + hex.EncodeToString(digest[:])
 }
 
-// WorkspacePolicy stores only intrinsic Workspace overrides. Effective
-// Project -> Workspace -> Task inheritance remains owned by the later M2
-// configuration Task.
+// WorkspacePolicy stores only intrinsic Workspace overrides. The engine
+// application configuration package owns effective Project -> Workspace ->
+// Task inheritance.
 type WorkspacePolicy struct {
 	LaunchPolicy string `json:"launchPolicy"`
 	DeliveryMode string `json:"deliveryMode"`

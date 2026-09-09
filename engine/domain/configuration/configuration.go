@@ -130,20 +130,33 @@ type RunBudget struct {
 }
 
 // Defaults is the Project-level configuration inherited by Workspaces and
-// Tasks. This Task does not implement launch, delivery, or inheritance logic.
+// Tasks. The application configuration package resolves the effective values.
 type Defaults struct {
-	LaunchPolicy LaunchPolicy `json:"launchPolicy"`
-	DeliveryMode DeliveryMode `json:"deliveryMode"`
-	Limits       Limits       `json:"limits"`
-	RunBudget    RunBudget    `json:"runBudget"`
+	LaunchPolicy          LaunchPolicy `json:"launchPolicy"`
+	DeliveryMode          DeliveryMode `json:"deliveryMode"`
+	Limits                Limits       `json:"limits"`
+	RunBudget             RunBudget    `json:"runBudget"`
+	AutoFixCIFailures     bool         `json:"autoFixCiFailures"`
+	AutoFixReviewFeedback bool         `json:"autoFixReviewFeedback"`
 }
 
-// WorkspaceOverride records explicit Inherit/concrete selections. Effective
-// policy reduction remains outside this configuration skeleton.
+// WorkspaceOverride records explicit Inherit/concrete selections. Pointer
+// fields distinguish an inherited value from an explicit zero or false value.
+// Effective reduction remains in the engine application boundary.
 type WorkspaceOverride struct {
-	WorkspaceID  string       `json:"workspaceId"`
-	LaunchPolicy LaunchPolicy `json:"launchPolicy"`
-	DeliveryMode DeliveryMode `json:"deliveryMode"`
+	WorkspaceID                string       `json:"workspaceId"`
+	LaunchPolicy               LaunchPolicy `json:"launchPolicy"`
+	DeliveryMode               DeliveryMode `json:"deliveryMode"`
+	MaxActiveTasks             *int         `json:"maxActiveTasks,omitempty"`
+	MaxActiveTasksPerWorkspace *int         `json:"maxActiveTasksPerWorkspace,omitempty"`
+	MaxConcurrentAgents        *int         `json:"maxConcurrentAgents,omitempty"`
+	MaxSubagentsPerTask        *int         `json:"maxSubagentsPerTask,omitempty"`
+	ElapsedSeconds             *int64       `json:"elapsedSeconds,omitempty"`
+	Tokens                     *int64       `json:"tokens,omitempty"`
+	Turns                      *int64       `json:"turns,omitempty"`
+	CICycles                   *int64       `json:"ciCycles,omitempty"`
+	AutoFixCIFailures          *bool        `json:"autoFixCiFailures,omitempty"`
+	AutoFixReviewFeedback      *bool        `json:"autoFixReviewFeedback,omitempty"`
 }
 
 // FileReference identifies one explicitly included Organizer file. Directory
@@ -225,10 +238,35 @@ func (document Document) Configuration() Configuration {
 
 func cloneConfiguration(value Configuration) Configuration {
 	value.Workspaces = slices.Clone(value.Workspaces)
-	value.WorkspaceOverrides = slices.Clone(value.WorkspaceOverrides)
+	value.WorkspaceOverrides = cloneWorkspaceOverrides(value.WorkspaceOverrides)
 	value.Skills = slices.Clone(value.Skills)
 	value.Templates = slices.Clone(value.Templates)
 	return value
+}
+
+func clonePointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneWorkspaceOverrides(values []WorkspaceOverride) []WorkspaceOverride {
+	cloned := slices.Clone(values)
+	for index := range cloned {
+		cloned[index].MaxActiveTasks = clonePointer(cloned[index].MaxActiveTasks)
+		cloned[index].MaxActiveTasksPerWorkspace = clonePointer(cloned[index].MaxActiveTasksPerWorkspace)
+		cloned[index].MaxConcurrentAgents = clonePointer(cloned[index].MaxConcurrentAgents)
+		cloned[index].MaxSubagentsPerTask = clonePointer(cloned[index].MaxSubagentsPerTask)
+		cloned[index].ElapsedSeconds = clonePointer(cloned[index].ElapsedSeconds)
+		cloned[index].Tokens = clonePointer(cloned[index].Tokens)
+		cloned[index].Turns = clonePointer(cloned[index].Turns)
+		cloned[index].CICycles = clonePointer(cloned[index].CICycles)
+		cloned[index].AutoFixCIFailures = clonePointer(cloned[index].AutoFixCIFailures)
+		cloned[index].AutoFixReviewFeedback = clonePointer(cloned[index].AutoFixReviewFeedback)
+	}
+	return cloned
 }
 
 func issue(code, path, message string) Issue {
@@ -445,6 +483,79 @@ func validateReferences(field, prefix, suffix string, references []FileReference
 	}
 }
 
+func workspaceOverrideEmpty(override WorkspaceOverride) bool {
+	return override.LaunchPolicy == LaunchInherit && override.DeliveryMode == DeliveryInherit &&
+		override.MaxActiveTasks == nil && override.MaxActiveTasksPerWorkspace == nil &&
+		override.MaxConcurrentAgents == nil && override.MaxSubagentsPerTask == nil &&
+		override.ElapsedSeconds == nil && override.Tokens == nil && override.Turns == nil &&
+		override.CICycles == nil && override.AutoFixCIFailures == nil &&
+		override.AutoFixReviewFeedback == nil
+}
+
+func effectiveWorkspaceLimits(project Limits, override WorkspaceOverride) Limits {
+	result := project
+	for destination, source := range map[*int]*int{
+		&result.MaxActiveTasks:             override.MaxActiveTasks,
+		&result.MaxActiveTasksPerWorkspace: override.MaxActiveTasksPerWorkspace,
+		&result.MaxConcurrentAgents:        override.MaxConcurrentAgents,
+		&result.MaxSubagentsPerTask:        override.MaxSubagentsPerTask,
+	} {
+		if source != nil {
+			*destination = *source
+		}
+	}
+	return result
+}
+
+func effectiveWorkspaceBudget(project RunBudget, override WorkspaceOverride) RunBudget {
+	result := project
+	for destination, source := range map[*int64]*int64{
+		&result.ElapsedSeconds: override.ElapsedSeconds,
+		&result.Tokens:         override.Tokens,
+		&result.Turns:          override.Turns,
+		&result.CICycles:       override.CICycles,
+	} {
+		if source != nil {
+			*destination = *source
+		}
+	}
+	return result
+}
+
+func validateLimits(path string, limits Limits, issues *[]Issue) {
+	for field, current := range map[string]int{
+		"maxActiveTasks":             limits.MaxActiveTasks,
+		"maxActiveTasksPerWorkspace": limits.MaxActiveTasksPerWorkspace,
+		"maxConcurrentAgents":        limits.MaxConcurrentAgents,
+	} {
+		if current < 1 {
+			*issues = append(*issues, issue("limit_invalid", path+"."+field, "limit must be a positive integer"))
+		}
+	}
+	if limits.MaxSubagentsPerTask < 0 {
+		*issues = append(*issues, issue("limit_invalid", path+".maxSubagentsPerTask", "subagent limit cannot be negative"))
+	}
+	if limits.MaxActiveTasksPerWorkspace > limits.MaxActiveTasks {
+		*issues = append(*issues, issue("limit_inconsistent", path+".maxActiveTasksPerWorkspace", "per-Workspace active Task limit cannot exceed the Project limit"))
+	}
+	if limits.MaxActiveTasks > limits.MaxConcurrentAgents {
+		*issues = append(*issues, issue("limit_inconsistent", path+".maxConcurrentAgents", "agent capacity cannot be lower than active Task capacity"))
+	}
+}
+
+func validateRunBudget(path string, budget RunBudget, issues *[]Issue) {
+	for field, current := range map[string]int64{
+		"elapsedSeconds": budget.ElapsedSeconds,
+		"tokens":         budget.Tokens,
+		"turns":          budget.Turns,
+		"ciCycles":       budget.CICycles,
+	} {
+		if current < 1 {
+			*issues = append(*issues, issue("budget_invalid", path+"."+field, "Run budget must be a positive integer"))
+		}
+	}
+}
+
 func validate(value Configuration) error {
 	var issues []Issue
 	if value.Schema != SchemaID {
@@ -505,35 +616,8 @@ func validate(value Configuration) error {
 	if value.Defaults.DeliveryMode != DeliveryPullRequest && value.Defaults.DeliveryMode != DeliveryDirect {
 		issues = append(issues, issue("delivery_mode_invalid", "$.defaults.deliveryMode", "Project delivery mode must be pull_request or direct"))
 	}
-	limits := value.Defaults.Limits
-	for field, current := range map[string]int{
-		"maxActiveTasks":             limits.MaxActiveTasks,
-		"maxActiveTasksPerWorkspace": limits.MaxActiveTasksPerWorkspace,
-		"maxConcurrentAgents":        limits.MaxConcurrentAgents,
-	} {
-		if current < 1 {
-			issues = append(issues, issue("limit_invalid", "$.defaults.limits."+field, "limit must be a positive integer"))
-		}
-	}
-	if limits.MaxSubagentsPerTask < 0 {
-		issues = append(issues, issue("limit_invalid", "$.defaults.limits.maxSubagentsPerTask", "subagent limit cannot be negative"))
-	}
-	if limits.MaxActiveTasksPerWorkspace > limits.MaxActiveTasks {
-		issues = append(issues, issue("limit_inconsistent", "$.defaults.limits.maxActiveTasksPerWorkspace", "per-Workspace active Task limit cannot exceed the Project limit"))
-	}
-	if limits.MaxActiveTasks > limits.MaxConcurrentAgents {
-		issues = append(issues, issue("limit_inconsistent", "$.defaults.limits.maxConcurrentAgents", "agent capacity cannot be lower than active Task capacity"))
-	}
-	for field, current := range map[string]int64{
-		"elapsedSeconds": value.Defaults.RunBudget.ElapsedSeconds,
-		"tokens":         value.Defaults.RunBudget.Tokens,
-		"turns":          value.Defaults.RunBudget.Turns,
-		"ciCycles":       value.Defaults.RunBudget.CICycles,
-	} {
-		if current < 1 {
-			issues = append(issues, issue("budget_invalid", "$.defaults.runBudget."+field, "Run budget must be a positive integer"))
-		}
-	}
+	validateLimits("$.defaults.limits", value.Defaults.Limits, &issues)
+	validateRunBudget("$.defaults.runBudget", value.Defaults.RunBudget, &issues)
 	if value.WorkspaceOverrides == nil {
 		issues = append(issues, issue("field_required", "$.workspaceOverrides", "an explicit Workspace override array is required"))
 	}
@@ -555,9 +639,11 @@ func validate(value Configuration) error {
 		if override.DeliveryMode != DeliveryInherit && override.DeliveryMode != DeliveryPullRequest && override.DeliveryMode != DeliveryDirect {
 			issues = append(issues, issue("delivery_mode_invalid", base+".deliveryMode", "override delivery mode must be inherit, pull_request, or direct"))
 		}
-		if override.LaunchPolicy == LaunchInherit && override.DeliveryMode == DeliveryInherit {
+		if workspaceOverrideEmpty(override) {
 			issues = append(issues, issue("override_empty", base, "an override must contain at least one concrete value"))
 		}
+		validateLimits(base, effectiveWorkspaceLimits(value.Defaults.Limits, override), &issues)
+		validateRunBudget(base, effectiveWorkspaceBudget(value.Defaults.RunBudget, override), &issues)
 	}
 	validateReferences("$.skills", "skills/", "/SKILL.md", value.Skills, &issues)
 	validateReferences("$.templates", "templates/", ".md", value.Templates, &issues)
@@ -595,13 +681,30 @@ func Parse(input []byte) (Document, error) {
 	}
 	var presence struct {
 		Defaults struct {
-			Limits struct {
+			AutoFixCIFailures     *bool `json:"autoFixCiFailures"`
+			AutoFixReviewFeedback *bool `json:"autoFixReviewFeedback"`
+			Limits                struct {
 				MaxSubagentsPerTask *int `json:"maxSubagentsPerTask"`
 			} `json:"limits"`
 		} `json:"defaults"`
+		WorkspaceOverrides []map[string]json.RawMessage `json:"workspaceOverrides"`
 	}
-	if err := json.Unmarshal(canonical, &presence); err != nil || presence.Defaults.Limits.MaxSubagentsPerTask == nil {
+	if err := json.Unmarshal(canonical, &presence); err != nil ||
+		presence.Defaults.Limits.MaxSubagentsPerTask == nil ||
+		presence.Defaults.AutoFixCIFailures == nil ||
+		presence.Defaults.AutoFixReviewFeedback == nil {
 		return Document{}, invalidDocument("schema_mismatch", "configuration does not match the closed version 1 schema")
+	}
+	optionalOverrideFields := []string{
+		"maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask",
+		"elapsedSeconds", "tokens", "turns", "ciCycles", "autoFixCiFailures", "autoFixReviewFeedback",
+	}
+	for _, override := range presence.WorkspaceOverrides {
+		for _, field := range optionalOverrideFields {
+			if raw, exists := override[field]; exists && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				return Document{}, invalidDocument("schema_mismatch", "configuration does not match the closed version 1 schema")
+			}
+		}
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return Document{}, invalidDocument("json_invalid", "configuration must contain exactly one JSON value")

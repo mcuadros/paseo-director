@@ -14,7 +14,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   generateClient,
+  generatePlanningClient,
   generatedClientMatches,
+  generatedPlanningClientMatches,
 } from "./contract-check.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -22,9 +24,37 @@ const schemaPath = resolve(
   repositoryRoot,
   "engine/ports/host/host-interface.v1.json",
 );
+const planningSchemaPath = resolve(
+  repositoryRoot,
+  "engine/ports/planning/planning-surface.v1.json",
+);
 
 test("the committed client is generated from the exact engine schema", () => {
   assert.equal(generatedClientMatches(repositoryRoot, schemaPath), true);
+  assert.equal(
+    generatedPlanningClientMatches(repositoryRoot, planningSchemaPath),
+    true,
+  );
+});
+
+test("the planning client drifts with its canonical engine schema", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "director-planning-drift-"));
+  try {
+    const changedSchema = join(temporaryRoot, "changed.json");
+    writeFileSync(
+      changedSchema,
+      readFileSync(planningSchemaPath, "utf8").replace(
+        "director-planning/v1",
+        "director-planning/v999",
+      ),
+    );
+    assert.throws(
+      () => generatePlanningClient(repositoryRoot, changedSchema),
+      /planning contract version does not match/,
+    );
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 test("generated TypeScript is invariant to schema key order and whitespace", () => {

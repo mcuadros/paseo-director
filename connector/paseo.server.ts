@@ -18,6 +18,14 @@ import {
   type HostDescriptor,
   type HostObservation,
 } from "../generated/host-contract.shared.ts";
+import type {
+  PlanningMutationInput,
+  PlanningMutationResult,
+  PlanningQueryInput,
+  PlanningSnapshot,
+  TaskDetailQueryInput,
+  TaskDetailSnapshot,
+} from "../generated/planning-contract.shared.ts";
 import type { ConnectorStartupStatus } from "../rpc/startup.shared.ts";
 import { loadConnectorCredential } from "./credential.server.ts";
 import {
@@ -77,6 +85,28 @@ export class PaseoHostConnector implements DirectorHost {
 
   async loadBoard() {
     return this.#boardTransport.load();
+  }
+
+  async queryPlanning(_input: PlanningQueryInput): Promise<PlanningSnapshot> {
+    throw new Error(
+      "PLANNING_SURFACE_NOT_WIRED: runtime planning queries are owned by later M2 Tasks",
+    );
+  }
+
+  async queryPlanningTask(
+    _input: TaskDetailQueryInput,
+  ): Promise<TaskDetailSnapshot> {
+    throw new Error(
+      "PLANNING_SURFACE_NOT_WIRED: runtime task-detail queries are owned by later M2 Tasks",
+    );
+  }
+
+  async mutatePlanning(
+    _input: PlanningMutationInput,
+  ): Promise<PlanningMutationResult> {
+    throw new Error(
+      "PLANNING_SURFACE_NOT_WIRED: runtime planning mutations are owned by later M2 Tasks",
+    );
   }
 
   async close(): Promise<void> {

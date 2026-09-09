@@ -141,12 +141,21 @@
     "defaults": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["launchPolicy", "deliveryMode", "limits", "runBudget"],
+      "required": [
+        "launchPolicy",
+        "deliveryMode",
+        "limits",
+        "runBudget",
+        "autoFixCiFailures",
+        "autoFixReviewFeedback"
+      ],
       "properties": {
         "launchPolicy": { "enum": ["manual", "automatic"] },
         "deliveryMode": { "enum": ["pull_request", "direct"] },
         "limits": { "$ref": "#/$defs/limits" },
-        "runBudget": { "$ref": "#/$defs/runBudget" }
+        "runBudget": { "$ref": "#/$defs/runBudget" },
+        "autoFixCiFailures": { "type": "boolean" },
+        "autoFixReviewFeedback": { "type": "boolean" }
       }
     },
     "workspaceOverride": {
@@ -156,7 +165,17 @@
       "properties": {
         "workspaceId": { "$ref": "#/$defs/identifier" },
         "launchPolicy": { "enum": ["inherit", "manual", "automatic"] },
-        "deliveryMode": { "enum": ["inherit", "pull_request", "direct"] }
+        "deliveryMode": { "enum": ["inherit", "pull_request", "direct"] },
+        "maxActiveTasks": { "type": "integer", "minimum": 1 },
+        "maxActiveTasksPerWorkspace": { "type": "integer", "minimum": 1 },
+        "maxConcurrentAgents": { "type": "integer", "minimum": 1 },
+        "maxSubagentsPerTask": { "type": "integer", "minimum": 0 },
+        "elapsedSeconds": { "type": "integer", "minimum": 1 },
+        "tokens": { "type": "integer", "minimum": 1 },
+        "turns": { "type": "integer", "minimum": 1 },
+        "ciCycles": { "type": "integer", "minimum": 1 },
+        "autoFixCiFailures": { "type": "boolean" },
+        "autoFixReviewFeedback": { "type": "boolean" }
       }
     },
     "fileReference": {
