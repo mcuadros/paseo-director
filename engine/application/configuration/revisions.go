@@ -25,24 +25,28 @@ import (
 const (
 	PreviewSchemaVersion  = "director.configuration-preview/v1"
 	SnapshotSchemaVersion = "director.run-configuration-snapshot/v1"
-	// MaximumSnapshotBytes includes the bounded canonical configuration plus
-	// fixed version, revision, digest, field-name, and JSON framing overhead.
-	MaximumSnapshotBytes = domainconfig.MaximumCanonicalDocumentBytes + 4096
+	// MaximumSnapshotBytes includes the bounded active configuration, its
+	// independently approved envelope configuration, and fixed framing.
+	MaximumSnapshotBytes = 2*domainconfig.MaximumCanonicalDocumentBytes + 8192
 )
 
 var (
-	ErrVersionConflict         = errors.New("Organizer revision state version conflict")
-	ErrRevisionInvalid         = errors.New("Organizer revision must be a lowercase full Git object ID")
-	ErrPendingRevisionMissing  = errors.New("pending Organizer revision is required")
-	ErrPreviewMismatch         = errors.New("Apply must name the exact current Preview")
-	ErrHumanApprovalRequired   = errors.New("Apply requires a confirmed server-authenticated human actor")
-	ErrPendingRevisionInvalid  = errors.New("invalid pending Organizer revision cannot be applied")
-	ErrRevisionContentConflict = errors.New("active Organizer revision cannot identify different configuration content")
-	ErrActiveRevisionMissing   = errors.New("an active Organizer revision is required to freeze a Run")
-	ErrSnapshotInvalid         = errors.New("Run configuration snapshot is invalid")
-	revisionPattern            = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
-	sha256Pattern              = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	configurationSectionOrder  = []string{"project", "workspaces", "agentProfiles", "defaults", "workspaceOverrides", "skills", "templates"}
+	ErrVersionConflict                 = errors.New("Organizer revision state version conflict")
+	ErrRevisionInvalid                 = errors.New("Organizer revision must be a lowercase full Git object ID")
+	ErrPendingRevisionMissing          = errors.New("pending Organizer revision is required")
+	ErrPreviewMismatch                 = errors.New("Apply must name the exact current Preview")
+	ErrHumanApprovalRequired           = errors.New("Apply requires a confirmed server-authenticated human actor")
+	ErrApprovalRevisionMismatch        = errors.New("Apply approval must name the exact proposed Organizer revision")
+	ErrHumanAcknowledgementRequired    = errors.New("Apply requires a confirmed human acknowledgement of the active revision")
+	ErrAcknowledgementRevisionMismatch = errors.New("Apply acknowledgement must name the exact active Organizer revision")
+	ErrPendingRevisionInvalid          = errors.New("invalid pending Organizer revision cannot be applied")
+	ErrRevisionContentConflict         = errors.New("active Organizer revision cannot identify different configuration content")
+	ErrActiveRevisionMissing           = errors.New("an active Organizer revision is required to freeze a Run")
+	ErrSnapshotInvalid                 = errors.New("Run configuration snapshot is invalid")
+	ErrSecurityEnvelopeInvalid         = errors.New("human-approved security envelope is invalid or missing")
+	revisionPattern                    = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+	sha256Pattern                      = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	configurationSectionOrder          = []string{"project", "workspaces", "agentProfiles", "defaults", "workspaceOverrides", "skills", "templates"}
 )
 
 // ImpactKind is the closed high-level result of comparing a pending revision
@@ -77,10 +81,11 @@ type Preview struct {
 	// submitted to Preview, whether or not those bytes form a valid document.
 	ContentSHA256 string `json:"contentSha256"`
 	// ConfigurationSHA256 identifies canonical validated configuration only.
-	ConfigurationSHA256 string               `json:"configurationSha256,omitempty"`
-	Valid               bool                 `json:"valid"`
-	Issues              []domainconfig.Issue `json:"issues"`
-	Impact              Impact               `json:"impact"`
+	ConfigurationSHA256    string               `json:"configurationSha256,omitempty"`
+	SecurityEnvelopeSHA256 string               `json:"securityEnvelopeSha256"`
+	Valid                  bool                 `json:"valid"`
+	Issues                 []domainconfig.Issue `json:"issues"`
+	Impact                 Impact               `json:"impact"`
 }
 
 func clonePreview(value Preview) Preview {
@@ -108,11 +113,13 @@ type pendingRevision struct {
 }
 
 // State is the optimistic-concurrency aggregate for one Project's active and
-// pending Organizer revisions. Its zero value is an empty version-0 state.
+// pending Organizer revisions. NewState is required because the zero value has
+// no human-approved security envelope and fails closed.
 type State struct {
-	version uint64
-	active  *storedRevision
-	pending *pendingRevision
+	version  uint64
+	active   *storedRevision
+	pending  *pendingRevision
+	envelope SecurityEnvelope
 }
 
 // Version returns the aggregate version required by the next mutation.
@@ -209,6 +216,7 @@ func assignPreviewID(preview *Preview) error {
 		ProposedRevision          string               `json:"proposedRevision"`
 		ContentSHA256             string               `json:"contentSha256"`
 		ConfigurationSHA256       string               `json:"configurationSha256"`
+		SecurityEnvelopeSHA256    string               `json:"securityEnvelopeSha256"`
 		Valid                     bool                 `json:"valid"`
 		Issues                    []domainconfig.Issue `json:"issues"`
 		Impact                    Impact               `json:"impact"`
@@ -220,6 +228,7 @@ func assignPreviewID(preview *Preview) error {
 		ProposedRevision:          preview.ProposedRevision,
 		ContentSHA256:             preview.ContentSHA256,
 		ConfigurationSHA256:       preview.ConfigurationSHA256,
+		SecurityEnvelopeSHA256:    preview.SecurityEnvelopeSHA256,
 		Valid:                     preview.Valid,
 		Issues:                    preview.Issues,
 		Impact:                    preview.Impact,
@@ -239,16 +248,20 @@ func (state State) Preview(command PreviewCommand) (State, Preview, error) {
 	if command.ExpectedVersion != state.version {
 		return state, Preview{}, ErrVersionConflict
 	}
+	if !state.envelope.valid() {
+		return state, Preview{}, ErrSecurityEnvelopeInvalid
+	}
 	if !validRevision(command.OrganizerRevision) {
 		return state, Preview{}, ErrRevisionInvalid
 	}
 	configurationJSON := slices.Clone(command.ConfigurationJSON)
 	preview := Preview{
-		SchemaVersion:    PreviewSchemaVersion,
-		AggregateVersion: state.version + 1,
-		ProposedRevision: command.OrganizerRevision,
-		ContentSHA256:    hashBytes(configurationJSON),
-		Issues:           []domainconfig.Issue{},
+		SchemaVersion:          PreviewSchemaVersion,
+		AggregateVersion:       state.version + 1,
+		ProposedRevision:       command.OrganizerRevision,
+		ContentSHA256:          hashBytes(configurationJSON),
+		SecurityEnvelopeSHA256: state.envelope.SHA256(),
+		Issues:                 []domainconfig.Issue{},
 	}
 	if state.active != nil {
 		preview.ActiveRevision = state.active.revision
@@ -269,9 +282,16 @@ func (state State) Preview(command PreviewCommand) (State, Preview, error) {
 			return state, Preview{}, ErrRevisionContentConflict
 		}
 		preview.ConfigurationSHA256 = document.SHA256()
-		preview.Valid = true
-		preview.Impact = previewImpact(state.active, document)
-		pendingDocument = &document
+		envelopeIssues := state.envelope.issues(document)
+		if len(envelopeIssues) > 0 {
+			preview.Valid = false
+			preview.Issues = envelopeIssues
+			preview.Impact = Impact{Kind: ImpactInvalid, ChangedSections: []string{}}
+		} else {
+			preview.Valid = true
+			preview.Impact = previewImpact(state.active, document)
+			pendingDocument = &document
+		}
 	}
 	if err := assignPreviewID(&preview); err != nil {
 		return state, Preview{}, err
@@ -282,10 +302,23 @@ func (state State) Preview(command PreviewCommand) (State, Preview, error) {
 	return next, clonePreview(preview), nil
 }
 
+// ActorKind is the server-derived authority class for a confirmation. An
+// Organizer or model may propose a revision but cannot approve or acknowledge
+// its activation.
+type ActorKind string
+
+const (
+	ActorHuman     ActorKind = "human"
+	ActorOrganizer ActorKind = "organizer"
+	ActorModel     ActorKind = "model"
+)
+
 // HumanConfirmation is populated only after the engine boundary authenticates
-// a human Apply action. Model claims and host narration are not confirmation.
+// a human action. Revision binds the action to the exact fact the human saw.
 type HumanConfirmation struct {
+	ActorKind ActorKind
 	ActorID   string
+	Revision  string
 	Confirmed bool
 }
 
@@ -295,6 +328,7 @@ type ApplyCommand struct {
 	ExpectedVersion uint64
 	PreviewID       string
 	Confirmation    HumanConfirmation
+	Acknowledgement HumanConfirmation
 }
 
 // Apply activates the exact valid pending revision. It never reparses caller-
@@ -309,8 +343,22 @@ func (state State) Apply(command ApplyCommand) (State, error) {
 	if command.PreviewID == "" || command.PreviewID != state.pending.preview.ID {
 		return state, ErrPreviewMismatch
 	}
-	if !command.Confirmation.Confirmed || !validHumanActor(command.Confirmation.ActorID) {
+	if command.Confirmation.ActorKind != ActorHuman || !command.Confirmation.Confirmed || !validHumanActor(command.Confirmation.ActorID) {
 		return state, ErrHumanApprovalRequired
+	}
+	if command.Confirmation.Revision != state.pending.preview.ProposedRevision {
+		return state, ErrApprovalRevisionMismatch
+	}
+	if command.Acknowledgement.ActorKind != ActorHuman || !command.Acknowledgement.Confirmed ||
+		!validHumanActor(command.Acknowledgement.ActorID) {
+		return state, ErrHumanAcknowledgementRequired
+	}
+	activeRevision := ""
+	if state.active != nil {
+		activeRevision = state.active.revision
+	}
+	if command.Acknowledgement.Revision != activeRevision {
+		return state, ErrAcknowledgementRevisionMismatch
 	}
 	if !state.pending.preview.Valid || state.pending.document == nil {
 		return state, ErrPendingRevisionInvalid
@@ -331,13 +379,16 @@ func (state State) Apply(command ApplyCommand) (State, error) {
 type RunConfigurationSnapshot struct {
 	organizerRevision string
 	document          domainconfig.Document
+	envelope          SecurityEnvelope
 }
 
 type snapshotWire struct {
-	SnapshotVersion     string          `json:"snapshotVersion"`
-	OrganizerRevision   string          `json:"organizerRevision"`
-	ConfigurationSHA256 string          `json:"configurationSha256"`
-	Configuration       json.RawMessage `json:"configuration"`
+	SnapshotVersion        string          `json:"snapshotVersion"`
+	OrganizerRevision      string          `json:"organizerRevision"`
+	ConfigurationSHA256    string          `json:"configurationSha256"`
+	SecurityEnvelopeSHA256 string          `json:"securityEnvelopeSha256"`
+	Configuration          json.RawMessage `json:"configuration"`
+	SecurityEnvelope       json.RawMessage `json:"securityEnvelope"`
 }
 
 // OrganizerRevision returns the exact approved Organizer Git revision frozen
@@ -364,14 +415,16 @@ func (snapshot RunConfigurationSnapshot) Configuration() domainconfig.Configurat
 
 // MarshalJSON emits the complete frozen snapshot with a verified content hash.
 func (snapshot RunConfigurationSnapshot) MarshalJSON() ([]byte, error) {
-	if !validRevision(snapshot.organizerRevision) || snapshot.document.SHA256() == "" {
+	if !validRevision(snapshot.organizerRevision) || snapshot.document.SHA256() == "" || !snapshot.envelope.valid() {
 		return nil, ErrSnapshotInvalid
 	}
 	encoded, err := json.Marshal(snapshotWire{
-		SnapshotVersion:     SnapshotSchemaVersion,
-		OrganizerRevision:   snapshot.organizerRevision,
-		ConfigurationSHA256: snapshot.document.SHA256(),
-		Configuration:       snapshot.document.CanonicalJSON(),
+		SnapshotVersion:        SnapshotSchemaVersion,
+		OrganizerRevision:      snapshot.organizerRevision,
+		ConfigurationSHA256:    snapshot.document.SHA256(),
+		SecurityEnvelopeSHA256: snapshot.envelope.SHA256(),
+		Configuration:          snapshot.document.CanonicalJSON(),
+		SecurityEnvelope:       snapshot.envelope.boundary.CanonicalJSON(),
 	})
 	if err != nil || len(encoded) > MaximumSnapshotBytes {
 		return nil, ErrSnapshotInvalid
@@ -397,14 +450,23 @@ func ParseRunConfigurationSnapshot(input []byte) (RunConfigurationSnapshot, erro
 		return RunConfigurationSnapshot{}, ErrSnapshotInvalid
 	}
 	if wire.SnapshotVersion != SnapshotSchemaVersion || !validRevision(wire.OrganizerRevision) ||
-		!sha256Pattern.MatchString(wire.ConfigurationSHA256) {
+		!sha256Pattern.MatchString(wire.ConfigurationSHA256) ||
+		!sha256Pattern.MatchString(wire.SecurityEnvelopeSHA256) {
 		return RunConfigurationSnapshot{}, ErrSnapshotInvalid
 	}
 	document, err := domainconfig.Parse(wire.Configuration)
 	if err != nil || document.SHA256() != wire.ConfigurationSHA256 {
 		return RunConfigurationSnapshot{}, ErrSnapshotInvalid
 	}
-	return RunConfigurationSnapshot{organizerRevision: wire.OrganizerRevision, document: document}, nil
+	envelopeDocument, err := domainconfig.Parse(wire.SecurityEnvelope)
+	if err != nil {
+		return RunConfigurationSnapshot{}, ErrSnapshotInvalid
+	}
+	envelope := securityEnvelopeFromDocument(envelopeDocument)
+	if envelope.SHA256() != wire.SecurityEnvelopeSHA256 || len(envelope.issues(document)) > 0 {
+		return RunConfigurationSnapshot{}, ErrSnapshotInvalid
+	}
+	return RunConfigurationSnapshot{organizerRevision: wire.OrganizerRevision, document: document, envelope: envelope}, nil
 }
 
 // FreezeRunConfiguration captures only the approved active revision. A valid
@@ -416,5 +478,6 @@ func (state State) FreezeRunConfiguration() (RunConfigurationSnapshot, error) {
 	return RunConfigurationSnapshot{
 		organizerRevision: state.active.revision,
 		document:          state.active.document,
+		envelope:          state.envelope,
 	}, nil
 }

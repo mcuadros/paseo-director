@@ -185,6 +185,16 @@ can never produce `In review` or `Ready`; those states require later persisted
 Review and Validation facts. See
 [Board/List walking-skeleton contract](docs/board-list.md).
 
+The contract-first M2 presentation extends the plugin UI without claiming its
+later runtime implementation. Its separate engine-owned planning schema and
+generated Zod client cover Project/Workspace/Epic navigation, closed filters
+and stable sorts, cursor paging, Task detail, configuration Preview/Apply,
+scheduler/capacity facts, Launch now, dependency override, and every
+engine-returned allowed action/explanation. Runtime planning handlers currently
+fail explicitly instead of using fixture authority; deterministic fixtures are
+test-only. See the
+[M2 planning presentation contract](docs/planning-surface.md).
+
 The plugin manifest declares exact argv for its locked dependency preparation.
 Paseo executes those commands as trusted, unsandboxed daemon-host code with the
 daemon user's access during installation and update. Review the source,
@@ -331,6 +341,13 @@ canonical JSON with sorted object keys, so whitespace and object-key order do
 not change identity while semantic edits do. Runtime handshake validation
 rejects a stale version, hash, credential scope, missing capability, extra
 capability, reordered capability, or extra descriptor field before mutation.
+
+The adjacent engine-owned
+[planning schema](engine/ports/planning/planning-surface.v1.json) has its own
+version and canonical hash and generates the only
+[planning client](generated/planning-contract.shared.ts) used by the planning
+UI and RPC boundary. It extends presentation contracts without adding a second
+Paseo lifecycle host port.
 
 The connector implements only the eight fixed capabilities approved in
 [ADR-0017](docs/adr/0017-standalone-engine-connector-authority-boundary.md).

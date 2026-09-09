@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export function generateClient(repositoryRoot, schemaPath) {
+function generate(repositoryRoot, schemaPath, command) {
   const temporaryRoot = mkdtempSync(join(tmpdir(), "director-contract-check-"));
   const outputPath = join(temporaryRoot, "generated.ts");
   const goCache = join(temporaryRoot, "go-cache");
@@ -22,7 +22,7 @@ export function generateClient(repositoryRoot, schemaPath) {
       "-C",
       "engine",
       "run",
-      "./cmd/generate-host-client",
+      command,
       "--schema",
       schemaPath,
       "--output",
@@ -45,6 +45,14 @@ export function generateClient(repositoryRoot, schemaPath) {
   return generated;
 }
 
+export function generateClient(repositoryRoot, schemaPath) {
+  return generate(repositoryRoot, schemaPath, "./cmd/generate-host-client");
+}
+
+export function generatePlanningClient(repositoryRoot, schemaPath) {
+  return generate(repositoryRoot, schemaPath, "./cmd/generate-planning-client");
+}
+
 export function generatedClientMatches(repositoryRoot, schemaPath) {
   const generated = generateClient(repositoryRoot, schemaPath);
   const committed = readFileSync(
@@ -53,18 +61,36 @@ export function generatedClientMatches(repositoryRoot, schemaPath) {
   return generated.equals(committed);
 }
 
+export function generatedPlanningClientMatches(repositoryRoot, schemaPath) {
+  const generated = generatePlanningClient(repositoryRoot, schemaPath);
+  const committed = readFileSync(
+    resolve(repositoryRoot, "generated/planning-contract.shared.ts"),
+  );
+  return generated.equals(committed);
+}
+
 function run(repositoryRoot) {
-  const schemaPath = resolve(
+  const hostSchemaPath = resolve(
     repositoryRoot,
     "engine/ports/host/host-interface.v1.json",
   );
-  if (!generatedClientMatches(repositoryRoot, schemaPath)) {
+  const planningSchemaPath = resolve(
+    repositoryRoot,
+    "engine/ports/planning/planning-surface.v1.json",
+  );
+  if (!generatedClientMatches(repositoryRoot, hostSchemaPath)) {
     console.error(
       "Generated host client drifted; run npm run contract:generate and review the result.",
     );
     return 1;
   }
-  console.log("Engine-owned host schema and generated TypeScript client match.");
+  if (!generatedPlanningClientMatches(repositoryRoot, planningSchemaPath)) {
+    console.error(
+      "Generated planning client drifted; run npm run contract:generate and review the result.",
+    );
+    return 1;
+  }
+  console.log("Engine-owned host and planning schemas match their generated TypeScript clients.");
   return 0;
 }
 

@@ -2,17 +2,19 @@
 
 import type { PluginContext } from "@getpaseo/plugin";
 
-import {
-  DirectorHome,
-  ProjectBoard,
-  TaskInspector,
-} from "./ui/shells.client";
+import { DirectorHome, TaskInspector } from "./ui/shells.client";
+import { ProjectBoard } from "./ui/planning-surface.client";
 import { DirectorWorkers } from "./ui/director-workers-panel.client";
 import { startConnectorShellFromEnvironment } from "./connector/paseo.server";
 import { connectorStartupStatus } from "./rpc/startup.shared";
 import { boardSnapshotRpc } from "./rpc/board.shared";
 import { directorWorkersRpc } from "./rpc/workers.shared";
 import { loadDirectorWorkers } from "./connector/engine-workers.server";
+import {
+  planningMutationRpc,
+  planningQueryRpc,
+  planningTaskDetailRpc,
+} from "./rpc/planning.shared";
 
 export default function contribute(plugin: PluginContext) {
   const connector = startConnectorShellFromEnvironment();
@@ -81,6 +83,11 @@ export default function contribute(plugin: PluginContext) {
       rootWorkspaceId,
     ),
   );
+  plugin.handle(planningQueryRpc, (input) => connector.queryPlanning(input));
+  plugin.handle(planningTaskDetailRpc, (input) =>
+    connector.queryPlanningTask(input),
+  );
+  plugin.handle(planningMutationRpc, (input) => connector.mutatePlanning(input));
 
   return () => connector.close();
 }

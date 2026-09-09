@@ -1,0 +1,985 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mcuadros/paseo-director/engine/ports/planning/planning-surface.v1.json",
+  "schemaVersion": 1,
+  "contractVersion": "director-planning/v1",
+  "queryNames": [
+    "planning.query",
+    "planning.task-detail"
+  ],
+  "mutationName": "planning.mutate",
+  "maximumPageSize": 100,
+  "maximumProjects": 100,
+  "maximumWorkspaces": 100,
+  "maximumEpics": 500,
+  "derivedStates": [
+    "needs_you",
+    "queued",
+    "building",
+    "validating",
+    "in_review",
+    "ready",
+    "done"
+  ],
+  "priorities": [
+    "urgent",
+    "high",
+    "normal",
+    "low"
+  ],
+  "stableSorts": [
+    "scheduler_order",
+    "updated_desc",
+    "priority_fifo",
+    "key_asc"
+  ],
+  "allowedActions": [
+    "project.create",
+    "project.update",
+    "epic.create",
+    "epic.update",
+    "task.create",
+    "task.update",
+    "dependency.add",
+    "dependency.remove",
+    "configuration.preview",
+    "configuration.apply",
+    "task.launch-now",
+    "dependency.override"
+  ],
+  "configurationKeys": [
+    "launchPolicy",
+    "maxActiveTasks",
+    "maxActiveTasksPerWorkspace",
+    "maxConcurrentAgents",
+    "maxSubagentsPerTask",
+    "autoFixCiFailures",
+    "autoFixReviewFeedback"
+  ],
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "boundedText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "uint64Decimal": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]{0,19})$"
+    },
+    "derivedState": {
+      "enum": [
+        "needs_you",
+        "queued",
+        "building",
+        "validating",
+        "in_review",
+        "ready",
+        "done"
+      ]
+    },
+    "priority": {
+      "enum": [
+        "urgent",
+        "high",
+        "normal",
+        "low"
+      ]
+    },
+    "stableSort": {
+      "enum": [
+        "scheduler_order",
+        "updated_desc",
+        "priority_fifo",
+        "key_asc"
+      ]
+    },
+    "allowedActionKind": {
+      "enum": [
+        "project.create",
+        "project.update",
+        "epic.create",
+        "epic.update",
+        "task.create",
+        "task.update",
+        "dependency.add",
+        "dependency.remove",
+        "configuration.preview",
+        "configuration.apply",
+        "task.launch-now",
+        "dependency.override"
+      ]
+    },
+    "explanation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "wakeCondition",
+        "humanActionRequired"
+      ],
+      "properties": {
+        "code": { "$ref": "#/$defs/opaqueId" },
+        "message": { "$ref": "#/$defs/boundedText" },
+        "wakeCondition": {
+          "anyOf": [
+            { "$ref": "#/$defs/boundedText" },
+            { "type": "null" }
+          ]
+        },
+        "humanActionRequired": { "type": "boolean" }
+      }
+    },
+    "allowedAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "label",
+        "targetId",
+        "requestId",
+        "idempotencyKey",
+        "expectedVersion",
+        "humanApprovalRef",
+        "acknowledgementRevision",
+        "emphasis"
+      ],
+      "properties": {
+        "kind": { "$ref": "#/$defs/allowedActionKind" },
+        "label": { "$ref": "#/$defs/boundedText" },
+        "targetId": {
+          "anyOf": [
+            { "$ref": "#/$defs/opaqueId" },
+            { "type": "null" }
+          ]
+        },
+        "requestId": { "$ref": "#/$defs/opaqueId" },
+        "idempotencyKey": { "$ref": "#/$defs/opaqueId" },
+        "expectedVersion": { "$ref": "#/$defs/uint64Decimal" },
+        "humanApprovalRef": {
+          "anyOf": [
+            { "$ref": "#/$defs/opaqueId" },
+            { "type": "null" }
+          ]
+        },
+        "acknowledgementRevision": {
+          "anyOf": [
+            { "$ref": "#/$defs/uint64Decimal" },
+            { "type": "null" }
+          ]
+        },
+        "emphasis": { "enum": ["primary", "secondary", "danger"] }
+      }
+    },
+    "configurationApplyAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "label",
+        "targetId",
+        "requestId",
+        "idempotencyKey",
+        "expectedVersion",
+        "humanApprovalRef",
+        "acknowledgementRevision",
+        "emphasis"
+      ],
+      "properties": {
+        "kind": { "const": "configuration.apply" },
+        "label": { "$ref": "#/$defs/boundedText" },
+        "targetId": { "$ref": "#/$defs/opaqueId" },
+        "requestId": { "$ref": "#/$defs/opaqueId" },
+        "idempotencyKey": { "$ref": "#/$defs/opaqueId" },
+        "expectedVersion": { "$ref": "#/$defs/uint64Decimal" },
+        "humanApprovalRef": { "$ref": "#/$defs/opaqueId" },
+        "acknowledgementRevision": { "$ref": "#/$defs/uint64Decimal" },
+        "emphasis": { "enum": ["primary", "secondary", "danger"] }
+      }
+    },
+    "taskCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["open", "done", "needsYou"],
+      "properties": {
+        "open": { "$ref": "#/$defs/uint64Decimal" },
+        "done": { "$ref": "#/$defs/uint64Decimal" },
+        "needsYou": { "$ref": "#/$defs/uint64Decimal" }
+      }
+    },
+    "projectSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "name",
+        "state",
+        "workspaceCount",
+        "taskCounts",
+        "allowedActions"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueId" },
+        "version": { "$ref": "#/$defs/uint64Decimal" },
+        "name": { "$ref": "#/$defs/boundedText" },
+        "state": { "enum": ["active", "paused", "degraded", "archived"] },
+        "workspaceCount": { "$ref": "#/$defs/uint64Decimal" },
+        "taskCounts": { "$ref": "#/$defs/taskCounts" },
+        "allowedActions": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/allowedAction" }
+        }
+      }
+    },
+    "workspaceSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "projectId",
+        "version",
+        "name",
+        "health",
+        "defaultBaseBranch",
+        "taskCounts",
+        "allowedActions"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueId" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "version": { "$ref": "#/$defs/uint64Decimal" },
+        "name": { "$ref": "#/$defs/boundedText" },
+        "health": { "enum": ["healthy", "degraded", "unavailable"] },
+        "defaultBaseBranch": { "$ref": "#/$defs/boundedText" },
+        "taskCounts": { "$ref": "#/$defs/taskCounts" },
+        "allowedActions": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/allowedAction" }
+        }
+      }
+    },
+    "epicSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "projectId",
+        "version",
+        "key",
+        "title",
+        "priority",
+        "labels",
+        "progress",
+        "blockers",
+        "allowedActions"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueId" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "version": { "$ref": "#/$defs/uint64Decimal" },
+        "key": { "$ref": "#/$defs/opaqueId" },
+        "title": { "$ref": "#/$defs/boundedText" },
+        "priority": {
+          "anyOf": [
+            { "$ref": "#/$defs/priority" },
+            { "type": "null" }
+          ]
+        },
+        "labels": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/opaqueId" }
+        },
+        "progress": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["completed", "total"],
+          "properties": {
+            "completed": { "$ref": "#/$defs/uint64Decimal" },
+            "total": { "$ref": "#/$defs/uint64Decimal" }
+          }
+        },
+        "blockers": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/explanation" }
+        },
+        "allowedActions": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/allowedAction" }
+        }
+      }
+    },
+    "schedulerFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["launchMode", "launchDisposition", "queuePosition", "factsRevision", "explanations"],
+      "properties": {
+        "launchMode": { "enum": ["manual", "automatic"] },
+        "launchDisposition": { "enum": ["eligible", "waiting", "needs_you"] },
+        "queuePosition": {
+          "anyOf": [
+            { "$ref": "#/$defs/uint64Decimal" },
+            { "type": "null" }
+          ]
+        },
+        "factsRevision": { "$ref": "#/$defs/uint64Decimal" },
+        "explanations": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/explanation" }
+        }
+      }
+    },
+    "taskSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "projectId",
+        "workspaceId",
+        "epicId",
+        "version",
+        "key",
+        "title",
+        "derivedState",
+        "priority",
+        "labels",
+        "updatedAt",
+        "blockers",
+        "needsYou",
+        "allowedActions",
+        "schedulingFacts"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueId" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "workspaceId": { "$ref": "#/$defs/opaqueId" },
+        "epicId": {
+          "anyOf": [
+            { "$ref": "#/$defs/opaqueId" },
+            { "type": "null" }
+          ]
+        },
+        "version": { "$ref": "#/$defs/uint64Decimal" },
+        "key": { "$ref": "#/$defs/opaqueId" },
+        "title": { "$ref": "#/$defs/boundedText" },
+        "derivedState": { "$ref": "#/$defs/derivedState" },
+        "priority": { "$ref": "#/$defs/priority" },
+        "labels": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/opaqueId" }
+        },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "blockers": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/explanation" }
+        },
+        "needsYou": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/explanation" }
+        },
+        "allowedActions": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/allowedAction" }
+        },
+        "schedulingFacts": { "$ref": "#/$defs/schedulerFacts" }
+      }
+    },
+    "capacityFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeTasks",
+        "maxActiveTasks",
+        "activeWorkspaceTasks",
+        "maxActiveTasksPerWorkspace",
+        "activeAgents",
+        "maxConcurrentAgents",
+        "reservedAgents"
+      ],
+      "properties": {
+        "activeTasks": { "$ref": "#/$defs/uint64Decimal" },
+        "maxActiveTasks": { "$ref": "#/$defs/uint64Decimal" },
+        "activeWorkspaceTasks": { "$ref": "#/$defs/uint64Decimal" },
+        "maxActiveTasksPerWorkspace": { "$ref": "#/$defs/uint64Decimal" },
+        "activeAgents": { "$ref": "#/$defs/uint64Decimal" },
+        "maxConcurrentAgents": { "$ref": "#/$defs/uint64Decimal" },
+        "reservedAgents": { "$ref": "#/$defs/uint64Decimal" }
+      }
+    },
+    "planningQueryInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projectId",
+        "workspaceIds",
+        "epicIds",
+        "states",
+        "priorities",
+        "labels",
+        "search",
+        "sort",
+        "cursor",
+        "pageSize"
+      ],
+      "properties": {
+        "projectId": {
+          "anyOf": [
+            { "$ref": "#/$defs/opaqueId" },
+            { "type": "null" }
+          ]
+        },
+        "workspaceIds": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/opaqueId" }
+        },
+        "epicIds": {
+          "type": "array",
+          "maxItems": 500,
+          "items": { "$ref": "#/$defs/opaqueId" }
+        },
+        "states": {
+          "type": "array",
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/derivedState" }
+        },
+        "priorities": {
+          "type": "array",
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/priority" }
+        },
+        "labels": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/opaqueId" }
+        },
+        "search": {
+          "anyOf": [
+            { "type": "string", "minLength": 1, "maxLength": 256 },
+            { "type": "null" }
+          ]
+        },
+        "sort": { "$ref": "#/$defs/stableSort" },
+        "cursor": {
+          "anyOf": [
+            { "$ref": "#/$defs/uint64Decimal" },
+            { "type": "null" }
+          ]
+        },
+        "pageSize": { "type": "integer", "minimum": 1, "maximum": 100 }
+      }
+    },
+    "planningPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selectedProjectId",
+        "selectedWorkspaceIds",
+        "selectedEpicIds",
+        "appliedQuery",
+        "availableSorts",
+        "availableLabels",
+        "projects",
+        "workspaces",
+        "epics",
+        "tasks",
+        "capacity",
+        "surfaceActions",
+        "totalTasks",
+        "nextCursor"
+      ],
+      "properties": {
+        "selectedProjectId": {
+          "anyOf": [
+            { "$ref": "#/$defs/opaqueId" },
+            { "type": "null" }
+          ]
+        },
+        "selectedWorkspaceIds": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/opaqueId" }
+        },
+        "selectedEpicIds": {
+          "type": "array",
+          "maxItems": 500,
+          "items": { "$ref": "#/$defs/opaqueId" }
+        },
+        "appliedQuery": { "$ref": "#/$defs/planningQueryInput" },
+        "availableSorts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/stableSort" }
+        },
+        "availableLabels": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/opaqueId" }
+        },
+        "projects": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/projectSummary" }
+        },
+        "workspaces": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/workspaceSummary" }
+        },
+        "epics": {
+          "type": "array",
+          "maxItems": 500,
+          "items": { "$ref": "#/$defs/epicSummary" }
+        },
+        "tasks": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/taskSummary" }
+        },
+        "capacity": { "$ref": "#/$defs/capacityFacts" },
+        "surfaceActions": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/allowedAction" }
+        },
+        "totalTasks": { "$ref": "#/$defs/uint64Decimal" },
+        "nextCursor": {
+          "anyOf": [
+            { "$ref": "#/$defs/uint64Decimal" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "planningSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "contractVersion", "contractHash", "cursor", "page"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "contractVersion": { "const": "director-planning/v1" },
+        "contractHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "cursor": { "$ref": "#/$defs/uint64Decimal" },
+        "page": { "$ref": "#/$defs/planningPage" }
+      }
+    },
+    "configurationValue": {
+      "anyOf": [
+        { "type": "boolean" },
+        { "$ref": "#/$defs/uint64Decimal" },
+        { "enum": ["manual", "automatic"] }
+      ]
+    },
+    "configurationOverride": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key", "mode"],
+          "properties": {
+            "key": { "enum": ["launchPolicy", "maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask", "autoFixCiFailures", "autoFixReviewFeedback"] },
+            "mode": { "const": "inherit" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key", "mode", "value"],
+          "properties": {
+            "key": { "enum": ["launchPolicy", "maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask", "autoFixCiFailures", "autoFixReviewFeedback"] },
+            "mode": { "const": "value" },
+            "value": { "$ref": "#/$defs/configurationValue" }
+          }
+        }
+      ]
+    },
+    "configurationEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "configured", "effectiveValue", "effectiveSource", "allowedValues"],
+      "properties": {
+        "key": { "enum": ["launchPolicy", "maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask", "autoFixCiFailures", "autoFixReviewFeedback"] },
+        "configured": { "$ref": "#/$defs/configurationOverride" },
+        "effectiveValue": { "$ref": "#/$defs/configurationValue" },
+        "effectiveSource": { "enum": ["project", "workspace", "task"] },
+        "allowedValues": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/configurationValue" }
+        }
+      }
+    },
+    "configurationTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "id"],
+      "properties": {
+        "scope": { "enum": ["project", "workspace", "task"] },
+        "id": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "configurationPreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["previewId", "target", "valid", "issues", "diff", "applyAction"],
+      "properties": {
+        "previewId": { "$ref": "#/$defs/opaqueId" },
+        "target": { "$ref": "#/$defs/configurationTarget" },
+        "valid": { "type": "boolean" },
+        "issues": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/explanation" }
+        },
+        "diff": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "before", "after", "effectiveSource"],
+            "properties": {
+              "key": { "enum": ["launchPolicy", "maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask", "autoFixCiFailures", "autoFixReviewFeedback"] },
+              "before": { "$ref": "#/$defs/configurationValue" },
+              "after": { "$ref": "#/$defs/configurationValue" },
+              "effectiveSource": { "enum": ["project", "workspace", "task"] }
+            }
+          }
+        },
+        "applyAction": {
+          "anyOf": [
+            { "$ref": "#/$defs/configurationApplyAction" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "taskDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "objective",
+        "acceptanceCriteria",
+        "dependencies",
+        "configurationTarget",
+        "configuration",
+        "configurationPreview",
+        "activity"
+      ],
+      "properties": {
+        "summary": { "$ref": "#/$defs/taskSummary" },
+        "objective": { "$ref": "#/$defs/boundedText" },
+        "acceptanceCriteria": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "text", "status"],
+            "properties": {
+              "id": { "$ref": "#/$defs/opaqueId" },
+              "text": { "$ref": "#/$defs/boundedText" },
+              "status": { "enum": ["pending", "satisfied", "unsatisfied"] }
+            }
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "kind", "key", "title", "satisfied", "overrideStatus", "explanation"],
+            "properties": {
+              "id": { "$ref": "#/$defs/opaqueId" },
+              "kind": { "enum": ["task", "epic"] },
+              "key": { "$ref": "#/$defs/opaqueId" },
+              "title": { "$ref": "#/$defs/boundedText" },
+              "satisfied": { "type": "boolean" },
+              "overrideStatus": { "enum": ["none", "pending", "approved"] },
+              "explanation": { "$ref": "#/$defs/explanation" }
+            }
+          }
+        },
+        "configurationTarget": { "$ref": "#/$defs/configurationTarget" },
+        "configuration": {
+          "type": "array",
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/configurationEntry" }
+        },
+        "configurationPreview": {
+          "anyOf": [
+            { "$ref": "#/$defs/configurationPreview" },
+            { "type": "null" }
+          ]
+        },
+        "activity": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "occurredAt", "kind", "message"],
+            "properties": {
+              "id": { "$ref": "#/$defs/opaqueId" },
+              "occurredAt": { "type": "string", "format": "date-time" },
+              "kind": { "enum": ["planning", "execution", "validation", "review", "human"] },
+              "message": { "$ref": "#/$defs/boundedText" }
+            }
+          }
+        }
+      }
+    },
+    "taskDetailQueryInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId", "afterCursor"],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/opaqueId" },
+        "afterCursor": {
+          "anyOf": [
+            { "$ref": "#/$defs/uint64Decimal" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "taskDetailSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "contractVersion", "contractHash", "cursor", "detail"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "contractVersion": { "const": "director-planning/v1" },
+        "contractHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "cursor": { "$ref": "#/$defs/uint64Decimal" },
+        "detail": { "$ref": "#/$defs/taskDetail" }
+      }
+    },
+    "planningMutationInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "contractVersion",
+        "contractHash",
+        "requestId",
+        "idempotencyKey",
+        "expectedVersion",
+        "humanApprovalRef",
+        "acknowledgementRevision",
+        "intent"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "contractVersion": { "const": "director-planning/v1" },
+        "contractHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "requestId": { "$ref": "#/$defs/opaqueId" },
+        "idempotencyKey": { "$ref": "#/$defs/opaqueId" },
+        "expectedVersion": { "$ref": "#/$defs/uint64Decimal" },
+        "humanApprovalRef": {
+          "anyOf": [
+            { "$ref": "#/$defs/opaqueId" },
+            { "type": "null" }
+          ]
+        },
+        "acknowledgementRevision": {
+          "anyOf": [
+            { "$ref": "#/$defs/uint64Decimal" },
+            { "type": "null" }
+          ]
+        },
+        "intent": {
+          "oneOf": [
+            { "$ref": "#/$defs/projectCreateIntent" },
+            { "$ref": "#/$defs/projectUpdateIntent" },
+            { "$ref": "#/$defs/epicCreateIntent" },
+            { "$ref": "#/$defs/epicUpdateIntent" },
+            { "$ref": "#/$defs/taskCreateIntent" },
+            { "$ref": "#/$defs/taskUpdateIntent" },
+            { "$ref": "#/$defs/dependencyAddIntent" },
+            { "$ref": "#/$defs/dependencyRemoveIntent" },
+            { "$ref": "#/$defs/configurationPreviewIntent" },
+            { "$ref": "#/$defs/configurationApplyIntent" },
+            { "$ref": "#/$defs/taskLaunchNowIntent" },
+            { "$ref": "#/$defs/dependencyOverrideIntent" }
+          ]
+        }
+      }
+    },
+    "projectCreateIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "name"],
+      "properties": {
+        "type": { "const": "project.create" },
+        "name": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "projectUpdateIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "projectId", "name"],
+      "properties": {
+        "type": { "const": "project.update" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "name": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "epicCreateIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "projectId", "key", "title", "description", "priority", "labels"],
+      "properties": {
+        "type": { "const": "epic.create" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "key": { "$ref": "#/$defs/opaqueId" },
+        "title": { "$ref": "#/$defs/boundedText" },
+        "description": { "$ref": "#/$defs/boundedText" },
+        "priority": { "anyOf": [{ "$ref": "#/$defs/priority" }, { "type": "null" }] },
+        "labels": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/opaqueId" } }
+      }
+    },
+    "epicUpdateIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "epicId", "title", "description", "priority", "labels"],
+      "properties": {
+        "type": { "const": "epic.update" },
+        "epicId": { "$ref": "#/$defs/opaqueId" },
+        "title": { "$ref": "#/$defs/boundedText" },
+        "description": { "$ref": "#/$defs/boundedText" },
+        "priority": { "anyOf": [{ "$ref": "#/$defs/priority" }, { "type": "null" }] },
+        "labels": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/opaqueId" } }
+      }
+    },
+    "taskCreateIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "projectId", "workspaceId", "epicId", "key", "title", "objective", "acceptanceCriteria", "priority", "labels"],
+      "properties": {
+        "type": { "const": "task.create" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "workspaceId": { "$ref": "#/$defs/opaqueId" },
+        "epicId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
+        "key": { "$ref": "#/$defs/opaqueId" },
+        "title": { "$ref": "#/$defs/boundedText" },
+        "objective": { "$ref": "#/$defs/boundedText" },
+        "acceptanceCriteria": { "type": "array", "minItems": 1, "maxItems": 128, "items": { "$ref": "#/$defs/boundedText" } },
+        "priority": { "$ref": "#/$defs/priority" },
+        "labels": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/opaqueId" } }
+      }
+    },
+    "taskUpdateIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "taskId", "epicId", "title", "objective", "acceptanceCriteria", "priority", "labels"],
+      "properties": {
+        "type": { "const": "task.update" },
+        "taskId": { "$ref": "#/$defs/opaqueId" },
+        "epicId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
+        "title": { "$ref": "#/$defs/boundedText" },
+        "objective": { "$ref": "#/$defs/boundedText" },
+        "acceptanceCriteria": { "type": "array", "minItems": 1, "maxItems": 128, "items": { "$ref": "#/$defs/boundedText" } },
+        "priority": { "$ref": "#/$defs/priority" },
+        "labels": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/opaqueId" } }
+      }
+    },
+    "dependencyAddIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "taskId", "dependencyKind", "dependencyId"],
+      "properties": {
+        "type": { "const": "dependency.add" },
+        "taskId": { "$ref": "#/$defs/opaqueId" },
+        "dependencyKind": { "enum": ["task", "epic"] },
+        "dependencyId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "dependencyRemoveIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "taskId", "dependencyKind", "dependencyId"],
+      "properties": {
+        "type": { "const": "dependency.remove" },
+        "taskId": { "$ref": "#/$defs/opaqueId" },
+        "dependencyKind": { "enum": ["task", "epic"] },
+        "dependencyId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "configurationPreviewIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "target", "overrides"],
+      "properties": {
+        "type": { "const": "configuration.preview" },
+        "target": { "$ref": "#/$defs/configurationTarget" },
+        "overrides": { "type": "array", "maxItems": 7, "items": { "$ref": "#/$defs/configurationOverride" } }
+      }
+    },
+    "configurationApplyIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "target", "previewId"],
+      "properties": {
+        "type": { "const": "configuration.apply" },
+        "target": { "$ref": "#/$defs/configurationTarget" },
+        "previewId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "taskLaunchNowIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "taskId"],
+      "properties": {
+        "type": { "const": "task.launch-now" },
+        "taskId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "dependencyOverrideIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "taskId", "dependencyKind", "dependencyId"],
+      "properties": {
+        "type": { "const": "dependency.override" },
+        "taskId": { "$ref": "#/$defs/opaqueId" },
+        "dependencyKind": { "enum": ["task", "epic"] },
+        "dependencyId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "planningMutationResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "contractVersion", "contractHash", "cursor", "requestId", "status", "message", "updatedVersion", "preview"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "contractVersion": { "const": "director-planning/v1" },
+        "contractHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "cursor": { "$ref": "#/$defs/uint64Decimal" },
+        "requestId": { "$ref": "#/$defs/opaqueId" },
+        "status": { "enum": ["accepted", "rejected"] },
+        "message": { "$ref": "#/$defs/boundedText" },
+        "updatedVersion": { "anyOf": [{ "$ref": "#/$defs/uint64Decimal" }, { "type": "null" }] },
+        "preview": { "anyOf": [{ "$ref": "#/$defs/configurationPreview" }, { "type": "null" }] }
+      }
+    }
+  }
+}

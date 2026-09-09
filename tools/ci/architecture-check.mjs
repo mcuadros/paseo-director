@@ -15,6 +15,7 @@ const ENGINE_MODULE = "github.com/mcuadros/director-engine";
 const TESTKIT_IMPORTS = new Set([
   `${ENGINE_MODULE}/internal/planningtestkit`,
   `${ENGINE_MODULE}/internal/testkit/projectionoracle`,
+  `${ENGINE_MODULE}/internal/testkit/configoracle`,
 ]);
 const TESTKIT_RELATIVE_PATHS = new Set(
   [...TESTKIT_IMPORTS].map((path) => path.slice(ENGINE_MODULE.length + 1)),
@@ -71,7 +72,7 @@ const IMPURE_STANDARD_IMPORTS = [
 ];
 const TS_ALLOWED_DEPENDENCIES = {
   composition: new Set(["connector", "rpc", "ui"]),
-  ui: new Set(["rpc", "ui"]),
+  ui: new Set(["generated", "rpc", "ui"]),
   rpc: new Set(["generated", "rpc"]),
   generated: new Set(["generated"]),
   connector: new Set(["connector", "generated", "rpc"]),
@@ -86,7 +87,7 @@ const TS_ALLOWED_EXTERNAL_IMPORTS = {
     "react-native",
   ]),
   rpc: new Set(["@getpaseo/plugin/server", "zod"]),
-  generated: new Set(),
+  generated: new Set(["zod"]),
   connector: new Set(["@getpaseo/client"]),
 };
 const POLICY_DECLARATION = /(?:Reducer|Policy|Scheduler|Orchestrator|TaskStore|Reconciler|StateTransition|DomainModel|ApplicationService|LifecycleDecision|LifecycleTransition|(?:Eligibility|Launch|Retry|Escalation|Routing|Closure)Decision)$/i;
@@ -452,6 +453,12 @@ export function structureErrors(paths, packagePaths, fileSources = new Map()) {
   }
   if (!pathSet.has("generated/host-contract.shared.ts")) {
     errors.push("generated: the generated engine client is missing");
+  }
+  if (!pathSet.has("generated/planning-contract.shared.ts")) {
+    errors.push("generated: the generated planning client is missing");
+  }
+  if (!pathSet.has("engine/ports/planning/planning-surface.v1.json")) {
+    errors.push("engine/ports/planning: the engine-owned planning schema is missing");
   }
   for (const requiredHostPath of [
     "connector/paseo.server.ts",

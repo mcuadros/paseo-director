@@ -279,6 +279,72 @@ test("projection oracle is an exact independent testkit boundary", () => {
   );
 });
 
+test("configuration oracle is an exact test-only architecture role", () => {
+  const oracle = `${modulePath}/internal/testkit/configoracle`;
+  assert.deepEqual(
+    goDependencyErrors([
+      {
+        importPath: oracle,
+        imports: ["cmp", "slices"],
+      },
+      {
+        importPath: `${modulePath}/domain/configuration`,
+        imports: ["fmt"],
+        testImports: ["testing", oracle],
+      },
+      {
+        importPath: `${modulePath}/application/configuration`,
+        imports: [`${modulePath}/domain/configuration`],
+        xTestImports: ["testing", oracle],
+      },
+    ]),
+    [],
+  );
+
+  assert.ok(
+    goDependencyErrors([
+      {
+        importPath: `${modulePath}/domain/configuration`,
+        imports: [oracle],
+      },
+    ]).some((error) => error.includes("domain boundary cannot import testkit")),
+  );
+  assert.ok(
+    goDependencyErrors([
+      {
+        importPath: oracle,
+        imports: [`${modulePath}/domain/configuration`],
+      },
+    ]).some((error) => error.includes("testkit boundary cannot import domain")),
+  );
+  assert.ok(
+    goDependencyErrors([
+      {
+        importPath: oracle,
+        imports: [],
+        testImports: [`${modulePath}/application/configuration`],
+      },
+    ]).some((error) => error.includes("testkit boundary cannot import application")),
+  );
+
+  for (const nonExact of [
+    `${modulePath}/internal/testkit`,
+    `${oracle}/runtime`,
+    `${modulePath}/internal/testkit/config-oracle`,
+  ]) {
+    assert.ok(
+      goDependencyErrors([
+        {
+          importPath: `${modulePath}/domain/configuration`,
+          imports: [],
+          testImports: [nonExact],
+        },
+      ]).some((error) => error.includes("imports unclassified engine package")),
+      `${nonExact} was admitted as an exact configuration-oracle test import`,
+    );
+  }
+});
+
 test("adapters and agent runtime cannot declare lifecycle policy", () => {
   assert.deepEqual(
     policyOwnershipErrors(

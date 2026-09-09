@@ -52,7 +52,9 @@ const validConfigurationTemplate = `{
       "tokens": 200000,
       "turns": 32,
       "ciCycles": 4
-    }
+    },
+    "autoFixCiFailures": true,
+    "autoFixReviewFeedback": true
   },
   "workspaceOverrides": [],
   "skills": [{"id": "commits", "path": "skills/commits/SKILL.md"}],
@@ -98,14 +100,42 @@ func confirmed(preview Preview, actor string) ApplyCommand {
 		ExpectedVersion: preview.AggregateVersion,
 		PreviewID:       preview.ID,
 		Confirmation: HumanConfirmation{
-			ActorID:   actor,
-			Confirmed: true,
+			ActorKind: ActorHuman, ActorID: actor,
+			Revision: preview.ProposedRevision, Confirmed: true,
+		},
+		Acknowledgement: HumanConfirmation{
+			ActorKind: ActorHuman, ActorID: actor,
+			Revision: preview.ActiveRevision, Confirmed: true,
 		},
 	}
 }
 
+func newTestStateFor(t *testing.T, configuration []byte) State {
+	t.Helper()
+	document, err := domainconfig.Parse(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := NewSecurityEnvelope(document, HumanConfirmation{
+		ActorKind: ActorHuman, ActorID: "human:owner",
+		Revision: document.SHA256(), Confirmed: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := NewState(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func newTestState(t *testing.T) State {
+	return newTestStateFor(t, configurationJSON("Director"))
+}
+
 func TestPreviewIsDeterministicAndDoesNotActivate(t *testing.T) {
-	var initial State
+	initial := newTestState(t)
 	command := PreviewCommand{
 		ExpectedVersion:   0,
 		OrganizerRevision: strings.Repeat("a", 40),
@@ -152,7 +182,7 @@ func TestPreviewIsDeterministicAndDoesNotActivate(t *testing.T) {
 
 func TestPreviewContentSHA256AlwaysIdentifiesSubmittedBytes(t *testing.T) {
 	validInput := configurationJSON("Director")
-	var initial State
+	initial := newTestState(t)
 	_, valid, err := initial.Preview(PreviewCommand{
 		ExpectedVersion:   0,
 		OrganizerRevision: strings.Repeat("a", 40),
@@ -187,7 +217,7 @@ func TestPreviewContentSHA256AlwaysIdentifiesSubmittedBytes(t *testing.T) {
 }
 
 func TestApplyRequiresExactHumanApprovedValidPreview(t *testing.T) {
-	var initial State
+	initial := newTestState(t)
 	state, preview, err := initial.Preview(PreviewCommand{
 		ExpectedVersion:   0,
 		OrganizerRevision: strings.Repeat("a", 40),
@@ -216,7 +246,7 @@ func TestApplyRequiresExactHumanApprovedValidPreview(t *testing.T) {
 			command: ApplyCommand{
 				ExpectedVersion: state.Version(),
 				PreviewID:       preview.ID,
-				Confirmation:    HumanConfirmation{Confirmed: true},
+				Confirmation:    HumanConfirmation{ActorKind: ActorHuman, Revision: preview.ProposedRevision, Confirmed: true},
 			},
 			want: ErrHumanApprovalRequired,
 		},
@@ -225,8 +255,8 @@ func TestApplyRequiresExactHumanApprovedValidPreview(t *testing.T) {
 				ExpectedVersion: state.Version(),
 				PreviewID:       preview.ID,
 				Confirmation: HumanConfirmation{
-					ActorID:   strings.Repeat("a", 257),
-					Confirmed: true,
+					ActorKind: ActorHuman, ActorID: strings.Repeat("a", 257),
+					Revision: preview.ProposedRevision, Confirmed: true,
 				},
 			},
 			want: ErrHumanApprovalRequired,
@@ -264,7 +294,7 @@ func TestApplyRequiresExactHumanApprovedValidPreview(t *testing.T) {
 }
 
 func TestInvalidOrUnapprovedPendingRevisionCannotAffectRun(t *testing.T) {
-	var state State
+	state := newTestState(t)
 	state, firstPreview, err := state.Preview(PreviewCommand{
 		ExpectedVersion:   state.Version(),
 		OrganizerRevision: strings.Repeat("a", 40),
@@ -344,7 +374,7 @@ func TestInvalidOrUnapprovedPendingRevisionCannotAffectRun(t *testing.T) {
 }
 
 func TestRunConfigurationSnapshotIsImmutableAndStrictlyRoundTrips(t *testing.T) {
-	var state State
+	state := newTestState(t)
 	state, preview, err := state.Preview(PreviewCommand{
 		ExpectedVersion:   0,
 		OrganizerRevision: strings.Repeat("d", 64),
@@ -403,7 +433,7 @@ func TestRunConfigurationSnapshotIsImmutableAndStrictlyRoundTrips(t *testing.T) 
 }
 
 func TestEveryAdmittedCanonicalExpansionSnapshotRoundTrips(t *testing.T) {
-	var state State
+	state := newTestStateFor(t, expansionConfigurationJSON(t, 40))
 	state, preview, err := state.Preview(PreviewCommand{
 		ExpectedVersion:   0,
 		OrganizerRevision: strings.Repeat("e", 40),
@@ -441,7 +471,7 @@ func TestEveryAdmittedCanonicalExpansionSnapshotRoundTrips(t *testing.T) {
 		t.Fatal("expanded snapshot did not round-trip exactly")
 	}
 
-	var rejected State
+	rejected := newTestState(t)
 	rejected, invalid, err := rejected.Preview(PreviewCommand{
 		ExpectedVersion:   0,
 		OrganizerRevision: strings.Repeat("f", 40),
@@ -462,7 +492,7 @@ func TestEveryAdmittedCanonicalExpansionSnapshotRoundTrips(t *testing.T) {
 }
 
 func TestRevisionCommandsFailClosedOnIdentityAndContentConflicts(t *testing.T) {
-	var state State
+	state := newTestState(t)
 	if after, _, err := state.Preview(PreviewCommand{
 		ExpectedVersion:   1,
 		OrganizerRevision: strings.Repeat("a", 40),

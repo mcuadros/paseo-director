@@ -70,7 +70,9 @@ This is a complete minimal document:
       "tokens": 200000,
       "turns": 32,
       "ciCycles": 4
-    }
+    },
+    "autoFixCiFailures": true,
+    "autoFixReviewFeedback": true
   },
   "workspaceOverrides": [],
   "skills": [
@@ -114,6 +116,16 @@ declared Organizer directories. Source and reference paths reject whitespace
 and control characters. Directory scanning never turns an unreferenced file
 into executable or prompt input.
 
+The Project defaults also require `autoFixCiFailures` and
+`autoFixReviewFeedback`; both default to `true` in the product plan but are
+explicit in the version 1 document. A Workspace override may independently
+replace launch and delivery mode, each capacity limit, each finite Run budget,
+and either auto-fix flag. Omitted scalar fields and the literal `inherit` mode
+retain the Project value. Task overrides live with the Task rather than in
+Organizer Git and use the same field-by-field representation. The engine
+resolves every field in the fixed order `Project → Workspace → Task` and
+reports the supplying scope with the effective value.
+
 ## Preview and Apply
 
 The Go application aggregate keeps `pending` and `active` revisions distinct.
@@ -131,9 +143,12 @@ Both mutations use optimistic aggregate versions.
    revision and configuration hash, proposed revision, content hash, validation
    result and impact.
 4. `Apply` accepts only the exact current preview ID at the expected aggregate
-   version with a confirmed server-authenticated human actor. It reparses no
-   caller-supplied configuration. A stale, mismatched, invalid or unconfirmed
-   command leaves both active state and Run inputs unchanged.
+   version with a confirmed server-authenticated human approval bound to the
+   proposed Organizer revision and a separate human acknowledgement bound to
+   the active Organizer revision the Preview compared (the empty revision for
+   initial activation). It reparses no caller-supplied configuration. A stale,
+   mismatched, invalid, model/Organizer-authored or unconfirmed command leaves
+   both active state and Run inputs unchanged.
 5. Successful Apply moves the already validated pending revision to active and
    clears pending state.
 
@@ -142,6 +157,19 @@ file, avoiding a self-referential commit. Models may propose configuration and
 hosts may submit typed commands, but neither can manufacture Apply authority.
 The TypeScript package renders engine projections and transports commands; it
 does not validate, activate or freeze revisions.
+
+Each revision aggregate is constructed inside an immutable security envelope
+established from an exact canonical configuration by a separately authenticated
+human confirmation. Its hash is part of every Preview and frozen Run snapshot.
+Organizer proposals may tighten that envelope: remove repositories, switch
+automatic launch to manual, switch direct delivery to pull request, lower
+capacity or budgets, or turn automatic correction off. They cannot add or
+retarget a repository, change provider/model/effort/permission authority,
+enable a more powerful launch/delivery mode, raise capacity or budgets, or
+reenable automatic correction beyond the envelope. Those proposals remain
+visible as invalid pending Previews and cannot be activated even if replayed
+with an ordinary Apply confirmation. Establishing a broader envelope is a
+separate human-owned action, never an Organizer self-activation path.
 
 ## Frozen Run snapshots
 
@@ -152,7 +180,10 @@ snapshot containing:
 - snapshot schema version `director.run-configuration-snapshot/v1`;
 - the exact active Organizer Git object ID;
 - the canonical configuration SHA-256;
-- the complete canonical version 1 configuration.
+- the immutable security-envelope SHA-256;
+- the complete canonical version 1 configuration; and
+- the complete canonical human-approved envelope configuration needed to
+  verify tightened revisions and later Task overrides after restart.
 
 Snapshot accessors return copies. Persisted snapshots are strictly reparsed and
 their internal revision format, contract version, configuration validity and
@@ -161,6 +192,9 @@ trusted TaskStore layer later binds that self-consistent snapshot to its exact
 Project and Run. A later Preview or Apply cannot change a snapshot already
 assigned to a Run. Thus a valid but unapproved pending revision, and even a
 human-confirmed invalid revision, cannot affect a new or existing Run.
+`Effective` resolves a frozen Workspace and Task override from that snapshot;
+an invalid, inconsistent, unknown-Workspace, or envelope-expanding override is
+refused rather than repaired or inherited silently.
 
 ## Create and Adopt Organizer
 

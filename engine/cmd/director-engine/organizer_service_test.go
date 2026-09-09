@@ -381,7 +381,9 @@ func configurationJSONWithReferences(
     "launchPolicy":"manual",
     "deliveryMode":"pull_request",
     "limits":{"maxActiveTasks":4,"maxActiveTasksPerWorkspace":2,"maxConcurrentAgents":8,"maxSubagentsPerTask":3},
-    "runBudget":{"elapsedSeconds":7200,"tokens":200000,"turns":32,"ciCycles":4}
+    "runBudget":{"elapsedSeconds":7200,"tokens":200000,"turns":32,"ciCycles":4},
+    "autoFixCiFailures":true,
+    "autoFixReviewFeedback":true
   },
   "workspaceOverrides": [],
   "skills": [{"id":"commits","path":%q}],
