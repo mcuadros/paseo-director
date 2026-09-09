@@ -134,6 +134,86 @@ test("Go boundaries reject outward, cross-reducer, external, and effectful impor
   );
 });
 
+test("planning testkit is isolated from every product boundary", () => {
+  const testkit = `${modulePath}/internal/planningtestkit`;
+  assert.deepEqual(
+    goDependencyErrors([{ importPath: testkit, imports: ["cmp", "slices"] }]),
+    [],
+  );
+  assert.ok(
+    goDependencyErrors([
+      { importPath: testkit, imports: [`${modulePath}/domain`] },
+    ]).some((error) => error.includes("testkit boundary cannot import domain")),
+  );
+  assert.ok(
+    goDependencyErrors([
+      { importPath: `${modulePath}/domain`, imports: [testkit] },
+    ]).some((error) => error.includes("domain boundary cannot import testkit")),
+  );
+  assert.ok(
+    goDependencyErrors([
+      { importPath: `${modulePath}/internal/runtime-policy`, imports: [] },
+    ]).some((error) => error.includes("outside an approved engine boundary")),
+  );
+});
+
+test("product tests alone may import the exact planning testkit", () => {
+  const testkit = `${modulePath}/internal/planningtestkit`;
+  assert.deepEqual(
+    goDependencyErrors([
+      {
+        importPath: `${modulePath}/domain/planning`,
+        imports: ["fmt"],
+        testImports: ["testing", testkit],
+      },
+      {
+        importPath: `${modulePath}/application/planning`,
+        imports: [`${modulePath}/domain`],
+        xTestImports: ["testing", testkit],
+      },
+    ]),
+    [],
+  );
+
+  const runtimeErrors = goDependencyErrors([
+    {
+      importPath: `${modulePath}/domain/planning`,
+      imports: [testkit],
+      testImports: [],
+      xTestImports: [],
+    },
+  ]);
+  assert.ok(
+    runtimeErrors.some((error) =>
+      error.includes("domain boundary cannot import testkit"),
+    ),
+  );
+
+  const reciprocalErrors = goDependencyErrors([
+    {
+      importPath: testkit,
+      imports: [`${modulePath}/domain/planning`],
+      testImports: [],
+      xTestImports: [],
+    },
+  ]);
+  assert.ok(
+    reciprocalErrors.some((error) =>
+      error.includes("testkit boundary cannot import domain"),
+    ),
+  );
+
+  assert.ok(
+    goDependencyErrors([
+      {
+        importPath: `${modulePath}/domain/planning`,
+        imports: [],
+        testImports: [`${testkit}/other`],
+      },
+    ]).some((error) => error.includes("imports unclassified engine package")),
+  );
+});
+
 test("adapters and agent runtime cannot declare lifecycle policy", () => {
   assert.deepEqual(
     policyOwnershipErrors(
