@@ -16,10 +16,9 @@ var (
 	ErrCandidateRunMismatch = errors.New("board Candidate belongs to another Run")
 )
 
-// BoardState is the engine-derived state rendered by Board and List clients.
-// The M1 walking skeleton currently produces NeedsYou, Queued, Building, and
-// Validating; the complete closed vocabulary keeps the host contract stable for
-// later facts.
+// BoardState is the engine-derived state vocabulary. The M1 host contract
+// still transports its original subset, while TaskProjection consumes the
+// complete M2 fact set without changing that connector boundary.
 type BoardState string
 
 const (
@@ -72,9 +71,8 @@ type Board struct {
 	Tasks         []BoardTask `json:"tasks"`
 }
 
-// BoardFacts is the closed fact set loaded by the application reader. It keeps
-// state derivation pure and host-independent until the routing reducer exposes
-// the complete post-M1 phase projection.
+// BoardFacts is the existing M1 persisted-fact adapter. DeriveBoardTask checks
+// ownership and delegates state to the complete pure projection reducer.
 type BoardFacts struct {
 	Project   domain.Project
 	Task      domain.Task
@@ -82,48 +80,82 @@ type BoardFacts struct {
 	Candidate *domain.Candidate
 }
 
-// DeriveBoardTask maps persisted facts to the minimal Board row without I/O.
+// DeriveBoardTask maps persisted facts to the minimal version-1 host row
+// without I/O or a second state policy.
 func DeriveBoardTask(facts BoardFacts) (BoardTask, error) {
 	if facts.Task.ProjectID != facts.Project.ID {
 		return BoardTask{}, ErrTaskProjectMismatch
 	}
 	row := BoardTask{
 		ID: facts.Task.ID, ProjectID: facts.Project.ID, ProjectName: facts.Project.Name,
-		Title: facts.Task.Title, State: StateQueued,
-	}
-	if facts.Task.Attention != nil {
-		row.State = StateNeedsYou
+		Title: facts.Task.Title,
 	}
 	if facts.Run == nil {
 		if facts.Candidate != nil {
 			return BoardTask{}, ErrCandidateRunMismatch
 		}
-		return row, nil
-	}
-	if facts.Run.TaskID != facts.Task.ID {
-		return BoardTask{}, ErrRunTaskMismatch
-	}
-	runNumber := strconv.FormatUint(facts.Run.Number, 10)
-	row.RunNumber = &runNumber
-	if row.State != StateNeedsYou {
-		row.State = StateBuilding
-	}
-	if facts.Run.Execution.NeedsYou != nil {
-		row.State = StateNeedsYou
-	}
-	if facts.Candidate == nil {
-		if facts.Run.CurrentCandidateID != "" {
-			return BoardTask{}, ErrCandidateRunMismatch
+	} else {
+		if facts.Run.TaskID != facts.Task.ID {
+			return BoardTask{}, ErrRunTaskMismatch
 		}
-		return row, nil
+		runNumber := strconv.FormatUint(facts.Run.Number, 10)
+		row.RunNumber = &runNumber
+		if facts.Candidate == nil {
+			if facts.Run.CurrentCandidateID != "" {
+				return BoardTask{}, ErrCandidateRunMismatch
+			}
+		} else {
+			if facts.Run.CurrentCandidateID != facts.Candidate.ID || facts.Candidate.RunID != facts.Run.ID {
+				return BoardTask{}, ErrCandidateRunMismatch
+			}
+			row.CandidateSHA = &facts.Candidate.CommitSHA
+		}
 	}
-	if facts.Run.CurrentCandidateID != facts.Candidate.ID || facts.Candidate.RunID != facts.Run.ID {
-		return BoardTask{}, ErrCandidateRunMismatch
-	}
-	row.CandidateSHA = &facts.Candidate.CommitSHA
-	if row.State != StateNeedsYou {
-		// Candidate admission proves quality work is required, never readiness.
-		row.State = StateValidating
-	}
+	row.State = DeriveTaskProjection(legacyTaskStateFacts(facts)).State
 	return row, nil
+}
+
+func legacyTaskStateFacts(facts BoardFacts) TaskStateFacts {
+	state := TaskStateFacts{
+		TaskID: facts.Task.ID, TaskVersion: facts.Task.Version,
+		Eligibility: EligibilityFact{
+			Status: FactCurrent, TaskVersion: facts.Task.Version, Decision: EligibilityEligible,
+		},
+		Run:        RunFact{Status: FactMissing},
+		Candidate:  CandidateFact{Status: FactMissing},
+		Validation: ValidationFact{Status: FactMissing},
+		Review:     ReviewFact{Status: FactMissing},
+		Feedback:   FeedbackFact{Status: FactMissing},
+		Delivery:   DeliveryFact{Status: FactMissing},
+		Cleanup:    CleanupFact{Status: FactMissing},
+		HumanInput: HumanInputFact{
+			Status: FactCurrent, TaskVersion: facts.Task.Version, State: HumanInputNone,
+		},
+		Terminal: TerminalFact{
+			Status: FactCurrent, TaskVersion: facts.Task.Version, State: TerminalOpen,
+		},
+	}
+	if facts.Run != nil {
+		state.Run = RunFact{
+			Status: FactCurrent, TaskVersion: facts.Task.Version,
+			ID: facts.Run.ID, Active: !facts.Run.Execution.Terminal,
+		}
+	}
+	if facts.Candidate != nil && facts.Run != nil {
+		state.Candidate = CandidateFact{
+			Status: FactCurrent, TaskVersion: facts.Task.Version,
+			ID: facts.Candidate.ID, RunID: facts.Run.ID,
+		}
+	}
+	need := facts.Task.Attention
+	if facts.Run != nil && facts.Run.Execution.NeedsYou != nil {
+		need = facts.Run.Execution.NeedsYou
+	}
+	if need != nil {
+		state.HumanInput = HumanInputFact{
+			Status: FactCurrent, TaskVersion: facts.Task.Version, State: HumanInputPending,
+			Code: AttentionPolicyOverrideRequired, WakeCondition: need.WakeCondition,
+		}
+	}
+	return state
 }

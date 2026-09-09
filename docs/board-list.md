@@ -49,11 +49,30 @@ Event facts. It therefore derives only states those records can prove:
 
 The pure `projection.DeriveBoardTask` function owns this mapping and rejects
 Project/Task, Task/Run, and Run/Candidate ownership mismatches. The application
-reader performs I/O only and supplies its loaded fact set. When later milestones
-expand the routing reducer to emit complete quality phases, this pure projection
-becomes an adapter from that reducer result rather than a second phase policy.
-`In review` and `Ready` remain contract-reserved and are not emitted in M1;
-Candidate presence does not prove Validation or independent Review.
+reader performs I/O only and supplies its loaded fact set. The M1 adapter now
+normalizes absent later evidence explicitly and delegates to the complete M2
+reducer rather than owning a second phase policy. `In review` and `Ready` remain
+contract-reserved and are not emitted from the limited M1 source; Candidate
+presence does not prove Validation or independent Review.
+
+## M2 engine-only derived-state query
+
+The standalone engine now also owns a separate complete derived-state reducer
+and paginated query for future Board/List consumers. It covers Needs you,
+Queued, Building, Validating, In review, Ready, and Done membership from closed,
+version-bound eligibility, Run, Candidate, claim, Validation, Review, feedback,
+delivery, cleanup, human-input, and terminal facts. Missing, stale,
+contradictory, or incorrectly bound facts remain visible as stable blocker
+codes and never fabricate progress. A current pending human-input fact is the
+only input which projects Needs you, and moving or reordering input cards has
+no effect on state or canonical order.
+
+The M2 query filters planning metadata and derived state, sorts by lane,
+priority, queue time, and Task identity, and uses snapshot/filter-bound opaque
+cursors. The application reader accepts engine-side normalized facts and
+rechecks the TaskStore event cursor around every read. This is additive engine
+behavior: the version-1 loopback response, TypeScript connector, Paseo UI, and
+their strict schemas remain unchanged in this Task.
 
 ## UI behavior
 

@@ -116,12 +116,7 @@ func (reader *Reader) task(ctx context.Context, project domain.Project, task dom
 	if len(runs) == 0 {
 		return projection.DeriveBoardTask(projection.BoardFacts{Project: project, Task: task})
 	}
-	latest := runs[0]
-	for _, run := range runs[1:] {
-		if run.Number > latest.Number || (run.Number == latest.Number && run.ID > latest.ID) {
-			latest = run
-		}
-	}
+	latest, _ := latestTaskRun(runs)
 	if latest.TaskID != task.ID {
 		return projection.BoardTask{}, projection.ErrRunTaskMismatch
 	}

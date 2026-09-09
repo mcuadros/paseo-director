@@ -22,7 +22,9 @@ import (
 const (
 	aggregateProject        = "project"
 	aggregateWorkspace      = "workspace"
+	aggregateEpic           = "epic"
 	aggregateTask           = "task"
+	aggregateOverride       = "override"
 	aggregateRun            = "run"
 	maximumJSONBytes        = 64 * 1024
 	maximumProjectJSONBytes = 1152 * 1024

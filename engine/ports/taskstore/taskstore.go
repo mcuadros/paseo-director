@@ -133,11 +133,11 @@ func Invalid(code ValidationCode) error {
 
 // TaskStore persists the Director aggregate records. Every mutation carries
 // an immutable Command request and Event; implementations atomically persist
-// the aggregate change, command outcome, and event. Project, Workspace, Task,
-// and Run records use optimistic versions, while Candidate, Command, and Event
-// records are append-only. Applied Event sequence allocation is serialized through
-// commit, making strict AfterGlobalSequence resume safe across concurrent
-// writers.
+// the aggregate change, command outcome, and event. Project, Workspace, Epic,
+// Task, and Run records use optimistic versions. DependencyOverride,
+// Candidate, Command, and Event records are append-only. Applied Event
+// sequence allocation is serialized through commit, making strict
+// AfterGlobalSequence resume safe across concurrent writers.
 type TaskStore interface {
 	SchemaVersion(context.Context) (int, error)
 
@@ -154,10 +154,18 @@ type TaskStore interface {
 	Workspaces(context.Context, string) ([]domain.Workspace, error)
 	UpdateWorkspace(context.Context, domain.CommandRequest, domain.Workspace, domain.Event) (domain.CommandResult, error)
 
+	CreateEpic(context.Context, domain.CommandRequest, domain.Epic, domain.Event) (domain.CommandResult, error)
+	Epic(context.Context, string) (domain.Epic, error)
+	Epics(context.Context, string) ([]domain.Epic, error)
+	UpdateEpic(context.Context, domain.CommandRequest, domain.Epic, domain.Event) (domain.CommandResult, error)
+
 	CreateTask(context.Context, domain.CommandRequest, domain.Task, domain.Event) (domain.CommandResult, error)
 	Task(context.Context, string) (domain.Task, error)
 	Tasks(context.Context, string) ([]domain.Task, error)
 	UpdateTask(context.Context, domain.CommandRequest, domain.Task, domain.Event) (domain.CommandResult, error)
+	GrantDependencyOverride(context.Context, domain.CommandRequest, domain.HumanDependencyOverrideGrant) (domain.CommandResult, error)
+	DependencyOverride(context.Context, string) (domain.DependencyOverride, error)
+	DependencyOverrides(context.Context, string) ([]domain.DependencyOverride, error)
 
 	CreateRun(context.Context, domain.CommandRequest, domain.Run, domain.Event) (domain.CommandResult, error)
 	Run(context.Context, string) (domain.Run, error)
