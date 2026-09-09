@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -21,12 +22,16 @@ import (
 )
 
 type projectData struct {
-	Name      string         `json:"name"`
-	State     string         `json:"state"`
-	Organizer *organizerData `json:"organizer,omitempty"`
+	Name             string                          `json:"name"`
+	State            string                          `json:"state"`
+	Organizer        *organizerData                  `json:"organizer,omitempty"`
+	LastLeaseEpoch   uint64                          `json:"lastLeaseEpoch"`
+	Lease            *domain.ProjectLease            `json:"lease,omitempty"`
+	LeaseObservation *domain.ProjectLeaseObservation `json:"leaseObservation,omitempty"`
 }
 
 type organizerData struct {
+	ID                   string                `json:"id"`
 	Mode                 domain.OrganizerMode  `json:"mode"`
 	Phase                domain.OrganizerPhase `json:"phase"`
 	RepositoryPath       string                `json:"repositoryPath"`
@@ -36,6 +41,14 @@ type organizerData struct {
 	ConfigurationSHA256  string                `json:"configurationSha256"`
 	OrganizerRevision    string                `json:"organizerRevision,omitempty"`
 	PendingConfiguration json.RawMessage       `json:"pendingConfiguration,omitempty"`
+}
+
+type workspaceData struct {
+	Key               string                    `json:"key"`
+	Name              string                    `json:"name"`
+	Repository        domain.RepositoryIdentity `json:"repository"`
+	DefaultBaseBranch string                    `json:"defaultBaseBranch"`
+	Policy            domain.WorkspacePolicy    `json:"policy"`
 }
 
 type taskData struct {
@@ -97,16 +110,8 @@ func finishRows(rows *sql.Rows) error {
 }
 
 func validateProject(project domain.Project) error {
-	if !safeIdentifier(project.ID, 128) || project.Name == "" || len(project.Name) > 512 {
+	if err := domain.ValidateProject(project); err != nil || !safeIdentifier(project.ID, 128) {
 		return fmt.Errorf("%w: invalid Project", storeport.ErrInvalidRecord)
-	}
-	switch project.State {
-	case "active", "paused", "degraded", "archived":
-	default:
-		return fmt.Errorf("%w: invalid Project state", storeport.ErrInvalidRecord)
-	}
-	if project.Organizer == nil {
-		return nil
 	}
 	organizer := project.Organizer
 	if organizer.Mode != domain.OrganizerModeCreate && organizer.Mode != domain.OrganizerModeAdopt {
@@ -162,7 +167,7 @@ func storedOrganizer(organizer *domain.Organizer) *organizerData {
 		return nil
 	}
 	return &organizerData{
-		Mode: organizer.Mode, Phase: organizer.Phase,
+		ID: organizer.ID, Mode: organizer.Mode, Phase: organizer.Phase,
 		RepositoryPath: organizer.RepositoryPath, PreviewID: organizer.PreviewID,
 		OperationID: organizer.OperationID, HumanActorID: organizer.HumanActorID,
 		ConfigurationSHA256:  organizer.ConfigurationSHA256,
@@ -176,13 +181,43 @@ func reloadedOrganizer(organizer *organizerData) *domain.Organizer {
 		return nil
 	}
 	return &domain.Organizer{
-		Mode: organizer.Mode, Phase: organizer.Phase,
+		ID: organizer.ID, Mode: organizer.Mode, Phase: organizer.Phase,
 		RepositoryPath: organizer.RepositoryPath, PreviewID: organizer.PreviewID,
 		OperationID: organizer.OperationID, HumanActorID: organizer.HumanActorID,
 		ConfigurationSHA256:  organizer.ConfigurationSHA256,
 		OrganizerRevision:    organizer.OrganizerRevision,
 		PendingConfiguration: append(json.RawMessage(nil), organizer.PendingConfiguration...),
 	}
+}
+
+func storedLease(lease *domain.ProjectLease) *domain.ProjectLease {
+	if lease == nil {
+		return nil
+	}
+	copy := *lease
+	return &copy
+}
+
+func storedLeaseObservation(observation *domain.ProjectLeaseObservation) *domain.ProjectLeaseObservation {
+	if observation == nil {
+		return nil
+	}
+	copy := *observation
+	return &copy
+}
+
+func workspaceRecord(workspace domain.Workspace) workspaceData {
+	return workspaceData{
+		Key: workspace.Key, Name: workspace.Name, Repository: workspace.Repository,
+		DefaultBaseBranch: workspace.DefaultBaseBranch, Policy: workspace.Policy,
+	}
+}
+
+func validateWorkspace(workspace domain.Workspace) error {
+	if err := domain.ValidateWorkspace(workspace); err != nil {
+		return fmt.Errorf("%w: invalid Workspace", storeport.ErrInvalidRecord)
+	}
+	return nil
 }
 
 func validateTask(task domain.Task) error {
@@ -269,27 +304,61 @@ func validateReloadedEvent(event domain.Event) error {
 	return nil
 }
 
-// CreateProject atomically appends the Project identity, Command, Event, and
-// applied outcome.
+func encodedWorkspace(workspace domain.Workspace) ([]byte, error) {
+	return marshalRecord(workspaceRecord(workspace))
+}
+
+func insertWorkspaceAggregate(ctx context.Context, tx *sql.Tx, workspace domain.Workspace) error {
+	data, err := encodedWorkspace(workspace)
+	if err != nil {
+		return err
+	}
+	return insertAggregate(ctx, tx, workspace.ID, aggregateWorkspace, workspace.ProjectID, workspace.Version, data)
+}
+
+// CreateProject atomically appends the Project, its one Organizer, all initial
+// Workspaces, the Command, Event, and applied outcome. A persisted Project is
+// therefore never visible without its required canonical Workspace set.
 func (store *DoltTaskStore) CreateProject(
 	ctx context.Context,
 	command domain.CommandRequest,
 	project domain.Project,
+	workspaces []domain.Workspace,
 	event domain.Event,
 ) (domain.CommandResult, error) {
 	if err := validateProject(project); err != nil {
 		return domain.CommandResult{}, err
 	}
+	if project.LastLeaseEpoch != 0 || project.Lease != nil || project.LeaseObservation != nil {
+		return domain.CommandResult{}, fmt.Errorf("%w: a new Project cannot preallocate lease state", storeport.ErrInvalidRecord)
+	}
+	if err := domain.ValidateWorkspaceSet(project.ID, workspaces); err != nil {
+		return domain.CommandResult{}, fmt.Errorf("%w: invalid initial Workspace set", storeport.ErrInvalidRecord)
+	}
+	for _, workspace := range workspaces {
+		if workspace.Version != 0 {
+			return domain.CommandResult{}, fmt.Errorf("%w: initial Workspace version must be zero", storeport.ErrInvalidRecord)
+		}
+	}
 	if err := validateCreateCommand(command, project.ID, project.Version); err != nil {
 		return domain.CommandResult{}, err
 	}
-	data, err := marshalProjectRecord(projectData{Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer)})
+	data, err := marshalProjectRecord(projectData{
+		Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer),
+		LastLeaseEpoch: project.LastLeaseEpoch,
+		Lease:          storedLease(project.Lease), LeaseObservation: storedLeaseObservation(project.LeaseObservation),
+	})
 	if err != nil {
 		return domain.CommandResult{}, err
 	}
 	return store.apply(ctx, command, event, func(ctx context.Context, tx *sql.Tx) (mutationResult, error) {
 		if err := insertAggregate(ctx, tx, project.ID, aggregateProject, nil, project.Version, data); err != nil {
 			return mutationResult{}, err
+		}
+		for _, workspace := range workspaces {
+			if err := insertWorkspaceAggregate(ctx, tx, workspace); err != nil {
+				return mutationResult{}, err
+			}
 		}
 		return mutationResult{outcome: domain.CommandApplied, observedVersion: project.Version}, nil
 	})
@@ -308,12 +377,449 @@ func (store *DoltTaskStore) UpdateProject(
 	if err := validateUpdateCommand(command, project.ID); err != nil {
 		return domain.CommandResult{}, err
 	}
-	data, err := marshalProjectRecord(projectData{Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer)})
+	data, err := marshalProjectRecord(projectData{
+		Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer),
+		LastLeaseEpoch: project.LastLeaseEpoch,
+		Lease:          storedLease(project.Lease), LeaseObservation: storedLeaseObservation(project.LeaseObservation),
+	})
 	if err != nil {
 		return domain.CommandResult{}, err
 	}
 	return store.apply(ctx, command, event, func(ctx context.Context, tx *sql.Tx) (mutationResult, error) {
+		current, err := projectByIDForUpdate(ctx, tx, project.ID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if current.Version != command.ExpectedVersion {
+			return updateAggregate(ctx, tx, project.ID, aggregateProject, command.ExpectedVersion, project.Version, data)
+		}
+		if current.Organizer.ID != project.Organizer.ID {
+			return mutationResult{}, fmt.Errorf("%w: Organizer identity is immutable", storeport.ErrInvalidRecord)
+		}
+		if !reflect.DeepEqual(current.Organizer, project.Organizer) && !strings.HasPrefix(command.Type, "organizer.") {
+			return mutationResult{}, fmt.Errorf("%w: only an Organizer command may change Organizer state", storeport.ErrInvalidRecord)
+		}
+		if current.LastLeaseEpoch != project.LastLeaseEpoch || !reflect.DeepEqual(current.Lease, project.Lease) ||
+			!reflect.DeepEqual(current.LeaseObservation, project.LeaseObservation) {
+			return mutationResult{}, fmt.Errorf("%w: generic Project update cannot change lease evidence", storeport.ErrInvalidRecord)
+		}
 		return updateAggregate(ctx, tx, project.ID, aggregateProject, command.ExpectedVersion, project.Version, data)
+	})
+}
+
+func exactCommandPayload(command domain.CommandRequest, expected any) error {
+	encoded, err := json.Marshal(expected)
+	if err != nil {
+		return fmt.Errorf("%w: invalid command payload", storeport.ErrInvalidRecord)
+	}
+	actual, err := canonicalPayload(command.Payload)
+	if err != nil {
+		return err
+	}
+	wanted, err := canonicalPayload(encoded)
+	if err != nil || !bytes.Equal(actual, wanted) {
+		return fmt.Errorf("%w: command payload does not match typed lease input", storeport.ErrInvalidRecord)
+	}
+	return nil
+}
+
+func projectLeaseEvent(command domain.CommandRequest, eventType string, payload json.RawMessage) domain.Event {
+	return domain.Event{
+		ID: "event-" + command.IdempotencyKey, Sequence: command.ExpectedVersion + 2,
+		AggregateID: command.AggregateID, AggregateVersion: command.ExpectedVersion + 1,
+		Type: eventType, Payload: payload,
+	}
+}
+
+func (store *DoltTaskStore) transactionTimestampMillis(ctx context.Context, tx *sql.Tx) (int64, error) {
+	if store.testNowMillis != nil {
+		now := store.testNowMillis()
+		if now <= 0 {
+			return 0, backendFailure(storeport.HealthQueryFailed)
+		}
+		return now, nil
+	}
+	var microseconds int64
+	if err := tx.QueryRowContext(ctx, `SELECT CAST(
+		UNIX_TIMESTAMP(CURRENT_TIMESTAMP(6)) * 1000000 AS SIGNED)`).Scan(&microseconds); err != nil || microseconds <= 0 {
+		return 0, backendFailure(storeport.HealthQueryFailed)
+	}
+	return microseconds / 1000, nil
+}
+
+func encodeProject(project domain.Project) ([]byte, error) {
+	return marshalProjectRecord(projectData{
+		Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer),
+		LastLeaseEpoch: project.LastLeaseEpoch,
+		Lease:          storedLease(project.Lease), LeaseObservation: storedLeaseObservation(project.LeaseObservation),
+	})
+}
+
+// ApplyProjectLease uses TaskStore/server time inside the versioned
+// transaction. Caller payload time or authority fields are structurally
+// impossible and any extra payload field is rejected before persistence.
+func (store *DoltTaskStore) ApplyProjectLease(
+	ctx context.Context,
+	command domain.CommandRequest,
+	mutation domain.ProjectLeaseMutation,
+) (domain.CommandResult, error) {
+	if mutation.ProjectID != command.AggregateID || command.Type != "project.lease."+string(mutation.Kind) {
+		return domain.CommandResult{}, fmt.Errorf("%w: invalid lease command binding", storeport.ErrInvalidRecord)
+	}
+	if err := exactCommandPayload(command, mutation); err != nil {
+		return store.rejectInvalidCommandReplay(ctx, command, err)
+	}
+	event := projectLeaseEvent(command, command.Type, command.Payload)
+	return store.apply(ctx, command, event, func(ctx context.Context, tx *sql.Tx) (mutationResult, error) {
+		current, err := projectByIDForUpdate(ctx, tx, mutation.ProjectID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if current.Version != command.ExpectedVersion {
+			return mutationResult{outcome: domain.CommandRejectedVersionConflict, observedVersion: current.Version}, nil
+		}
+		nowMillis, err := store.transactionTimestampMillis(ctx, tx)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		lease, lastLeaseEpoch, err := domain.ApplyProjectLeaseMutation(
+			current.Lease, current.LastLeaseEpoch, mutation, nowMillis,
+		)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		next := current
+		next.Version++
+		next.LastLeaseEpoch = lastLeaseEpoch
+		next.Lease = lease
+		if mutation.Kind == domain.ProjectLeaseAcquire || mutation.Kind == domain.ProjectLeaseTakeover ||
+			mutation.Kind == domain.ProjectLeaseRelease {
+			next.LeaseObservation = nil
+		}
+		if err := validateProject(next); err != nil {
+			return mutationResult{}, err
+		}
+		data, err := encodeProject(next)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		return updateAggregate(ctx, tx, next.ID, aggregateProject, current.Version, next.Version, data)
+	})
+}
+
+// RecordProjectLeaseObservation timestamps and persists one authorized adapter
+// result as Project state plus an immutable Event.
+func (store *DoltTaskStore) RecordProjectLeaseObservation(
+	ctx context.Context,
+	command domain.CommandRequest,
+	projectID string,
+	input domain.ProjectLeaseObservationInput,
+) (domain.CommandResult, error) {
+	typedPayload := struct {
+		ProjectID string                              `json:"projectId"`
+		Input     domain.ProjectLeaseObservationInput `json:"input"`
+	}{projectID, input}
+	if command.AggregateID != projectID || command.Type != "project.lease.observe_takeover" {
+		return domain.CommandResult{}, fmt.Errorf("%w: invalid lease observation binding", storeport.ErrInvalidRecord)
+	}
+	if err := exactCommandPayload(command, typedPayload); err != nil {
+		return store.rejectInvalidCommandReplay(ctx, command, err)
+	}
+	event := projectLeaseEvent(command, command.Type, command.Payload)
+	return store.apply(ctx, command, event, func(ctx context.Context, tx *sql.Tx) (mutationResult, error) {
+		current, err := projectByIDForUpdate(ctx, tx, projectID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if current.Version != command.ExpectedVersion {
+			return mutationResult{outcome: domain.CommandRejectedVersionConflict, observedVersion: current.Version}, nil
+		}
+		nowMillis, err := store.transactionTimestampMillis(ctx, tx)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if current.LeaseObservation != nil &&
+			nowMillis-current.LeaseObservation.RecordedAtMillis <= current.LeaseObservation.MaximumAgeMillis {
+			return mutationResult{}, domain.ErrLeaseProofInvalid
+		}
+		observation, err := domain.NewProjectLeaseObservation(projectID, current.Lease, input, nowMillis)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		next := current
+		next.Version++
+		next.LeaseObservation = observation
+		if err := validateProject(next); err != nil {
+			return mutationResult{}, err
+		}
+		data, err := encodeProject(next)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		result, err := updateAggregate(ctx, tx, next.ID, aggregateProject, current.Version, next.Version, data)
+		if err != nil || result.outcome != domain.CommandApplied {
+			return result, err
+		}
+		observationPayload, _ := json.Marshal(observation)
+		observedEvent := projectLeaseEvent(command, command.Type, observationPayload)
+		result.event = &observedEvent
+		return result, nil
+	})
+}
+
+// EnableProjectLeaseDispatch atomically validates and consumes the exact
+// current persisted observation using TaskStore time.
+func (store *DoltTaskStore) EnableProjectLeaseDispatch(
+	ctx context.Context,
+	command domain.CommandRequest,
+	projectID string,
+	observationID string,
+) (domain.CommandResult, error) {
+	typedPayload := struct {
+		ProjectID     string `json:"projectId"`
+		ObservationID string `json:"observationId"`
+	}{projectID, observationID}
+	if command.AggregateID != projectID || command.Type != "project.lease.enable_dispatch" {
+		return domain.CommandResult{}, fmt.Errorf("%w: invalid lease enable binding", storeport.ErrInvalidRecord)
+	}
+	if err := exactCommandPayload(command, typedPayload); err != nil {
+		return store.rejectInvalidCommandReplay(ctx, command, err)
+	}
+	event := projectLeaseEvent(command, command.Type, command.Payload)
+	return store.apply(ctx, command, event, func(ctx context.Context, tx *sql.Tx) (mutationResult, error) {
+		current, err := projectByIDForUpdate(ctx, tx, projectID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if current.Version != command.ExpectedVersion {
+			return mutationResult{outcome: domain.CommandRejectedVersionConflict, observedVersion: current.Version}, nil
+		}
+		if current.LeaseObservation == nil || current.LeaseObservation.ID != observationID {
+			return mutationResult{}, domain.ErrLeaseProofInvalid
+		}
+		nowMillis, err := store.transactionTimestampMillis(ctx, tx)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		lease, err := domain.EnableProjectLeaseDispatch(projectID, current.Lease, current.LeaseObservation, nowMillis)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		next := current
+		next.Version++
+		next.Lease = lease
+		if err := validateProject(next); err != nil {
+			return mutationResult{}, err
+		}
+		data, err := encodeProject(next)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		return updateAggregate(ctx, tx, next.ID, aggregateProject, current.Version, next.Version, data)
+	})
+}
+
+type rowsQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func projectByIDForUpdate(ctx context.Context, tx *sql.Tx, id string) (domain.Project, error) {
+	var project domain.Project
+	var rawData []byte
+	err := tx.QueryRowContext(ctx,
+		`SELECT id, version, data FROM aggregates WHERE id = ? AND kind = ? FOR UPDATE`, id, aggregateProject,
+	).Scan(&project.ID, &project.Version, &rawData)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Project{}, storeport.ErrReferentialIntegrity
+	}
+	if err != nil {
+		return domain.Project{}, err
+	}
+	var data projectData
+	if err := decodeRecord(rawData, &data); err != nil {
+		return domain.Project{}, err
+	}
+	project.Name, project.State, project.Organizer = data.Name, data.State, reloadedOrganizer(data.Organizer)
+	project.LastLeaseEpoch, project.Lease = data.LastLeaseEpoch, storedLease(data.Lease)
+	project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
+	if err := validateReloaded(validateProject(project)); err != nil {
+		return domain.Project{}, err
+	}
+	if _, err := workspacesByProject(ctx, tx, id); err != nil {
+		return domain.Project{}, err
+	}
+	return project, nil
+}
+
+func workspaceByID(ctx context.Context, query rowQuerier, id string) (domain.Workspace, error) {
+	var workspace domain.Workspace
+	var rawData []byte
+	var parentKind sql.NullString
+	err := query.QueryRowContext(ctx,
+		`SELECT child.id, child.parent_id, child.version, child.data, parent.kind
+		FROM aggregates AS child
+		LEFT JOIN aggregates AS parent ON parent.id = child.parent_id
+		WHERE child.id = ? AND child.kind = ?`, id, aggregateWorkspace,
+	).Scan(&workspace.ID, &workspace.ProjectID, &workspace.Version, &rawData, &parentKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Workspace{}, storeport.ErrNotFound
+	}
+	if err != nil {
+		return domain.Workspace{}, queryFailure()
+	}
+	if !parentKind.Valid || parentKind.String != aggregateProject {
+		return domain.Workspace{}, backendFailure(storeport.HealthStoredRecordInvalid)
+	}
+	var data workspaceData
+	if err := decodeRecord(rawData, &data); err != nil {
+		return domain.Workspace{}, err
+	}
+	workspace.Key, workspace.Name, workspace.Repository = data.Key, data.Name, data.Repository
+	workspace.DefaultBaseBranch, workspace.Policy = data.DefaultBaseBranch, data.Policy
+	if err := validateReloaded(validateWorkspace(workspace)); err != nil {
+		return domain.Workspace{}, err
+	}
+	return workspace, nil
+}
+
+func workspacesByProject(ctx context.Context, query rowsQuerier, projectID string) ([]domain.Workspace, error) {
+	rows, err := query.QueryContext(ctx,
+		`SELECT id, parent_id, version, data FROM aggregates WHERE kind = ? AND parent_id = ? ORDER BY id`,
+		aggregateWorkspace, projectID,
+	)
+	if err != nil {
+		return nil, queryFailure()
+	}
+	defer rows.Close()
+	workspaces := make([]domain.Workspace, 0)
+	for rows.Next() {
+		var workspace domain.Workspace
+		var rawData []byte
+		if err := rows.Scan(&workspace.ID, &workspace.ProjectID, &workspace.Version, &rawData); err != nil {
+			return nil, scanFailure()
+		}
+		var data workspaceData
+		if err := decodeRecord(rawData, &data); err != nil {
+			return nil, err
+		}
+		workspace.Key, workspace.Name, workspace.Repository = data.Key, data.Name, data.Repository
+		workspace.DefaultBaseBranch, workspace.Policy = data.DefaultBaseBranch, data.Policy
+		if err := validateReloaded(validateWorkspace(workspace)); err != nil {
+			return nil, err
+		}
+		workspaces = append(workspaces, workspace)
+	}
+	if err := finishRows(rows); err != nil {
+		return nil, err
+	}
+	if err := domain.ValidateWorkspaceSet(projectID, workspaces); err != nil {
+		return nil, backendFailure(storeport.HealthStoredRecordInvalid)
+	}
+	return workspaces, nil
+}
+
+func workspaceMappingAvailable(candidate domain.Workspace, existing []domain.Workspace) error {
+	for _, current := range existing {
+		if current.ID == candidate.ID {
+			continue
+		}
+		if current.Repository.Key == candidate.Repository.Key ||
+			current.Repository.SourcePath == candidate.Repository.SourcePath ||
+			current.Repository.GitCommonDirectory == candidate.Repository.GitCommonDirectory ||
+			(current.Repository.SourceDevice == candidate.Repository.SourceDevice &&
+				current.Repository.SourceInode == candidate.Repository.SourceInode) ||
+			(current.Repository.GitCommonDevice == candidate.Repository.GitCommonDevice &&
+				current.Repository.GitCommonInode == candidate.Repository.GitCommonInode) {
+			return storeport.ErrWorkspaceConflict
+		}
+	}
+	return nil
+}
+
+// CreateWorkspace adds one canonical Workspace to an existing Project. All
+// additions serialize on the parent Project row so conflicting repository,
+// path, and common-directory aliases cannot win concurrently.
+func (store *DoltTaskStore) CreateWorkspace(
+	ctx context.Context,
+	command domain.CommandRequest,
+	workspace domain.Workspace,
+	event domain.Event,
+) (domain.CommandResult, error) {
+	if err := validateWorkspace(workspace); err != nil {
+		return domain.CommandResult{}, err
+	}
+	if err := validateCreateCommand(command, workspace.ID, workspace.Version); err != nil {
+		return domain.CommandResult{}, err
+	}
+	return store.apply(ctx, command, event, func(ctx context.Context, tx *sql.Tx) (mutationResult, error) {
+		project, err := projectByIDForUpdate(ctx, tx, workspace.ProjectID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if project.State == "archived" {
+			return mutationResult{}, fmt.Errorf("%w: archived Project cannot accept a Workspace", storeport.ErrInvalidRecord)
+		}
+		existing, err := workspacesByProject(ctx, tx, workspace.ProjectID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if len(existing) >= domain.MaximumWorkspacesPerProject {
+			return mutationResult{}, fmt.Errorf("%w: Project Workspace bound reached", storeport.ErrInvalidRecord)
+		}
+		if err := workspaceMappingAvailable(workspace, existing); err != nil {
+			return mutationResult{}, err
+		}
+		if err := insertWorkspaceAggregate(ctx, tx, workspace); err != nil {
+			return mutationResult{}, err
+		}
+		return mutationResult{outcome: domain.CommandApplied, observedVersion: workspace.Version}, nil
+	})
+}
+
+// UpdateWorkspace persists one expected-version replacement without changing
+// its Project or canonical repository identity.
+func (store *DoltTaskStore) UpdateWorkspace(
+	ctx context.Context,
+	command domain.CommandRequest,
+	workspace domain.Workspace,
+	event domain.Event,
+) (domain.CommandResult, error) {
+	if err := validateWorkspace(workspace); err != nil {
+		return domain.CommandResult{}, err
+	}
+	if err := validateUpdateCommand(command, workspace.ID); err != nil {
+		return domain.CommandResult{}, err
+	}
+	data, err := encodedWorkspace(workspace)
+	if err != nil {
+		return domain.CommandResult{}, err
+	}
+	return store.apply(ctx, command, event, func(ctx context.Context, tx *sql.Tx) (mutationResult, error) {
+		if _, err := projectByIDForUpdate(ctx, tx, workspace.ProjectID); err != nil {
+			return mutationResult{}, err
+		}
+		current, err := workspaceByID(ctx, tx, workspace.ID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if current.Version != command.ExpectedVersion {
+			return updateAggregate(
+				ctx, tx, workspace.ID, aggregateWorkspace, command.ExpectedVersion, workspace.Version, data,
+			)
+		}
+		if current.ProjectID != workspace.ProjectID || current.Key != workspace.Key ||
+			current.Repository.ID != workspace.Repository.ID ||
+			current.Repository.Key != workspace.Repository.Key {
+			return mutationResult{}, fmt.Errorf("%w: Workspace Project and repository identities are immutable", storeport.ErrInvalidRecord)
+		}
+		existing, err := workspacesByProject(ctx, tx, workspace.ProjectID)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		if err := workspaceMappingAvailable(workspace, existing); err != nil {
+			return mutationResult{}, err
+		}
+		return updateAggregate(ctx, tx, workspace.ID, aggregateWorkspace, command.ExpectedVersion, workspace.Version, data)
 	})
 }
 
@@ -575,7 +1081,14 @@ func (store *DoltTaskStore) Project(ctx context.Context, id string) (domain.Proj
 		return domain.Project{}, err
 	}
 	defer connection.Close()
-	return projectByID(ctx, connection, id)
+	project, err := projectByID(ctx, connection, id)
+	if err != nil {
+		return domain.Project{}, err
+	}
+	if _, err := workspacesByProject(ctx, connection, id); err != nil {
+		return domain.Project{}, err
+	}
+	return project, nil
 }
 
 func projectByID(ctx context.Context, query rowQuerier, id string) (domain.Project, error) {
@@ -595,6 +1108,8 @@ func projectByID(ctx context.Context, query rowQuerier, id string) (domain.Proje
 		return domain.Project{}, err
 	}
 	project.Name, project.State, project.Organizer = data.Name, data.State, reloadedOrganizer(data.Organizer)
+	project.LastLeaseEpoch, project.Lease = data.LastLeaseEpoch, storedLease(data.Lease)
+	project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
 	if err := validateReloaded(validateProject(project)); err != nil {
 		return domain.Project{}, err
 	}
@@ -627,6 +1142,8 @@ func (store *DoltTaskStore) Projects(ctx context.Context) ([]domain.Project, err
 			return nil, err
 		}
 		project.Name, project.State, project.Organizer = data.Name, data.State, reloadedOrganizer(data.Organizer)
+		project.LastLeaseEpoch, project.Lease = data.LastLeaseEpoch, storedLease(data.Lease)
+		project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
 		if err := validateReloaded(validateProject(project)); err != nil {
 			return nil, err
 		}
@@ -635,7 +1152,52 @@ func (store *DoltTaskStore) Projects(ctx context.Context) ([]domain.Project, err
 	if err := finishRows(rows); err != nil {
 		return nil, err
 	}
+	for _, project := range projects {
+		if _, err := workspacesByProject(ctx, connection, project.ID); err != nil {
+			return nil, err
+		}
+	}
 	return projects, nil
+}
+
+// Workspace returns one Workspace without exposing its aggregate row or JSON.
+func (store *DoltTaskStore) Workspace(ctx context.Context, id string) (domain.Workspace, error) {
+	if err := validateLookupID(id); err != nil {
+		return domain.Workspace{}, err
+	}
+	connection, err := store.readConnection(ctx)
+	if err != nil {
+		return domain.Workspace{}, err
+	}
+	defer connection.Close()
+	workspace, err := workspaceByID(ctx, connection, id)
+	if err != nil {
+		return domain.Workspace{}, err
+	}
+	if _, err := workspacesByProject(ctx, connection, workspace.ProjectID); err != nil {
+		return domain.Workspace{}, err
+	}
+	return workspace, nil
+}
+
+// Workspaces returns one Project's canonical Workspaces ordered by stable ID.
+func (store *DoltTaskStore) Workspaces(ctx context.Context, projectID string) ([]domain.Workspace, error) {
+	if err := validateLookupID(projectID); err != nil {
+		return nil, err
+	}
+	connection, err := store.readConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer connection.Close()
+	if _, err := projectByID(ctx, connection, projectID); err != nil {
+		return nil, err
+	}
+	workspaces, err := workspacesByProject(ctx, connection, projectID)
+	if err != nil {
+		return nil, err
+	}
+	return workspaces, nil
 }
 
 // Task returns one Task without exposing its aggregate row or JSON.

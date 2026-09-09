@@ -19,6 +19,7 @@ var (
 	ErrAlreadyExists        = errors.New("taskstore identity already exists")
 	ErrInvalidRecord        = errors.New("taskstore record is invalid")
 	ErrReferentialIntegrity = errors.New("taskstore reference is invalid")
+	ErrWorkspaceConflict    = errors.New("taskstore Workspace repository mapping conflicts")
 	ErrIdempotencyConflict  = errors.New("IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD")
 	ErrSchemaVersion        = errors.New("taskstore schema version mismatch")
 	ErrUnhealthy            = errors.New("taskstore is unhealthy")
@@ -130,20 +131,28 @@ func Invalid(code ValidationCode) error {
 	return &ValidationError{Code: code}
 }
 
-// TaskStore persists the M1 walking-skeleton records. Every mutation carries
+// TaskStore persists the Director aggregate records. Every mutation carries
 // an immutable Command request and Event; implementations atomically persist
-// the aggregate change, command outcome, and event. The three mutable record
-// types use optimistic versions, while Candidate, Command, and Event records
-// are append-only. Applied Event sequence allocation is serialized through
+// the aggregate change, command outcome, and event. Project, Workspace, Task,
+// and Run records use optimistic versions, while Candidate, Command, and Event
+// records are append-only. Applied Event sequence allocation is serialized through
 // commit, making strict AfterGlobalSequence resume safe across concurrent
 // writers.
 type TaskStore interface {
 	SchemaVersion(context.Context) (int, error)
 
-	CreateProject(context.Context, domain.CommandRequest, domain.Project, domain.Event) (domain.CommandResult, error)
+	CreateProject(context.Context, domain.CommandRequest, domain.Project, []domain.Workspace, domain.Event) (domain.CommandResult, error)
 	Project(context.Context, string) (domain.Project, error)
 	Projects(context.Context) ([]domain.Project, error)
 	UpdateProject(context.Context, domain.CommandRequest, domain.Project, domain.Event) (domain.CommandResult, error)
+	ApplyProjectLease(context.Context, domain.CommandRequest, domain.ProjectLeaseMutation) (domain.CommandResult, error)
+	RecordProjectLeaseObservation(context.Context, domain.CommandRequest, string, domain.ProjectLeaseObservationInput) (domain.CommandResult, error)
+	EnableProjectLeaseDispatch(context.Context, domain.CommandRequest, string, string) (domain.CommandResult, error)
+
+	CreateWorkspace(context.Context, domain.CommandRequest, domain.Workspace, domain.Event) (domain.CommandResult, error)
+	Workspace(context.Context, string) (domain.Workspace, error)
+	Workspaces(context.Context, string) ([]domain.Workspace, error)
+	UpdateWorkspace(context.Context, domain.CommandRequest, domain.Workspace, domain.Event) (domain.CommandResult, error)
 
 	CreateTask(context.Context, domain.CommandRequest, domain.Task, domain.Event) (domain.CommandResult, error)
 	Task(context.Context, string) (domain.Task, error)

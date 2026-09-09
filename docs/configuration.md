@@ -8,7 +8,7 @@ transition.
 
 The Director Engine owns the closed JSON Schema at
 [`engine/domain/configuration/paseo-director.schema.json`](../engine/domain/configuration/paseo-director.schema.json).
-The M1 schema version is `1` and requires the exact engine-owned `$schema`
+The schema version is `1` and requires the exact engine-owned `$schema`
 identifier. Unknown fields, duplicate object keys, trailing JSON values,
 non-integer numeric spellings, invalid UTF-8, unpaired escaped Unicode
 surrogates and unsupported versions are rejected. Both the source document and
@@ -36,6 +36,7 @@ This is a complete minimal document:
   "workspaces": [
     {
       "id": "product",
+      "name": "Product repository",
       "remote": "https://github.com/example/product.git",
       "sourcePath": "/srv/example/product",
       "defaultBaseBranch": "main"
@@ -88,15 +89,23 @@ This is a complete minimal document:
 ```
 
 Schema checks are followed by deterministic semantic validation. Project,
-Workspace and reference identifiers are bounded; Workspace IDs and explicit
-references are unique; source paths are clean absolute Linux paths; Git branch
-names are safe; Workspace remotes use only `https://`, `ssh://`, `git://`, or
-safe scp-like SSH syntax; password-bearing URL/scp userinfo, Git remote-helper
+Workspace and reference identifiers are bounded; the optional Workspace
+display name is independent of its stable Project-local ID; Workspace IDs,
+canonical repository identities, canonical source paths, and explicit
+references are unique inside one Project; source paths are clean absolute
+Linux paths; Git branch names are safe; Workspace remotes use only `https://`,
+`ssh://`, `git://`, or safe scp-like SSH syntax. HTTPS and Git URL userinfo is
+always rejected; SSH URL and SCP userinfo is limited to the closed `git`
+username. Password-bearing URL/scp userinfo, Git remote-helper
 `token::address` dispatch, and command-bearing or local transports are rejected
-while username-only SSH forms such as
-`git@github.com:owner/repository.git` remain valid; profile tokens and provider
-families are closed; capacity and Run budgets are finite and internally
-consistent; Workspace overrides name a declared Workspace and select `inherit`
+while the non-secret SSH form
+`git@github.com:owner/repository.git` remains valid and maps to the same
+repository identity as an equivalent HTTPS or SSH URL. Remote percent escapes
+are decoded once and canonical output re-encodes literal percent data, while
+repeated `.git` suffix chains, ambiguous IPv4, and malformed embedded-IPv4 IPv6
+forms are rejected; profile tokens and provider families are closed; capacity
+and Run budgets are finite and internally consistent; Workspace overrides name
+a declared Workspace and select `inherit`
 or a concrete value; and skill/template paths are clean relative paths in their
 declared Organizer directories. Source and reference paths reject whitespace
 and control characters. Directory scanning never turns an unreferenced file
@@ -182,7 +191,10 @@ binding to the already durable approved intent.
 
 `ApplyCreate` requires the exact Preview ID and a confirmed,
 server-authenticated human actor. Before touching the filesystem it persists a
-paused Project and approved operation identity through the selected TaskStore.
+paused Project, its one stable Organizer identity, every configured canonical
+Workspace, and the approved operation identity atomically through the selected
+TaskStore. The durable Workspace ID is derived from the stable Project ID and
+Project-local Workspace ID; renaming or moving a checkout does not change it.
 Create then advances through these engine-owned effects:
 
 1. create/adopt the exact owned Organizer root and ownership marker;
@@ -218,12 +230,16 @@ retaining the excess bytes.
 
 `PreviewAdopt` reads a clean exact Git root, committed
 `paseo-director.json`, current HEAD, and every configured Workspace identity.
+Workspace observation rejects symlink/traversal aliases, nested roots, and a
+Git common directory outside the canonical source checkout. Supported remote
+transport aliases are canonicalized to one host/repository key before mapping.
 Every explicit skill/template reference must be a committed regular file. The
 preview performs no repository or TaskStore write. Confirmed `ApplyAdopt`
 re-runs that exact observation and then persists the active Project/revision in
 one TaskStore transaction. `Open` rechecks repository cleanliness, revision,
-configuration hash, Project identity, explicit references, and Workspace
-path/remotes after a process or TaskStore reopen. Drift never silently changes
+configuration hash, Project identity, explicit references, and the complete
+durable Workspace identity/policy mapping after a process or TaskStore reopen.
+Drift never silently changes
 the active revision.
 
 Create and Adopt inspect product repositories only through read-only Git/path

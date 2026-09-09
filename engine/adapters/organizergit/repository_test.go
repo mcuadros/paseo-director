@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	repoport "github.com/mcuadros/director-engine/ports/organizer"
@@ -159,4 +160,128 @@ func TestExecutionConfigEnumerationFailsClosed(t *testing.T) {
 			t.Fatalf("localExecutionOverrides() malformed worktree error = %v", err)
 		}
 	})
+}
+
+func TestResolveWorkspaceCanonicalizesRemoteAliases(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init", "--initial-branch=main")
+	runTestGit(t, root, "remote", "add", "origin", "git@github.com:example/product.git")
+	adapter := New()
+	snapshot, err := adapter.ResolveWorkspace(
+		context.Background(), root, "https://GitHub.com:443/example/product.git/",
+	)
+	if err != nil {
+		t.Fatalf("ResolveWorkspace() error = %v", err)
+	}
+	if snapshot.SourcePath != root || snapshot.GitCommonDirectory != filepath.Join(root, ".git") ||
+		snapshot.SourceDevice == 0 || snapshot.SourceInode == 0 ||
+		snapshot.GitCommonDevice == 0 || snapshot.GitCommonInode == 0 ||
+		snapshot.RepositoryKey != "github.com/example/product" ||
+		snapshot.CanonicalRemote != "ssh://git@github.com/example/product" || snapshot.RepositoryID == "" {
+		t.Fatalf("Workspace snapshot = %#v", snapshot)
+	}
+}
+
+func TestResolveWorkspacePreservesSinglePassPercentIdentity(t *testing.T) {
+	const remote = "https://github.com/acme/repo%252egit"
+	root := t.TempDir()
+	runTestGit(t, root, "init", "--initial-branch=main")
+	runTestGit(t, root, "remote", "add", "origin", remote)
+	snapshot, err := New().ResolveWorkspace(context.Background(), root, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.CanonicalRemote != remote || snapshot.RepositoryKey != "github.com/acme/repo%2egit" ||
+		snapshot.RepositoryID == "" {
+		t.Fatalf("single-pass Workspace snapshot = %#v", snapshot)
+	}
+	second, err := New().ResolveWorkspace(context.Background(), root, snapshot.CanonicalRemote)
+	if err != nil || second != snapshot {
+		t.Fatalf("canonical Workspace re-resolution = %#v, %v; want %#v", second, err, snapshot)
+	}
+}
+
+func TestResolveWorkspaceDoesNotPropagateCredentialBearingRemote(t *testing.T) {
+	const secret = "token-shaped-username-0123456789abcdef"
+	root := t.TempDir()
+	runTestGit(t, root, "init", "--initial-branch=main")
+	runTestGit(t, root, "remote", "add", "origin", "https://"+secret+"@github.com/example/product.git")
+	_, err := New().ResolveWorkspace(
+		context.Background(), root, "https://github.com/example/product.git",
+	)
+	if !errors.Is(err, repoport.ErrWorkspaceMismatch) || strings.Contains(err.Error(), secret) {
+		t.Fatalf("credential-bearing remote error = %v", err)
+	}
+}
+
+func TestResolveWorkspaceDoesNotPropagateMalformedRemote(t *testing.T) {
+	for name, malformed := range map[string]string{
+		"embedded IPv4":           "ssh://git@[192.168.1.1::]/example/product.git",
+		"raw repeated suffix":     "https://github.com/example/repository.git.git",
+		"case repeated suffix":    "https://github.com/example/repository.GIT.git",
+		"encoded prefix suffix":   "https://github.com/example/repository%2egit.git",
+		"encoded terminal suffix": "https://github.com/example/repository.git%2egit",
+		"deeper suffix chain":     "https://github.com/example/repository%2Egit%2egit%2EGIT",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			runTestGit(t, root, "init", "--initial-branch=main")
+			runTestGit(t, root, "remote", "add", "origin", malformed)
+			_, err := New().ResolveWorkspace(
+				context.Background(), root, "https://github.com/example/product.git",
+			)
+			if !errors.Is(err, repoport.ErrWorkspaceMismatch) || strings.Contains(err.Error(), malformed) {
+				t.Fatalf("malformed remote error = %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveWorkspaceRejectsPathAliasesAndNoncanonicalRoots(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init", "--initial-branch=main")
+	runTestGit(t, root, "remote", "add", "origin", "https://github.com/example/product.git")
+	adapter := New()
+
+	symlink := filepath.Join(t.TempDir(), "product-link")
+	if err := os.Symlink(root, symlink); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, candidate := range map[string]string{
+		"symlink":                     symlink,
+		"lexical traversal":           root + string(filepath.Separator) + "nested" + string(filepath.Separator) + "..",
+		"nested repository directory": nested,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := adapter.ResolveWorkspace(
+				context.Background(), candidate, "https://github.com/example/product.git",
+			); !errors.Is(err, repoport.ErrWorkspaceMismatch) {
+				t.Fatalf("ResolveWorkspace(%q) error = %v", candidate, err)
+			}
+		})
+	}
+}
+
+func TestResolveWorkspaceRejectsLinkedWorktreeAsCanonicalSource(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init", "--initial-branch=main")
+	runTestGit(t, root, "config", "user.name", "Director test")
+	runTestGit(t, root, "config", "user.email", "director@example.invalid")
+	runTestGit(t, root, "remote", "add", "origin", "https://github.com/example/product.git")
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("product\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, root, "add", "--", "README.md")
+	runTestGit(t, root, "commit", "-m", "baseline")
+	linked := filepath.Join(t.TempDir(), "linked")
+	runTestGit(t, root, "worktree", "add", "--detach", linked, "HEAD")
+	if _, err := New().ResolveWorkspace(
+		context.Background(), linked, "https://github.com/example/product.git",
+	); !errors.Is(err, repoport.ErrWorkspaceMismatch) {
+		t.Fatalf("linked worktree error = %v", err)
+	}
 }

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -40,15 +41,17 @@ type storedCommand struct {
 }
 
 type memoryProjectStore struct {
-	mu       sync.Mutex
-	projects map[string]domain.Project
-	commands map[string]storedCommand
+	mu         sync.Mutex
+	projects   map[string]domain.Project
+	workspaces map[string][]domain.Workspace
+	commands   map[string]storedCommand
 }
 
 func newMemoryProjectStore() *memoryProjectStore {
 	return &memoryProjectStore{
-		projects: make(map[string]domain.Project),
-		commands: make(map[string]storedCommand),
+		projects:   make(map[string]domain.Project),
+		workspaces: make(map[string][]domain.Workspace),
+		commands:   make(map[string]storedCommand),
 	}
 }
 
@@ -57,6 +60,14 @@ func cloneProject(project domain.Project) domain.Project {
 		copy := *project.Organizer
 		copy.PendingConfiguration = append(json.RawMessage(nil), copy.PendingConfiguration...)
 		project.Organizer = &copy
+	}
+	if project.Lease != nil {
+		lease := *project.Lease
+		project.Lease = &lease
+	}
+	if project.LeaseObservation != nil {
+		observation := *project.LeaseObservation
+		project.LeaseObservation = &observation
 	}
 	return project
 }
@@ -78,6 +89,7 @@ func (store *memoryProjectStore) CreateProject(
 	_ context.Context,
 	command domain.CommandRequest,
 	project domain.Project,
+	workspaces []domain.Workspace,
 	event domain.Event,
 ) (domain.CommandResult, error) {
 	store.mu.Lock()
@@ -88,13 +100,28 @@ func (store *memoryProjectStore) CreateProject(
 	if command.AggregateID != project.ID || command.ExpectedVersion != 0 || project.Version != 0 {
 		return domain.CommandResult{}, storeport.ErrInvalidRecord
 	}
+	if err := domain.ValidateWorkspaceSet(project.ID, workspaces); err != nil ||
+		project.Organizer == nil || project.Organizer.ID != domain.OrganizerID(project.ID) {
+		return domain.CommandResult{}, storeport.ErrInvalidRecord
+	}
 	if _, ok := store.projects[project.ID]; ok {
 		return domain.CommandResult{}, storeport.ErrAlreadyExists
 	}
 	store.projects[project.ID] = cloneProject(project)
+	store.workspaces[project.ID] = slices.Clone(workspaces)
 	result := domain.CommandResult{Outcome: domain.CommandApplied, ObservedVersion: 0, EventID: event.ID}
 	store.commands[command.IdempotencyKey] = storedCommand{payload: string(command.Payload), result: result}
 	return result, nil
+}
+
+func (store *memoryProjectStore) Workspaces(_ context.Context, projectID string) ([]domain.Workspace, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	workspaces, ok := store.workspaces[projectID]
+	if !ok {
+		return nil, storeport.ErrNotFound
+	}
+	return slices.Clone(workspaces), nil
 }
 
 func (store *memoryProjectStore) Project(_ context.Context, id string) (domain.Project, error) {
@@ -406,6 +433,83 @@ func TestCreatePreviewIsReadOnlyAndApplyRecoversEveryBoundary(t *testing.T) {
 	}
 }
 
+func TestCreatePreviewAndApplyShareSinglePassRemoteIdentity(t *testing.T) {
+	const remote = "https://github.com/acme/repo%252egit"
+	root := privateTempDir(t)
+	productPath, _, before := newProductRepository(t, root)
+	runGit(t, productPath, "remote", "set-url", "origin", remote)
+	before = readProductFacts(t, productPath)
+	repositoryPath := filepath.Join(root, "organizer")
+	request := createRequest(
+		"project-percent-remote", "Percent Remote", repositoryPath,
+		configurationJSON("project-percent-remote", "Percent Remote", productPath, remote),
+	)
+	store := newMemoryProjectStore()
+	service := app.New(store, organizergit.New(), nil)
+	preview, err := service.PreviewCreate(context.Background(), request)
+	if err != nil || !preview.Valid || preview.ID == "" {
+		t.Fatalf("PreviewCreate() = %#v, %v", preview, err)
+	}
+	if _, err := service.ApplyCreate(context.Background(), app.ApplyCreateCommand{
+		RequestID: request.RequestID, PreviewID: preview.ID, Request: request, Confirmation: confirmed(),
+	}); err != nil {
+		t.Fatalf("ApplyCreate() = %v", err)
+	}
+	workspaces := store.workspaces[request.ProjectID]
+	if len(workspaces) != 1 || workspaces[0].Repository.CanonicalRemote != remote ||
+		workspaces[0].Repository.Key != "github.com/acme/repo%2egit" {
+		t.Fatalf("durable canonical Workspaces = %#v", workspaces)
+	}
+	if after := readProductFacts(t, productPath); after != before {
+		t.Fatalf("Preview/Apply changed product repository: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestCreatePreviewAndApplyRedactRejectedRemoteIdentity(t *testing.T) {
+	for name, remote := range map[string]string{
+		"token-shaped username":   "https://token-shaped-username-0123456789abcdef@github.com/example/product.git",
+		"malformed embedded IPv4": "ssh://git@[192.168.1.1::]/example/product.git",
+		"malformed percent":       "https://github.com/example/product%2",
+		"raw repeated suffix":     "https://github.com/example/repository.git.git",
+		"case repeated suffix":    "https://github.com/example/repository.GIT.git",
+		"encoded prefix suffix":   "https://github.com/example/repository%2egit.git",
+		"encoded terminal suffix": "https://github.com/example/repository.git%2egit",
+		"deeper suffix chain":     "https://github.com/example/repository%2Egit%2egit%2EGIT",
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := privateTempDir(t)
+			productPath, _, _ := newProductRepository(t, root)
+			repositoryPath := filepath.Join(root, "organizer")
+			request := createRequest(
+				"project-rejected-remote", "Rejected Remote", repositoryPath,
+				configurationJSON("project-rejected-remote", "Rejected Remote", productPath, remote),
+			)
+			store := newMemoryProjectStore()
+			service := app.New(store, organizergit.New(), nil)
+			preview, err := service.PreviewCreate(context.Background(), request)
+			if err != nil || preview.Valid || preview.ID == "" {
+				t.Fatalf("PreviewCreate() = %#v, %v", preview, err)
+			}
+			encoded, err := json.Marshal(preview)
+			if err != nil || strings.Contains(string(encoded), remote) {
+				t.Fatalf("Preview propagated rejected remote: %s, %v", encoded, err)
+			}
+			_, err = service.ApplyCreate(context.Background(), app.ApplyCreateCommand{
+				RequestID: request.RequestID, PreviewID: preview.ID, Request: request, Confirmation: confirmed(),
+			})
+			if !errors.Is(err, app.ErrPreviewInvalid) || strings.Contains(err.Error(), remote) {
+				t.Fatalf("ApplyCreate() rejected remote error = %v", err)
+			}
+			if len(store.projects) != 0 || len(store.commands) != 0 {
+				t.Fatalf("rejected remote reached TaskStore: projects=%#v commands=%#v", store.projects, store.commands)
+			}
+			if _, err := os.Stat(repositoryPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("rejected remote changed Organizer target: %v", err)
+			}
+		})
+	}
+}
+
 func TestHostileRepositoryLocalGitConfigNeverExecutes(t *testing.T) {
 	root := privateTempDir(t)
 	executedPath := filepath.Join(root, "hostile-command-executed")
@@ -555,6 +659,20 @@ func TestAdoptIsReadOnlyIdempotentAndReopens(t *testing.T) {
 	if reopened, err := app.New(store, organizergit.New(), nil).Open(context.Background(), request.ProjectID); err != nil || !reflect.DeepEqual(reopened, projection) {
 		t.Fatalf("Open() = %#v, %v", reopened, err)
 	}
+	durableWorkspaces, err := store.Workspaces(context.Background(), request.ProjectID)
+	if err != nil || len(durableWorkspaces) != 1 || durableWorkspaces[0].Key != "product" ||
+		durableWorkspaces[0].ID != domain.WorkspaceID(request.ProjectID, "product") {
+		t.Fatalf("durable Workspaces = %#v, %v", durableWorkspaces, err)
+	}
+	store.mu.Lock()
+	store.workspaces[request.ProjectID][0].Name = "drifted"
+	store.mu.Unlock()
+	if _, err := app.New(store, organizergit.New(), nil).Open(context.Background(), request.ProjectID); !errors.Is(err, app.ErrOrganizerDrift) {
+		t.Fatalf("Open() Workspace drift error = %v", err)
+	}
+	store.mu.Lock()
+	store.workspaces[request.ProjectID] = slices.Clone(durableWorkspaces)
+	store.mu.Unlock()
 	if after := readProductFacts(t, repositoryPath); after != organizerBefore {
 		t.Fatalf("Adopt mutated Organizer: before=%#v after=%#v", organizerBefore, after)
 	}
@@ -566,6 +684,61 @@ func TestAdoptIsReadOnlyIdempotentAndReopens(t *testing.T) {
 	}
 	if _, err := app.New(store, organizergit.New(), nil).Open(context.Background(), request.ProjectID); !errors.Is(err, app.ErrOrganizerDrift) {
 		t.Fatalf("Open() dirty drift error = %v", err)
+	}
+}
+
+func TestAdoptPreviewAndApplyRejectRepeatedGitSuffixWithoutPropagation(t *testing.T) {
+	const rejectedRemote = "https://github.com/example/repository.git%2egit"
+	root := privateTempDir(t)
+	productPath, validRemote, _ := newProductRepository(t, root)
+	repositoryPath := filepath.Join(root, "organizer")
+	validDocument := configurationJSON("project-adopt-repeated", "Adopt Repeated", productPath, validRemote)
+	creator := app.New(newMemoryProjectStore(), organizergit.New(), nil)
+	create := createRequest("project-adopt-repeated", "Adopt Repeated", repositoryPath, validDocument)
+	createPreview, err := creator.PreviewCreate(context.Background(), create)
+	if err != nil || !createPreview.Valid {
+		t.Fatalf("seed PreviewCreate() = %#v, %v", createPreview, err)
+	}
+	if _, err := creator.ApplyCreate(context.Background(), app.ApplyCreateCommand{
+		RequestID: create.RequestID, PreviewID: createPreview.ID, Request: create, Confirmation: confirmed(),
+	}); err != nil {
+		t.Fatalf("seed ApplyCreate() = %v", err)
+	}
+	rejectedDocument := configurationJSON(
+		"project-adopt-repeated", "Adopt Repeated", productPath, rejectedRemote,
+	)
+	if err := os.WriteFile(filepath.Join(repositoryPath, "paseo-director.json"), rejectedDocument, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repositoryPath, "add", "--", "paseo-director.json")
+	runGit(t, repositoryPath, "commit", "-m", "inject repeated Git suffix")
+	before := readProductFacts(t, repositoryPath)
+
+	store := newMemoryProjectStore()
+	service := app.New(store, organizergit.New(), nil)
+	request := app.AdoptRequest{
+		RequestID: "request-adopt-repeated", ProjectID: "project-adopt-repeated",
+		ProjectName: "Adopt Repeated", RepositoryPath: repositoryPath,
+	}
+	preview, err := service.PreviewAdopt(context.Background(), request)
+	if err != nil || preview.Valid || preview.ID == "" {
+		t.Fatalf("PreviewAdopt() = %#v, %v", preview, err)
+	}
+	encoded, err := json.Marshal(preview)
+	if err != nil || strings.Contains(string(encoded), rejectedRemote) {
+		t.Fatalf("PreviewAdopt propagated rejected remote: %s, %v", encoded, err)
+	}
+	_, err = service.ApplyAdopt(context.Background(), app.ApplyAdoptCommand{
+		RequestID: request.RequestID, PreviewID: preview.ID, Request: request, Confirmation: confirmed(),
+	})
+	if !errors.Is(err, app.ErrPreviewInvalid) || strings.Contains(err.Error(), rejectedRemote) {
+		t.Fatalf("ApplyAdopt() repeated suffix error = %v", err)
+	}
+	if len(store.projects) != 0 || len(store.commands) != 0 {
+		t.Fatalf("rejected Adopt reached TaskStore: projects=%#v commands=%#v", store.projects, store.commands)
+	}
+	if after := readProductFacts(t, repositoryPath); after != before {
+		t.Fatalf("rejected Adopt changed Organizer: before=%#v after=%#v", before, after)
 	}
 }
 
