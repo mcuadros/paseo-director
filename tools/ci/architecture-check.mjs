@@ -12,6 +12,8 @@ import {
 } from "./scaffold-check.mjs";
 
 const ENGINE_MODULE = "github.com/mcuadros/director-engine";
+const PLANNING_TESTKIT_IMPORT =
+  `${ENGINE_MODULE}/internal/planningtestkit`;
 const GO_ROOTS = [
   "domain",
   "reducer",
@@ -46,9 +48,10 @@ const GO_ALLOWED_DEPENDENCIES = {
   application: new Set(["domain", "reducer", "projection", "ports"]),
   adapters: new Set(["domain", "ports", "adapters"]),
   "agent-runtime": new Set(["domain", "application", "agent-runtime"]),
+  testkit: new Set(["testkit"]),
   cmd: new Set([...GO_ROOTS, "cmd"]),
 };
-const PURE_GO_ROLES = new Set(["domain", "reducer", "projection"]);
+const PURE_GO_ROLES = new Set(["domain", "reducer", "projection", "testkit"]);
 const IMPURE_STANDARD_IMPORTS = [
   "crypto/rand",
   "database",
@@ -106,6 +109,7 @@ export function classifyGoPackage(importPath) {
   if (!importPath.startsWith(`${ENGINE_MODULE}/`)) return null;
   const relativePath = importPath.slice(ENGINE_MODULE.length + 1);
   if (relativePath === "cmd" || relativePath.startsWith("cmd/")) return "cmd";
+  if (relativePath === "internal/planningtestkit") return "testkit";
   return GO_ROOTS.find(
     (root) => relativePath === root || relativePath.startsWith(`${root}/`),
   ) ?? null;
@@ -160,6 +164,71 @@ export function policyPathErrors(path) {
     : [];
 }
 
+function goImportErrors(current, role, imports, testSource) {
+  const errors = [];
+  for (const imported of imports) {
+    if (
+      testSource &&
+      role !== "testkit" &&
+      imported === PLANNING_TESTKIT_IMPORT
+    ) {
+      continue;
+    }
+    if (!imported.includes(".")) {
+      if (role === "ports" && standardImportMatches(imported, "database")) {
+        errors.push(
+          `${current.importPath}: port boundary cannot leak database backend package ${imported}`,
+        );
+      }
+      if (
+        PURE_GO_ROLES.has(role) &&
+        IMPURE_STANDARD_IMPORTS.some((prefix) =>
+          standardImportMatches(imported, prefix),
+        )
+      ) {
+        errors.push(
+          `${current.importPath}: pure ${role} package imports effectful standard package ${imported}`,
+        );
+      }
+      continue;
+    }
+    if (!imported.startsWith(`${ENGINE_MODULE}/`)) {
+      if (
+        role === "adapters" &&
+        !/(?:paseo|director-for-paseo|(?:^|[./_-])beads(?:[./_-]|$))/i.test(imported)
+      ) {
+        continue;
+      }
+      errors.push(
+        `${current.importPath}: standalone engine imports external package ${imported}`,
+      );
+      continue;
+    }
+    const importedRole = classifyGoPackage(imported);
+    if (!importedRole) {
+      errors.push(
+        `${current.importPath}: imports unclassified engine package ${imported}`,
+      );
+      continue;
+    }
+    if (!GO_ALLOWED_DEPENDENCIES[role].has(importedRole)) {
+      errors.push(
+        `${current.importPath}: ${role} boundary cannot import ${importedRole} package ${imported}`,
+      );
+    }
+    if (
+      role === "reducer" &&
+      importedRole === "reducer" &&
+      imported !== `${ENGINE_MODULE}/reducer`
+    ) {
+      errors.push(
+        `${current.importPath}: one decision reducer cannot depend on another reducer package ${imported}`,
+      );
+    }
+  }
+  return errors;
+}
+
 export function goDependencyErrors(packages) {
   const errors = [];
   for (const current of packages) {
@@ -168,59 +237,14 @@ export function goDependencyErrors(packages) {
       errors.push(`${current.importPath}: Go package is outside an approved engine boundary`);
       continue;
     }
-    for (const imported of current.imports) {
-      if (!imported.includes(".")) {
-        if (role === "ports" && standardImportMatches(imported, "database")) {
-          errors.push(
-            `${current.importPath}: port boundary cannot leak database backend package ${imported}`,
-          );
-        }
-        if (
-          PURE_GO_ROLES.has(role) &&
-          IMPURE_STANDARD_IMPORTS.some((prefix) =>
-            standardImportMatches(imported, prefix),
-          )
-        ) {
-          errors.push(
-            `${current.importPath}: pure ${role} package imports effectful standard package ${imported}`,
-          );
-        }
-        continue;
-      }
-      if (!imported.startsWith(`${ENGINE_MODULE}/`)) {
-        if (
-          role === "adapters" &&
-          !/(?:paseo|director-for-paseo|(?:^|[./_-])beads(?:[./_-]|$))/i.test(imported)
-        ) {
-          continue;
-        }
-        errors.push(
-          `${current.importPath}: standalone engine imports external package ${imported}`,
-        );
-        continue;
-      }
-      const importedRole = classifyGoPackage(imported);
-      if (!importedRole) {
-        errors.push(
-          `${current.importPath}: imports unclassified engine package ${imported}`,
-        );
-        continue;
-      }
-      if (!GO_ALLOWED_DEPENDENCIES[role].has(importedRole)) {
-        errors.push(
-          `${current.importPath}: ${role} boundary cannot import ${importedRole} package ${imported}`,
-        );
-      }
-      if (
-        role === "reducer" &&
-        importedRole === "reducer" &&
-        imported !== `${ENGINE_MODULE}/reducer`
-      ) {
-        errors.push(
-          `${current.importPath}: one decision reducer cannot depend on another reducer package ${imported}`,
-        );
-      }
-    }
+    errors.push(...goImportErrors(current, role, current.imports ?? [], false));
+    const testImports = [
+      ...(current.testImports ?? []),
+      ...(current.xTestImports ?? []),
+    ];
+    errors.push(
+      ...goImportErrors(current, role, [...new Set(testImports)], true),
+    );
   }
   return errors;
 }
@@ -462,11 +486,9 @@ function listGoPackages(repositoryRoot) {
         line.split("\t");
       return {
         importPath,
-        imports: [...new Set(
-          [imports, testImports, externalTestImports]
-            .flatMap((group) => group.split(","))
-            .filter(Boolean),
-        )],
+        imports: imports.split(",").filter(Boolean),
+        testImports: testImports.split(",").filter(Boolean),
+        xTestImports: externalTestImports.split(",").filter(Boolean),
       };
     });
 }
