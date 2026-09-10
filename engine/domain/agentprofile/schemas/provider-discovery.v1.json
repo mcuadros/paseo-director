@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mcuadros/paseo-director/engine/domain/agentprofile/schemas/provider-discovery.v1.json",
+  "title": "Director Provider Discovery Facts",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "revision", "paseoVersion", "observedAtMillis", "maximumAgeMillis", "providers"],
+  "properties": {
+    "schemaVersion": { "const": "director.provider-discovery/v1" },
+    "revision": { "$ref": "#/$defs/digest" },
+    "paseoVersion": { "$ref": "#/$defs/token" },
+    "observedAtMillis": { "type": "integer", "minimum": 0 },
+    "maximumAgeMillis": { "type": "integer", "minimum": 1, "maximum": 60000 },
+    "providers": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/provider" }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "token": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+    "providerOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value"],
+      "properties": {
+        "name": { "enum": ["networkAccess", "nativeWebSearch", "reasoningSummary"] },
+        "value": { "$ref": "#/$defs/token" }
+      }
+    },
+    "mcpCapability": {
+      "enum": ["project.read", "planning.command.submit", "task.read", "task.outcome.submit", "candidate.read", "review.verdict.submit"]
+    },
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["effort", "mode", "permissionMode", "providerOptions", "mcpCapabilities", "sessionStdioMcp", "exactMcpToolPolicy", "runtimeProbePassed"],
+      "properties": {
+        "effort": { "$ref": "#/$defs/token" },
+        "mode": { "$ref": "#/$defs/token" },
+        "permissionMode": { "enum": ["read-only", "workspace-write"] },
+        "providerOptions": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/providerOption" } },
+        "mcpCapabilities": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/mcpCapability" } },
+        "sessionStdioMcp": { "type": "boolean" },
+        "exactMcpToolPolicy": { "type": "boolean" },
+        "runtimeProbePassed": { "type": "boolean" }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "variants"],
+      "properties": {
+        "model": { "$ref": "#/$defs/token" },
+        "variants": { "type": "array", "minItems": 1, "maxItems": 128, "items": { "$ref": "#/$defs/variant" } }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "cliVersion", "state", "diagnosticCodes", "models"],
+      "properties": {
+        "provider": { "$ref": "#/$defs/token" },
+        "cliVersion": { "$ref": "#/$defs/token" },
+        "state": { "enum": ["ready", "unavailable"] },
+        "diagnosticCodes": {
+          "type": "array",
+          "maxItems": 4,
+          "items": { "enum": ["authentication_required", "service_unavailable", "capability_loss", "version_mismatch"] }
+        },
+        "models": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/model" } }
+      }
+    }
+  }
+}

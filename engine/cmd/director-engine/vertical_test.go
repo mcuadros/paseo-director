@@ -21,6 +21,8 @@ import (
 	"github.com/mcuadros/director-engine/adapters/fake"
 	executionapp "github.com/mcuadros/director-engine/application/execution"
 	"github.com/mcuadros/director-engine/domain"
+	"github.com/mcuadros/director-engine/domain/agentprofile"
+	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	"github.com/mcuadros/director-engine/domain/execution"
 	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 	"github.com/mcuadros/director-engine/ports/host"
@@ -247,15 +249,73 @@ func eligibilityFacts(scope execution.Scope, surfaces execution.LifecycleSurface
 	}
 }
 
-func startCommand(task domain.Task, scope execution.Scope, source, worktree, base string, facts eligibility.Facts) executionapp.StartCommand {
+func verticalProfiles(t *testing.T) agentprofile.FrozenSet {
+	t.Helper()
+	readOnly := domainconfig.AgentSelection{
+		Provider: domainconfig.ProviderCodex, Model: "gpt-5.4-mini", Effort: "high", Mode: "default",
+		PermissionMode: "read-only", ProviderOptions: []domainconfig.ProviderOption{},
+		MCPCapabilities: []domainconfig.MCPCapability{
+			domainconfig.MCPProjectRead, domainconfig.MCPPlanningCommandSubmit,
+			domainconfig.MCPCandidateRead, domainconfig.MCPReviewVerdictSubmit,
+		},
+	}
+	worker := domainconfig.AgentSelection{
+		Provider: domainconfig.ProviderCodex, Model: "gpt-5.4-mini", Effort: "high", Mode: "default",
+		PermissionMode: "workspace-write", ProviderOptions: []domainconfig.ProviderOption{},
+		MCPCapabilities: []domainconfig.MCPCapability{domainconfig.MCPTaskRead, domainconfig.MCPTaskOutcomeSubmit},
+	}
+	profiles := domainconfig.AgentProfiles{
+		Organizer: domainconfig.AgentProfile{AgentSelection: domainconfig.AgentSelection{
+			Provider: readOnly.Provider, Model: readOnly.Model, Effort: readOnly.Effort, Mode: readOnly.Mode,
+			PermissionMode: readOnly.PermissionMode, ProviderOptions: []domainconfig.ProviderOption{},
+			MCPCapabilities: []domainconfig.MCPCapability{domainconfig.MCPProjectRead, domainconfig.MCPPlanningCommandSubmit},
+		}, FallbackChain: []domainconfig.AgentSelection{}},
+		Worker: domainconfig.AgentProfile{AgentSelection: worker, FallbackChain: []domainconfig.AgentSelection{}},
+		Reviewer: domainconfig.AgentProfile{AgentSelection: domainconfig.AgentSelection{
+			Provider: readOnly.Provider, Model: readOnly.Model, Effort: readOnly.Effort, Mode: readOnly.Mode,
+			PermissionMode: readOnly.PermissionMode, ProviderOptions: []domainconfig.ProviderOption{},
+			MCPCapabilities: []domainconfig.MCPCapability{domainconfig.MCPCandidateRead, domainconfig.MCPReviewVerdictSubmit},
+		}, FallbackChain: []domainconfig.AgentSelection{}},
+	}
+	discovery := agentprofile.DiscoverySnapshot{
+		SchemaVersion: agentprofile.DiscoverySchemaVersion, Revision: strings.Repeat("0", 64),
+		PaseoVersion: agentprofile.SupportedPaseoVersion, ObservedAtMillis: 1_000, MaximumAgeMillis: 30_000,
+		Providers: []agentprofile.ProviderFact{{
+			Provider: domainconfig.ProviderCodex, CLIVersion: "0.147.0", State: agentprofile.ProviderReady,
+			DiagnosticCodes: []agentprofile.DiagnosticCode{}, Models: []agentprofile.ModelFact{{
+				Model: "gpt-5.4-mini", Variants: []agentprofile.VariantFact{
+					{Effort: "high", Mode: "default", PermissionMode: "read-only", ProviderOptions: []domainconfig.ProviderOption{}, MCPCapabilities: readOnly.MCPCapabilities, SessionStdioMCP: true, ExactMCPToolPolicy: true, RuntimeProbePassed: true},
+					{Effort: "high", Mode: "default", PermissionMode: "workspace-write", ProviderOptions: []domainconfig.ProviderOption{}, MCPCapabilities: worker.MCPCapabilities, SessionStdioMCP: true, ExactMCPToolPolicy: true, RuntimeProbePassed: true},
+				},
+			}},
+		}},
+	}
+	discovery, err := agentprofile.SealDiscovery(discovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := agentprofile.Freeze(agentprofile.FreezeRequest{
+		Profiles: profiles, OrganizerRevision: strings.Repeat("b", 40),
+		ExpectedOrganizerRevision: strings.Repeat("b", 40), ConfigurationSHA256: strings.Repeat("a", 64),
+		Discovery: discovery, ExpectedDiscoveryRevision: discovery.Revision, NowMillis: 1_001,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return frozen
+}
+
+func startCommand(t *testing.T, task domain.Task, scope execution.Scope, source, worktree, base string, facts eligibility.Facts) executionapp.StartCommand {
+	t.Helper()
 	return executionapp.StartCommand{
 		RequestID: "start-" + scope.RunID, Scope: scope, RunNumber: 1,
 		SourcePath: source, WorktreePath: worktree,
 		Branch: "task/" + scope.TaskID, BaseSHA: base,
 		TaskTitle: task.Title, InitialPrompt: "Produce the declared fixture Candidate and return one completed claim.",
-		CriterionIDs:     []string{"criterion-1"},
-		RootWorkspaceID:  "wks_root_" + scope.ProjectID,
-		EligibilityFacts: facts,
+		CriterionIDs:      []string{"criterion-1"},
+		RootWorkspaceID:   "wks_root_" + scope.ProjectID,
+		EffectiveProfiles: verticalProfiles(t),
+		EligibilityFacts:  facts,
 	}
 }
 
@@ -312,12 +372,12 @@ func TestFakeExecutionVerticalPathRecoversEveryLostResponse(t *testing.T) {
 	})
 	t.Cleanup(environment.RemoveFixture)
 	controller := executionapp.NewController(store, environment, environment, environment)
-	started, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, facts))
+	started, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, facts))
 	if err != nil || started.Decision.Kind != eligibility.DecisionEligible || started.RunID != scope.RunID {
 		t.Fatalf("start = %#v, %v", started, err)
 	}
 	replayed, err := executionapp.NewController(store, environment, environment, environment).Start(
-		context.Background(), startCommand(task, scope, source, worktree, base, facts),
+		context.Background(), startCommand(t, task, scope, source, worktree, base, facts),
 	)
 	if err != nil || replayed.RunID != started.RunID || replayed.Decision.DecisionID != started.Decision.DecisionID || environment.TotalMutationCount() != 0 {
 		t.Fatalf("idempotent start replay = %#v, %v", replayed, err)
@@ -326,8 +386,14 @@ func TestFakeExecutionVerticalPathRecoversEveryLostResponse(t *testing.T) {
 	run := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
 		return run.Execution.Agent.Phase == execution.EffectComplete
 	})
-	if run.Execution.Agent.ExternalID == "" || !run.Execution.PreparationReady {
+	if run.Execution.Agent.ExternalID == "" || !run.Execution.PreparationReady ||
+		run.Execution.EffectiveProfiles == nil || !run.Execution.EffectiveProfiles.Valid() ||
+		run.Execution.EffectiveProfilesSHA256 != run.Execution.EffectiveProfiles.SHA256() {
 		t.Fatalf("agent launch state = %#v", run.Execution)
+	}
+	workerProfile, ok := run.Execution.EffectiveProfiles.Role(agentprofile.RoleWorker)
+	if !ok || workerProfile.Selection.Provider != domainconfig.ProviderCodex || workerProfile.Selection.PermissionMode != "workspace-write" {
+		t.Fatalf("frozen Worker profile = %#v, %v", workerProfile, ok)
 	}
 	request := environment.AgentRequest()
 	if request.ParentAgentID != nil || request.Title != task.Title || request.InitialPrompt != host.ZeroWorkBootstrapPrompt || request.NotifyOnFinish {
@@ -338,7 +404,7 @@ func TestFakeExecutionVerticalPathRecoversEveryLostResponse(t *testing.T) {
 			run.Execution.AgentPrompt.Observation.Status == execution.ObservationOwnedPresent
 	})
 	prompt := environment.PromptRequest()
-	if prompt.AgentID != run.Execution.Agent.ExternalID || prompt.InitialPrompt != startCommand(task, scope, source, worktree, base, facts).InitialPrompt ||
+	if prompt.AgentID != run.Execution.Agent.ExternalID || prompt.InitialPrompt != startCommand(t, task, scope, source, worktree, base, facts).InitialPrompt ||
 		!prompt.NotifyOnFinish || len(prompt.Labels) != 0 || run.Execution.WorkerVisibility.AgentID != run.Execution.Agent.ExternalID {
 		t.Fatalf("real Task prompt request = %#v, visibility = %#v", prompt, run.Execution.WorkerVisibility)
 	}
@@ -465,7 +531,7 @@ func TestTerminalErrorAndPermissionCallbacksSynchronouslyEnqueueThenPark(t *test
 			})
 			t.Cleanup(environment.RemoveFixture)
 			controller := executionapp.NewController(store, environment, environment, environment)
-			if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
+			if _, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 				t.Fatal(err)
 			}
 			run := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
@@ -502,7 +568,7 @@ func TestFiveMinuteMultiSourceWatchdogRecoversOnlyALostTerminalEvent(t *testing.
 	})
 	t.Cleanup(environment.RemoveFixture)
 	controller := executionapp.NewController(store, environment, environment, environment)
-	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
+	if _, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
 	run := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
@@ -545,7 +611,7 @@ func TestLifecycleAndPeriodicFactsParkWithoutSDKOrCleanupAuthority(t *testing.T)
 		environment := fake.NewEnvironment(fake.Options{SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID, BaseSHA: base, Operational: operationalObservation("periodic-lifecycle")})
 		t.Cleanup(environment.RemoveFixture)
 		controller := executionapp.NewController(store, environment, environment, environment)
-		result, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, surfaces)))
+		result, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, surfaces)))
 		if err != nil || result.Decision.Kind != eligibility.DecisionEscalate || result.Decision.CleanupAuthorized {
 			t.Fatalf("unapproved start = %#v, %v", result, err)
 		}
@@ -585,7 +651,7 @@ func TestLifecycleAndPeriodicFactsParkWithoutSDKOrCleanupAuthority(t *testing.T)
 			environment := fake.NewEnvironment(fake.Options{SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID, BaseSHA: base, Operational: operationalObservation("periodic-unused")})
 			t.Cleanup(environment.RemoveFixture)
 			controller := executionapp.NewController(store, environment, environment, environment)
-			result, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, facts))
+			result, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, facts))
 			if err != nil || result.Decision.Kind != eligibility.DecisionEscalate || result.Decision.CleanupAuthorized {
 				t.Fatalf("unsafe launch = %#v, %v", result, err)
 			}
@@ -622,7 +688,7 @@ func TestLifecycleAndPeriodicFactsParkWithoutSDKOrCleanupAuthority(t *testing.T)
 			environment := fake.NewEnvironment(fake.Options{SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID, BaseSHA: base, Operational: operationalObservation("periodic-valid")})
 			t.Cleanup(environment.RemoveFixture)
 			controller := executionapp.NewController(store, environment, environment, environment)
-			if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, facts)); err != nil {
+			if _, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, facts)); err != nil {
 				t.Fatal(err)
 			}
 			runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {

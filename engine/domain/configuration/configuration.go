@@ -81,6 +81,30 @@ const (
 	ProviderOpenCode   Provider = "opencode"
 )
 
+// ProviderOptionName is the closed set of non-secret provider-native options
+// which Organizer configuration may select. Authentication material is never
+// a provider option and cannot be represented by this contract.
+type ProviderOptionName string
+
+const (
+	ProviderOptionNetworkAccess    ProviderOptionName = "networkAccess"
+	ProviderOptionNativeWebSearch  ProviderOptionName = "nativeWebSearch"
+	ProviderOptionReasoningSummary ProviderOptionName = "reasoningSummary"
+)
+
+// MCPCapability is an engine capability identifier, not a tool name. The
+// scoped MCP bridge owned by M3.3 will translate only these frozen values.
+type MCPCapability string
+
+const (
+	MCPProjectRead           MCPCapability = "project.read"
+	MCPPlanningCommandSubmit MCPCapability = "planning.command.submit"
+	MCPTaskRead              MCPCapability = "task.read"
+	MCPTaskOutcomeSubmit     MCPCapability = "task.outcome.submit"
+	MCPCandidateRead         MCPCapability = "candidate.read"
+	MCPReviewVerdictSubmit   MCPCapability = "review.verdict.submit"
+)
+
 // Project identifies the one Director Project represented by an Organizer.
 type Project struct {
 	ID   string `json:"id"`
@@ -97,19 +121,41 @@ type Workspace struct {
 	DefaultBaseBranch string `json:"defaultBaseBranch"`
 }
 
-// AgentProfile records the provider inputs that later execution Tasks may
-// reconcile. Parsing a profile does not admit or launch an agent.
-type AgentProfile struct {
-	Provider       Provider `json:"provider"`
-	Model          string   `json:"model"`
-	Effort         string   `json:"effort"`
-	PermissionMode string   `json:"permissionMode"`
+// ProviderOption is one bounded non-secret provider-native selection.
+type ProviderOption struct {
+	Name  ProviderOptionName `json:"name"`
+	Value string             `json:"value"`
 }
 
-// AgentProfiles keeps Task and Reviewer profiles distinct.
+// AgentSelection is one complete provider choice. All fields are matched
+// against one discovered provider variant; fields are never combined across
+// variants or inferred by a connector.
+type AgentSelection struct {
+	Provider        Provider         `json:"provider"`
+	Model           string           `json:"model"`
+	Effort          string           `json:"effort"`
+	Mode            string           `json:"mode"`
+	PermissionMode  string           `json:"permissionMode"`
+	ProviderOptions []ProviderOption `json:"providerOptions"`
+	MCPCapabilities []MCPCapability  `json:"mcpCapabilities"`
+}
+
+// AgentProfile records one primary selection and an explicitly ordered
+// fallback chain. FallbackChain is required in configuration and is empty by
+// default; Director never manufactures entries.
+type AgentProfile struct {
+	AgentSelection
+	FallbackChain []AgentSelection `json:"fallbackChain"`
+}
+
+// AgentProfiles keeps the optional planning context, Task Worker, and
+// independent Reviewer policies distinct. Organizer is a profile for a
+// non-authoritative planning context; it does not turn the Organizer
+// repository into an agent or grant lifecycle authority.
 type AgentProfiles struct {
-	TaskAgent     AgentProfile `json:"taskAgent"`
-	ReviewerAgent AgentProfile `json:"reviewerAgent"`
+	Organizer AgentProfile `json:"organizer"`
+	Worker    AgentProfile `json:"worker"`
+	Reviewer  AgentProfile `json:"reviewer"`
 }
 
 // Limits records Project-level capacity defaults. This package validates only
@@ -221,6 +267,17 @@ func Schema() []byte {
 	return slices.Clone(embeddedSchema)
 }
 
+// SchemaSHA256 identifies the canonical closed Organizer configuration
+// contract so generated consumers and tests detect profile-schema drift.
+func SchemaSHA256() (string, error) {
+	canonical, err := jsondocument.Canonical(embeddedSchema)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
+}
+
 // CanonicalJSON returns a defensive copy of the validated canonical document.
 func (document Document) CanonicalJSON() []byte {
 	return slices.Clone(document.canonical)
@@ -238,9 +295,27 @@ func (document Document) Configuration() Configuration {
 
 func cloneConfiguration(value Configuration) Configuration {
 	value.Workspaces = slices.Clone(value.Workspaces)
+	value.AgentProfiles.Organizer = cloneAgentProfile(value.AgentProfiles.Organizer)
+	value.AgentProfiles.Worker = cloneAgentProfile(value.AgentProfiles.Worker)
+	value.AgentProfiles.Reviewer = cloneAgentProfile(value.AgentProfiles.Reviewer)
 	value.WorkspaceOverrides = cloneWorkspaceOverrides(value.WorkspaceOverrides)
 	value.Skills = slices.Clone(value.Skills)
 	value.Templates = slices.Clone(value.Templates)
+	return value
+}
+
+func cloneAgentSelection(value AgentSelection) AgentSelection {
+	value.ProviderOptions = slices.Clone(value.ProviderOptions)
+	value.MCPCapabilities = slices.Clone(value.MCPCapabilities)
+	return value
+}
+
+func cloneAgentProfile(value AgentProfile) AgentProfile {
+	value.AgentSelection = cloneAgentSelection(value.AgentSelection)
+	value.FallbackChain = slices.Clone(value.FallbackChain)
+	for index := range value.FallbackChain {
+		value.FallbackChain[index] = cloneAgentSelection(value.FallbackChain[index])
+	}
 	return value
 }
 
@@ -437,18 +512,138 @@ func validSourcePath(value string) bool {
 		strings.IndexFunc(value, unsafeWhitespaceOrControl) < 0
 }
 
-func validateProfile(path string, profile AgentProfile, issues *[]Issue) {
-	if profile.Provider != ProviderCodex && profile.Provider != ProviderClaudeCode && profile.Provider != ProviderOpenCode {
+func validProviderOption(option ProviderOption) bool {
+	switch option.Name {
+	case ProviderOptionNetworkAccess, ProviderOptionNativeWebSearch:
+		return option.Value == "disabled" || option.Value == "enabled"
+	case ProviderOptionReasoningSummary:
+		return option.Value == "disabled" || option.Value == "concise" || option.Value == "detailed"
+	default:
+		return false
+	}
+}
+
+func capabilityAllowed(role string, capability MCPCapability) bool {
+	switch role {
+	case "organizer":
+		return capability == MCPProjectRead || capability == MCPPlanningCommandSubmit
+	case "worker":
+		return capability == MCPProjectRead || capability == MCPTaskRead || capability == MCPTaskOutcomeSubmit
+	case "reviewer":
+		return capability == MCPCandidateRead || capability == MCPReviewVerdictSubmit
+	default:
+		return false
+	}
+}
+
+func requiredCapabilities(role string) []MCPCapability {
+	switch role {
+	case "organizer":
+		return []MCPCapability{MCPProjectRead, MCPPlanningCommandSubmit}
+	case "worker":
+		return []MCPCapability{MCPTaskRead, MCPTaskOutcomeSubmit}
+	case "reviewer":
+		return []MCPCapability{MCPCandidateRead, MCPReviewVerdictSubmit}
+	default:
+		return nil
+	}
+}
+
+func selectionKey(selection AgentSelection) string {
+	selection.ProviderOptions = slices.Clone(selection.ProviderOptions)
+	sort.Slice(selection.ProviderOptions, func(left, right int) bool {
+		if selection.ProviderOptions[left].Name != selection.ProviderOptions[right].Name {
+			return selection.ProviderOptions[left].Name < selection.ProviderOptions[right].Name
+		}
+		return selection.ProviderOptions[left].Value < selection.ProviderOptions[right].Value
+	})
+	selection.MCPCapabilities = slices.Clone(selection.MCPCapabilities)
+	sort.Slice(selection.MCPCapabilities, func(left, right int) bool {
+		return selection.MCPCapabilities[left] < selection.MCPCapabilities[right]
+	})
+	encoded, _ := json.Marshal(selection)
+	return string(encoded)
+}
+
+func validateSelection(path, role string, selection AgentSelection, issues *[]Issue) {
+	if selection.Provider != ProviderCodex && selection.Provider != ProviderClaudeCode && selection.Provider != ProviderOpenCode {
 		*issues = append(*issues, issue("provider_unsupported", path+".provider", "provider must be codex, claude-code, or opencode"))
 	}
 	for field, value := range map[string]string{
-		"model":          profile.Model,
-		"effort":         profile.Effort,
-		"permissionMode": profile.PermissionMode,
+		"model": selection.Model, "effort": selection.Effort, "mode": selection.Mode,
+		"permissionMode": selection.PermissionMode,
 	} {
 		if !validToken(value) {
 			*issues = append(*issues, issue("token_invalid", path+"."+field, "value must be a bounded provider token"))
 		}
+	}
+	if selection.PermissionMode != "read-only" && selection.PermissionMode != "workspace-write" {
+		*issues = append(*issues, issue("permission_mode_unsupported", path+".permissionMode", "permission mode must be read-only or workspace-write"))
+	}
+	if role == "reviewer" && selection.PermissionMode != "read-only" {
+		*issues = append(*issues, issue("reviewer_permission_expansion", path+".permissionMode", "Reviewer permission mode must be read-only"))
+	}
+	if role == "organizer" && selection.PermissionMode != "read-only" {
+		*issues = append(*issues, issue("organizer_permission_expansion", path+".permissionMode", "Organizer planning context permission mode must be read-only"))
+	}
+	if selection.ProviderOptions == nil {
+		*issues = append(*issues, issue("field_required", path+".providerOptions", "an explicit provider option array is required"))
+	}
+	if len(selection.ProviderOptions) > 16 {
+		*issues = append(*issues, issue("provider_option_count", path+".providerOptions", "at most 16 provider options are permitted"))
+	}
+	optionNames := make(map[ProviderOptionName]struct{}, len(selection.ProviderOptions))
+	for index, option := range selection.ProviderOptions {
+		base := fmt.Sprintf("%s.providerOptions[%d]", path, index)
+		if !validProviderOption(option) {
+			*issues = append(*issues, issue("provider_option_unsupported", base, "provider option name and value must use the closed non-secret vocabulary"))
+		}
+		if _, duplicate := optionNames[option.Name]; duplicate {
+			*issues = append(*issues, issue("provider_option_duplicate", base+".name", "provider option names must be unique"))
+		}
+		optionNames[option.Name] = struct{}{}
+	}
+	if selection.MCPCapabilities == nil {
+		*issues = append(*issues, issue("field_required", path+".mcpCapabilities", "an explicit MCP capability array is required"))
+	}
+	if len(selection.MCPCapabilities) == 0 || len(selection.MCPCapabilities) > 16 {
+		*issues = append(*issues, issue("mcp_capability_count", path+".mcpCapabilities", "between 1 and 16 MCP capabilities are required"))
+	}
+	capabilities := make(map[MCPCapability]struct{}, len(selection.MCPCapabilities))
+	for index, capability := range selection.MCPCapabilities {
+		base := fmt.Sprintf("%s.mcpCapabilities[%d]", path, index)
+		if !capabilityAllowed(role, capability) {
+			*issues = append(*issues, issue("mcp_capability_forbidden", base, "MCP capability is not permitted for this role"))
+		}
+		if _, duplicate := capabilities[capability]; duplicate {
+			*issues = append(*issues, issue("mcp_capability_duplicate", base, "MCP capabilities must be unique"))
+		}
+		capabilities[capability] = struct{}{}
+	}
+	for _, required := range requiredCapabilities(role) {
+		if _, present := capabilities[required]; !present {
+			*issues = append(*issues, issue("mcp_capability_required", path+".mcpCapabilities", "role-required MCP capability is missing"))
+		}
+	}
+}
+
+func validateProfile(path, role string, profile AgentProfile, issues *[]Issue) {
+	validateSelection(path, role, profile.AgentSelection, issues)
+	if profile.FallbackChain == nil {
+		*issues = append(*issues, issue("field_required", path+".fallbackChain", "an explicit ordered fallback array is required"))
+	}
+	if len(profile.FallbackChain) > 8 {
+		*issues = append(*issues, issue("fallback_count", path+".fallbackChain", "at most eight explicit fallbacks are permitted"))
+	}
+	seen := map[string]struct{}{selectionKey(profile.AgentSelection): {}}
+	for index, fallback := range profile.FallbackChain {
+		base := fmt.Sprintf("%s.fallbackChain[%d]", path, index)
+		validateSelection(base, role, fallback, issues)
+		key := selectionKey(fallback)
+		if _, duplicate := seen[key]; duplicate {
+			*issues = append(*issues, issue("fallback_duplicate", base, "fallback selections must be unique and cannot repeat the primary"))
+		}
+		seen[key] = struct{}{}
 	}
 }
 
@@ -608,8 +803,9 @@ func validate(value Configuration) error {
 			issues = append(issues, issue("base_branch_invalid", base+".defaultBaseBranch", "default base branch is not a safe Git branch name"))
 		}
 	}
-	validateProfile("$.agentProfiles.taskAgent", value.AgentProfiles.TaskAgent, &issues)
-	validateProfile("$.agentProfiles.reviewerAgent", value.AgentProfiles.ReviewerAgent, &issues)
+	validateProfile("$.agentProfiles.organizer", "organizer", value.AgentProfiles.Organizer, &issues)
+	validateProfile("$.agentProfiles.worker", "worker", value.AgentProfiles.Worker, &issues)
+	validateProfile("$.agentProfiles.reviewer", "reviewer", value.AgentProfiles.Reviewer, &issues)
 	if value.Defaults.LaunchPolicy != LaunchManual && value.Defaults.LaunchPolicy != LaunchAutomatic {
 		issues = append(issues, issue("launch_policy_invalid", "$.defaults.launchPolicy", "Project launch policy must be manual or automatic"))
 	}

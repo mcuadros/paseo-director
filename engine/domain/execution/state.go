@@ -2,6 +2,8 @@
 
 package execution
 
+import "github.com/mcuadros/director-engine/domain/agentprofile"
+
 const SchemaVersion = "director.execution/v1"
 
 const StartupReconciliationSchemaVersion = "director.startup-reconciliation/v1"
@@ -169,6 +171,8 @@ type State struct {
 	LifecycleDigest                  string                   `json:"lifecycleDigest,omitempty"`
 	LifecycleApproval                *LifecycleApproval       `json:"lifecycleApproval,omitempty"`
 	IsolationDigest                  string                   `json:"isolationDigest,omitempty"`
+	EffectiveProfiles                *agentprofile.FrozenSet  `json:"effectiveProfiles,omitempty"`
+	EffectiveProfilesSHA256          string                   `json:"effectiveProfilesSha256,omitempty"`
 	Isolation                        IsolationObservation     `json:"isolation,omitempty"`
 	OperationalPolicy                OperationalPolicy        `json:"operationalPolicy,omitempty"`
 	LifecycleSurfaces                LifecycleSurfaces        `json:"lifecycleSurfaces,omitempty"`

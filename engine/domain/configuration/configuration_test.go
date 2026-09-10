@@ -98,17 +98,35 @@ func validConfigurationJSON() []byte {
     }
   ],
   "agentProfiles": {
-    "taskAgent": {
+    "organizer": {
       "provider": "codex",
       "model": "gpt-5.6",
       "effort": "high",
-      "permissionMode": "workspace-write"
+      "mode": "default",
+      "permissionMode": "read-only",
+      "providerOptions": [],
+      "mcpCapabilities": ["project.read", "planning.command.submit"],
+      "fallbackChain": []
     },
-    "reviewerAgent": {
+    "worker": {
+      "provider": "codex",
+      "model": "gpt-5.6",
+      "effort": "high",
+      "mode": "default",
+      "permissionMode": "workspace-write",
+      "providerOptions": [],
+      "mcpCapabilities": ["project.read", "task.read", "task.outcome.submit"],
+      "fallbackChain": []
+    },
+    "reviewer": {
       "provider": "claude-code",
       "model": "sonnet-4.6",
       "effort": "high",
-      "permissionMode": "read-only"
+      "mode": "default",
+      "permissionMode": "read-only",
+      "providerOptions": [],
+      "mcpCapabilities": ["candidate.read", "review.verdict.submit"],
+      "fallbackChain": []
     }
   },
   "defaults": {
@@ -232,6 +250,10 @@ func TestParseValidConfigurationIsCanonicalAndDefensive(t *testing.T) {
 }
 
 func TestSchemaIsPublishedClosedAndVersioned(t *testing.T) {
+	hash, err := SchemaSHA256()
+	if err != nil || hash != "74f76edc3a0cc01fbebe4f4ecacea0e7b6287d2a492847fc96ece0ba76a58fd9" {
+		t.Fatalf("configuration schema hash = %q: %v", hash, err)
+	}
 	var schema struct {
 		ID                   string   `json:"$id"`
 		Dialect              string   `json:"$schema"`
@@ -261,6 +283,72 @@ func TestSchemaIsPublishedClosedAndVersioned(t *testing.T) {
 	}
 	if schema.Properties["schemaVersion"].Const != float64(SchemaVersion) {
 		t.Fatalf("schemaVersion const = %#v", schema.Properties["schemaVersion"].Const)
+	}
+}
+
+func TestAgentProfileSchemaIsClosedRoleScopedAndFallbackExplicit(t *testing.T) {
+	var schema struct {
+		Definitions map[string]struct {
+			AdditionalProperties *bool    `json:"additionalProperties"`
+			Required             []string `json:"required"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(Schema(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, definition := range []string{"providerOption", "agentSelection", "agentProfile", "agentProfiles"} {
+		current := schema.Definitions[definition]
+		if current.AdditionalProperties == nil || *current.AdditionalProperties {
+			t.Fatalf("schema definition %s is not closed", definition)
+		}
+	}
+	for _, field := range []string{"mode", "providerOptions", "mcpCapabilities", "fallbackChain"} {
+		if !slices.Contains(schema.Definitions["agentProfile"].Required, field) {
+			t.Fatalf("agentProfile does not require %s", field)
+		}
+	}
+
+	valid := string(validConfigurationJSON())
+	tests := []struct {
+		name  string
+		input string
+		code  string
+	}{
+		{"missing explicit fallback", strings.Replace(valid, ",\n      \"fallbackChain\": []", "", 1), "field_required"},
+		{"Organizer permission expansion", strings.Replace(valid, `"permissionMode": "read-only"`, `"permissionMode": "workspace-write"`, 1), "organizer_permission_expansion"},
+		{"Reviewer capability expansion", strings.Replace(valid, `"candidate.read"`, `"task.read"`, 1), "mcp_capability_forbidden"},
+		{"credential-shaped option is unrepresentable", strings.Replace(valid, `"providerOptions": []`, `"providerOptions": [{"name":"apiToken","value":"redacted"}]`, 1), "provider_option_unsupported"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			issues := issuesFor(t, []byte(test.input))
+			if !containsIssue(issues, test.code) {
+				t.Fatalf("issues = %#v, want %s", issues, test.code)
+			}
+		})
+	}
+
+	document, err := Parse(validConfigurationJSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := document.Configuration()
+	configuration.AgentProfiles.Worker.FallbackChain = []AgentSelection{configuration.AgentProfiles.Worker.AgentSelection}
+	encoded, err := json.Marshal(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := issuesFor(t, encoded)
+	if !containsIssue(issues, "fallback_duplicate") {
+		t.Fatalf("duplicate fallback issues = %#v", issues)
+	}
+
+	configuration = document.Configuration()
+	configuration.AgentProfiles.Worker.MCPCapabilities[0] = MCPReviewVerdictSubmit
+	configuration.AgentProfiles.Worker.ProviderOptions = append(configuration.AgentProfiles.Worker.ProviderOptions, ProviderOption{Name: ProviderOptionNetworkAccess, Value: "enabled"})
+	fresh := document.Configuration()
+	if fresh.AgentProfiles.Worker.MCPCapabilities[0] != MCPProjectRead || len(fresh.AgentProfiles.Worker.ProviderOptions) != 0 {
+		t.Fatal("Configuration() exposed mutable profile slices")
 	}
 }
 

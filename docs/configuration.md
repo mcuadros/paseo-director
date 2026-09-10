@@ -43,17 +43,37 @@ This is a complete minimal document:
     }
   ],
   "agentProfiles": {
-    "taskAgent": {
+    "organizer": {
       "provider": "codex",
       "model": "gpt-5.6",
       "effort": "high",
-      "permissionMode": "workspace-write"
+      "mode": "default",
+      "permissionMode": "read-only",
+      "providerOptions": [],
+      "mcpCapabilities": ["project.read", "planning.command.submit"],
+      "fallbackChain": []
     },
-    "reviewerAgent": {
+    "worker": {
+      "provider": "codex",
+      "model": "gpt-5.6",
+      "effort": "high",
+      "mode": "default",
+      "permissionMode": "workspace-write",
+      "providerOptions": [
+        {"name": "networkAccess", "value": "disabled"}
+      ],
+      "mcpCapabilities": ["project.read", "task.read", "task.outcome.submit"],
+      "fallbackChain": []
+    },
+    "reviewer": {
       "provider": "opencode",
       "model": "reviewer-1",
       "effort": "high",
-      "permissionMode": "read-only"
+      "mode": "default",
+      "permissionMode": "read-only",
+      "providerOptions": [],
+      "mcpCapabilities": ["candidate.read", "review.verdict.submit"],
+      "fallbackChain": []
     }
   },
   "defaults": {
@@ -108,8 +128,9 @@ both submitted and canonical output are limited to 2,048 UTF-8 bytes. Every
 accepted canonical output reparses to the identical canonical value, key, and
 repository ID; an expanding normalization which would cross the limit is
 rejected rather than truncated. Repeated `.git` suffix chains, ambiguous IPv4,
-and malformed embedded-IPv4 IPv6 forms are rejected; profile tokens and provider families
-are closed; capacity and Run budgets are finite and internally consistent;
+and malformed embedded-IPv4 IPv6 forms are rejected; profile tokens, provider
+families, non-secret provider option names/values, and MCP capability IDs are
+closed; capacity and Run budgets are finite and internally consistent;
 Workspace overrides name a declared Workspace and select `inherit`
 or a concrete value; and skill/template paths are clean relative paths in their
 declared Organizer directories. Source and reference paths reject whitespace
@@ -195,6 +216,11 @@ human-confirmed invalid revision, cannot affect a new or existing Run.
 `Effective` resolves a frozen Workspace and Task override from that snapshot;
 an invalid, inconsistent, unknown-Workspace, or envelope-expanding override is
 refused rather than repaired or inherited silently.
+
+The active snapshot is also the sole configuration input to the profile
+resolver described in [Agent profiles and provider discovery](agent-profiles.md).
+Only that engine resolver may match normalized provider facts, walk an explicit
+fallback chain, or freeze a provider choice into a Run.
 
 ## Create and Adopt Organizer
 
