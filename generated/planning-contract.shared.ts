@@ -8,7 +8,7 @@ import { z } from "zod";
 
 export const PLANNING_SCHEMA_VERSION = 1 as const;
 export const PLANNING_CONTRACT_VERSION = "director-planning/v1" as const;
-export const PLANNING_CONTRACT_SHA256 = "729791418f1ac075e4adb07b956f27007eab0ee83644cbcf1070fa33c9d51fd8" as const;
+export const PLANNING_CONTRACT_SHA256 = "464826be2f264aa6a36cbeaae03ea276f91b19bc352e32b108fadaecdcba1e04" as const;
 export const PLANNING_QUERY_NAMES = [
   "planning.query",
   "planning.task-detail",
@@ -169,6 +169,35 @@ export const taskQueueFactsSchema = z.strictObject({
   explanations: z.array(explanationSchema).max(64).readonly(),
 });
 
+export const budgetDimensionSummarySchema = z.strictObject({
+  dimension: z.enum(["wall_time", "tokens", "turns", "cost"]),
+  enabled: z.boolean(),
+  consumed: uint64DecimalSchema,
+  reserved: uint64DecimalSchema,
+  limit: uint64DecimalSchema,
+  ratioBasisPoints: uint64DecimalSchema,
+});
+
+export const budgetCountSummarySchema = z.strictObject({
+  dimension: z.enum(["correction_attempts", "ci_cycles", "replacement_attempts", "setup_attempts"]),
+  consumed: uint64DecimalSchema,
+  reserved: uint64DecimalSchema,
+  limit: uint64DecimalSchema,
+});
+
+export const runtimeBudgetSummarySchema = z.strictObject({
+  policyRevision: opaquePlanningIdSchema,
+  state: z.enum(["current", "soft_paused", "hard_exhausted", "unavailable", "ambiguous", "fail_closed"]),
+  softThresholdBasisPoints: uint64DecimalSchema,
+  dimensions: z.array(budgetDimensionSummarySchema).length(4).readonly(),
+  counts: z.array(budgetCountSummarySchema).length(4).readonly(),
+  workerTurns: uint64DecimalSchema,
+  helperTurns: uint64DecimalSchema,
+  reviewerTurns: uint64DecimalSchema,
+  correctionTurns: uint64DecimalSchema,
+  reasonCode: opaquePlanningIdSchema.nullable(),
+});
+
 export const taskSummarySchema = z.strictObject({
   id: opaquePlanningIdSchema,
   projectId: opaquePlanningIdSchema,
@@ -185,6 +214,7 @@ export const taskSummarySchema = z.strictObject({
   needsYou: z.array(explanationSchema).max(64).readonly(),
   allowedActions: z.array(allowedActionSchema).max(16).readonly(),
   schedulingFacts: taskQueueFactsSchema,
+  runtimeBudget: runtimeBudgetSummarySchema.nullable(),
 });
 
 export const capacityFactsSchema = z.strictObject({

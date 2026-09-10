@@ -198,6 +198,20 @@ export type HostObservationStatus =
   | "ambiguous"
   | "unavailable";
 
+export type HostUsageState = "current" | "unavailable" | "ambiguous";
+
+export interface HostProviderUsage {
+  state: HostUsageState;
+  sourceRevision?: string;
+  inputTokensPresent: boolean;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokensPresent: boolean;
+  outputTokens: number;
+  costMicrousdPresent: boolean;
+  costMicrousd: number;
+}
+
 export interface HostObservationResult {
   effectId: string;
   status: HostObservationStatus;
@@ -206,6 +220,7 @@ export interface HostObservationResult {
   correlationHash?: string;
   priorDispatcherAbsent: boolean;
   maximumAgeMillis: number;
+  usage?: Readonly<HostProviderUsage>;
   factHash: string;
 }
 

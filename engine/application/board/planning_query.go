@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mcuadros/director-engine/domain"
+	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	"github.com/mcuadros/director-engine/domain/scheduling"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 	"github.com/mcuadros/director-engine/projection"
@@ -217,6 +218,13 @@ func (reader *PlanningReader) loadFacts(ctx context.Context) (planningFacts, err
 				QueuedAtUnixMillis: task.QueuedAtUnixMillis, UpdatedAtUnixMillis: updatedAt,
 				Facts: taskStateFacts(task, dependency.Blocked, run, candidate),
 			}
+			if run != nil && runtimebudget.ValidLedger(run.Execution.Budget) {
+				budget := run.Execution.Budget
+				input.Budget = &budget
+				if run.Execution.NeedsYou != nil && strings.HasPrefix(string(run.Execution.NeedsYou.Code), "budget_") {
+					input.BudgetNeedCode = string(run.Execution.NeedsYou.Code)
+				}
+			}
 			projectFacts.inputs = append(projectFacts.inputs, input)
 			projected := projection.DeriveTaskProjection(input.Facts)
 			projectFacts.counts.add(projected)
@@ -357,6 +365,109 @@ func launchMode(workspaces map[string]domain.Workspace, workspaceID string) stri
 	return "automatic"
 }
 
+func decimalSum(left, right uint64) string {
+	if ^uint64(0)-left < right {
+		return strconv.FormatUint(^uint64(0), 10)
+	}
+	return strconv.FormatUint(left+right, 10)
+}
+
+func runtimeBudgetSummary(input projection.TaskProjectionInput) *planningport.RuntimeBudgetSummary {
+	if input.Budget == nil || !runtimebudget.ValidLedger(*input.Budget) {
+		return nil
+	}
+	ledger := *input.Budget
+	reserved, counts, ok := runtimebudget.Outstanding(ledger)
+	if !ok {
+		return nil
+	}
+	state := "current"
+	switch ledger.TelemetryState {
+	case runtimebudget.UsageUnavailable:
+		state = "unavailable"
+	case runtimebudget.UsageAmbiguous:
+		state = "ambiguous"
+	}
+	if input.BudgetNeedCode != "" {
+		if strings.Contains(input.BudgetNeedCode, "soft_limit") {
+			state = "soft_paused"
+		} else if strings.Contains(input.BudgetNeedCode, "exhausted") {
+			state = "hard_exhausted"
+		} else {
+			state = "fail_closed"
+		}
+	}
+	type dimension struct {
+		name     runtimebudget.Dimension
+		enabled  bool
+		consumed uint64
+		reserved uint64
+		limit    uint64
+	}
+	dimensions := []dimension{
+		{runtimebudget.DimensionWallTime, true, ledger.Consumption.WallTimeMilliseconds, reserved.WallTimeMilliseconds, ledger.Policy.WallTimeLimitMilliseconds},
+		{runtimebudget.DimensionTokens, true, ledger.Consumption.Tokens, reserved.Tokens, ledger.Policy.TokenLimit},
+		{runtimebudget.DimensionTurns, true, ledger.Consumption.Turns, reserved.Turns, ledger.Policy.TurnLimit},
+		{runtimebudget.DimensionCost, ledger.Policy.CostLimitMicrousd > 0, ledger.Consumption.CostMicrousd, reserved.CostMicrousd, ledger.Policy.CostLimitMicrousd},
+	}
+	projectedDimensions := make([]planningport.BudgetDimensionSummary, 0, len(dimensions))
+	for _, current := range dimensions {
+		measured := current.consumed
+		if ^uint64(0)-measured >= current.reserved {
+			measured += current.reserved
+		} else {
+			measured = ^uint64(0)
+		}
+		ratio := uint64(0)
+		if current.enabled {
+			ratio = runtimebudget.RatioBasisPoints(measured, current.limit)
+		}
+		projectedDimensions = append(projectedDimensions, planningport.BudgetDimensionSummary{
+			Dimension: string(current.name), Enabled: current.enabled,
+			Consumed: strconv.FormatUint(current.consumed, 10), Reserved: strconv.FormatUint(current.reserved, 10),
+			Limit: strconv.FormatUint(current.limit, 10), RatioBasisPoints: strconv.FormatUint(ratio, 10),
+		})
+	}
+	countRows := []struct {
+		name               string
+		consumed, reserved uint32
+		limit              uint32
+	}{
+		{"correction_attempts", ledger.Consumption.CorrectionAttempts, counts.CorrectionAttempts, ledger.Policy.CorrectionLimit},
+		{"ci_cycles", ledger.Consumption.CICycles, counts.CICycles, ledger.Policy.CICycleLimit},
+		{"replacement_attempts", ledger.Consumption.ReplacementAttempts, counts.ReplacementAttempts, ledger.Policy.ReplacementLimit},
+		{"setup_attempts", ledger.Consumption.SetupAttempts, counts.SetupAttempts, ledger.Policy.SetupAttemptLimit},
+	}
+	projectedCounts := make([]planningport.BudgetCountSummary, 0, len(countRows))
+	for _, current := range countRows {
+		projectedCounts = append(projectedCounts, planningport.BudgetCountSummary{
+			Dimension: current.name, Consumed: strconv.FormatUint(uint64(current.consumed), 10),
+			Reserved: strconv.FormatUint(uint64(current.reserved), 10), Limit: strconv.FormatUint(uint64(current.limit), 10),
+		})
+	}
+	turns := map[runtimebudget.Activity]uint64{}
+	for _, observation := range ledger.ProviderSnapshots {
+		if observation.State == runtimebudget.UsageCurrent {
+			turns[observation.Activity]++
+		}
+	}
+	var reason *string
+	if input.BudgetNeedCode != "" {
+		value := input.BudgetNeedCode
+		reason = &value
+	}
+	return &planningport.RuntimeBudgetSummary{
+		PolicyRevision: ledger.Policy.Revision, State: state,
+		SoftThresholdBasisPoints: strconv.FormatUint(ledger.Policy.SoftThresholdBasisPoints, 10),
+		Dimensions:               projectedDimensions, Counts: projectedCounts,
+		WorkerTurns:     decimalSum(turns[runtimebudget.ActivityWorkerBootstrap], turns[runtimebudget.ActivityWorkerTurn]),
+		HelperTurns:     strconv.FormatUint(turns[runtimebudget.ActivityHelperTurn], 10),
+		ReviewerTurns:   strconv.FormatUint(turns[runtimebudget.ActivityReviewerTurn], 10),
+		CorrectionTurns: strconv.FormatUint(turns[runtimebudget.ActivityCorrectionTurn], 10),
+		ReasonCode:      reason,
+	}
+}
+
 func taskSummary(row projection.TaskProjectionRow, input projection.TaskProjectionInput, workspaces map[string]domain.Workspace, cursor string) planningport.TaskSummary {
 	state := string(row.Projection.State)
 	if row.Projection.DoneMember {
@@ -386,6 +497,7 @@ func taskSummary(row projection.TaskProjectionRow, input projection.TaskProjecti
 			LaunchMode: launchMode(workspaces, row.WorkspaceID), LaunchDisposition: disposition,
 			FactsRevision: cursor, Explanations: explanations,
 		},
+		RuntimeBudget: runtimeBudgetSummary(input),
 	}
 }
 

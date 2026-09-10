@@ -4,7 +4,7 @@
 // This generated boundary contains transport types only and owns no policy.
 
 export const HOST_CONTRACT_VERSION = "director-host/v1" as const;
-export const HOST_CONTRACT_SHA256 = "267d2b2ac63df875c9e9e94198175a8e82fbeacb78b663d4b426bc2fb0f2d7d6" as const;
+export const HOST_CONTRACT_SHA256 = "c0cdb03203f7c988c7e573c32e28133c4387b23b5c6e6d57a4974e460d95e610" as const;
 export const HOST_CREDENTIAL_SCOPE = "full-daemon-operator" as const;
 export const HOST_CAPABILITIES = [
   "executionWorkspace.createManaged",
@@ -177,6 +177,20 @@ export type HostObservationStatus =
   | "ambiguous"
   | "unavailable";
 
+export type HostUsageState = "current" | "unavailable" | "ambiguous";
+
+export interface HostProviderUsage {
+  state: HostUsageState;
+  sourceRevision?: string;
+  inputTokensPresent: boolean;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokensPresent: boolean;
+  outputTokens: number;
+  costMicrousdPresent: boolean;
+  costMicrousd: number;
+}
+
 export interface HostObservationResult {
   effectId: string;
   status: HostObservationStatus;
@@ -185,6 +199,7 @@ export interface HostObservationResult {
   correlationHash?: string;
   priorDispatcherAbsent: boolean;
   maximumAgeMillis: number;
+  usage?: Readonly<HostProviderUsage>;
   factHash: string;
 }
 

@@ -41,11 +41,17 @@ const (
 	CodeDependencyWait            Code = "dependency_wait"
 	CodeDuplicateActiveRun        Code = "duplicate_active_run"
 	CodeTimeBudgetUnavailable     Code = "time_budget_unavailable"
+	CodeTokenBudgetUnavailable    Code = "token_budget_unavailable"
+	CodeTurnBudgetUnavailable     Code = "turn_budget_unavailable"
 	CodeCostBudgetUnavailable     Code = "cost_budget_unavailable"
 	CodeCIBudgetUnavailable       Code = "ci_budget_unavailable"
 	CodeTimeSoftBudget            Code = "time_soft_budget_acknowledgement_required"
+	CodeTokenSoftBudget           Code = "token_soft_budget_acknowledgement_required"
+	CodeTurnSoftBudget            Code = "turn_soft_budget_acknowledgement_required"
 	CodeCostSoftBudget            Code = "cost_soft_budget_acknowledgement_required"
 	CodeTimeHardBudget            Code = "time_hard_budget_exhausted"
+	CodeTokenHardBudget           Code = "token_hard_budget_exhausted"
+	CodeTurnHardBudget            Code = "turn_hard_budget_exhausted"
 	CodeCostHardBudget            Code = "cost_hard_budget_exhausted"
 	CodeCIHardBudget              Code = "ci_hard_budget_exhausted"
 	CodeProjectCapacity           Code = "project_task_capacity_exhausted"
@@ -61,8 +67,10 @@ func Codes() []Code {
 		CodeDiskUnavailable, CodeDiskLimit, CodeProviderUnavailable, CodeProviderNotAdmitted,
 		CodeTaskIncomplete, CodeOrganizerUnapproved, CodePreflightNotReady,
 		CodeManualPolicyWait, CodeDependencyWait, CodeDuplicateActiveRun,
-		CodeTimeBudgetUnavailable, CodeCostBudgetUnavailable, CodeCIBudgetUnavailable,
-		CodeTimeSoftBudget, CodeCostSoftBudget, CodeTimeHardBudget, CodeCostHardBudget,
+		CodeTimeBudgetUnavailable, CodeTokenBudgetUnavailable, CodeTurnBudgetUnavailable,
+		CodeCostBudgetUnavailable, CodeCIBudgetUnavailable,
+		CodeTimeSoftBudget, CodeTokenSoftBudget, CodeTurnSoftBudget, CodeCostSoftBudget,
+		CodeTimeHardBudget, CodeTokenHardBudget, CodeTurnHardBudget, CodeCostHardBudget,
 		CodeCIHardBudget, CodeProjectCapacity, CodeWorkspaceCapacity,
 		CodeAgentCapacity, CodeHelperCapacity,
 	}
@@ -309,7 +317,13 @@ func validateTask(task scheduling.TaskFacts, projectPolicy scheduling.LaunchPoli
 	if code := evaluateConsumptiveBudget(task.Budgets.Time, CodeTimeBudgetUnavailable, CodeTimeSoftBudget, CodeTimeHardBudget, guards); code != "" {
 		return code
 	}
-	if code := evaluateConsumptiveBudget(task.Budgets.Cost, CodeCostBudgetUnavailable, CodeCostSoftBudget, CodeCostHardBudget, guards); code != "" {
+	if code := evaluateConsumptiveBudget(task.Budgets.Tokens, CodeTokenBudgetUnavailable, CodeTokenSoftBudget, CodeTokenHardBudget, guards); code != "" {
+		return code
+	}
+	if code := evaluateConsumptiveBudget(task.Budgets.Turns, CodeTurnBudgetUnavailable, CodeTurnSoftBudget, CodeTurnHardBudget, guards); code != "" {
+		return code
+	}
+	if code := evaluateOptionalConsumptiveBudget(task.Budgets.Cost, CodeCostBudgetUnavailable, CodeCostSoftBudget, CodeCostHardBudget, guards); code != "" {
 		return code
 	}
 	return evaluateHardBudget(task.Budgets.CI, CodeCIBudgetUnavailable, CodeCIHardBudget, guards)
@@ -465,6 +479,17 @@ func evaluateConsumptiveBudget(budget scheduling.Budget, unavailable, soft, hard
 		}
 	}
 	return ""
+}
+
+func evaluateOptionalConsumptiveBudget(budget scheduling.Budget, unavailable, soft, hard Code, guards guardSet) Code {
+	if budget.State == scheduling.BudgetDisabled {
+		if budget.Revision == "" && budget.Limit == 0 && budget.Used == 0 && budget.Reserved == 0 && budget.Requested == 0 &&
+			budget.Acknowledgement == scheduling.AcknowledgementNone && budget.AcknowledgedRevision == "" {
+			return ""
+		}
+		return CodeFactsAmbiguous
+	}
+	return evaluateConsumptiveBudget(budget, unavailable, soft, hard, guards)
 }
 
 func evaluateHardBudget(budget scheduling.Budget, unavailable, hard Code, guards guardSet) Code {

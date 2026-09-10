@@ -11,6 +11,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/execution"
+	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 	"github.com/mcuadros/director-engine/projection"
 )
@@ -19,6 +20,80 @@ func planningQueryInput() planningport.QueryInput {
 	return planningport.QueryInput{
 		WorkspaceIDs: []string{}, EpicIDs: []string{}, States: []string{}, Priorities: []string{},
 		Labels: []string{}, Attention: []string{}, Sort: string(projection.TaskSortSchedulerOrder), PageSize: planningport.MaximumPageSize,
+	}
+}
+
+func TestPlanningReaderProjectsRuntimeBudgetForOrganizerVisibility(t *testing.T) {
+	store := planningScaleStore()
+	policy := runtimebudget.NewPolicy("configuration-revision", 100_000, 100, 10, 0, 4)
+	ledger, err := runtimebudget.NewLedger(policy, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := runtimebudget.ReserveRequest{
+		ID: "reservation-worker", EffectID: "effect-worker", Activity: runtimebudget.ActivityWorkerTurn,
+		LeaseEpoch: 1, PolicyRevision: policy.Revision,
+		Demand: runtimebudget.Demand{WallTimeMilliseconds: 100, Tokens: 10, Turns: 1},
+	}
+	ledger, decision, err := runtimebudget.Reserve(ledger, request, 0)
+	if err != nil || decision.Disposition != runtimebudget.DispositionAllow {
+		t.Fatal(decision, err)
+	}
+	usage := runtimebudget.ProviderObservation{
+		ID: "usage-worker", EffectID: request.EffectID, AgentID: "agent-worker",
+		Activity: request.Activity, LeaseEpoch: 1, PolicyRevision: policy.Revision,
+		Sequence: 1, ObservedAtMillis: 1,
+		ProviderUsage: runtimebudget.ProviderUsage{
+			State: runtimebudget.UsageCurrent, SourceRevision: "source-worker",
+			InputTokensPresent: true, InputTokens: 84,
+			OutputTokensPresent: true,
+		},
+	}
+	usage.FactHash = runtimebudget.ProviderObservationHash(usage)
+	ledger, decision, err = runtimebudget.ApplyProviderObservation(ledger, usage)
+	if err != nil || decision.Disposition != runtimebudget.DispositionAllow {
+		t.Fatal(decision, err)
+	}
+	_, decision, err = runtimebudget.Reserve(ledger, runtimebudget.ReserveRequest{
+		ID: "reservation-reviewer", EffectID: "effect-reviewer", Activity: runtimebudget.ActivityReviewerTurn,
+		LeaseEpoch: 1, PolicyRevision: policy.Revision,
+		Demand: runtimebudget.Demand{WallTimeMilliseconds: 100, Tokens: 1, Turns: 1},
+	}, 2)
+	if err != nil || decision.Disposition != runtimebudget.DispositionSoftPause {
+		t.Fatal(decision, err)
+	}
+	taskID := store.tasks["project-scale"][1].ID
+	store.runs[taskID] = []domain.Run{{
+		ID: "run-budget", TaskID: taskID, Number: 1,
+		Execution: execution.State{
+			Budget: ledger,
+			NeedsYou: &execution.NeedsYou{
+				Code: execution.NeedCode(decision.Reason), WakeCondition: "human_acknowledges_exact_budget_warning",
+			},
+		},
+	}}
+	input := planningQueryInput()
+	search := "Open task 00002"
+	input.Search = &search
+	result, err := NewPlanningReader(store).Query(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary *planningport.TaskSummary
+	for index := range result.Page.Tasks {
+		if result.Page.Tasks[index].ID == taskID {
+			summary = &result.Page.Tasks[index]
+			break
+		}
+	}
+	if summary == nil || summary.RuntimeBudget == nil {
+		t.Fatalf("runtime budget missing from Organizer projection: %#v", summary)
+	}
+	budget := summary.RuntimeBudget
+	if budget.State != "soft_paused" || budget.ReasonCode == nil || *budget.ReasonCode != string(runtimebudget.ReasonTokensSoft) ||
+		budget.SoftThresholdBasisPoints != "8500" || budget.WorkerTurns != "1" ||
+		len(budget.Dimensions) != 4 || len(budget.Counts) != 4 || budget.Dimensions[1].Consumed != "84" {
+		t.Fatalf("runtime budget summary = %#v", budget)
 	}
 }
 

@@ -126,7 +126,8 @@ func TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect(t
 			},
 		)
 		if err != nil {
-			t.Fatalf("restart %d: %v", restart, err)
+			failed, _ := store.Run(context.Background(), scope.RunID)
+			t.Fatalf("restart %d: %v; run version=%d effects=%#v/%#v/%#v/%#v/%#v/%#v budget=%#v", restart, err, failed.Version, failed.Execution.Worktree, failed.Execution.HostView, failed.Execution.Boundary, failed.Execution.Setup, failed.Execution.Agent, failed.Execution.AgentPrompt, failed.Execution.Budget)
 		}
 		if result.Projects != 1 || result.Tasks != 1 || len(result.Runs) != 1 {
 			t.Fatalf("restart inventory %d = %#v", restart, result)

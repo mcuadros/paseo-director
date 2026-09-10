@@ -26,6 +26,7 @@ import (
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	"github.com/mcuadros/director-engine/domain/execution"
 	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
+	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	"github.com/mcuadros/director-engine/ports/host"
 	"github.com/mcuadros/director-engine/reducer/eligibility"
 )
@@ -350,6 +351,7 @@ func verticalProfiles(t *testing.T) agentprofile.FrozenSet {
 
 func startCommand(t *testing.T, task domain.Task, scope execution.Scope, source, worktree, base string, facts eligibility.Facts) executionapp.StartCommand {
 	t.Helper()
+	profiles := verticalProfiles(t)
 	return executionapp.StartCommand{
 		RequestID: "start-" + scope.RunID, Scope: scope, RunNumber: 1,
 		SourcePath: source, WorktreePath: worktree,
@@ -361,8 +363,12 @@ func startCommand(t *testing.T, task domain.Task, scope execution.Scope, source,
 			Name: "director-session-mcp", Command: "/usr/bin/director-agent-runtime",
 			Args: []string{"serve", "--run", scope.RunID}, Env: map[string]string{},
 		},
-		EffectiveProfiles: verticalProfiles(t),
-		EligibilityFacts:  facts,
+		EffectiveProfiles: profiles,
+		BudgetPolicy: runtimebudget.NewPolicy(
+			profiles.ConfigurationSHA256(), 2*60*60*1_000, 200_000, 32, 0, 4,
+		),
+		TurnBudgetDemand: runtimebudget.Demand{WallTimeMilliseconds: 60_000, Tokens: 1_000, Turns: 1},
+		EligibilityFacts: facts,
 	}
 }
 
@@ -371,11 +377,13 @@ func testNowMillis() int64 { return time.Now().UnixMilli() }
 func runSteps(t *testing.T, store *dolt.DoltTaskStore, environment *fake.Environment, runID string, stop func(domain.Run) bool) domain.Run {
 	t.Helper()
 	ctx := context.Background()
+	var last domain.Run
 	for step := 0; step < 200; step++ {
 		run, err := store.Run(ctx, runID)
 		if err != nil {
 			t.Fatal(err)
 		}
+		last = run
 		if stop(run) {
 			return run
 		}
@@ -398,7 +406,7 @@ func runSteps(t *testing.T, store *dolt.DoltTaskStore, environment *fake.Environ
 			t.Fatalf("step %d: %v", step, err)
 		}
 	}
-	t.Fatal("execution path did not converge")
+	t.Fatalf("execution path did not converge: version=%d needsYou=%#v worktree=%#v host=%#v boundary=%#v setup=%#v agent=%#v prompt=%#v budget=%#v", last.Version, last.Execution.NeedsYou, last.Execution.Worktree, last.Execution.HostView, last.Execution.Boundary, last.Execution.Setup, last.Execution.Agent, last.Execution.AgentPrompt, last.Execution.Budget)
 	return domain.Run{}
 }
 
@@ -577,7 +585,11 @@ func TestPrimaryAgentDispatchIsCASSerializedAcrossConcurrentReconcilers(t *testi
 		t.Fatal(err)
 	}
 	runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
-		return run.Execution.Agent.ID != "" && run.Execution.Agent.Observation != nil &&
+		reserved := false
+		for _, reservation := range run.Execution.Budget.Reservations {
+			reserved = reserved || (reservation.EffectID == run.Execution.Agent.ID && !reservation.Released)
+		}
+		return reserved && run.Execution.Agent.ID != "" && run.Execution.Agent.Observation != nil &&
 			run.Execution.Agent.Observation.Status == execution.ObservationAbsent &&
 			run.Execution.OperationalObservation != nil && !run.Execution.OperationalObservationConsumed &&
 			run.Execution.OperationalObservationRunVersion == run.Version
@@ -724,6 +736,10 @@ func TestTerminalErrorAndPermissionCallbacksSynchronouslyEnqueueThenPark(t *test
 			parked := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool { return run.Execution.NeedsYou != nil })
 			if parked.Execution.NeedsYou.Code != terminal.code || parked.Execution.NeedsYou.CleanupAuthorized {
 				t.Fatalf("terminal park = %#v", parked.Execution.NeedsYou)
+			}
+			if parked.Execution.Budget.Consumption.Turns != 2 || parked.Execution.Budget.Consumption.Tokens != 24 ||
+				len(parked.Execution.Budget.ProviderSnapshots) != 2 {
+				t.Fatalf("terminal usage was not accounted: %#v", parked.Execution.Budget)
 			}
 		})
 	}

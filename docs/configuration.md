@@ -89,7 +89,8 @@ This is a complete minimal document:
       "elapsedSeconds": 7200,
       "tokens": 200000,
       "turns": 32,
-      "ciCycles": 4
+      "ciCycles": 4,
+      "costMicrousd": 5000000
     },
     "autoFixCiFailures": true,
     "autoFixReviewFeedback": true
@@ -130,7 +131,10 @@ repository ID; an expanding normalization which would cross the limit is
 rejected rather than truncated. Repeated `.git` suffix chains, ambiguous IPv4,
 and malformed embedded-IPv4 IPv6 forms are rejected; profile tokens, provider
 families, non-secret provider option names/values, and MCP capability IDs are
-closed; capacity and Run budgets are finite and internally consistent;
+closed; elapsed-time, token, turn, and CI Run budgets are mandatory and finite,
+while `costMicrousd` is an optional exact millionth-of-a-US-dollar ceiling.
+Missing provider cost is never estimated from token pricing; capacity and Run
+budgets are internally consistent;
 Workspace overrides name a declared Workspace and select `inherit`
 or a concrete value; and skill/template paths are clean relative paths in their
 declared Organizer directories. Source and reference paths reject whitespace

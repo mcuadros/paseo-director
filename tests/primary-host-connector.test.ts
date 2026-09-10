@@ -265,6 +265,11 @@ test("public connector creates one host view and one parentless primary then sen
   assert.equal(observedAgent.result.status, "desired");
   assert.equal(observedAgent.result.externalId, agent.id);
   assert.equal(observedAgent.result.correlationHash?.length, 64);
+  assert.deepEqual(observedAgent.result.usage, {
+    state: "unavailable", inputTokensPresent: false, inputTokens: 0,
+    cachedInputTokens: 0, outputTokensPresent: false, outputTokens: 0,
+    costMicrousdPresent: false, costMicrousd: 0,
+  });
 
   const promptArguments: HostCommandArguments = {
     ...createArguments, effectKind: "agent.send_prompt", effectId: "effect-real-prompt",
@@ -282,9 +287,25 @@ test("public connector creates one host view and one parentless primary then sen
 
   agent.status = "idle";
   agent.activeTurn = null;
+  agent.lastUsage = {
+    inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, totalCostUsd: 0.123456,
+  };
   const completedPrompt = await host.invoke(command("agent.observe", promptArguments, replayedPrompt.cursor));
   assert.equal(completedPrompt.result.status, "desired");
   assert.ok(completedPrompt.cursor > replayedPrompt.cursor);
+  assert.deepEqual(completedPrompt.result.usage, {
+    state: "current", sourceRevision: agent.updatedAt, inputTokensPresent: true, inputTokens: 100,
+    cachedInputTokens: 40, outputTokensPresent: true, outputTokens: 20,
+    costMicrousdPresent: true, costMicrousd: 123456,
+  });
+
+  agent.lastUsage = { inputTokens: 1, outputTokens: 2 };
+  const noEstimatedCost = await host.invoke(command("agent.observe", promptArguments, completedPrompt.cursor));
+  assert.equal(noEstimatedCost.result.usage?.state, "current");
+  assert.equal(noEstimatedCost.result.usage?.costMicrousdPresent, false);
+  agent.lastUsage = { inputTokens: 1, outputTokens: 2, totalCostUsd: 0.0000001 };
+  const ambiguousCost = await host.invoke(command("agent.observe", promptArguments, noEstimatedCost.cursor));
+  assert.equal(ambiguousCost.result.usage?.state, "ambiguous");
 
   world.agents.push({
     ...agent,
@@ -295,7 +316,7 @@ test("public connector creates one host view and one parentless primary then sen
   const duplicate = await host.invoke(command("agent.observe", {
     ...createArguments,
     agentId: agent.id,
-  }, completedPrompt.cursor));
+  }, ambiguousCost.cursor));
   assert.equal(duplicate.result.status, "ambiguous");
 });
 

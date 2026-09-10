@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mcuadros/director-engine/domain"
+	"github.com/mcuadros/director-engine/domain/runtimebudget"
 )
 
 var (
@@ -38,17 +39,19 @@ const (
 // TaskProjectionInput combines immutable display/filter metadata with the
 // normalized fact set. It contains no caller-selected state or card position.
 type TaskProjectionInput struct {
-	TaskID              string          `json:"taskId"`
-	ProjectID           string          `json:"projectId"`
-	WorkspaceID         string          `json:"workspaceId"`
-	EpicID              string          `json:"epicId,omitempty"`
-	Key                 string          `json:"key"`
-	Title               string          `json:"title"`
-	Priority            domain.Priority `json:"priority"`
-	Labels              []string        `json:"labels,omitempty"`
-	QueuedAtUnixMillis  int64           `json:"queuedAtUnixMillis"`
-	UpdatedAtUnixMillis int64           `json:"updatedAtUnixMillis"`
-	Facts               TaskStateFacts  `json:"facts"`
+	TaskID              string                `json:"taskId"`
+	ProjectID           string                `json:"projectId"`
+	WorkspaceID         string                `json:"workspaceId"`
+	EpicID              string                `json:"epicId,omitempty"`
+	Key                 string                `json:"key"`
+	Title               string                `json:"title"`
+	Priority            domain.Priority       `json:"priority"`
+	Labels              []string              `json:"labels,omitempty"`
+	QueuedAtUnixMillis  int64                 `json:"queuedAtUnixMillis"`
+	UpdatedAtUnixMillis int64                 `json:"updatedAtUnixMillis"`
+	Facts               TaskStateFacts        `json:"facts"`
+	Budget              *runtimebudget.Ledger `json:"budget,omitempty"`
+	BudgetNeedCode      string                `json:"budgetNeedCode,omitempty"`
 }
 
 // TaskProjectionRow is one derived Board/List query result.

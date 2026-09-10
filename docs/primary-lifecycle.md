@@ -100,7 +100,13 @@ branch/base drift, incomplete workspace registration, profile/MCP drift,
 missing enforcement, or missing/exceeded telemetry stops before another
 mutation and grants no cleanup authority.
 
-Helper creation, runtime budget transitions, pause/cancel/emergency controls,
-Task Agent replacement, Reviewer behavior, and delivery remain owned by their
-later M3/M4 Tasks. The independent m3.10 execution oracle remains test-only;
-this production implementation does not import or duplicate it.
+Every bootstrap and real Task prompt now consumes a lease-fenced reservation
+from the durable Run budget before host dispatch. Exact public provider usage
+is applied at the terminal observation; missing or ambiguous usage parks while
+preserving the existing effect and worktree. The complete thresholds and
+cross-role accounting are documented in [Runtime time and cost budgets](runtime-budgets.md).
+
+Helper creation, pause/cancel/emergency controls, Task Agent replacement,
+Reviewer behavior, and delivery remain owned by their later M3/M4 Tasks. The
+independent m3.10 execution oracle remains test-only; production does not import
+or duplicate it.

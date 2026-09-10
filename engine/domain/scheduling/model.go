@@ -88,6 +88,7 @@ const (
 	BudgetUnavailable BudgetState = "unavailable"
 	BudgetStale       BudgetState = "stale"
 	BudgetAmbiguous   BudgetState = "ambiguous"
+	BudgetDisabled    BudgetState = "disabled"
 )
 
 // AcknowledgementState is explicit so missing, stale, and contradictory human
@@ -102,8 +103,8 @@ const (
 )
 
 // Budget is a finite immutable ledger observation. Revision binds the soft
-// acknowledgement to the exact unchanged limit. CI ignores acknowledgement
-// because its integer cycle count has only a hard limit.
+// acknowledgement to the exact unchanged limit. Time, token, turn, and
+// configured cost values are consumptive; CI retains its integer hard limit.
 type Budget struct {
 	State                BudgetState          `json:"state"`
 	Revision             string               `json:"revision"`
@@ -116,9 +117,11 @@ type Budget struct {
 }
 
 type Budgets struct {
-	Time Budget `json:"time"`
-	Cost Budget `json:"cost"`
-	CI   Budget `json:"ci"`
+	Time   Budget `json:"time"`
+	Tokens Budget `json:"tokens"`
+	Turns  Budget `json:"turns"`
+	Cost   Budget `json:"cost"`
+	CI     Budget `json:"ci"`
 }
 
 type CapacityDemand struct {
@@ -230,14 +233,16 @@ func CloneSnapshot(snapshot Snapshot) Snapshot {
 }
 
 type Reservation struct {
-	ID            string         `json:"id"`
-	TaskID        TaskID         `json:"taskId"`
-	Workspace     WorkspaceID    `json:"workspace"`
-	TaskVersion   uint64         `json:"taskVersion"`
-	WorkClass     WorkClass      `json:"workClass"`
-	LeaseEpoch    uint64         `json:"leaseEpoch"`
-	Demand        CapacityDemand `json:"demand"`
-	TimeRequested uint64         `json:"timeRequested"`
-	CostRequested uint64         `json:"costRequested"`
-	CIRequested   uint64         `json:"ciRequested"`
+	ID             string         `json:"id"`
+	TaskID         TaskID         `json:"taskId"`
+	Workspace      WorkspaceID    `json:"workspace"`
+	TaskVersion    uint64         `json:"taskVersion"`
+	WorkClass      WorkClass      `json:"workClass"`
+	LeaseEpoch     uint64         `json:"leaseEpoch"`
+	Demand         CapacityDemand `json:"demand"`
+	TimeRequested  uint64         `json:"timeRequested"`
+	TokenRequested uint64         `json:"tokenRequested"`
+	TurnRequested  uint64         `json:"turnRequested"`
+	CostRequested  uint64         `json:"costRequested"`
+	CIRequested    uint64         `json:"ciRequested"`
 }

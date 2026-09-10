@@ -72,6 +72,12 @@ func attentionForNeed(code execution.NeedCode) projection.AttentionCode {
 		return projection.AttentionRecoveryAmbiguous
 	case strings.Contains(text, "configuration"), strings.Contains(text, "observation_missing"):
 		return projection.AttentionConfigurationRequired
+	case strings.Contains(text, "correction"):
+		return projection.AttentionCorrectionBudgetExhausted
+	case strings.Contains(text, "replacement"):
+		return projection.AttentionReplacementBudgetExhausted
+	case strings.Contains(text, "soft_limit"):
+		return projection.AttentionSoftBudgetAcknowledgment
 	case strings.Contains(text, "budget"):
 		return projection.AttentionHardBudgetExhausted
 	default:

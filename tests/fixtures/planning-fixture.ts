@@ -145,6 +145,25 @@ function makeTask(index: number, historical: boolean): TaskSummary {
       factsRevision: "12",
       explanations: blocker,
     },
+    runtimeBudget: index === 0 ? {
+      policyRevision: "configuration-revision-1",
+      state: "soft_paused",
+      softThresholdBasisPoints: "8500",
+      dimensions: [
+        { dimension: "wall_time", enabled: true, consumed: "3600000", reserved: "60000", limit: "7200000", ratioBasisPoints: "5083" },
+        { dimension: "tokens", enabled: true, consumed: "170000", reserved: "0", limit: "200000", ratioBasisPoints: "8500" },
+        { dimension: "turns", enabled: true, consumed: "12", reserved: "0", limit: "32", ratioBasisPoints: "3750" },
+        { dimension: "cost", enabled: false, consumed: "0", reserved: "0", limit: "0", ratioBasisPoints: "0" },
+      ],
+      counts: [
+        { dimension: "correction_attempts", consumed: "1", reserved: "0", limit: "3" },
+        { dimension: "ci_cycles", consumed: "2", reserved: "0", limit: "4" },
+        { dimension: "replacement_attempts", consumed: "0", reserved: "0", limit: "1" },
+        { dimension: "setup_attempts", consumed: "1", reserved: "0", limit: "2" },
+      ],
+      workerTurns: "8", helperTurns: "2", reviewerTurns: "1", correctionTurns: "1",
+      reasonCode: "budget_tokens_soft_limit_reached",
+    } : null,
   };
 }
 

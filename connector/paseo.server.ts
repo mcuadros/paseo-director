@@ -23,6 +23,7 @@ import {
   type HostDescriptor,
   type HostObservation,
   type HostObservationStatus,
+  type HostProviderUsage,
 } from "../generated/host-contract.shared.ts";
 import type { AgentMCPSessionLaunch } from "../generated/agent-mcp-contract.shared.ts";
 import type {
@@ -120,9 +121,61 @@ function resultDigest(result: Omit<HostObservation["result"], "factHash">): stri
     ...(result.correlationHash ? { correlationHash: result.correlationHash } : {}),
     priorDispatcherAbsent: result.priorDispatcherAbsent,
     maximumAgeMillis: result.maximumAgeMillis,
+    ...(result.usage ? { usage: result.usage } : {}),
     factHash: "",
   };
   return sha256(JSON.stringify(wire));
+}
+
+function exactCostMicrousd(value: number): number | null {
+  if (!Number.isFinite(value) || value < 0) return null;
+  const decimal = String(value);
+  if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?$/u.test(decimal)) return null;
+  const [whole, fraction = ""] = decimal.split(".");
+  const result = Number(BigInt(whole!) * 1_000_000n + BigInt(fraction.padEnd(6, "0")));
+  return Number.isSafeInteger(result) ? result : null;
+}
+
+function providerUsage(agent: PaseoAgent): HostProviderUsage {
+  const usage = agent.lastUsage;
+  if (!usage) {
+    return {
+      state: "unavailable", inputTokensPresent: false, inputTokens: 0,
+      cachedInputTokens: 0, outputTokensPresent: false, outputTokens: 0,
+      costMicrousdPresent: false, costMicrousd: 0,
+    };
+  }
+  const validToken = (value: number | undefined) =>
+    value === undefined || (Number.isSafeInteger(value) && value >= 0);
+  const cost = usage.totalCostUsd === undefined ? undefined : exactCostMicrousd(usage.totalCostUsd);
+  if (
+    !validToken(usage.inputTokens) || !validToken(usage.cachedInputTokens) ||
+    !validToken(usage.outputTokens) || cost === null
+  ) {
+    return {
+      state: "ambiguous", inputTokensPresent: false, inputTokens: 0,
+      cachedInputTokens: 0, outputTokensPresent: false, outputTokens: 0,
+      costMicrousdPresent: false, costMicrousd: 0,
+    };
+  }
+  if (usage.inputTokens === undefined || usage.outputTokens === undefined) {
+    return {
+      state: "unavailable", inputTokensPresent: false, inputTokens: 0,
+      cachedInputTokens: 0, outputTokensPresent: false, outputTokens: 0,
+      costMicrousdPresent: false, costMicrousd: 0,
+    };
+  }
+  return {
+    state: "current",
+    sourceRevision: agent.updatedAt,
+    inputTokensPresent: true,
+    inputTokens: usage.inputTokens,
+    cachedInputTokens: usage.cachedInputTokens ?? 0,
+    outputTokensPresent: true,
+    outputTokens: usage.outputTokens,
+    costMicrousdPresent: cost !== undefined,
+    costMicrousd: cost ?? 0,
+  };
 }
 
 function exactLabels(
@@ -181,6 +234,7 @@ export class PaseoHostConnector implements DirectorHost {
     externalId = "",
     correlationHash = "",
     priorDispatcherAbsent = true,
+    usage?: HostProviderUsage,
   ): HostObservation {
     const after = command.afterCursor ?? 0;
     this.#cursor = Math.max(this.#cursor + 1, after + 1);
@@ -192,6 +246,7 @@ export class PaseoHostConnector implements DirectorHost {
       ...(correlationHash ? { correlationHash } : {}),
       priorDispatcherAbsent,
       maximumAgeMillis: MAXIMUM_OBSERVATION_AGE_MILLIS,
+      ...(usage ? { usage } : {}),
     } as const;
     return {
       requestId: command.requestId,
@@ -350,16 +405,16 @@ export class PaseoHostConnector implements DirectorHost {
     );
     if (!promptPresent) return this.#observation(command, "absent", agent.id, correlation);
     if (agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") {
-      return this.#observation(command, "permission", agent.id, correlation);
+      return this.#observation(command, "permission", agent.id, correlation, true, providerUsage(agent));
     }
     if (agent.status === "error" || agent.attentionReason === "error") {
-      return this.#observation(command, "errored", agent.id, correlation);
+      return this.#observation(command, "errored", agent.id, correlation, true, providerUsage(agent));
     }
     if (agent.status === "running" || agent.status === "initializing" || agent.activeTurn) {
-      return this.#observation(command, "owned_present", agent.id, correlation, false);
+      return this.#observation(command, "owned_present", agent.id, correlation, false, providerUsage(agent));
     }
     if (agent.status === "idle") {
-      return this.#observation(command, "desired", agent.id, correlation);
+      return this.#observation(command, "desired", agent.id, correlation, true, providerUsage(agent));
     }
     return this.#observation(command, "ambiguous", agent.id, correlation);
   }

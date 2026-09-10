@@ -43,6 +43,8 @@ type Definition struct {
 var requiredDefinitions = []string{
 	"allowedAction",
 	"attentionCode",
+	"budgetCountSummary",
+	"budgetDimensionSummary",
 	"capacityFacts",
 	"configurationEntry",
 	"configurationApplyAction",
@@ -56,6 +58,7 @@ var requiredDefinitions = []string{
 	"planningQueryInput",
 	"planningSnapshot",
 	"projectSummary",
+	"runtimeBudgetSummary",
 	"schedulerFacts",
 	"taskDetail",
 	"taskDetailQueryInput",

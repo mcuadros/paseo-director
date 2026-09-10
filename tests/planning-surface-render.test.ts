@@ -215,6 +215,7 @@ test("wide planning presentation renders engine navigation, Board, capacity, det
     /Tasks\s+3\s*\/\s*4/,
     /Agents\s+5\s*\/\s*8/,
     /Needs you/,
+    /Budget\s+Soft paused/,
     /A human may approve a scoped dependency override/,
   ]) {
     assert.match(text, expected);
@@ -238,6 +239,10 @@ test("wide planning presentation renders engine navigation, Board, capacity, det
   });
   assert.match(renderedText(renderer), /Waiting for DIR-DEPENDENCY/);
   assert.match(renderedText(renderer), /Task projection created/);
+  assert.match(renderedText(renderer), /Runtime budget/);
+  assert.match(renderedText(renderer), /tokens\s*:\s*170000\s+consumed \+\s*0\s+reserved \/\s*200000/);
+  assert.match(renderedText(renderer), /Reviewer\s+1/);
+  assert.match(renderedText(renderer), /budget_tokens_soft_limit_reached/);
 
   const manual = renderer.root.findByProps({
     accessibilityLabel: "Set launchPolicy to Manual",

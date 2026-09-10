@@ -16,6 +16,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
+	"github.com/mcuadros/director-engine/domain/runtimebudget"
 )
 
 //go:embed host-interface.v1.json
@@ -182,14 +183,15 @@ type Command struct {
 // ObservationResult is a normalized host fact. SDK receipts and model text
 // are not represented as evidence.
 type ObservationResult struct {
-	EffectID              string                      `json:"effectId"`
-	Status                execution.ObservationStatus `json:"status"`
-	ExternalID            string                      `json:"externalId,omitempty"`
-	BindingHash           string                      `json:"bindingHash"`
-	CorrelationHash       string                      `json:"correlationHash,omitempty"`
-	PriorDispatcherAbsent bool                        `json:"priorDispatcherAbsent"`
-	MaximumAgeMillis      int64                       `json:"maximumAgeMillis"`
-	FactHash              string                      `json:"factHash"`
+	EffectID              string                       `json:"effectId"`
+	Status                execution.ObservationStatus  `json:"status"`
+	ExternalID            string                       `json:"externalId,omitempty"`
+	BindingHash           string                       `json:"bindingHash"`
+	CorrelationHash       string                       `json:"correlationHash,omitempty"`
+	PriorDispatcherAbsent bool                         `json:"priorDispatcherAbsent"`
+	MaximumAgeMillis      int64                        `json:"maximumAgeMillis"`
+	Usage                 *runtimebudget.ProviderUsage `json:"usage,omitempty"`
+	FactHash              string                       `json:"factHash"`
 }
 
 // Observation is the resumable typed transport envelope returned by the host.
@@ -235,6 +237,26 @@ func ValidateObservation(command Command, observation Observation) error {
 			return !strings.ContainsRune("0123456789abcdef", character)
 		}) >= 0) {
 		return errors.New("host observation correlation is invalid")
+	}
+	if usage := observation.Result.Usage; usage != nil {
+		const maximumJavaScriptSafeInteger = uint64(9_007_199_254_740_991)
+		if usage.InputTokens > maximumJavaScriptSafeInteger || usage.CachedInputTokens > maximumJavaScriptSafeInteger ||
+			usage.OutputTokens > maximumJavaScriptSafeInteger || usage.CostMicrousd > maximumJavaScriptSafeInteger {
+			return errors.New("host usage observation exceeds the exact transport range")
+		}
+		switch usage.State {
+		case runtimebudget.UsageCurrent:
+			if !usage.InputTokensPresent || !usage.OutputTokensPresent || usage.SourceRevision == "" || len(usage.SourceRevision) > 128 {
+				return errors.New("host usage observation is incomplete")
+			}
+		case runtimebudget.UsageUnavailable, runtimebudget.UsageAmbiguous:
+			if usage.SourceRevision != "" || usage.InputTokensPresent || usage.InputTokens != 0 || usage.CachedInputTokens != 0 ||
+				usage.OutputTokensPresent || usage.OutputTokens != 0 || usage.CostMicrousdPresent || usage.CostMicrousd != 0 {
+				return errors.New("host unavailable usage observation carries values")
+			}
+		default:
+			return errors.New("host usage observation state is invalid")
+		}
 	}
 	switch observation.Result.Status {
 	case execution.ObservationDesired, execution.ObservationAbsent,
