@@ -183,15 +183,17 @@ type Command struct {
 // ObservationResult is a normalized host fact. SDK receipts and model text
 // are not represented as evidence.
 type ObservationResult struct {
-	EffectID              string                       `json:"effectId"`
-	Status                execution.ObservationStatus  `json:"status"`
-	ExternalID            string                       `json:"externalId,omitempty"`
-	BindingHash           string                       `json:"bindingHash"`
-	CorrelationHash       string                       `json:"correlationHash,omitempty"`
-	PriorDispatcherAbsent bool                         `json:"priorDispatcherAbsent"`
-	MaximumAgeMillis      int64                        `json:"maximumAgeMillis"`
-	Usage                 *runtimebudget.ProviderUsage `json:"usage,omitempty"`
-	FactHash              string                       `json:"factHash"`
+	EffectID              string                              `json:"effectId"`
+	Status                execution.ObservationStatus         `json:"status"`
+	ExternalID            string                              `json:"externalId,omitempty"`
+	BindingHash           string                              `json:"bindingHash"`
+	CorrelationHash       string                              `json:"correlationHash,omitempty"`
+	PriorDispatcherAbsent bool                                `json:"priorDispatcherAbsent"`
+	MaximumAgeMillis      int64                               `json:"maximumAgeMillis"`
+	Usage                 *runtimebudget.ProviderUsage        `json:"usage,omitempty"`
+	NativeAgent           *execution.NativeAgentRecoveryFact  `json:"nativeAgent,omitempty"`
+	Inventory             *execution.PrimaryRecoveryInventory `json:"inventory,omitempty"`
+	FactHash              string                              `json:"factHash"`
 }
 
 // Observation is the resumable typed transport envelope returned by the host.
@@ -257,6 +259,12 @@ func ValidateObservation(command Command, observation Observation) error {
 		default:
 			return errors.New("host usage observation state is invalid")
 		}
+	}
+	if observation.Result.NativeAgent != nil && !execution.ValidNativeAgentRecoveryFact(*observation.Result.NativeAgent) {
+		return errors.New("host native agent recovery fact is invalid")
+	}
+	if observation.Result.Inventory != nil && !execution.ValidPrimaryRecoveryInventory(*observation.Result.Inventory) {
+		return errors.New("host primary recovery inventory is invalid")
 	}
 	switch observation.Result.Status {
 	case execution.ObservationDesired, execution.ObservationAbsent,

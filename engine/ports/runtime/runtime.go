@@ -44,6 +44,25 @@ type CandidateRequest struct {
 	Claim        execution.CompletedClaim `json:"claim"`
 }
 
+// PrimaryRecoveryRequest fixes the complete durable Run binding for one
+// read-only recovery observation. CandidateSHA is empty before admission.
+type PrimaryRecoveryRequest struct {
+	Scope           execution.Scope             `json:"scope"`
+	LeaseBinding    execution.LeaseBinding      `json:"leaseBinding"`
+	Repository      execution.RepositoryBinding `json:"repository"`
+	BindingHash     string                      `json:"bindingHash"`
+	WorktreeID      string                      `json:"worktreeId"`
+	CandidateID     string                      `json:"candidateId,omitempty"`
+	CandidateSHA    string                      `json:"candidateSha,omitempty"`
+	OriginalAgentID string                      `json:"originalAgentId"`
+}
+
+// PrimaryRecoveryPort observes repository, worktree, process, and Candidate
+// facts. It performs no containment, replacement, or cleanup effect.
+type PrimaryRecoveryPort interface {
+	ObservePrimaryRecovery(context.Context, PrimaryRecoveryRequest) (execution.PrimaryRuntimeRecoveryObservation, error)
+}
+
 // HelperRequest binds a helper-only runtime operation to its immutable Run,
 // parent, repository, checkout mode, and ADR-0014 facts. Implementations do
 // not decide admission or retry.

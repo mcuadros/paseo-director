@@ -117,6 +117,7 @@ export type HostEffectKind =
   | "host_view.create"
   | "task_agent.create_with_bootstrap"
   | "agent.send_prompt"
+  | "primary_recovery.observe"
   | "helper_agent.observe"
   | "helper_agent.archive"
   | "control_agent.observe_safe_boundary"
@@ -216,6 +217,52 @@ export interface HostProviderUsage {
   costMicrousd: number;
 }
 
+export type HostProviderFailureSignal =
+  | "none"
+  | "provider_terminal"
+  | "policy_rejection"
+  | "authentication_rejection"
+  | "configuration_rejection"
+  | "transient_service"
+  | "unclassified";
+
+export type HostControlledAgentRole = "task_agent" | "reviewer" | "helper";
+
+export interface HostNativeAgentRecoveryFact {
+  agentId: string;
+  workspaceId: string;
+  role: HostControlledAgentRole;
+  effectId: string;
+  status: "idle" | "running" | "initializing" | "closed" | "error";
+  activeTurnPresent: boolean;
+  archivedAtPresent: boolean;
+  parentPresent: boolean;
+  titleExact: boolean;
+  worktreeExact: boolean;
+  labelsRunExact: boolean;
+  profileExact: boolean;
+  sessionExact: boolean;
+  bootstrapPresent: boolean;
+  promptPresent: boolean;
+  persistenceReferencePresent: boolean;
+  failureSignals: readonly HostProviderFailureSignal[];
+}
+
+export interface HostNativeWorkspaceRecoveryFact {
+  workspaceId: string;
+  active: boolean;
+  archived: boolean;
+  worktreeExact: boolean;
+  titleExact: boolean;
+  kindExact: boolean;
+}
+
+export interface HostPrimaryRecoveryInventory {
+  complete: true;
+  workspaces: readonly Readonly<HostNativeWorkspaceRecoveryFact>[];
+  agents: readonly Readonly<HostNativeAgentRecoveryFact>[];
+}
+
 export interface HostObservationResult {
   effectId: string;
   status: HostObservationStatus;
@@ -225,6 +272,8 @@ export interface HostObservationResult {
   priorDispatcherAbsent: boolean;
   maximumAgeMillis: number;
   usage?: Readonly<HostProviderUsage>;
+  nativeAgent?: Readonly<HostNativeAgentRecoveryFact>;
+  inventory?: Readonly<HostPrimaryRecoveryInventory>;
   factHash: string;
 }
 

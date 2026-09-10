@@ -388,6 +388,10 @@ func validateRun(run domain.Run) error {
 		if !execution.ValidHelpers(state) {
 			return fmt.Errorf("%w: invalid helper execution state", storeport.ErrInvalidRecord)
 		}
+		legacyRecovery := state.RecoveryPolicy.SchemaVersion == "" && state.PrimaryRecovery.SchemaVersion == ""
+		if (!legacyRecovery && !execution.ValidPrimaryRecoveryPolicy(state.RecoveryPolicy)) || !execution.ValidPrimaryRecovery(state.PrimaryRecovery, state) {
+			return fmt.Errorf("%w: invalid primary recovery state", storeport.ErrInvalidRecord)
+		}
 		if len(state.MCPCommandReceipts) > execution.MaximumMCPCommandReceipts {
 			return fmt.Errorf("%w: invalid MCP command receipt count", storeport.ErrInvalidRecord)
 		}

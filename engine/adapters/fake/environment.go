@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,13 +36,18 @@ var ErrResponseLost = errors.New("fake adapter response lost after possible hand
 
 // Options fixes one disposable repository and external-world identity.
 type Options struct {
-	SourcePath                string
-	WorktreePath              string
-	Branch                    string
-	BaseSHA                   string
-	Operational               execution.OperationalObservation
-	LoseEveryMutationResponse bool
-	GlobalActiveAgents        uint32
+	SourcePath                  string
+	WorktreePath                string
+	Branch                      string
+	BaseSHA                     string
+	Operational                 execution.OperationalObservation
+	LoseEveryMutationResponse   bool
+	GlobalActiveAgents          uint32
+	RecoveryFailureSignals      []execution.ProviderFailureSignal
+	RecoveryDuplicateAgents     uint32
+	RecoveryDuplicateWorkspaces uint32
+	RecoveryOrphanWorktree      bool
+	RecoveryReviewerID          string
 }
 
 type helperWorld struct {
@@ -105,6 +111,7 @@ type Environment struct {
 }
 
 var _ runtimeport.Port = (*Environment)(nil)
+var _ runtimeport.PrimaryRecoveryPort = (*Environment)(nil)
 var _ host.Port = (*Environment)(nil)
 var _ reconciliationport.Queue = (*Environment)(nil)
 
@@ -116,6 +123,7 @@ type RestartedEnvironment struct {
 }
 
 var _ runtimeport.Port = (*RestartedEnvironment)(nil)
+var _ runtimeport.PrimaryRecoveryPort = (*RestartedEnvironment)(nil)
 var _ host.Port = (*RestartedEnvironment)(nil)
 var _ reconciliationport.Queue = (*RestartedEnvironment)(nil)
 
@@ -159,6 +167,10 @@ func (environment *RestartedEnvironment) ObserveOperational(ctx context.Context,
 
 func (environment *RestartedEnvironment) ObserveCandidate(ctx context.Context, request runtimeport.CandidateRequest) (execution.CandidateObservation, error) {
 	return environment.world.ObserveCandidate(ctx, request)
+}
+
+func (environment *RestartedEnvironment) ObservePrimaryRecovery(ctx context.Context, request runtimeport.PrimaryRecoveryRequest) (execution.PrimaryRuntimeRecoveryObservation, error) {
+	return environment.world.ObservePrimaryRecovery(ctx, request)
 }
 
 func (environment *RestartedEnvironment) Enqueue(ctx context.Context, request reconciliationport.Request) (reconciliationport.Receipt, error) {
@@ -491,6 +503,57 @@ func (environment *Environment) ObserveCandidate(_ context.Context, request runt
 	return observation, nil
 }
 
+// ObservePrimaryRecovery re-proves the exact disposable Git/worktree and fake
+// process facts without mutating either. RelatedWorktrees deliberately lists
+// every fake world resource so orphan tests can fail closed.
+func (environment *Environment) ObservePrimaryRecovery(_ context.Context, request runtimeport.PrimaryRecoveryRequest) (execution.PrimaryRuntimeRecoveryObservation, error) {
+	environment.mu.Lock()
+	defer environment.mu.Unlock()
+	environment.observationSeq++
+	repositoryExact := request.BindingHash == environment.world.bindingHash &&
+		execution.RepositoryBindingSHA256(request.Repository) == request.BindingHash &&
+		request.Repository.SourcePath == environment.options.SourcePath &&
+		request.Repository.WorktreePath == environment.options.WorktreePath &&
+		request.Repository.Branch == environment.options.Branch && request.Repository.BaseSHA == environment.options.BaseSHA
+	worktreePresent := pathPresent(environment.options.WorktreePath)
+	branchExact := false
+	baseExact := false
+	if worktreePresent {
+		branch, branchErr := runGit(environment.options.WorktreePath, "symbolic-ref", "HEAD")
+		_, baseErr := runGit(environment.options.SourcePath, "cat-file", "-e", environment.options.BaseSHA+"^{commit}")
+		branchExact = branchErr == nil && branch == "refs/heads/"+environment.options.Branch
+		baseExact = baseErr == nil
+	}
+	candidatePresent := request.CandidateSHA != ""
+	candidateExact := !candidatePresent
+	if candidatePresent && worktreePresent {
+		head, err := runGit(environment.options.WorktreePath, "rev-parse", "HEAD")
+		candidateExact = err == nil && head == request.CandidateSHA
+	}
+	observation := execution.PrimaryRuntimeRecoveryObservation{
+		ID:               fmt.Sprintf("primary-recovery-runtime-%d", environment.observationSeq),
+		ObservedAtMillis: environment.operational.ObservedAtMillis, MaximumAgeMillis: 30_000,
+		BindingHash: request.BindingHash, RepositoryExact: repositoryExact,
+		WorktreePresent: worktreePresent, WorktreeExact: worktreePresent && request.WorktreeID == environment.world.worktreeID,
+		BranchExact: branchExact, BaseExact: baseExact,
+		OriginalAgentProcessAbsent:   environment.world.agentArchived && !environment.world.agentActive,
+		PriorEngineAndDispatchAbsent: true,
+		CandidatePresent:             candidatePresent, CandidateSHA: request.CandidateSHA, CandidateExact: candidateExact,
+		RelatedWorktrees: []execution.RelatedWorktreeRecoveryFact{{
+			WorktreeID: environment.world.worktreeID, BindingHash: request.BindingHash,
+			Owned: true, ExactRun: true, Active: worktreePresent,
+		}},
+	}
+	if environment.options.RecoveryOrphanWorktree {
+		observation.RelatedWorktrees = append(observation.RelatedWorktrees, execution.RelatedWorktreeRecoveryFact{
+			WorktreeID: "orphan-worktree", BindingHash: strings.Repeat("f", 64),
+			Owned: false, ExactRun: false, Active: true,
+		})
+	}
+	observation.FactHash = execution.PrimaryRuntimeRecoveryObservationHash(observation)
+	return observation, nil
+}
+
 // Describe returns the exact engine-owned descriptor without contacting Paseo.
 func (environment *Environment) Describe(_ context.Context) (host.Descriptor, error) {
 	return host.ExpectedDescriptor()
@@ -530,6 +593,80 @@ func hostObservation(command host.Command, status execution.ObservationStatus, e
 		RequestID: command.RequestID, Cursor: sequence,
 		ObservedAt: time.UnixMilli(observedAtMillis).UTC().Format(time.RFC3339Nano), Result: result,
 	}
+}
+
+func fakeRecoveryStatus(world world) string {
+	if world.agentArchived {
+		return "closed"
+	}
+	if world.promptStatus == execution.ObservationErrored || world.promptStatus == execution.ObservationPermission {
+		return "error"
+	}
+	if world.promptStatus == execution.ObservationOwnedPresent {
+		return "running"
+	}
+	return "idle"
+}
+
+func (environment *Environment) recoveryInventory() execution.PrimaryRecoveryInventory {
+	signals := append([]execution.ProviderFailureSignal(nil), environment.options.RecoveryFailureSignals...)
+	if len(signals) == 0 {
+		if fakeRecoveryStatus(environment.world) == "error" {
+			signals = []execution.ProviderFailureSignal{execution.ProviderFailureUnknown}
+		} else {
+			signals = []execution.ProviderFailureSignal{execution.ProviderFailureNone}
+		}
+	}
+	sort.Slice(signals, func(left, right int) bool { return signals[left] < signals[right] })
+	agents := []execution.NativeAgentRecoveryFact{{
+		AgentID: environment.world.agentID, WorkspaceID: environment.world.hostViewID,
+		Role: execution.ControlledTaskAgent, EffectID: environment.world.bootstrapEffectID,
+		Status: fakeRecoveryStatus(environment.world), ActiveTurnPresent: environment.world.promptStatus == execution.ObservationOwnedPresent,
+		ArchivedAtPresent: environment.world.agentArchived, ParentPresent: false,
+		TitleExact: true, WorktreeExact: true, LabelsRunExact: true, ProfileExact: true, SessionExact: true,
+		BootstrapPresent: environment.world.bootstrapEffectID != "", PromptPresent: environment.world.promptEffectID != "",
+		PersistenceReferencePresent: true, FailureSignals: signals,
+	}}
+	for index := uint32(0); index < environment.options.RecoveryDuplicateAgents; index++ {
+		duplicate := agents[0]
+		duplicate.AgentID = fmt.Sprintf("duplicate-agent-%d", index+1)
+		agents = append(agents, duplicate)
+	}
+	if environment.options.RecoveryReviewerID != "" {
+		agents = append(agents, execution.NativeAgentRecoveryFact{
+			AgentID: environment.options.RecoveryReviewerID, WorkspaceID: "review-workspace",
+			Role: execution.ControlledReviewer, EffectID: "review-effect", Status: "idle",
+			TitleExact: true, WorktreeExact: true, LabelsRunExact: true, ProfileExact: true, SessionExact: true,
+			BootstrapPresent: true, PromptPresent: true, PersistenceReferencePresent: true,
+			FailureSignals: []execution.ProviderFailureSignal{execution.ProviderFailureNone},
+		})
+	}
+	for _, helper := range environment.helpers {
+		status := "idle"
+		if helper.agentArchived {
+			status = "closed"
+		}
+		agents = append(agents, execution.NativeAgentRecoveryFact{
+			AgentID: helper.agentID, WorkspaceID: helper.workspaceID, Role: execution.ControlledHelper,
+			EffectID: helper.primaryFactHash, Status: status, ArchivedAtPresent: helper.agentArchived, ParentPresent: true,
+			TitleExact: true, WorktreeExact: true, LabelsRunExact: true, ProfileExact: true, SessionExact: true,
+			BootstrapPresent: helper.bootstrapDone, PromptPresent: helper.bootstrapDone, PersistenceReferencePresent: true,
+			FailureSignals: []execution.ProviderFailureSignal{execution.ProviderFailureNone},
+		})
+	}
+	sort.Slice(agents, func(left, right int) bool { return agents[left].AgentID < agents[right].AgentID })
+	workspaces := []execution.NativeWorkspaceRecoveryFact{{
+		WorkspaceID: environment.world.hostViewID, Active: environment.world.hostViewActive,
+		Archived: environment.world.hostViewArchived, WorktreeExact: true, TitleExact: true, KindExact: true,
+	}}
+	for index := uint32(0); index < environment.options.RecoveryDuplicateWorkspaces; index++ {
+		workspaces = append(workspaces, execution.NativeWorkspaceRecoveryFact{
+			WorkspaceID: fmt.Sprintf("duplicate-workspace-%d", index+1), Active: true,
+			WorktreeExact: true, TitleExact: true, KindExact: true,
+		})
+	}
+	sort.Slice(workspaces, func(left, right int) bool { return workspaces[left].WorkspaceID < workspaces[right].WorkspaceID })
+	return execution.PrimaryRecoveryInventory{Complete: true, Workspaces: workspaces, Agents: agents}
 }
 
 // Invoke translates one fixed host capability and contains no workflow choice.
@@ -587,11 +724,17 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 		if _, err := host.AdmitAgentCreateLabels(command); err != nil {
 			return host.Observation{}, fmt.Errorf("fake Task Agent create is not registered for root-workspace visibility: %w", err)
 		}
+		if environment.world.agentActive {
+			return host.Observation{}, errors.New("fake Task Agent create would overlap an active primary")
+		}
 		environment.agentRequest = arguments
 		environment.world.agentID = externalID("agent", arguments.EffectID)
 		environment.world.agentActive = true
+		environment.world.agentArchived = false
 		environment.world.bootstrapEffectID = arguments.EffectID
 		environment.world.bootstrapStatus = execution.ObservationOwnedPresent
+		environment.world.promptEffectID = ""
+		environment.world.promptStatus = ""
 		environment.world.bindingHash = arguments.BindingHash
 		return host.Observation{}, environment.recordMutation(arguments.EffectKind)
 	case host.CapabilityAgentPrompt:
@@ -610,6 +753,13 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 		environment.world.promptStatus = execution.ObservationOwnedPresent
 		return host.Observation{}, environment.recordMutation(arguments.EffectKind)
 	case host.CapabilityAgentObserve:
+		if arguments.EffectKind == execution.EffectPrimaryRecoveryObserve {
+			observation := hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis)
+			inventory := environment.recoveryInventory()
+			observation.Result.Inventory = &inventory
+			observation.Result.FactHash = host.ObservationResultHash(observation.Result)
+			return observation, nil
+		}
 		if (arguments.EffectKind == execution.EffectControlAgentBoundary || arguments.EffectKind == execution.EffectControlAgentArchive) &&
 			arguments.ParentAgentID != nil {
 			for _, helper := range environment.helpers {
@@ -789,6 +939,16 @@ func (environment *Environment) PromptRequest() host.Arguments {
 	environment.mu.Lock()
 	defer environment.mu.Unlock()
 	return environment.promptRequest
+}
+
+// DropCurrentPromptObservationForTest models a lost/non-durable native prompt
+// after possible handoff. The engine must preserve the session and park rather
+// than send the nonrepeatable progress effect again.
+func (environment *Environment) DropCurrentPromptObservationForTest() {
+	environment.mu.Lock()
+	defer environment.mu.Unlock()
+	environment.world.promptEffectID = ""
+	environment.world.promptStatus = ""
 }
 
 // TerminalEvent atomically changes the fake daemon fact before producing the

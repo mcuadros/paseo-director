@@ -25,24 +25,25 @@ const MaximumMCPCommandReceipts = 64
 type EffectKind string
 
 const (
-	EffectWorktreeCreate       EffectKind = "worktree.create"
-	EffectHostViewCreate       EffectKind = "host_view.create"
-	EffectBoundaryMaterialize  EffectKind = "rootless_oci.materialize"
-	EffectSetupRun             EffectKind = "lifecycle_setup.run"
-	EffectAgentCreate          EffectKind = "task_agent.create_with_bootstrap"
-	EffectAgentPrompt          EffectKind = "agent.send_prompt"
-	EffectHelperCheckoutCreate EffectKind = "helper_checkout.create"
-	EffectHelperBoundary       EffectKind = "helper_boundary.materialize"
-	EffectHelperAgentObserve   EffectKind = "helper_agent.observe"
-	EffectHelperCommitHandoff  EffectKind = "helper_commit.handoff"
-	EffectHelperAgentArchive   EffectKind = "helper_agent.archive"
-	EffectHelperCheckoutRemove EffectKind = "helper_checkout.remove"
-	EffectControlAgentBoundary EffectKind = "control_agent.observe_safe_boundary"
-	EffectControlAgentArchive  EffectKind = "control_agent.archive"
-	EffectRecoverySnapshot     EffectKind = "recovery.snapshot"
-	EffectAgentArchive         EffectKind = "task_agent.archive"
-	EffectHostViewArchive      EffectKind = "host_view.archive"
-	EffectWorktreeRemove       EffectKind = "worktree.remove"
+	EffectWorktreeCreate         EffectKind = "worktree.create"
+	EffectHostViewCreate         EffectKind = "host_view.create"
+	EffectBoundaryMaterialize    EffectKind = "rootless_oci.materialize"
+	EffectSetupRun               EffectKind = "lifecycle_setup.run"
+	EffectAgentCreate            EffectKind = "task_agent.create_with_bootstrap"
+	EffectAgentPrompt            EffectKind = "agent.send_prompt"
+	EffectPrimaryRecoveryObserve EffectKind = "primary_recovery.observe"
+	EffectHelperCheckoutCreate   EffectKind = "helper_checkout.create"
+	EffectHelperBoundary         EffectKind = "helper_boundary.materialize"
+	EffectHelperAgentObserve     EffectKind = "helper_agent.observe"
+	EffectHelperCommitHandoff    EffectKind = "helper_commit.handoff"
+	EffectHelperAgentArchive     EffectKind = "helper_agent.archive"
+	EffectHelperCheckoutRemove   EffectKind = "helper_checkout.remove"
+	EffectControlAgentBoundary   EffectKind = "control_agent.observe_safe_boundary"
+	EffectControlAgentArchive    EffectKind = "control_agent.archive"
+	EffectRecoverySnapshot       EffectKind = "recovery.snapshot"
+	EffectAgentArchive           EffectKind = "task_agent.archive"
+	EffectHostViewArchive        EffectKind = "host_view.archive"
+	EffectWorktreeRemove         EffectKind = "worktree.remove"
 )
 
 // EffectPhase records intent before any adapter handoff and keeps a possible
@@ -85,6 +86,8 @@ type EffectObservation struct {
 	PriorDispatcherAbsent bool                         `json:"priorDispatcherAbsent"`
 	FactHash              string                       `json:"factHash"`
 	Usage                 *runtimebudget.ProviderUsage `json:"usage,omitempty"`
+	NativeAgent           *NativeAgentRecoveryFact     `json:"nativeAgent,omitempty"`
+	Inventory             *PrimaryRecoveryInventory    `json:"inventory,omitempty"`
 }
 
 // Effect is one immutable intent with bounded attempts and its latest
@@ -201,32 +204,36 @@ type CleanupIntentFact struct {
 // command digest refers to immutable TaskStore rows; CandidateSHA is
 // corroborated independently and never comes from model narration alone.
 type StartupReconciliation struct {
-	SchemaVersion              string              `json:"schemaVersion"`
-	ID                         string              `json:"id"`
-	ObservedRunVersion         uint64              `json:"observedRunVersion"`
-	ObservedAtMillis           int64               `json:"observedAtMillis"`
-	CommandCount               uint64              `json:"commandCount"`
-	CommandChainHash           string              `json:"commandChainHash"`
-	LastCommandID              string              `json:"lastCommandId"`
-	OperationalObservationID   string              `json:"operationalObservationId"`
-	EffectObservationCount     uint64              `json:"effectObservationCount"`
-	EffectObservationChainHash string              `json:"effectObservationChainHash,omitempty"`
-	WorktreeID                 string              `json:"worktreeId,omitempty"`
-	WorkspaceID                string              `json:"workspaceId,omitempty"`
-	AgentID                    string              `json:"agentId,omitempty"`
-	HelperCount                uint64              `json:"helperCount,omitempty"`
-	HelperChainHash            string              `json:"helperChainHash,omitempty"`
-	CandidateID                string              `json:"candidateId,omitempty"`
-	CandidateSHA               string              `json:"candidateSha,omitempty"`
-	CleanupIntents             []CleanupIntentFact `json:"cleanupIntents,omitempty"`
-	FrontierEffectID           string              `json:"frontierEffectId,omitempty"`
-	FrontierEffectKind         EffectKind          `json:"frontierEffectKind,omitempty"`
-	FrontierObservationID      string              `json:"frontierObservationId,omitempty"`
-	FrontierObservationHash    string              `json:"frontierObservationHash,omitempty"`
-	CandidateObservationID     string              `json:"candidateObservationId,omitempty"`
-	CandidateObservationHash   string              `json:"candidateObservationHash,omitempty"`
-	HostCursor                 uint64              `json:"hostCursor,omitempty"`
-	FactHash                   string              `json:"factHash"`
+	SchemaVersion              string               `json:"schemaVersion"`
+	ID                         string               `json:"id"`
+	ObservedRunVersion         uint64               `json:"observedRunVersion"`
+	ObservedAtMillis           int64                `json:"observedAtMillis"`
+	CommandCount               uint64               `json:"commandCount"`
+	CommandChainHash           string               `json:"commandChainHash"`
+	LastCommandID              string               `json:"lastCommandId"`
+	OperationalObservationID   string               `json:"operationalObservationId"`
+	EffectObservationCount     uint64               `json:"effectObservationCount"`
+	EffectObservationChainHash string               `json:"effectObservationChainHash,omitempty"`
+	WorktreeID                 string               `json:"worktreeId,omitempty"`
+	WorkspaceID                string               `json:"workspaceId,omitempty"`
+	AgentID                    string               `json:"agentId,omitempty"`
+	HelperCount                uint64               `json:"helperCount,omitempty"`
+	HelperChainHash            string               `json:"helperChainHash,omitempty"`
+	CandidateID                string               `json:"candidateId,omitempty"`
+	CandidateSHA               string               `json:"candidateSha,omitempty"`
+	CleanupIntents             []CleanupIntentFact  `json:"cleanupIntents,omitempty"`
+	FrontierEffectID           string               `json:"frontierEffectId,omitempty"`
+	FrontierEffectKind         EffectKind           `json:"frontierEffectKind,omitempty"`
+	FrontierObservationID      string               `json:"frontierObservationId,omitempty"`
+	FrontierObservationHash    string               `json:"frontierObservationHash,omitempty"`
+	CandidateObservationID     string               `json:"candidateObservationId,omitempty"`
+	CandidateObservationHash   string               `json:"candidateObservationHash,omitempty"`
+	HostCursor                 uint64               `json:"hostCursor,omitempty"`
+	PrimaryRecoveryPhase       PrimaryRecoveryPhase `json:"primaryRecoveryPhase,omitempty"`
+	ReplacementAuthorityID     string               `json:"replacementAuthorityId,omitempty"`
+	OriginalPrimaryAgentID     string               `json:"originalPrimaryAgentId,omitempty"`
+	ReplacementPrimaryAgentID  string               `json:"replacementPrimaryAgentId,omitempty"`
+	FactHash                   string               `json:"factHash"`
 }
 
 // State is the durable primary execution projection stored inside its Run record.
@@ -287,6 +294,8 @@ type State struct {
 	ControlPolicy                    ControlPolicy             `json:"controlPolicy"`
 	ControlledAgents                 []ControlledAgentIdentity `json:"controlledAgents,omitempty"`
 	Control                          RunControl                `json:"control,omitempty"`
+	RecoveryPolicy                   PrimaryRecoveryPolicy     `json:"recoveryPolicy,omitempty"`
+	PrimaryRecovery                  PrimaryRecovery           `json:"primaryRecovery,omitempty"`
 	FakeTerminalRung                 bool                      `json:"fakeTerminalRung,omitempty"`
 	AgentArchive                     Effect                    `json:"agentArchive,omitempty"`
 	HostViewArchive                  Effect                    `json:"hostViewArchive,omitempty"`

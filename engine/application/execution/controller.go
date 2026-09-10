@@ -45,17 +45,19 @@ var (
 
 // Controller is restartable: it owns no workflow state outside TaskStore.
 type Controller struct {
-	store         storeport.TaskStore
-	runtime       runtimeport.Port
-	helperRuntime runtimeport.HelperPort
-	host          host.Port
-	queue         reconciliationport.Queue
+	store           storeport.TaskStore
+	runtime         runtimeport.Port
+	helperRuntime   runtimeport.HelperPort
+	recoveryRuntime runtimeport.PrimaryRecoveryPort
+	host            host.Port
+	queue           reconciliationport.Queue
 }
 
 // NewController wires the engine-owned ports without importing an adapter.
 func NewController(store storeport.TaskStore, runtime runtimeport.Port, hostPort host.Port, queue reconciliationport.Queue) *Controller {
 	helperRuntime, _ := runtime.(runtimeport.HelperPort)
-	return &Controller{store: store, runtime: runtime, helperRuntime: helperRuntime, host: hostPort, queue: queue}
+	recoveryRuntime, _ := runtime.(runtimeport.PrimaryRecoveryPort)
+	return &Controller{store: store, runtime: runtime, helperRuntime: helperRuntime, recoveryRuntime: recoveryRuntime, host: hostPort, queue: queue}
 }
 
 // StartCommand freezes every identity and fact needed by one primary Run.
@@ -77,7 +79,15 @@ type StartCommand struct {
 	TurnBudgetDemand  runtimebudget.Demand
 	HelperPolicy      domainexecution.HelperPolicy
 	ControlPolicy     domainexecution.ControlPolicy
+	RecoveryPolicy    domainexecution.PrimaryRecoveryPolicy
 	EligibilityFacts  eligibility.Facts
+}
+
+func effectiveRecoveryPolicy(policy domainexecution.PrimaryRecoveryPolicy) domainexecution.PrimaryRecoveryPolicy {
+	if policy.SchemaVersion == "" {
+		return domainexecution.DefaultPrimaryRecoveryPolicy()
+	}
+	return policy
 }
 
 // StartResult reports the pure eligibility result and the Run identity, if an
@@ -256,6 +266,7 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 	if controlPolicy == (domainexecution.ControlPolicy{}) {
 		controlPolicy = domainexecution.DefaultControlPolicy()
 	}
+	recoveryPolicy := effectiveRecoveryPolicy(command.RecoveryPolicy)
 	return project.State == "active" && !project.Control.ResumeRequired &&
 		project.Organizer != nil && project.Organizer.Phase == domain.OrganizerPhaseActive &&
 		project.Lease != nil && project.Lease.DispatchAllowed &&
@@ -280,7 +291,8 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 		command.TurnBudgetDemand.WallTimeMilliseconds > 0 && command.TurnBudgetDemand.Tokens > 0 &&
 		command.TurnBudgetDemand.Turns == 1 &&
 		(command.BudgetPolicy.CostLimitMicrousd == 0 || command.TurnBudgetDemand.CostMicrousd > 0) &&
-		domainexecution.ValidHelperPolicy(command.HelperPolicy) && domainexecution.ValidControlPolicy(controlPolicy)
+		domainexecution.ValidHelperPolicy(command.HelperPolicy) && domainexecution.ValidControlPolicy(controlPolicy) &&
+		domainexecution.ValidPrimaryRecoveryPolicy(recoveryPolicy)
 }
 
 func eventPayload(value any) json.RawMessage {
@@ -361,6 +373,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		if controlPolicy == (domainexecution.ControlPolicy{}) {
 			controlPolicy = domainexecution.DefaultControlPolicy()
 		}
+		recoveryPolicy := effectiveRecoveryPolicy(command.RecoveryPolicy)
 		expectedSession, sessionErr := domainexecution.NewPrimarySession(
 			command.Scope, stableID("effect", command.Scope.RunID, string(domainexecution.EffectAgentCreate)),
 			command.EffectiveProfiles, command.MCPServer,
@@ -375,7 +388,8 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			existing.Execution.PrimarySession.ReservationSHA256 != expectedSession.ReservationSHA256 ||
 			existing.Execution.Budget.Policy != command.BudgetPolicy ||
 			existing.Execution.TurnBudgetDemand != command.TurnBudgetDemand ||
-			existing.Execution.HelperPolicy != command.HelperPolicy || existing.Execution.ControlPolicy != controlPolicy {
+			existing.Execution.HelperPolicy != command.HelperPolicy || existing.Execution.ControlPolicy != controlPolicy ||
+			existing.Execution.RecoveryPolicy != recoveryPolicy {
 			return StartResult{}, errors.New("existing Run conflicts with start command")
 		}
 		result.Decision.Kind = eligibility.DecisionEligible
@@ -438,6 +452,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			}
 			return command.ControlPolicy
 		}(),
+		RecoveryPolicy:    effectiveRecoveryPolicy(command.RecoveryPolicy),
 		LifecycleSurfaces: command.EligibilityFacts.LifecycleSurfaces,
 		SourcePath:        command.SourcePath, WorktreePath: command.WorktreePath,
 		Branch: command.Branch, TaskTitle: command.TaskTitle,
@@ -464,6 +479,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			state.PrimarySession.ReservationSHA256, state.InitialPromptHash,
 			hashText(string(eventPayload(state.Budget.Policy))), hashText(string(eventPayload(state.TurnBudgetDemand))),
 			hashText(string(eventPayload(state.ControlPolicy))),
+			hashText(string(eventPayload(state.RecoveryPolicy))),
 			strings.Join(state.CriterionIDs, "\x1e"),
 		}, "\x1f")),
 	)
@@ -482,10 +498,12 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			PrimarySessionSHA256    string `json:"primarySessionSha256"`
 			BudgetPolicySHA256      string `json:"budgetPolicySha256"`
 			ControlPolicySHA256     string `json:"controlPolicySha256"`
+			RecoveryPolicySHA256    string `json:"recoveryPolicySha256"`
 			LeaseEpoch              uint64 `json:"leaseEpoch"`
 		}{decision.DecisionID, decision.LifecycleDigest, decision.IsolationDigest, state.EffectiveProfilesSHA256,
 			state.RepositoryBindingHash, state.PrimarySession.ReservationSHA256,
 			hashText(string(eventPayload(state.Budget.Policy))), hashText(string(eventPayload(state.ControlPolicy))),
+			hashText(string(eventPayload(state.RecoveryPolicy))),
 			state.LeaseBinding.Epoch}),
 	}, run, domain.Event{
 		ID: stableID("event", commandID), RunID: run.ID, Sequence: 1,
@@ -497,10 +515,12 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			PrimarySessionSHA256    string `json:"primarySessionSha256"`
 			BudgetPolicySHA256      string `json:"budgetPolicySha256"`
 			ControlPolicySHA256     string `json:"controlPolicySha256"`
+			RecoveryPolicySHA256    string `json:"recoveryPolicySha256"`
 			LeaseEpoch              uint64 `json:"leaseEpoch"`
 		}{decision.DecisionID, state.EffectiveProfilesSHA256, state.RepositoryBindingHash,
 			state.PrimarySession.ReservationSHA256, hashText(string(eventPayload(state.Budget.Policy))),
-			hashText(string(eventPayload(state.ControlPolicy))), state.LeaseBinding.Epoch}),
+			hashText(string(eventPayload(state.ControlPolicy))), hashText(string(eventPayload(state.RecoveryPolicy))),
+			state.LeaseBinding.Epoch}),
 	})
 	if err != nil {
 		return StartResult{}, err
@@ -642,14 +662,17 @@ func (controller *Controller) RecordCompletionEvent(
 		break
 	}
 	if receiptIndex < 0 {
-		effect := effectPointer(&run.Execution, completionEffectKind(event, run.Execution))
+		effect := notifiedEffectPointer(&run.Execution, event.DispatchEffectID)
 		if effect == nil || effect.ID != event.DispatchEffectID || effect.Observation == nil ||
 			effect.Observation.Status != domainexecution.ObservationOwnedPresent {
 			return errors.New("completion event is not bound to a pending notified turn")
 		}
-		agentID := run.Execution.Agent.ExternalID
-		if agentID == "" {
-			agentID = effect.Observation.ExternalID
+		agentID := effect.Observation.ExternalID
+		if effect.ID == run.Execution.Agent.ID || effect.ID == run.Execution.AgentPrompt.ID {
+			agentID = run.Execution.Agent.ExternalID
+			if agentID == "" {
+				agentID = effect.Observation.ExternalID
+			}
 		}
 		admission := domainexecution.AdmitCompletionEvent(
 			event, agentID, run.Execution.RepositoryBindingHash,
@@ -684,7 +707,7 @@ func (controller *Controller) RecordCompletionEvent(
 				target.Archive.Observation = nil
 			}
 		}
-		pending := effectPointer(&next.Execution, completionEffectKind(event, next.Execution))
+		pending := notifiedEffectPointer(&next.Execution, event.DispatchEffectID)
 		pending.Observation = nil
 		next.Execution.OperationalObservationConsumed = true
 		if err := controller.persistRun(ctx, run, next, "agent.terminal_event.recorded"); err != nil {
@@ -728,15 +751,9 @@ func (controller *Controller) RecoverLostCompletionEvent(
 		return err
 	}
 	kind := domainexecution.EffectKind("")
-	for _, candidate := range []domainexecution.EffectKind{
-		domainexecution.EffectAgentCreate, domainexecution.EffectAgentPrompt,
-	} {
-		effect := effectPointer(&run.Execution, candidate)
-		if effect.ID == facts.PendingTerminalEffectID && effect.Observation != nil &&
-			effect.Observation.Status == domainexecution.ObservationOwnedPresent {
-			kind = candidate
-			break
-		}
+	if effect := notifiedEffectPointer(&run.Execution, facts.PendingTerminalEffectID); effect != nil &&
+		effect.Observation != nil && effect.Observation.Status == domainexecution.ObservationOwnedPresent {
+		kind = effect.Kind
 	}
 	if kind == "" {
 		return fmt.Errorf("lost-event recovery refused: %s", domainexecution.NeedStallRecoveryInvalid)
@@ -746,23 +763,34 @@ func (controller *Controller) RecoverLostCompletionEvent(
 		return fmt.Errorf("lost-event recovery refused: %s", admission.Code)
 	}
 	next := run
-	effectPointer(&next.Execution, kind).Observation = nil
+	notifiedEffectPointer(&next.Execution, facts.PendingTerminalEffectID).Observation = nil
 	next.Execution.OperationalObservationConsumed = true
 	return controller.persistRun(ctx, run, next, "agent.lost_event_recovery")
 }
 
 // dispatchEffectIDKind returns the durable notified effect for one callback.
 func completionEffectKind(event domainexecution.CompletionEvent, state domainexecution.State) domainexecution.EffectKind {
-	for _, effect := range []domainexecution.Effect{state.Agent, state.AgentPrompt} {
-		if effect.ID == event.DispatchEffectID {
-			return effect.Kind
-		}
+	if effect := notifiedEffectPointer(&state, event.DispatchEffectID); effect != nil {
+		return effect.Kind
 	}
 	return ""
 }
 
+func notifiedEffectPointer(state *domainexecution.State, effectID string) *domainexecution.Effect {
+	for _, effect := range []*domainexecution.Effect{
+		&state.Agent, &state.AgentPrompt,
+		&state.PrimaryRecovery.ReplacementAgent, &state.PrimaryRecovery.ReplacementPrompt,
+	} {
+		if effect.ID == effectID {
+			return effect
+		}
+	}
+	return nil
+}
+
 func (controller *Controller) persistRunTransition(ctx context.Context, current, next domain.Run, transition string) (bool, error) {
 	next.Version = current.Version + 1
+	stateHash := hashState(next.Execution)
 	commandID := stableID("command", current.ID, fmt.Sprintf("version-%d", next.Version), transition)
 	result, err := controller.store.UpdateRun(ctx, domain.CommandRequest{
 		IdempotencyKey: commandID, Type: transition, AggregateID: current.ID,
@@ -770,7 +798,7 @@ func (controller *Controller) persistRunTransition(ctx context.Context, current,
 		Payload: eventPayload(struct {
 			Transition string `json:"transition"`
 			StateHash  string `json:"stateHash"`
-		}{transition, hashState(next.Execution)}),
+		}{transition, stateHash}),
 	}, next, domain.Event{
 		ID: stableID("event", commandID), RunID: current.ID, Sequence: current.Version + 2,
 		AggregateID: current.ID, AggregateVersion: next.Version, Type: transition,
@@ -802,6 +830,8 @@ func currentEffectObservation(state domainexecution.State) *domainexecution.Effe
 	for _, effect := range []domainexecution.Effect{
 		state.Worktree, state.HostView, state.Boundary, state.Setup, state.Agent, state.AgentPrompt,
 		state.AgentArchive, state.HostViewArchive, state.WorktreeRemove,
+		state.PrimaryRecovery.Observe, state.PrimaryRecovery.Archive,
+		state.PrimaryRecovery.ReplacementAgent, state.PrimaryRecovery.ReplacementPrompt,
 	} {
 		if effect.Observation != nil {
 			observation := *effect.Observation
@@ -820,6 +850,10 @@ func currentEffectObservation(state domainexecution.State) *domainexecution.Effe
 		observation := *state.Control.Recovery.Snapshot.Observation
 		return &observation
 	}
+	if state.PrimaryRecovery.Observation != nil {
+		observation := state.PrimaryRecovery.Observation.Host
+		return &observation
+	}
 	return nil
 }
 
@@ -832,6 +866,7 @@ func durableTransitionPayload(transition string, state domainexecution.State) js
 		Claim                  *domainexecution.CompletedClaim         `json:"claim,omitempty"`
 		NeedsYou               *domainexecution.NeedsYou               `json:"needsYou,omitempty"`
 		CompletionReceipt      *domainexecution.CompletionEventReceipt `json:"completionReceipt,omitempty"`
+		PrimaryRecovery        *domainexecution.PrimaryRecovery        `json:"primaryRecovery,omitempty"`
 	}{
 		Transition: transition, StateHash: hashState(state),
 		EffectObservation: currentEffectObservation(state),
@@ -847,6 +882,9 @@ func durableTransitionPayload(transition string, state domainexecution.State) js
 		len(state.CompletionEventReceipts) > 0 {
 		receipt := state.CompletionEventReceipts[len(state.CompletionEventReceipts)-1]
 		payload.CompletionReceipt = &receipt
+	}
+	if strings.HasPrefix(transition, "run.primary_recovery_") {
+		payload.PrimaryRecovery = &state.PrimaryRecovery
 	}
 	return eventPayload(payload)
 }
@@ -909,9 +947,15 @@ func preparationBarrier(state domainexecution.State) string {
 	}
 	barrier, ok := domainexecution.PreparationBarrier(state.PreparationPlan, domainexecution.PreparationOutputs{
 		FrozenInputsHash: hashText(strings.Join([]string{
-			state.RepositoryBindingHash, frozenProfilesHash(state), state.PrimarySession.ReservationSHA256,
+			state.RepositoryBindingHash, frozenProfilesHash(state), func() string {
+				if state.PrimaryRecovery.SchemaVersion != "" {
+					return state.PrimaryRecovery.OriginalSession.ReservationSHA256
+				}
+				return state.PrimarySession.ReservationSHA256
+			}(),
 			hashText(string(eventPayload(state.Budget.Policy))), hashText(string(eventPayload(state.TurnBudgetDemand))),
 			hashText(string(eventPayload(state.ControlPolicy))),
+			hashText(string(eventPayload(state.RecoveryPolicy))),
 		}, "\x1f")),
 		EligibilityHash:       state.EligibilityFactsHash,
 		SecurityAdmissionHash: hashText(state.LifecycleDigest + "\x1f" + state.IsolationDigest),
@@ -1039,6 +1083,8 @@ func hostResumeCursor(state domainexecution.State) uint64 {
 	}
 	for _, effect := range []domainexecution.Effect{
 		state.HostView, state.Agent, state.AgentPrompt, state.AgentArchive, state.HostViewArchive,
+		state.PrimaryRecovery.Observe, state.PrimaryRecovery.Archive,
+		state.PrimaryRecovery.ReplacementAgent, state.PrimaryRecovery.ReplacementPrompt,
 	} {
 		if effect.Observation != nil && effect.Observation.Cursor > cursor {
 			cursor = effect.Observation.Cursor
@@ -1966,6 +2012,12 @@ func (controller *Controller) step(ctx context.Context, runID string, nowMillis 
 	if run.Execution.Terminal {
 		return StepResult{Run: run}, nil
 	}
+	if run.Execution.PrimaryRecovery.SchemaVersion != "" &&
+		run.Execution.PrimaryRecovery.Phase != domainexecution.PrimaryRecoveryComplete &&
+		run.Execution.PrimaryRecovery.Phase != domainexecution.PrimaryRecoveryNeedsYou {
+		recovery, recoveryErr := controller.ReconcilePrimaryRecovery(ctx, run.ID, nowMillis)
+		return StepResult{Run: recovery.Run, Progressed: recovery.Progressed}, recoveryErr
+	}
 	if err := controller.currentExecutionAuthority(ctx, run, nowMillis); err != nil {
 		return StepResult{Run: run}, err
 	}
@@ -1978,6 +2030,23 @@ func (controller *Controller) step(ctx context.Context, runID string, nowMillis 
 	}
 	if project.State != "active" || project.Control.ResumeRequired {
 		return StepResult{Run: run}, nil
+	}
+	if run.Execution.PrimaryRecovery.Authority != nil && run.Execution.PrimaryRecovery.Phase == domainexecution.PrimaryRecoveryComplete &&
+		run.Execution.AgentPrompt.Observation != nil &&
+		(run.Execution.AgentPrompt.Observation.Status == domainexecution.ObservationErrored ||
+			run.Execution.AgentPrompt.Observation.Status == domainexecution.ObservationPermission) {
+		return StepResult{Run: run, Progressed: true}, controller.parkRun(ctx, run, domainexecution.NeedRecoverySecondFailure)
+	}
+	if run.Execution.PrimaryRecovery.SchemaVersion == "" && run.Execution.AgentPrompt.Observation != nil &&
+		(run.Execution.AgentPrompt.Observation.Status == domainexecution.ObservationErrored ||
+			run.Execution.AgentPrompt.Observation.Status == domainexecution.ObservationPermission) {
+		recovery, recoveryErr := controller.RequestPrimaryRecovery(ctx, PrimaryRecoveryCommand{
+			SchemaVersion: PrimaryRecoveryCommandSchemaVersion,
+			RequestID:     stableID("primary-recovery", run.ID, run.Execution.AgentPrompt.Observation.ID),
+			RunID:         run.ID, ExpectedRunVersion: run.Version,
+			Trigger: domainexecution.RecoveryProviderFailure, RepeatedFailureCount: 1, NowMillis: nowMillis,
+		})
+		return StepResult{Run: recovery.Run, Progressed: recovery.Progressed}, recoveryErr
 	}
 	if run.Execution.NeedsYou != nil {
 		return controller.stepPausedEvidence(ctx, run, nowMillis)
