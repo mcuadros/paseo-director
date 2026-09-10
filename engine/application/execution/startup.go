@@ -11,6 +11,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
+	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	runtimeport "github.com/mcuadros/director-engine/ports/runtime"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
@@ -151,6 +152,11 @@ func validateExecutionGraph(run domain.Run) error {
 		state.PrimarySession.EffectiveProfilesSHA256 != state.EffectiveProfilesSHA256 ||
 		state.PrimarySession.AgentIntentID != expectedEffect(run.ID, domainexecution.EffectAgentCreate) {
 		return errors.New("Run execution scope or repository binding is invalid")
+	}
+	if !runtimebudget.ValidLedger(state.Budget) ||
+		!runtimebudget.ValidTurnDemand(state.Budget.Policy, state.TurnBudgetDemand) ||
+		state.Budget.Policy.Revision != state.EffectiveProfiles.ConfigurationSHA256() {
+		return errors.New("Run runtime budget is invalid")
 	}
 	if state.LastStartupReconciliation != nil &&
 		!domainexecution.ValidStartupReconciliation(*state.LastStartupReconciliation) {

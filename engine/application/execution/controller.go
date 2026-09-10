@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/agentprofile"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
+	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	"github.com/mcuadros/director-engine/ports/host"
 	reconciliationport "github.com/mcuadros/director-engine/ports/reconciliation"
 	runtimeport "github.com/mcuadros/director-engine/ports/runtime"
@@ -38,6 +40,7 @@ var (
 	shaPattern                  = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	ErrProjectLeaseUnavailable  = errors.New("project execution lease is stale or belongs to another engine")
 	ErrRepositoryBindingChanged = errors.New("execution repository binding changed")
+	ErrRuntimeBudgetLeaseFenced = errors.New(string(runtimebudget.ReasonLeaseFenced))
 )
 
 // Controller is restartable: it owns no workflow state outside TaskStore.
@@ -68,6 +71,8 @@ type StartCommand struct {
 	RootWorkspaceID   string
 	MCPServer         domainexecution.MCPServerLaunch
 	EffectiveProfiles agentprofile.FrozenSet
+	BudgetPolicy      runtimebudget.Policy
+	TurnBudgetDemand  runtimebudget.Demand
 	EligibilityFacts  eligibility.Facts
 }
 
@@ -82,6 +87,42 @@ type StartResult struct {
 type StepResult struct {
 	Run        domain.Run
 	Progressed bool
+}
+
+// BudgetWorkCommand is the engine-owned admission for setup, model, Review,
+// correction, Validation, or replacement work. The TaskStore Run version and
+// Project lease epoch fence concurrent and stale writers before persistence.
+type BudgetWorkCommand struct {
+	RequestID          string
+	RunID              string
+	ExpectedRunVersion uint64
+	LeaseEpoch         uint64
+	EffectID           string
+	Activity           runtimebudget.Activity
+	Demand             runtimebudget.Demand
+	CandidateSHA       string
+	FailureFingerprint string
+	NowMillis          int64
+}
+
+type BudgetResult struct {
+	Run           domain.Run
+	Decision      runtimebudget.Decision
+	ReservationID string
+	Replay        bool
+}
+
+type BudgetAcknowledgementCommand struct {
+	RequestID          string
+	RunID              string
+	ExpectedRunVersion uint64
+	LeaseEpoch         uint64
+	WarningID          string
+	PolicyRevision     string
+	ActorKind          string
+	ActorID            string
+	Source             string
+	NowMillis          int64
 }
 
 func stableID(prefix string, parts ...string) string {
@@ -147,6 +188,9 @@ func (controller *Controller) currentExecutionAuthority(ctx context.Context, run
 	if !currentLease(project, run.Execution.LeaseBinding, nowMillis) {
 		return ErrProjectLeaseUnavailable
 	}
+	if !runtimebudget.ValidLedgerForLease(run.Execution.Budget, run.Execution.LeaseBinding.Epoch) {
+		return ErrRuntimeBudgetLeaseFenced
+	}
 	workspace, err := controller.store.Workspace(ctx, run.Execution.Scope.WorkspaceID)
 	if err != nil {
 		return err
@@ -205,7 +249,11 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 		command.SourcePath != command.WorktreePath && identifierPattern.MatchString(command.Branch) &&
 		!strings.Contains(command.Branch, "..") && !strings.Contains(command.Branch, "//") &&
 		command.TaskTitle == task.Title && strings.TrimSpace(command.InitialPrompt) != "" && len(command.InitialPrompt) <= 16*1_024 &&
-		command.EffectiveProfiles.Valid()
+		command.EffectiveProfiles.Valid() && runtimebudget.ValidPolicy(command.BudgetPolicy) &&
+		command.BudgetPolicy.Revision == command.EffectiveProfiles.ConfigurationSHA256() &&
+		command.TurnBudgetDemand.WallTimeMilliseconds > 0 && command.TurnBudgetDemand.Tokens > 0 &&
+		command.TurnBudgetDemand.Turns == 1 &&
+		(command.BudgetPolicy.CostLimitMicrousd == 0 || command.TurnBudgetDemand.CostMicrousd > 0)
 }
 
 func eventPayload(value any) json.RawMessage {
@@ -293,7 +341,9 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			existing.Execution.EffectiveProfilesSHA256 != command.EffectiveProfiles.SHA256() ||
 			existing.Execution.RepositoryBinding != repositoryBinding(workspace, command.WorktreePath, command.Branch, command.BaseSHA) ||
 			existing.Execution.LeaseBinding != leaseBinding(project) || sessionErr != nil ||
-			existing.Execution.PrimarySession.ReservationSHA256 != expectedSession.ReservationSHA256 {
+			existing.Execution.PrimarySession.ReservationSHA256 != expectedSession.ReservationSHA256 ||
+			existing.Execution.Budget.Policy != command.BudgetPolicy ||
+			existing.Execution.TurnBudgetDemand != command.TurnBudgetDemand {
 			return StartResult{}, errors.New("existing Run conflicts with start command")
 		}
 		result.Decision.Kind = eligibility.DecisionEligible
@@ -322,6 +372,10 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 	if err != nil || repositoryHash == "" {
 		return StartResult{}, errors.New("primary execution binding is invalid")
 	}
+	budget, err := runtimebudget.NewLedger(command.BudgetPolicy, command.EligibilityFacts.TaskStoreNowMillis)
+	if err != nil {
+		return StartResult{}, errors.New("primary execution budget is invalid")
+	}
 	state := domainexecution.State{
 		SchemaVersion: domainexecution.SchemaVersion, Scope: command.Scope,
 		StartCommandID:             commandID,
@@ -337,6 +391,8 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		LifecycleApproval:       command.EligibilityFacts.LifecycleApproval,
 		Isolation:               command.EligibilityFacts.Isolation,
 		OperationalPolicy:       command.EligibilityFacts.OperationalPolicy,
+		Budget:                  budget,
+		TurnBudgetDemand:        command.TurnBudgetDemand,
 		LifecycleSurfaces:       command.EligibilityFacts.LifecycleSurfaces,
 		SourcePath:              command.SourcePath, WorktreePath: command.WorktreePath,
 		Branch: command.Branch, TaskTitle: command.TaskTitle,
@@ -360,6 +416,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			state.RepositoryBindingHash, state.EligibilityFactsHash,
 			state.LifecycleDigest, state.IsolationDigest, state.EffectiveProfilesSHA256,
 			state.PrimarySession.ReservationSHA256, state.InitialPromptHash,
+			hashText(string(eventPayload(state.Budget.Policy))), hashText(string(eventPayload(state.TurnBudgetDemand))),
 			strings.Join(state.CriterionIDs, "\x1e"),
 		}, "\x1f")),
 	)
@@ -376,9 +433,11 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			EffectiveProfilesSHA256 string `json:"effectiveProfilesSha256"`
 			RepositoryBindingSHA256 string `json:"repositoryBindingSha256"`
 			PrimarySessionSHA256    string `json:"primarySessionSha256"`
+			BudgetPolicySHA256      string `json:"budgetPolicySha256"`
 			LeaseEpoch              uint64 `json:"leaseEpoch"`
 		}{decision.DecisionID, decision.LifecycleDigest, decision.IsolationDigest, state.EffectiveProfilesSHA256,
-			state.RepositoryBindingHash, state.PrimarySession.ReservationSHA256, state.LeaseBinding.Epoch}),
+			state.RepositoryBindingHash, state.PrimarySession.ReservationSHA256,
+			hashText(string(eventPayload(state.Budget.Policy))), state.LeaseBinding.Epoch}),
 	}, run, domain.Event{
 		ID: stableID("event", commandID), RunID: run.ID, Sequence: 1,
 		AggregateID: run.ID, AggregateVersion: 0, Type: "run.primary_execution.created",
@@ -387,9 +446,10 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			EffectiveProfilesSHA256 string `json:"effectiveProfilesSha256"`
 			RepositoryBindingSHA256 string `json:"repositoryBindingSha256"`
 			PrimarySessionSHA256    string `json:"primarySessionSha256"`
+			BudgetPolicySHA256      string `json:"budgetPolicySha256"`
 			LeaseEpoch              uint64 `json:"leaseEpoch"`
 		}{decision.DecisionID, state.EffectiveProfilesSHA256, state.RepositoryBindingHash,
-			state.PrimarySession.ReservationSHA256, state.LeaseBinding.Epoch}),
+			state.PrimarySession.ReservationSHA256, hashText(string(eventPayload(state.Budget.Policy))), state.LeaseBinding.Epoch}),
 	})
 	if err != nil {
 		return StartResult{}, err
@@ -770,7 +830,10 @@ func preparationBarrier(state domainexecution.State) string {
 		setupHash = state.Setup.ExternalID
 	}
 	barrier, ok := domainexecution.PreparationBarrier(state.PreparationPlan, domainexecution.PreparationOutputs{
-		FrozenInputsHash:      hashText(state.RepositoryBindingHash + "\x1f" + frozenProfilesHash(state) + "\x1f" + state.PrimarySession.ReservationSHA256),
+		FrozenInputsHash: hashText(strings.Join([]string{
+			state.RepositoryBindingHash, frozenProfilesHash(state), state.PrimarySession.ReservationSHA256,
+			hashText(string(eventPayload(state.Budget.Policy))), hashText(string(eventPayload(state.TurnBudgetDemand))),
+		}, "\x1f")),
 		EligibilityHash:       state.EligibilityFactsHash,
 		SecurityAdmissionHash: hashText(state.LifecycleDigest + "\x1f" + state.IsolationDigest),
 		WorktreeHash:          state.Worktree.ExternalID,
@@ -963,6 +1026,7 @@ func (controller *Controller) observeEffectAfter(ctx context.Context, run domain
 			Cursor:          observed.Cursor, ObservedAt: observed.ObservedAt,
 			ObservedAtMillis: observedAt.UnixMilli(), MaximumAgeMillis: observed.Result.MaximumAgeMillis,
 			PriorDispatcherAbsent: observed.Result.PriorDispatcherAbsent,
+			Usage:                 observed.Result.Usage,
 		}
 		normalized.FactHash = domainexecution.EffectObservationHash(normalized)
 		return normalized, nil
@@ -1055,11 +1119,202 @@ func (controller *Controller) parkRun(ctx context.Context, run domain.Run, code 
 	return controller.persistRun(ctx, run, next, "run.needs_you")
 }
 
+func budgetActivity(kind domainexecution.EffectKind) (runtimebudget.Activity, bool) {
+	switch kind {
+	case domainexecution.EffectAgentCreate:
+		return runtimebudget.ActivityWorkerBootstrap, true
+	case domainexecution.EffectAgentPrompt:
+		return runtimebudget.ActivityWorkerTurn, true
+	case domainexecution.EffectSetupRun:
+		return runtimebudget.ActivitySetupAttempt, true
+	default:
+		return "", false
+	}
+}
+
+func budgetReservationID(effect domainexecution.Effect) string {
+	return stableID("budget-reservation", effect.ID, fmt.Sprintf("attempt-%d", effect.Attempt+1))
+}
+
+func budgetDemand(run domain.Run, activity runtimebudget.Activity) runtimebudget.Demand {
+	if activity != runtimebudget.ActivitySetupAttempt {
+		return run.Execution.TurnBudgetDemand
+	}
+	for _, step := range run.Execution.PreparationPlan.Steps {
+		if step.Kind == "prepare_dependencies" {
+			return runtimebudget.Demand{WallTimeMilliseconds: uint64(step.TimeoutSeconds) * 1_000}
+		}
+	}
+	return runtimebudget.Demand{}
+}
+
+func budgetWakeCondition(decision runtimebudget.Decision) string {
+	switch decision.Disposition {
+	case runtimebudget.DispositionSoftPause:
+		return "human_acknowledges_exact_budget_warning"
+	case runtimebudget.DispositionHardExhausted:
+		return "human_applies_permitted_budget_revision"
+	default:
+		return "fresh_unambiguous_provider_usage_or_human_decision"
+	}
+}
+
+func budgetTransition(decision runtimebudget.Decision, fallback string) string {
+	switch decision.Disposition {
+	case runtimebudget.DispositionSoftPause:
+		return "soft_budget_reached"
+	case runtimebudget.DispositionHardExhausted:
+		return "hard_budget_exhausted"
+	case runtimebudget.DispositionFailClosed:
+		return "run.budget_fact_failed_closed"
+	default:
+		return fallback
+	}
+}
+
+func budgetNeedsYou(scope domainexecution.Scope, decision runtimebudget.Decision) (*domainexecution.NeedsYou, error) {
+	escalated := escalation.Reduce(escalation.Facts{
+		SchemaVersion: escalation.SchemaVersion, Scope: scope,
+		CauseCode: domainexecution.NeedCode(decision.Reason), Reconciled: true,
+		WakeCondition: budgetWakeCondition(decision),
+	})
+	if escalated.Kind != escalation.DecisionNeedsYou {
+		return nil, errors.New("runtime budget cause was not admitted by escalation reducer")
+	}
+	return &escalated.NeedsYou, nil
+}
+
+func (controller *Controller) reserveEffectBudget(
+	ctx context.Context, run domain.Run, kind domainexecution.EffectKind, nowMillis int64,
+) (StepResult, bool, error) {
+	activity, budgeted := budgetActivity(kind)
+	if !budgeted {
+		return StepResult{Run: run}, false, nil
+	}
+	effect := effectPointer(&run.Execution, kind)
+	if effect == nil {
+		return StepResult{Run: run}, true, errors.New("budgeted execution effect is missing")
+	}
+	request := runtimebudget.ReserveRequest{
+		ID: budgetReservationID(*effect), EffectID: effect.ID, Activity: activity,
+		LeaseEpoch:     run.Execution.LeaseBinding.Epoch,
+		PolicyRevision: run.Execution.Budget.Policy.Revision,
+		Demand:         budgetDemand(run, activity),
+	}
+	ledger := run.Execution.Budget
+	if effect.Attempt > 0 && effect.Observation != nil &&
+		effect.Observation.Status == domainexecution.ObservationAbsent && effect.Observation.PriorDispatcherAbsent {
+		released, err := runtimebudget.ReleaseAbsentReservation(
+			ledger, effect.ID, run.Execution.LeaseBinding.Epoch,
+			stableID("budget-absence", effect.Observation.ID),
+		)
+		if err != nil {
+			return StepResult{Run: run}, true, err
+		}
+		ledger = released
+	}
+	if effect.Observation != nil {
+		switch effect.Observation.Status {
+		case domainexecution.ObservationErrored, domainexecution.ObservationPermission,
+			domainexecution.ObservationDifferent, domainexecution.ObservationAmbiguous:
+			request.Fingerprint = hashText(string(effect.Observation.Status) + "\x1f" + effect.Observation.ExternalID)
+		}
+	}
+	ledger, decision, err := runtimebudget.Reserve(ledger, request, nowMillis)
+	if err != nil {
+		return StepResult{Run: run}, true, err
+	}
+	if decision.Disposition != runtimebudget.DispositionAllow {
+		needsYou, needsErr := budgetNeedsYou(run.Execution.Scope, decision)
+		if needsErr != nil {
+			return StepResult{Run: run}, true, needsErr
+		}
+		next := run
+		next.Execution.Budget = ledger
+		next.Execution.NeedsYou = needsYou
+		return StepResult{Run: next, Progressed: true}, true, controller.persistRun(
+			ctx, run, next, budgetTransition(decision, "run.budget_paused"),
+		)
+	}
+	if ledgerEqual(run.Execution.Budget, ledger) {
+		return StepResult{Run: run}, false, nil
+	}
+	next := run
+	next.Execution.Budget = ledger
+	return StepResult{Run: next, Progressed: true}, true, controller.persistRun(ctx, run, next, "run.budget_reserved")
+}
+
+func ledgerEqual(left, right runtimebudget.Ledger) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
+}
+
+func effectReservation(ledger runtimebudget.Ledger, effect domainexecution.Effect) (runtimebudget.Reservation, bool) {
+	id := stableID("budget-reservation", effect.ID, fmt.Sprintf("attempt-%d", effect.Attempt))
+	index := slices.IndexFunc(ledger.Reservations, func(reservation runtimebudget.Reservation) bool {
+		return reservation.ID == id && !reservation.Released
+	})
+	if index < 0 {
+		return runtimebudget.Reservation{}, false
+	}
+	return ledger.Reservations[index], true
+}
+
+func applyEffectBudget(run *domain.Run, effect domainexecution.Effect, nowMillis int64) runtimebudget.Decision {
+	activity, budgeted := budgetActivity(effect.Kind)
+	if !budgeted {
+		return runtimebudget.Decision{Disposition: runtimebudget.DispositionAllow}
+	}
+	reservation, ok := effectReservation(run.Execution.Budget, effect)
+	if !ok || effect.Observation == nil {
+		return runtimebudget.Decision{Disposition: runtimebudget.DispositionFailClosed, Reason: runtimebudget.ReasonProviderUsageAmbiguous}
+	}
+	if activity == runtimebudget.ActivitySetupAttempt {
+		observation := runtimebudget.ActivityObservation{
+			ID: stableID("budget-activity", effect.Observation.ID), ReservationID: reservation.ID,
+			EffectID: effect.ID, Activity: activity, LeaseEpoch: run.Execution.LeaseBinding.Epoch,
+			PolicyRevision:   run.Execution.Budget.Policy.Revision,
+			ObservedAtMillis: nowMillis, Fingerprint: reservation.Fingerprint,
+		}
+		observation.FactHash = runtimebudget.ActivityObservationHash(observation)
+		ledger, decision, err := runtimebudget.ApplyActivityObservation(run.Execution.Budget, observation)
+		if err != nil {
+			return runtimebudget.Decision{Disposition: runtimebudget.DispositionFailClosed, Reason: runtimebudget.ReasonLedgerInvalid}
+		}
+		run.Execution.Budget = ledger
+		return decision
+	}
+	usage := runtimebudget.ProviderUsage{State: runtimebudget.UsageUnavailable}
+	if effect.Observation.Usage != nil {
+		usage = *effect.Observation.Usage
+	}
+	agentID := run.Execution.Agent.ExternalID
+	if agentID == "" {
+		agentID = effect.Observation.ExternalID
+	}
+	observation := runtimebudget.ProviderObservation{
+		ID: stableID("provider-usage", effect.Observation.ID), EffectID: effect.ID,
+		AgentID: agentID, Activity: activity,
+		LeaseEpoch: run.Execution.LeaseBinding.Epoch, PolicyRevision: run.Execution.Budget.Policy.Revision,
+		Sequence: effect.Observation.Cursor, ObservedAtMillis: nowMillis,
+		ProviderUsage: usage,
+	}
+	observation.FactHash = runtimebudget.ProviderObservationHash(observation)
+	ledger, decision, err := runtimebudget.ApplyProviderObservation(run.Execution.Budget, observation)
+	if err != nil {
+		return runtimebudget.Decision{Disposition: runtimebudget.DispositionFailClosed, Reason: runtimebudget.ReasonLedgerInvalid}
+	}
+	run.Execution.Budget = ledger
+	return decision
+}
+
 func (controller *Controller) applyEffectDecision(
 	ctx context.Context,
 	run domain.Run,
 	kind domainexecution.EffectKind,
 	action string,
+	nowMillis int64,
 ) (StepResult, error) {
 	switch action {
 	case "observe":
@@ -1070,11 +1325,28 @@ func (controller *Controller) applyEffectDecision(
 		next := run
 		effect := effectPointer(&next.Execution, kind)
 		effect.Observation = &observation
-		if err := controller.persistRun(ctx, run, next, "run.effect_observed"); err != nil {
+		transition := "run.effect_observed"
+		if (kind == domainexecution.EffectAgentCreate || kind == domainexecution.EffectAgentPrompt) &&
+			(observation.Status == domainexecution.ObservationErrored || observation.Status == domainexecution.ObservationPermission) {
+			budgetDecision := applyEffectBudget(&next, *effect, nowMillis)
+			transition = "run.effect_terminal_usage_observed"
+			if budgetDecision.Disposition != runtimebudget.DispositionAllow {
+				needsYou, needsErr := budgetNeedsYou(run.Execution.Scope, budgetDecision)
+				if needsErr != nil {
+					return StepResult{Run: run}, needsErr
+				}
+				next.Execution.NeedsYou = needsYou
+				transition = budgetTransition(budgetDecision, transition)
+			}
+		}
+		if err := controller.persistRun(ctx, run, next, transition); err != nil {
 			return StepResult{Run: run}, err
 		}
 		return StepResult{Run: next, Progressed: true}, nil
 	case "dispatch":
+		if budgeted, handled, err := controller.reserveEffectBudget(ctx, run, kind, nowMillis); err != nil || handled {
+			return budgeted, err
+		}
 		if isHostEffect(kind) {
 			if err := controller.verifyHost(ctx); err != nil {
 				if parkErr := controller.parkRun(ctx, run, domainexecution.NeedCode("host_contract_unavailable")); parkErr != nil {
@@ -1114,13 +1386,23 @@ func (controller *Controller) applyEffectDecision(
 		}
 		next := run
 		effect := effectPointer(&next.Execution, kind)
+		budgetDecision := applyEffectBudget(&next, *effect, nowMillis)
 		effect.Phase = domainexecution.EffectComplete
 		effect.ExternalID = effect.Observation.ExternalID
 		effect.ObservedFactHash = effect.Observation.FactHash
 		effect.ObservedCorrelation = effect.Observation.CorrelationHash
 		effect.Observation = nil
 		next.Execution.OperationalObservationConsumed = true
-		if err := controller.persistRun(ctx, run, next, "run.effect_completed"); err != nil {
+		transition := "run.effect_completed"
+		if budgetDecision.Disposition != runtimebudget.DispositionAllow {
+			needsYou, err := budgetNeedsYou(run.Execution.Scope, budgetDecision)
+			if err != nil {
+				return StepResult{Run: run}, err
+			}
+			next.Execution.NeedsYou = needsYou
+			transition = budgetTransition(budgetDecision, "run.effect_completed_budget_paused")
+		}
+		if err := controller.persistRun(ctx, run, next, transition); err != nil {
 			return StepResult{Run: run}, err
 		}
 		return StepResult{Run: next, Progressed: true}, nil
@@ -1152,9 +1434,9 @@ func (controller *Controller) applyRetryDecision(
 		if !recoveryAuthorized {
 			return StepResult{Run: run}, nil
 		}
-		return controller.applyEffectDecision(ctx, run, kind, "dispatch")
+		return controller.applyEffectDecision(ctx, run, kind, "dispatch", nowMillis)
 	case retry.DecisionAdopt:
-		return controller.applyEffectDecision(ctx, run, kind, "adopt")
+		return controller.applyEffectDecision(ctx, run, kind, "adopt", nowMillis)
 	case retry.DecisionEscalate:
 		return StepResult{Run: run, Progressed: true}, controller.parkRun(ctx, run, domainexecution.NeedCode(decision.Code))
 	default:
@@ -1320,11 +1602,11 @@ func (controller *Controller) stepLaunch(ctx context.Context, run domain.Run, no
 	case launch.DecisionObserveOperationalLimits:
 		return StepResult{Run: run, Progressed: true}, controller.observeOperational(ctx, run)
 	case launch.DecisionObserve:
-		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "observe")
+		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "observe", nowMillis)
 	case launch.DecisionDispatch:
-		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "dispatch")
+		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "dispatch", nowMillis)
 	case launch.DecisionAdopt:
-		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "adopt")
+		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "adopt", nowMillis)
 	case launch.DecisionRetry:
 		return controller.applyRetryDecision(ctx, run, decision.EffectKind, nowMillis, recoveryAuthorized)
 	case launch.DecisionCommitPreparationReady:
@@ -1476,11 +1758,11 @@ func (controller *Controller) stepClosure(ctx context.Context, run domain.Run, n
 		next.Execution.OperationalObservationConsumed = true
 		return StepResult{Run: next, Progressed: true}, controller.persistRun(ctx, run, next, "run.worktree_remove_intent_recorded")
 	case closure.DecisionObserve:
-		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "observe")
+		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "observe", nowMillis)
 	case closure.DecisionDispatch:
-		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "dispatch")
+		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "dispatch", nowMillis)
 	case closure.DecisionAdopt:
-		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "adopt")
+		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "adopt", nowMillis)
 	case closure.DecisionRetry:
 		return controller.applyRetryDecision(ctx, run, decision.EffectKind, nowMillis, recoveryAuthorized)
 	case closure.DecisionTerminal:
@@ -1493,6 +1775,71 @@ func (controller *Controller) stepClosure(ctx context.Context, run domain.Run, n
 	}
 }
 
+// stepPausedEvidence continues only observation and evidence persistence for
+// an already handed-off model turn. It cannot create an intent, reserve work,
+// retry, prompt, review, validate, or clean recoverable state.
+func (controller *Controller) stepPausedEvidence(ctx context.Context, run domain.Run, nowMillis int64) (StepResult, error) {
+	if run.Execution.NeedsYou != nil &&
+		(run.Execution.NeedsYou.Code == domainexecution.NeedCode(runtimebudget.ReasonProviderUsageUnavailable) ||
+			run.Execution.NeedsYou.Code == domainexecution.NeedCode(runtimebudget.ReasonProviderUsageAmbiguous)) {
+		for _, kind := range []domainexecution.EffectKind{domainexecution.EffectAgentPrompt, domainexecution.EffectAgentCreate} {
+			effect := effectPointer(&run.Execution, kind)
+			if effect == nil || effect.ID == "" || effect.Phase != domainexecution.EffectComplete {
+				continue
+			}
+			if _, outstanding := effectReservation(run.Execution.Budget, *effect); !outstanding {
+				continue
+			}
+			observation, err := controller.observeEffect(ctx, run, kind)
+			if err != nil {
+				return StepResult{Run: run}, err
+			}
+			if observation.Status != domainexecution.ObservationDesired &&
+				observation.Status != domainexecution.ObservationErrored &&
+				observation.Status != domainexecution.ObservationPermission {
+				return StepResult{Run: run}, nil
+			}
+			observedEffect := *effect
+			observedEffect.Observation = &observation
+			next := run
+			decision := applyEffectBudget(&next, observedEffect, nowMillis)
+			if decision.Disposition == runtimebudget.DispositionAllow {
+				next.Execution.NeedsYou = nil
+			} else {
+				needsYou, needsErr := budgetNeedsYou(run.Execution.Scope, decision)
+				if needsErr != nil {
+					return StepResult{Run: run}, needsErr
+				}
+				next.Execution.NeedsYou = needsYou
+			}
+			if ledgerEqual(run.Execution.Budget, next.Execution.Budget) &&
+				run.Execution.NeedsYou != nil && next.Execution.NeedsYou != nil &&
+				*run.Execution.NeedsYou == *next.Execution.NeedsYou {
+				return StepResult{Run: run}, nil
+			}
+			if err := controller.persistRun(ctx, run, next, "run.provider_usage_reconciled"); err != nil {
+				return StepResult{Run: run}, err
+			}
+			next.Version = run.Version + 1
+			return StepResult{Run: next, Progressed: true}, nil
+		}
+	}
+	for _, kind := range []domainexecution.EffectKind{domainexecution.EffectAgentPrompt, domainexecution.EffectAgentCreate} {
+		effect := effectPointer(&run.Execution, kind)
+		if effect == nil || effect.ID == "" || effect.Phase == domainexecution.EffectComplete {
+			continue
+		}
+		if effect.Observation == nil {
+			return controller.applyEffectDecision(ctx, run, kind, "observe", nowMillis)
+		}
+		if effect.Observation.Status == domainexecution.ObservationDesired {
+			return controller.applyEffectDecision(ctx, run, kind, "adopt", nowMillis)
+		}
+		return StepResult{Run: run}, nil
+	}
+	return StepResult{Run: run}, nil
+}
+
 // Step executes at most one durable transition or one already-persisted
 // adapter handoff. Constructing a new Controller between calls is supported.
 func (controller *Controller) step(ctx context.Context, runID string, nowMillis int64, recoveryAuthorized bool) (StepResult, error) {
@@ -1500,11 +1847,19 @@ func (controller *Controller) step(ctx context.Context, runID string, nowMillis 
 	if err != nil {
 		return StepResult{}, err
 	}
-	if run.Execution.NeedsYou != nil || run.Execution.Terminal {
+	if run.Execution.Terminal {
 		return StepResult{Run: run}, nil
 	}
 	if err := controller.currentExecutionAuthority(ctx, run, nowMillis); err != nil {
 		return StepResult{Run: run}, err
+	}
+	if run.Execution.NeedsYou != nil {
+		return controller.stepPausedEvidence(ctx, run, nowMillis)
+	}
+	ledger, budgetDecision := runtimebudget.Evaluate(run.Execution.Budget, nowMillis)
+	if budgetDecision.Disposition != runtimebudget.DispositionAllow {
+		next, persistErr := controller.persistBudgetResult(ctx, run, ledger, budgetDecision, "run.budget_reconciled")
+		return StepResult{Run: next, Progressed: persistErr == nil}, persistErr
 	}
 	if run.CurrentCandidateID != "" {
 		return controller.stepClosure(ctx, run, nowMillis, recoveryAuthorized)
@@ -1520,6 +1875,182 @@ func (controller *Controller) step(ctx context.Context, runID string, nowMillis 
 // complete startup reconciliation can supply that authorization.
 func (controller *Controller) Step(ctx context.Context, runID string, nowMillis int64) (StepResult, error) {
 	return controller.step(ctx, runID, nowMillis, false)
+}
+
+func validBudgetCommand(command BudgetWorkCommand) bool {
+	return identifierPattern.MatchString(command.RequestID) && identifierPattern.MatchString(command.RunID) &&
+		identifierPattern.MatchString(command.EffectID) && command.LeaseEpoch > 0 && command.NowMillis >= 0
+}
+
+func (controller *Controller) persistBudgetResult(
+	ctx context.Context, current domain.Run, ledger runtimebudget.Ledger,
+	decision runtimebudget.Decision, transition string,
+) (domain.Run, error) {
+	next := current
+	next.Execution.Budget = ledger
+	if decision.Disposition != runtimebudget.DispositionAllow {
+		needsYou, err := budgetNeedsYou(current.Execution.Scope, decision)
+		if err != nil {
+			return current, err
+		}
+		next.Execution.NeedsYou = needsYou
+		transition = budgetTransition(decision, transition)
+	}
+	if ledgerEqual(current.Execution.Budget, next.Execution.Budget) &&
+		((current.Execution.NeedsYou == nil && next.Execution.NeedsYou == nil) ||
+			(current.Execution.NeedsYou != nil && next.Execution.NeedsYou != nil && *current.Execution.NeedsYou == *next.Execution.NeedsYou)) {
+		return current, nil
+	}
+	if err := controller.persistRun(ctx, current, next, transition); err != nil {
+		return current, err
+	}
+	next.Version = current.Version + 1
+	return next, nil
+}
+
+// ReserveAutomatedWork persists the exact reservation before a later adapter
+// handoff. Reviewers and correction/validation controllers use this same path;
+// no connector or model may reserve itself.
+func (controller *Controller) ReserveAutomatedWork(ctx context.Context, command BudgetWorkCommand) (BudgetResult, error) {
+	if !validBudgetCommand(command) {
+		return BudgetResult{}, errors.New("runtime budget work command is invalid")
+	}
+	run, err := controller.store.Run(ctx, command.RunID)
+	if err != nil {
+		return BudgetResult{}, err
+	}
+	if run.Execution.LeaseBinding.Epoch != command.LeaseEpoch {
+		return BudgetResult{}, ErrRuntimeBudgetLeaseFenced
+	}
+	if run.Version != command.ExpectedRunVersion {
+		return BudgetResult{}, errors.New("runtime budget work command is stale")
+	}
+	if run.Execution.NeedsYou != nil || run.Execution.Terminal {
+		return BudgetResult{}, errors.New("runtime budget work command targets a paused or terminal Run")
+	}
+	if err := controller.currentExecutionAuthority(ctx, run, command.NowMillis); err != nil {
+		return BudgetResult{}, err
+	}
+	reservationID := stableID("budget-reservation", command.RequestID, command.EffectID)
+	request := runtimebudget.ReserveRequest{
+		ID: reservationID, EffectID: command.EffectID, Activity: command.Activity,
+		LeaseEpoch: command.LeaseEpoch, PolicyRevision: run.Execution.Budget.Policy.Revision,
+		Demand: command.Demand, CandidateSHA: command.CandidateSHA,
+		Fingerprint: command.FailureFingerprint,
+	}
+	ledger, decision, err := runtimebudget.Reserve(run.Execution.Budget, request, command.NowMillis)
+	if err != nil {
+		return BudgetResult{}, err
+	}
+	replay := ledgerEqual(run.Execution.Budget, ledger) && decision.Disposition == runtimebudget.DispositionAllow
+	next, err := controller.persistBudgetResult(ctx, run, ledger, decision, "run.budget_work_reserved")
+	if err != nil {
+		return BudgetResult{}, err
+	}
+	return BudgetResult{Run: next, Decision: decision, ReservationID: reservationID, Replay: replay}, nil
+}
+
+// RecordProviderUsage persists one exact provider snapshot and releases its
+// matching reservation. Missing/ambiguous observations are persisted and park
+// fail closed; they are never repaired by a pricing estimate.
+func (controller *Controller) RecordProviderUsage(
+	ctx context.Context, runID string, expectedRunVersion, leaseEpoch uint64,
+	observation runtimebudget.ProviderObservation,
+) (BudgetResult, error) {
+	run, err := controller.store.Run(ctx, runID)
+	if err != nil {
+		return BudgetResult{}, err
+	}
+	if run.Execution.LeaseBinding.Epoch != leaseEpoch || observation.LeaseEpoch != leaseEpoch {
+		return BudgetResult{}, ErrRuntimeBudgetLeaseFenced
+	}
+	if run.Version != expectedRunVersion {
+		return BudgetResult{}, errors.New("provider usage observation is stale or lease-fenced")
+	}
+	if err := controller.currentExecutionAuthority(ctx, run, observation.ObservedAtMillis); err != nil {
+		return BudgetResult{}, err
+	}
+	ledger, decision, err := runtimebudget.ApplyProviderObservation(run.Execution.Budget, observation)
+	if err != nil {
+		return BudgetResult{}, err
+	}
+	replay := ledgerEqual(run.Execution.Budget, ledger)
+	next, err := controller.persistBudgetResult(ctx, run, ledger, decision, "run.provider_usage_recorded")
+	return BudgetResult{Run: next, Decision: decision, Replay: replay}, err
+}
+
+// RecordBudgetActivity persists bounded non-provider setup, Validation, and
+// replacement accounting with the same Run/lease fencing.
+func (controller *Controller) RecordBudgetActivity(
+	ctx context.Context, runID string, expectedRunVersion, leaseEpoch uint64,
+	observation runtimebudget.ActivityObservation,
+) (BudgetResult, error) {
+	run, err := controller.store.Run(ctx, runID)
+	if err != nil {
+		return BudgetResult{}, err
+	}
+	if run.Execution.LeaseBinding.Epoch != leaseEpoch || observation.LeaseEpoch != leaseEpoch {
+		return BudgetResult{}, ErrRuntimeBudgetLeaseFenced
+	}
+	if run.Version != expectedRunVersion {
+		return BudgetResult{}, errors.New("budget activity observation is stale or lease-fenced")
+	}
+	if err := controller.currentExecutionAuthority(ctx, run, observation.ObservedAtMillis); err != nil {
+		return BudgetResult{}, err
+	}
+	ledger, decision, err := runtimebudget.ApplyActivityObservation(run.Execution.Budget, observation)
+	if err != nil {
+		return BudgetResult{}, err
+	}
+	replay := ledgerEqual(run.Execution.Budget, ledger)
+	next, err := controller.persistBudgetResult(ctx, run, ledger, decision, "run.budget_activity_recorded")
+	return BudgetResult{Run: next, Decision: decision, Replay: replay}, err
+}
+
+// AcknowledgeBudgetWarning is the only unchanged-limit resume path. It
+// accepts only a server-authenticated human command and clears only the exact
+// matching soft-budget park after persisting the acknowledgement.
+func (controller *Controller) AcknowledgeBudgetWarning(
+	ctx context.Context, command BudgetAcknowledgementCommand,
+) (BudgetResult, error) {
+	if !identifierPattern.MatchString(command.RequestID) || !identifierPattern.MatchString(command.RunID) ||
+		command.ActorKind != "human" || command.Source != "authenticated_engine_command" ||
+		!identifierPattern.MatchString(command.ActorID) || command.NowMillis < 0 {
+		return BudgetResult{}, errors.New("budget acknowledgement command is invalid")
+	}
+	run, err := controller.store.Run(ctx, command.RunID)
+	if err != nil {
+		return BudgetResult{}, err
+	}
+	if run.Execution.LeaseBinding.Epoch != command.LeaseEpoch {
+		return BudgetResult{}, ErrRuntimeBudgetLeaseFenced
+	}
+	if run.Version != command.ExpectedRunVersion {
+		return BudgetResult{}, errors.New("budget acknowledgement command is stale")
+	}
+	if err := controller.currentExecutionAuthority(ctx, run, command.NowMillis); err != nil {
+		return BudgetResult{}, err
+	}
+	ledger, err := runtimebudget.AcknowledgeSoftWarning(
+		run.Execution.Budget, command.WarningID, command.PolicyRevision, command.ActorID, command.NowMillis,
+	)
+	if err != nil {
+		return BudgetResult{}, err
+	}
+	next := run
+	next.Execution.Budget = ledger
+	if next.Execution.NeedsYou != nil {
+		code := runtimebudget.ReasonCode(next.Execution.NeedsYou.Code)
+		if code == runtimebudget.ReasonWallTimeSoft || code == runtimebudget.ReasonTokensSoft ||
+			code == runtimebudget.ReasonTurnsSoft || code == runtimebudget.ReasonCostSoft {
+			next.Execution.NeedsYou = nil
+		}
+	}
+	if err := controller.persistRun(ctx, run, next, "run.budget_warning_acknowledged"); err != nil {
+		return BudgetResult{}, err
+	}
+	next.Version = run.Version + 1
+	return BudgetResult{Run: next, Decision: runtimebudget.Decision{Disposition: runtimebudget.DispositionAllow}}, nil
 }
 
 // SortedCriteria returns the stable criterion IDs retained by a completed

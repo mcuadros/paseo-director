@@ -90,9 +90,11 @@ func (service *Service) Schedule(ctx context.Context, command Command) (Result, 
 			ID:     stableID("scheduler-reservation", command.ProjectID, command.RequestID, string(task.ID)),
 			TaskID: task.ID, Workspace: task.Workspace, TaskVersion: task.TaskVersion,
 			WorkClass: task.WorkClass, LeaseEpoch: snapshot.LeaseEpoch, Demand: task.Demand,
-			TimeRequested: task.Budgets.Time.Requested,
-			CostRequested: task.Budgets.Cost.Requested,
-			CIRequested:   task.Budgets.CI.Requested,
+			TimeRequested:  task.Budgets.Time.Requested,
+			TokenRequested: task.Budgets.Tokens.Requested,
+			TurnRequested:  task.Budgets.Turns.Requested,
+			CostRequested:  task.Budgets.Cost.Requested,
+			CIRequested:    task.Budgets.CI.Requested,
 		})
 	}
 	reserved, err := service.store.CompareAndReserve(ctx, batch)

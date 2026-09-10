@@ -185,22 +185,55 @@ type SchedulerFacts struct {
 	Explanations      []Explanation `json:"explanations"`
 }
 
+type BudgetDimensionSummary struct {
+	Dimension        string `json:"dimension"`
+	Enabled          bool   `json:"enabled"`
+	Consumed         string `json:"consumed"`
+	Reserved         string `json:"reserved"`
+	Limit            string `json:"limit"`
+	RatioBasisPoints string `json:"ratioBasisPoints"`
+}
+
+type BudgetCountSummary struct {
+	Dimension string `json:"dimension"`
+	Consumed  string `json:"consumed"`
+	Reserved  string `json:"reserved"`
+	Limit     string `json:"limit"`
+}
+
+// RuntimeBudgetSummary is the bounded Organizer-facing projection. It exposes
+// exact ledger amounts and churn counters, never raw provider payloads or a
+// connector-computed lifecycle decision.
+type RuntimeBudgetSummary struct {
+	PolicyRevision           string                   `json:"policyRevision"`
+	State                    string                   `json:"state"`
+	SoftThresholdBasisPoints string                   `json:"softThresholdBasisPoints"`
+	Dimensions               []BudgetDimensionSummary `json:"dimensions"`
+	Counts                   []BudgetCountSummary     `json:"counts"`
+	WorkerTurns              string                   `json:"workerTurns"`
+	HelperTurns              string                   `json:"helperTurns"`
+	ReviewerTurns            string                   `json:"reviewerTurns"`
+	CorrectionTurns          string                   `json:"correctionTurns"`
+	ReasonCode               *string                  `json:"reasonCode"`
+}
+
 type TaskSummary struct {
-	ID              string          `json:"id"`
-	ProjectID       string          `json:"projectId"`
-	WorkspaceID     string          `json:"workspaceId"`
-	EpicID          *string         `json:"epicId"`
-	Version         string          `json:"version"`
-	Key             string          `json:"key"`
-	Title           string          `json:"title"`
-	DerivedState    string          `json:"derivedState"`
-	Priority        string          `json:"priority"`
-	Labels          []string        `json:"labels"`
-	UpdatedAt       string          `json:"updatedAt"`
-	Blockers        []Explanation   `json:"blockers"`
-	NeedsYou        []Explanation   `json:"needsYou"`
-	AllowedActions  []AllowedAction `json:"allowedActions"`
-	SchedulingFacts SchedulerFacts  `json:"schedulingFacts"`
+	ID              string                `json:"id"`
+	ProjectID       string                `json:"projectId"`
+	WorkspaceID     string                `json:"workspaceId"`
+	EpicID          *string               `json:"epicId"`
+	Version         string                `json:"version"`
+	Key             string                `json:"key"`
+	Title           string                `json:"title"`
+	DerivedState    string                `json:"derivedState"`
+	Priority        string                `json:"priority"`
+	Labels          []string              `json:"labels"`
+	UpdatedAt       string                `json:"updatedAt"`
+	Blockers        []Explanation         `json:"blockers"`
+	NeedsYou        []Explanation         `json:"needsYou"`
+	AllowedActions  []AllowedAction       `json:"allowedActions"`
+	SchedulingFacts SchedulerFacts        `json:"schedulingFacts"`
+	RuntimeBudget   *RuntimeBudgetSummary `json:"runtimeBudget"`
 }
 
 type CapacityFacts struct {

@@ -173,6 +173,10 @@ type RunBudget struct {
 	Tokens         int64 `json:"tokens"`
 	Turns          int64 `json:"turns"`
 	CICycles       int64 `json:"ciCycles"`
+	// CostMicrousd is optional. Zero disables cost limiting; a positive value
+	// is an exact millionth-of-a-US-dollar ceiling and is never inferred from
+	// token pricing or another provider estimate.
+	CostMicrousd int64 `json:"costMicrousd,omitempty"`
 }
 
 // Defaults is the Project-level configuration inherited by Workspaces and
@@ -201,6 +205,7 @@ type WorkspaceOverride struct {
 	Tokens                     *int64       `json:"tokens,omitempty"`
 	Turns                      *int64       `json:"turns,omitempty"`
 	CICycles                   *int64       `json:"ciCycles,omitempty"`
+	CostMicrousd               *int64       `json:"costMicrousd,omitempty"`
 	AutoFixCIFailures          *bool        `json:"autoFixCiFailures,omitempty"`
 	AutoFixReviewFeedback      *bool        `json:"autoFixReviewFeedback,omitempty"`
 }
@@ -683,7 +688,7 @@ func workspaceOverrideEmpty(override WorkspaceOverride) bool {
 		override.MaxActiveTasks == nil && override.MaxActiveTasksPerWorkspace == nil &&
 		override.MaxConcurrentAgents == nil && override.MaxSubagentsPerTask == nil &&
 		override.ElapsedSeconds == nil && override.Tokens == nil && override.Turns == nil &&
-		override.CICycles == nil && override.AutoFixCIFailures == nil &&
+		override.CICycles == nil && override.CostMicrousd == nil && override.AutoFixCIFailures == nil &&
 		override.AutoFixReviewFeedback == nil
 }
 
@@ -709,6 +714,7 @@ func effectiveWorkspaceBudget(project RunBudget, override WorkspaceOverride) Run
 		&result.Tokens:         override.Tokens,
 		&result.Turns:          override.Turns,
 		&result.CICycles:       override.CICycles,
+		&result.CostMicrousd:   override.CostMicrousd,
 	} {
 		if source != nil {
 			*destination = *source
@@ -748,6 +754,15 @@ func validateRunBudget(path string, budget RunBudget, issues *[]Issue) {
 		if current < 1 {
 			*issues = append(*issues, issue("budget_invalid", path+"."+field, "Run budget must be a positive integer"))
 		}
+	}
+	if budget.Turns > 256 {
+		*issues = append(*issues, issue("budget_invalid", path+".turns", "Run turn budget cannot exceed the durable usage ledger bound of 256"))
+	}
+	if budget.CICycles > 256 {
+		*issues = append(*issues, issue("budget_invalid", path+".ciCycles", "Run CI cycle budget cannot exceed the durable activity ledger bound of 256"))
+	}
+	if budget.CostMicrousd < 0 {
+		*issues = append(*issues, issue("budget_invalid", path+".costMicrousd", "optional Run cost budget cannot be negative"))
 	}
 }
 

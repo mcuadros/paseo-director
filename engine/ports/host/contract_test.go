@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mcuadros/director-engine/domain/execution"
+	"github.com/mcuadros/director-engine/domain/runtimebudget"
 )
 
 func TestEmbeddedContractAndDescriptor(t *testing.T) {
@@ -199,6 +200,50 @@ func TestValidateObservationBindsEnvelopeResultAndHash(t *testing.T) {
 			mutate(&changed)
 			if err := ValidateObservation(command, changed); err == nil {
 				t.Fatal("ValidateObservation accepted drift")
+			}
+		})
+	}
+}
+
+func TestValidateObservationRequiresExactBoundedProviderUsage(t *testing.T) {
+	command := Command{
+		RequestID: "request-usage", IdempotencyKey: "effect-usage", ExpectedVersion: 1,
+		Capability: CapabilityAgentObserve,
+		Arguments: Arguments{
+			Scope:      execution.Scope{ProjectID: "project-1", WorkspaceID: "workspace-1", TaskID: "task-1", RunID: "run-1"},
+			EffectKind: execution.EffectAgentPrompt, EffectID: "effect-usage", BindingHash: strings.Repeat("1", 64),
+		},
+	}
+	valid := Observation{
+		RequestID: command.RequestID, Cursor: 1, ObservedAt: "1970-01-01T00:00:01Z",
+		Result: ObservationResult{
+			EffectID: command.Arguments.EffectID, Status: execution.ObservationDesired,
+			BindingHash: command.Arguments.BindingHash, PriorDispatcherAbsent: true, MaximumAgeMillis: 30_000,
+			Usage: &runtimebudget.ProviderUsage{
+				State: runtimebudget.UsageCurrent, SourceRevision: "agent-updated-at-1",
+				InputTokensPresent: true, InputTokens: 10, CachedInputTokens: 4,
+				OutputTokensPresent: true, OutputTokens: 2, CostMicrousdPresent: true, CostMicrousd: 9,
+			},
+		},
+	}
+	valid.Result.FactHash = ObservationResultHash(valid.Result)
+	if err := ValidateObservation(command, valid); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*runtimebudget.ProviderUsage){
+		"missing source revision": func(value *runtimebudget.ProviderUsage) { value.SourceRevision = "" },
+		"missing tokens":          func(value *runtimebudget.ProviderUsage) { value.InputTokensPresent = false },
+		"transport overflow":      func(value *runtimebudget.ProviderUsage) { value.OutputTokens = 9_007_199_254_740_992 },
+		"unknown state":           func(value *runtimebudget.ProviderUsage) { value.State = "future" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := valid
+			usage := *valid.Result.Usage
+			mutate(&usage)
+			changed.Result.Usage = &usage
+			changed.Result.FactHash = ObservationResultHash(changed.Result)
+			if err := ValidateObservation(command, changed); err == nil {
+				t.Fatal("invalid provider usage was accepted")
 			}
 		})
 	}

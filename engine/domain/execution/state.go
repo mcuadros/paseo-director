@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mcuadros/director-engine/domain/agentprofile"
+	"github.com/mcuadros/director-engine/domain/runtimebudget"
 )
 
 const SchemaVersion = "director.execution/v1"
@@ -61,18 +62,19 @@ const (
 
 // EffectObservation is persisted before a reducer may consume it.
 type EffectObservation struct {
-	ID                    string            `json:"id"`
-	EffectID              string            `json:"effectId"`
-	Status                ObservationStatus `json:"status"`
-	ExternalID            string            `json:"externalId,omitempty"`
-	Cursor                uint64            `json:"cursor,omitempty"`
-	ObservedAt            string            `json:"observedAt,omitempty"`
-	ObservedAtMillis      int64             `json:"observedAtMillis"`
-	MaximumAgeMillis      int64             `json:"maximumAgeMillis"`
-	BindingHash           string            `json:"bindingHash"`
-	CorrelationHash       string            `json:"correlationHash,omitempty"`
-	PriorDispatcherAbsent bool              `json:"priorDispatcherAbsent"`
-	FactHash              string            `json:"factHash"`
+	ID                    string                       `json:"id"`
+	EffectID              string                       `json:"effectId"`
+	Status                ObservationStatus            `json:"status"`
+	ExternalID            string                       `json:"externalId,omitempty"`
+	Cursor                uint64                       `json:"cursor,omitempty"`
+	ObservedAt            string                       `json:"observedAt,omitempty"`
+	ObservedAtMillis      int64                        `json:"observedAtMillis"`
+	MaximumAgeMillis      int64                        `json:"maximumAgeMillis"`
+	BindingHash           string                       `json:"bindingHash"`
+	CorrelationHash       string                       `json:"correlationHash,omitempty"`
+	PriorDispatcherAbsent bool                         `json:"priorDispatcherAbsent"`
+	FactHash              string                       `json:"factHash"`
+	Usage                 *runtimebudget.ProviderUsage `json:"usage,omitempty"`
 }
 
 // Effect is one immutable intent with bounded attempts and its latest
@@ -263,6 +265,8 @@ type State struct {
 	OperationalObservation           *OperationalObservation  `json:"operationalObservation,omitempty"`
 	OperationalObservationRunVersion uint64                   `json:"operationalObservationRunVersion,omitempty"`
 	OperationalObservationConsumed   bool                     `json:"operationalObservationConsumed,omitempty"`
+	Budget                           runtimebudget.Ledger     `json:"budget"`
+	TurnBudgetDemand                 runtimebudget.Demand     `json:"turnBudgetDemand"`
 	FakeTerminalRung                 bool                     `json:"fakeTerminalRung,omitempty"`
 	AgentArchive                     Effect                   `json:"agentArchive,omitempty"`
 	HostViewArchive                  Effect                   `json:"hostViewArchive,omitempty"`

@@ -22,6 +22,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain/execution"
 	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
+	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	"github.com/mcuadros/director-engine/ports/host"
 	reconciliationport "github.com/mcuadros/director-engine/ports/reconciliation"
 	runtimeport "github.com/mcuadros/director-engine/ports/runtime"
@@ -42,21 +43,23 @@ type Options struct {
 }
 
 type world struct {
-	worktreeID        string
-	boundaryID        string
-	hostViewID        string
-	agentID           string
-	boundaryReady     bool
-	setupComplete     bool
-	hostViewActive    bool
-	agentActive       bool
-	agentArchived     bool
-	hostViewArchived  bool
-	bootstrapEffectID string
-	promptEffectID    string
-	bootstrapStatus   execution.ObservationStatus
-	promptStatus      execution.ObservationStatus
-	bindingHash       string
+	worktreeID                string
+	boundaryID                string
+	hostViewID                string
+	agentID                   string
+	boundaryReady             bool
+	setupComplete             bool
+	hostViewActive            bool
+	agentActive               bool
+	agentArchived             bool
+	hostViewArchived          bool
+	bootstrapEffectID         string
+	promptEffectID            string
+	bootstrapStatus           execution.ObservationStatus
+	promptStatus              execution.ObservationStatus
+	bootstrapObservedAtMillis int64
+	promptObservedAtMillis    int64
+	bindingHash               string
 }
 
 // Environment implements both the non-host runtime port and the one host port
@@ -382,6 +385,16 @@ func hostObservation(command host.Command, status execution.ObservationStatus, e
 		PriorDispatcherAbsent: true,
 		MaximumAgeMillis:      30_000,
 	}
+	if (command.Arguments.EffectKind == execution.EffectAgentCreate ||
+		command.Arguments.EffectKind == execution.EffectAgentPrompt) &&
+		(status == execution.ObservationDesired || status == execution.ObservationErrored || status == execution.ObservationPermission) {
+		result.Usage = &runtimebudget.ProviderUsage{
+			State: runtimebudget.UsageCurrent, SourceRevision: "usage:" + command.Arguments.EffectID,
+			InputTokensPresent: true, InputTokens: 10,
+			CachedInputTokens: 5, OutputTokensPresent: true, OutputTokens: 2,
+			CostMicrousdPresent: true, CostMicrousd: 100,
+		}
+	}
 	result.FactHash = host.ObservationResultHash(result)
 	return host.Observation{
 		RequestID: command.RequestID, Cursor: sequence,
@@ -464,13 +477,21 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 			if !environment.world.agentActive {
 				return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
-			return hostObservation(command, environment.world.bootstrapStatus, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			observedAt := environment.operational.ObservedAtMillis
+			if environment.world.bootstrapObservedAtMillis > observedAt {
+				observedAt = environment.world.bootstrapObservedAtMillis
+			}
+			return hostObservation(command, environment.world.bootstrapStatus, environment.world.agentID, environment.observationSeq, observedAt), nil
 		}
 		if arguments.EffectKind == execution.EffectAgentPrompt {
 			if environment.world.promptEffectID == "" {
 				return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
-			return hostObservation(command, environment.world.promptStatus, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			observedAt := environment.operational.ObservedAtMillis
+			if environment.world.promptObservedAtMillis > observedAt {
+				observedAt = environment.world.promptObservedAtMillis
+			}
+			return hostObservation(command, environment.world.promptStatus, environment.world.agentID, environment.observationSeq, observedAt), nil
 		}
 		return host.Observation{}, errors.New("fake agent observation effect is unsupported")
 	case host.CapabilityAgentArchive:
@@ -576,8 +597,10 @@ func (environment *Environment) TerminalEvent(kind execution.CompletionEventKind
 	switch effectID {
 	case environment.world.bootstrapEffectID:
 		environment.world.bootstrapStatus = status
+		environment.world.bootstrapObservedAtMillis = observedAtMillis
 	case environment.world.promptEffectID:
 		environment.world.promptStatus = status
+		environment.world.promptObservedAtMillis = observedAtMillis
 	default:
 		return execution.CompletionEvent{}, errors.New("fake terminal event effect is unknown")
 	}

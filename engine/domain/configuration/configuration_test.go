@@ -176,6 +176,18 @@ func issuesFor(t *testing.T, input []byte) []Issue {
 	return issues
 }
 
+func TestOptionalCostBudgetUsesExactMicrousd(t *testing.T) {
+	withCost := bytes.Replace(validConfigurationJSON(), []byte(`"ciCycles": 4`), []byte(`"ciCycles": 4, "costMicrousd": 5000000`), 1)
+	document, err := Parse(withCost)
+	if err != nil || document.Configuration().Defaults.RunBudget.CostMicrousd != 5_000_000 {
+		t.Fatalf("Parse(costMicrousd) = %#v, %v", document.Configuration().Defaults.RunBudget, err)
+	}
+	negative := bytes.Replace(validConfigurationJSON(), []byte(`"ciCycles": 4`), []byte(`"ciCycles": 4, "costMicrousd": -1`), 1)
+	if issues := issuesFor(t, negative); !containsIssue(issues, "schema_validation_failed") && !containsIssue(issues, "budget_invalid") {
+		t.Fatalf("negative cost issues = %#v", issues)
+	}
+}
+
 func containsIssue(issues []Issue, code string) bool {
 	return slices.ContainsFunc(issues, func(current Issue) bool { return current.Code == code })
 }
@@ -251,7 +263,7 @@ func TestParseValidConfigurationIsCanonicalAndDefensive(t *testing.T) {
 
 func TestSchemaIsPublishedClosedAndVersioned(t *testing.T) {
 	hash, err := SchemaSHA256()
-	if err != nil || hash != "74f76edc3a0cc01fbebe4f4ecacea0e7b6287d2a492847fc96ece0ba76a58fd9" {
+	if err != nil || hash != "cbee3f254c655f1be54c3b2c6ea539312d81fb36eed99086f544f9df6a8e64d0" {
 		t.Fatalf("configuration schema hash = %q: %v", hash, err)
 	}
 	var schema struct {

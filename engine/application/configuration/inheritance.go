@@ -40,6 +40,7 @@ type TaskOverride struct {
 	Tokens                     *int64
 	Turns                      *int64
 	CICycles                   *int64
+	CostMicrousd               *int64
 	AutoFixCIFailures          *bool
 	AutoFixReviewFeedback      *bool
 }
@@ -56,6 +57,7 @@ type EffectiveSources struct {
 	Tokens                     Scope `json:"tokens"`
 	Turns                      Scope `json:"turns"`
 	CICycles                   Scope `json:"ciCycles"`
+	CostMicrousd               Scope `json:"costMicrousd"`
 	AutoFixCIFailures          Scope `json:"autoFixCiFailures"`
 	AutoFixReviewFeedback      Scope `json:"autoFixReviewFeedback"`
 }
@@ -85,7 +87,7 @@ func projectEffective(configuration domainconfig.Configuration) EffectiveConfigu
 			MaxActiveTasks: ScopeProject, MaxActiveTasksPerWorkspace: ScopeProject,
 			MaxConcurrentAgents: ScopeProject, MaxSubagentsPerTask: ScopeProject,
 			ElapsedSeconds: ScopeProject, Tokens: ScopeProject, Turns: ScopeProject,
-			CICycles: ScopeProject, AutoFixCIFailures: ScopeProject,
+			CICycles: ScopeProject, CostMicrousd: ScopeProject, AutoFixCIFailures: ScopeProject,
 			AutoFixReviewFeedback: ScopeProject,
 		},
 	}
@@ -129,6 +131,7 @@ func applyWorkspace(result *EffectiveConfiguration, override domainconfig.Worksp
 	applyInt64(override.Tokens, &result.RunBudget.Tokens, &result.Sources.Tokens, ScopeWorkspace)
 	applyInt64(override.Turns, &result.RunBudget.Turns, &result.Sources.Turns, ScopeWorkspace)
 	applyInt64(override.CICycles, &result.RunBudget.CICycles, &result.Sources.CICycles, ScopeWorkspace)
+	applyInt64(override.CostMicrousd, &result.RunBudget.CostMicrousd, &result.Sources.CostMicrousd, ScopeWorkspace)
 	applyBool(override.AutoFixCIFailures, &result.AutoFixCIFailures, &result.Sources.AutoFixCIFailures, ScopeWorkspace)
 	applyBool(override.AutoFixReviewFeedback, &result.AutoFixReviewFeedback, &result.Sources.AutoFixReviewFeedback, ScopeWorkspace)
 }
@@ -150,6 +153,7 @@ func applyTask(result *EffectiveConfiguration, override TaskOverride) {
 	applyInt64(override.Tokens, &result.RunBudget.Tokens, &result.Sources.Tokens, ScopeTask)
 	applyInt64(override.Turns, &result.RunBudget.Turns, &result.Sources.Turns, ScopeTask)
 	applyInt64(override.CICycles, &result.RunBudget.CICycles, &result.Sources.CICycles, ScopeTask)
+	applyInt64(override.CostMicrousd, &result.RunBudget.CostMicrousd, &result.Sources.CostMicrousd, ScopeTask)
 	applyBool(override.AutoFixCIFailures, &result.AutoFixCIFailures, &result.Sources.AutoFixCIFailures, ScopeTask)
 	applyBool(override.AutoFixReviewFeedback, &result.AutoFixReviewFeedback, &result.Sources.AutoFixReviewFeedback, ScopeTask)
 }
@@ -171,10 +175,19 @@ func taskOverrideValid(override TaskOverride) bool {
 	if override.MaxSubagentsPerTask != nil && *override.MaxSubagentsPerTask < 0 {
 		return false
 	}
-	for _, value := range []*int64{override.ElapsedSeconds, override.Tokens, override.Turns, override.CICycles} {
+	for _, value := range []*int64{override.ElapsedSeconds, override.Tokens} {
 		if value != nil && *value < 1 {
 			return false
 		}
+	}
+	if override.Turns != nil && (*override.Turns < 1 || *override.Turns > 256) {
+		return false
+	}
+	if override.CICycles != nil && (*override.CICycles < 1 || *override.CICycles > 256) {
+		return false
+	}
+	if override.CostMicrousd != nil && *override.CostMicrousd < 0 {
+		return false
 	}
 	return true
 }
@@ -185,7 +198,14 @@ func effectiveConsistent(value EffectiveConfiguration) bool {
 		value.Limits.MaxActiveTasksPerWorkspace <= value.Limits.MaxActiveTasks &&
 		value.Limits.MaxActiveTasks <= value.Limits.MaxConcurrentAgents &&
 		value.RunBudget.ElapsedSeconds >= 1 && value.RunBudget.Tokens >= 1 &&
-		value.RunBudget.Turns >= 1 && value.RunBudget.CICycles >= 1
+		value.RunBudget.Turns >= 1 && value.RunBudget.Turns <= 256 &&
+		value.RunBudget.CICycles >= 1 && value.RunBudget.CICycles <= 256
+}
+
+func costWithin(boundary, proposed int64) bool {
+	// No configured boundary is intentionally unlimited, so adding a finite
+	// limit tightens it. Removing or raising a finite limit expands authority.
+	return boundary == 0 || (proposed > 0 && proposed <= boundary)
 }
 
 func resolve(configuration domainconfig.Configuration, workspaceID string, task TaskOverride) (EffectiveConfiguration, error) {
@@ -271,6 +291,7 @@ func effectiveWithin(boundary, proposed EffectiveConfiguration) bool {
 		proposed.RunBudget.Tokens <= boundary.RunBudget.Tokens &&
 		proposed.RunBudget.Turns <= boundary.RunBudget.Turns &&
 		proposed.RunBudget.CICycles <= boundary.RunBudget.CICycles &&
+		costWithin(boundary.RunBudget.CostMicrousd, proposed.RunBudget.CostMicrousd) &&
 		(!proposed.AutoFixCIFailures || boundary.AutoFixCIFailures) &&
 		(!proposed.AutoFixReviewFeedback || boundary.AutoFixReviewFeedback)
 }

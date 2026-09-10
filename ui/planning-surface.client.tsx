@@ -498,6 +498,12 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
         <Text style={styles.taskMeta}>
           {stateLabels[task.derivedState]} · {task.schedulingFacts.launchMode}
         </Text>
+        {task.runtimeBudget ? (
+          <Text style={task.runtimeBudget.state === "current" ? styles.taskMeta : styles.attention}>
+            Budget {attentionLabel(task.runtimeBudget.state)}
+            {task.runtimeBudget.reasonCode ? ` · ${task.runtimeBudget.reasonCode}` : ""}
+          </Text>
+        ) : null}
         {explanation ? (
           <Text style={task.needsYou.length > 0 ? styles.attention : styles.taskMeta}>
             {explanation.message}
@@ -677,6 +683,31 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
             </Pressable>
           ) : null}
         </View>
+
+        {task.summary.runtimeBudget ? (
+          <View style={styles.modalSection}>
+            <Text style={styles.sectionLabel}>Runtime budget</Text>
+            <Text style={task.summary.runtimeBudget.state === "current" ? styles.success : styles.warning}>
+              {attentionLabel(task.summary.runtimeBudget.state)} · soft threshold {task.summary.runtimeBudget.softThresholdBasisPoints} bp
+            </Text>
+            {task.summary.runtimeBudget.reasonCode ? (
+              <Text style={styles.warning}>{task.summary.runtimeBudget.reasonCode}</Text>
+            ) : null}
+            {task.summary.runtimeBudget.dimensions.map((dimension) => (
+              <Text key={dimension.dimension} style={styles.body}>
+                {dimension.dimension}: {dimension.consumed} consumed + {dimension.reserved} reserved / {dimension.enabled ? dimension.limit : "disabled"}
+              </Text>
+            ))}
+            {task.summary.runtimeBudget.counts.map((count) => (
+              <Text key={count.dimension} style={styles.body}>
+                {count.dimension}: {count.consumed} consumed + {count.reserved} reserved / {count.limit}
+              </Text>
+            ))}
+            <Text style={styles.muted}>
+              Turns · Worker {task.summary.runtimeBudget.workerTurns} · Helper {task.summary.runtimeBudget.helperTurns} · Reviewer {task.summary.runtimeBudget.reviewerTurns} · Correction {task.summary.runtimeBudget.correctionTurns}
+            </Text>
+          </View>
+        ) : null}
 
         <View style={styles.modalSection}>
           <Text style={styles.sectionLabel}>Acceptance criteria</Text>

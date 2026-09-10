@@ -102,6 +102,7 @@ func sameReservationTask(task domainscheduling.TaskFacts, reservation domainsche
 	return task.ID == reservation.TaskID && task.Workspace == reservation.Workspace &&
 		task.TaskVersion == reservation.TaskVersion && task.WorkClass == reservation.WorkClass &&
 		task.Demand == reservation.Demand && task.Budgets.Time.Requested == reservation.TimeRequested &&
+		task.Budgets.Tokens.Requested == reservation.TokenRequested && task.Budgets.Turns.Requested == reservation.TurnRequested &&
 		task.Budgets.Cost.Requested == reservation.CostRequested && task.Budgets.CI.Requested == reservation.CIRequested
 }
 

@@ -62,6 +62,12 @@ is represented by a fake effect only after admission and after the rootless-OCI
 fixture is materialized. No repository command text is executed by this test
 adapter.
 
+The fake path also exercises the production runtime budget ledger. Setup and
+both provider turns reserve before dispatch, terminal observations apply one
+monotonic usage snapshot, and restart retains consumption and outstanding
+reservations. Soft/hard and provider-unknown paths park with recoverable state
+and no cleanup authority; see [Runtime time and cost budgets](runtime-budgets.md).
+
 Each Run freezes `director.preparation-plan/v1`: the nine approved preparation
 steps, the 1,200-second whole-plan deadline, the 300-second per dependency
 command limit, and the 900-second dependency aggregate. The fake path declares

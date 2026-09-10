@@ -128,16 +128,19 @@ func TestProductionInheritanceMatchesIndependentOracle(t *testing.T) {
 
 func TestAllEffectiveFieldsReportTheirSupplyingScope(t *testing.T) {
 	document := configurationDocument(t, func(configuration *domainconfig.Configuration) {
+		configuration.Defaults.RunBudget.CostMicrousd = 5_000_000
 		configuration.WorkspaceOverrides = []domainconfig.WorkspaceOverride{{
 			WorkspaceID: "product", LaunchPolicy: domainconfig.LaunchAutomatic,
 			DeliveryMode:   domainconfig.DeliveryInherit,
 			MaxActiveTasks: intPointer(3), ElapsedSeconds: int64Pointer(3600),
+			CostMicrousd:      int64Pointer(2_000_000),
 			AutoFixCIFailures: boolPointer(false),
 		}}
 	})
 	envelopeDocument := configurationDocument(t, func(configuration *domainconfig.Configuration) {
 		configuration.Defaults.LaunchPolicy = domainconfig.LaunchAutomatic
 		configuration.Defaults.DeliveryMode = domainconfig.DeliveryDirect
+		configuration.Defaults.RunBudget.CostMicrousd = 5_000_000
 	})
 	effective, err := approvedEnvelope(t, envelopeDocument).ResolveEffective(document, "product", TaskOverride{
 		DeliveryMode:               domainconfig.DeliveryPullRequest,
@@ -145,6 +148,7 @@ func TestAllEffectiveFieldsReportTheirSupplyingScope(t *testing.T) {
 		MaxConcurrentAgents:        intPointer(6),
 		MaxSubagentsPerTask:        intPointer(2),
 		Tokens:                     int64Pointer(100000), Turns: int64Pointer(16), CICycles: int64Pointer(2),
+		CostMicrousd:          int64Pointer(1_000_000),
 		AutoFixReviewFeedback: boolPointer(false),
 	})
 	if err != nil {
@@ -153,6 +157,7 @@ func TestAllEffectiveFieldsReportTheirSupplyingScope(t *testing.T) {
 	if effective.Sources.LaunchPolicy != ScopeWorkspace || effective.Sources.DeliveryMode != ScopeTask ||
 		effective.Sources.MaxActiveTasks != ScopeWorkspace || effective.Sources.ElapsedSeconds != ScopeWorkspace ||
 		effective.Sources.MaxActiveTasksPerWorkspace != ScopeTask || effective.Sources.Tokens != ScopeTask ||
+		effective.Sources.CostMicrousd != ScopeTask ||
 		effective.Sources.AutoFixCIFailures != ScopeWorkspace || effective.Sources.AutoFixReviewFeedback != ScopeTask {
 		t.Fatalf("effective sources = %#v", effective.Sources)
 	}
@@ -160,8 +165,29 @@ func TestAllEffectiveFieldsReportTheirSupplyingScope(t *testing.T) {
 		effective.Limits.MaxConcurrentAgents != 6 || effective.Limits.MaxSubagentsPerTask != 2 ||
 		effective.RunBudget.ElapsedSeconds != 3600 || effective.RunBudget.Tokens != 100000 ||
 		effective.RunBudget.Turns != 16 || effective.RunBudget.CICycles != 2 ||
+		effective.RunBudget.CostMicrousd != 1_000_000 ||
 		effective.AutoFixCIFailures || effective.AutoFixReviewFeedback {
 		t.Fatalf("effective values = %#v", effective)
+	}
+}
+
+func TestOptionalCostLimitMayTightenButNotBeRemovedOrRaised(t *testing.T) {
+	unlimited := configurationDocument(t, func(*domainconfig.Configuration) {})
+	finite := configurationDocument(t, func(configuration *domainconfig.Configuration) {
+		configuration.Defaults.RunBudget.CostMicrousd = 5_000_000
+	})
+	if _, err := approvedEnvelope(t, unlimited).ResolveEffective(finite, "product", TaskOverride{}); err != nil {
+		t.Fatalf("finite cost did not tighten an unlimited envelope: %v", err)
+	}
+	finiteEnvelope := approvedEnvelope(t, finite)
+	if _, err := finiteEnvelope.ResolveEffective(unlimited, "product", TaskOverride{}); !errors.Is(err, ErrOutsideSecurityEnvelope) {
+		t.Fatalf("removing finite cost error = %v", err)
+	}
+	if _, err := finiteEnvelope.ResolveEffective(finite, "product", TaskOverride{CostMicrousd: int64Pointer(6_000_000)}); !errors.Is(err, ErrOutsideSecurityEnvelope) {
+		t.Fatalf("raising finite cost error = %v", err)
+	}
+	if effective, err := finiteEnvelope.ResolveEffective(finite, "product", TaskOverride{CostMicrousd: int64Pointer(1_000_000)}); err != nil || effective.RunBudget.CostMicrousd != 1_000_000 {
+		t.Fatalf("tightened Task cost = %#v, %v", effective.RunBudget, err)
 	}
 }
 

@@ -36,7 +36,8 @@ func task(id, workspace string, queuedAt int64) domainscheduling.TaskFacts {
 		Dependency: domainscheduling.DependenciesSatisfied, TaskComplete: true,
 		OrganizerApproved: true, PreflightReady: true, Demand: domainscheduling.NewRunDemand(),
 		Budgets: domainscheduling.Budgets{
-			Time: budget("time", 100, 0, 0, 1, false), Cost: budget("cost", 100, 0, 0, 1, false),
+			Time: budget("time", 100, 0, 0, 1, false), Tokens: budget("tokens", 100, 0, 0, 1, false),
+			Turns: budget("turns", 100, 0, 0, 1, false), Cost: budget("cost", 100, 0, 0, 1, false),
 			CI: budget("ci", 4, 0, 0, 1, false),
 		},
 	}
@@ -123,6 +124,8 @@ func TestEveryCapacityBudgetAndEligibilityRefusalStopsReservation(t *testing.T) 
 		}, scheduler.CodeHelperCapacity},
 		{"time-soft", func(value *domainscheduling.Snapshot) { value.Tasks[0].Budgets.Time.Used = 84 }, scheduler.CodeTimeSoftBudget},
 		{"time-hard", func(value *domainscheduling.Snapshot) { value.Tasks[0].Budgets.Time.Used = 99 }, scheduler.CodeTimeHardBudget},
+		{"token-soft", func(value *domainscheduling.Snapshot) { value.Tasks[0].Budgets.Tokens.Used = 84 }, scheduler.CodeTokenSoftBudget},
+		{"turn-hard", func(value *domainscheduling.Snapshot) { value.Tasks[0].Budgets.Turns.Used = 99 }, scheduler.CodeTurnHardBudget},
 		{"cost-hard", func(value *domainscheduling.Snapshot) { value.Tasks[0].Budgets.Cost.Used = 99 }, scheduler.CodeCostHardBudget},
 		{"ci-hard", func(value *domainscheduling.Snapshot) { value.Tasks[0].Budgets.CI.Used = 3 }, scheduler.CodeCIHardBudget},
 		{"disk-hard", func(value *domainscheduling.Snapshot) { value.Disk = domainscheduling.DiskLimitExceeded }, scheduler.CodeDiskLimit},
@@ -152,6 +155,22 @@ func TestEveryCapacityBudgetAndEligibilityRefusalStopsReservation(t *testing.T) 
 				t.Fatalf("refused work mutated reservations: result=%#v reservations=%#v", result, store.Reservations())
 			}
 		})
+	}
+}
+
+func TestSchedulerAllowsOnlyAnExactlyDisabledOptionalCostBudget(t *testing.T) {
+	facts := snapshot(task("task-a", "workspace-1", 1))
+	facts.Tasks[0].Budgets.Cost = domainscheduling.Budget{
+		State: domainscheduling.BudgetDisabled, Acknowledgement: domainscheduling.AcknowledgementNone,
+	}
+	decision := scheduler.Reduce(facts)
+	if len(decision.OrderedTaskIDs) != 1 || decision.Explanations[0].Code != scheduler.CodeSelectedAutomatic {
+		t.Fatalf("disabled optional cost decision = %#v", decision)
+	}
+	facts.Tasks[0].Budgets.Cost.Limit = 1
+	decision = scheduler.Reduce(facts)
+	if len(decision.OrderedTaskIDs) != 0 || decision.Explanations[0].Code != scheduler.CodeFactsAmbiguous {
+		t.Fatalf("malformed disabled cost decision = %#v", decision)
 	}
 }
 

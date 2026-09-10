@@ -129,8 +129,11 @@ func productionTask(spec taskSpec) domainscheduling.TaskFacts {
 		HasActiveRun: spec.activeRun, TaskComplete: spec.complete, OrganizerApproved: spec.organizer,
 		PreflightReady: spec.preflight, HelpersActive: spec.helpersActive, HelpersReserved: spec.helpersReserved,
 		Budgets: domainscheduling.Budgets{
-			Time: productionBudget("time", spec.time, false), Cost: productionBudget("cost", spec.cost, false),
-			CI: productionBudget("ci", spec.ci, true),
+			Time:   productionBudget("time", spec.time, false),
+			Tokens: domainscheduling.Budget{State: domainscheduling.BudgetReady, Revision: "tokens-revision", Limit: 100, Requested: 1, Acknowledgement: domainscheduling.AcknowledgementNone},
+			Turns:  domainscheduling.Budget{State: domainscheduling.BudgetReady, Revision: "turns-revision", Limit: 100, Requested: 1, Acknowledgement: domainscheduling.AcknowledgementNone},
+			Cost:   productionBudget("cost", spec.cost, false),
+			CI:     productionBudget("ci", spec.ci, true),
 		},
 	}
 	if spec.workClass == 1 {

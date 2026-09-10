@@ -379,6 +379,58 @@
         }
       }
     },
+    "budgetDimensionSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dimension", "enabled", "consumed", "reserved", "limit", "ratioBasisPoints"],
+      "properties": {
+        "dimension": { "enum": ["wall_time", "tokens", "turns", "cost"] },
+        "enabled": { "type": "boolean" },
+        "consumed": { "$ref": "#/$defs/uint64Decimal" },
+        "reserved": { "$ref": "#/$defs/uint64Decimal" },
+        "limit": { "$ref": "#/$defs/uint64Decimal" },
+        "ratioBasisPoints": { "$ref": "#/$defs/uint64Decimal" }
+      }
+    },
+    "budgetCountSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dimension", "consumed", "reserved", "limit"],
+      "properties": {
+        "dimension": { "enum": ["correction_attempts", "ci_cycles", "replacement_attempts", "setup_attempts"] },
+        "consumed": { "$ref": "#/$defs/uint64Decimal" },
+        "reserved": { "$ref": "#/$defs/uint64Decimal" },
+        "limit": { "$ref": "#/$defs/uint64Decimal" }
+      }
+    },
+    "runtimeBudgetSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policyRevision", "state", "softThresholdBasisPoints", "dimensions", "counts",
+        "workerTurns", "helperTurns", "reviewerTurns", "correctionTurns", "reasonCode"
+      ],
+      "properties": {
+        "policyRevision": { "$ref": "#/$defs/opaqueId" },
+        "state": { "enum": ["current", "soft_paused", "hard_exhausted", "unavailable", "ambiguous", "fail_closed"] },
+        "softThresholdBasisPoints": { "$ref": "#/$defs/uint64Decimal" },
+        "dimensions": {
+          "type": "array", "minItems": 4, "maxItems": 4,
+          "items": { "$ref": "#/$defs/budgetDimensionSummary" }
+        },
+        "counts": {
+          "type": "array", "minItems": 4, "maxItems": 4,
+          "items": { "$ref": "#/$defs/budgetCountSummary" }
+        },
+        "workerTurns": { "$ref": "#/$defs/uint64Decimal" },
+        "helperTurns": { "$ref": "#/$defs/uint64Decimal" },
+        "reviewerTurns": { "$ref": "#/$defs/uint64Decimal" },
+        "correctionTurns": { "$ref": "#/$defs/uint64Decimal" },
+        "reasonCode": {
+          "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }]
+        }
+      }
+    },
     "taskSummary": {
       "type": "object",
       "additionalProperties": false,
@@ -397,7 +449,8 @@
         "blockers",
         "needsYou",
         "allowedActions",
-        "schedulingFacts"
+        "schedulingFacts",
+        "runtimeBudget"
       ],
       "properties": {
         "id": { "$ref": "#/$defs/opaqueId" },
@@ -435,7 +488,10 @@
           "maxItems": 16,
           "items": { "$ref": "#/$defs/allowedAction" }
         },
-        "schedulingFacts": { "$ref": "#/$defs/schedulerFacts" }
+        "schedulingFacts": { "$ref": "#/$defs/schedulerFacts" },
+        "runtimeBudget": {
+          "anyOf": [{ "$ref": "#/$defs/runtimeBudgetSummary" }, { "type": "null" }]
+        }
       }
     },
     "capacityFacts": {
