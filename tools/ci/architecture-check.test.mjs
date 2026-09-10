@@ -380,6 +380,56 @@ test("product tests alone may import the exact scheduler oracle", () => {
   );
 });
 
+test("execution oracle is an exact independent test-source-only boundary", () => {
+  const oracle = `${modulePath}/internal/testkit/executionoracle`;
+  const otherTestkit = `${modulePath}/internal/testkit/scheduleroracle`;
+  assert.deepEqual(
+    goDependencyErrors([
+      {
+        importPath: oracle,
+        imports: ["errors", "math/bits", "slices", "sync"],
+        testImports: ["testing"],
+      },
+      {
+        importPath: `${modulePath}/application/execution`,
+        imports: [`${modulePath}/domain`],
+        testImports: ["testing", oracle],
+      },
+    ]),
+    [],
+  );
+
+  for (const current of [
+    {
+      importPath: `${modulePath}/application/execution`,
+      imports: [oracle],
+    },
+    {
+      importPath: oracle,
+      imports: [`${modulePath}/domain/execution`],
+    },
+    {
+      importPath: oracle,
+      testImports: [otherTestkit],
+    },
+    {
+      importPath: otherTestkit,
+      xTestImports: [oracle],
+    },
+  ]) {
+    assert.ok(goDependencyErrors([current]).length > 0);
+  }
+
+  assert.ok(
+    goDependencyErrors([
+      {
+        importPath: `${modulePath}/application/execution`,
+        testImports: [`${oracle}/runtime`],
+      },
+    ]).some((error) => error.includes("imports unclassified engine package")),
+  );
+});
+
 test("adapters and agent runtime cannot declare lifecycle policy", () => {
   assert.deepEqual(
     policyOwnershipErrors(
