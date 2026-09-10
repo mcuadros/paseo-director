@@ -374,8 +374,9 @@ func configurationJSONWithReferences(
     "defaultBaseBranch": "main"
   }],
   "agentProfiles": {
-    "taskAgent": {"provider":"codex","model":"gpt-5.6","effort":"high","permissionMode":"workspace-write"},
-    "reviewerAgent": {"provider":"opencode","model":"reviewer-1","effort":"high","permissionMode":"read-only"}
+    "organizer": {"provider":"codex","model":"gpt-5.6","effort":"high","mode":"default","permissionMode":"read-only","providerOptions":[],"mcpCapabilities":["project.read","planning.command.submit"],"fallbackChain":[]},
+    "worker": {"provider":"codex","model":"gpt-5.6","effort":"high","mode":"default","permissionMode":"workspace-write","providerOptions":[],"mcpCapabilities":["task.read","task.outcome.submit"],"fallbackChain":[]},
+    "reviewer": {"provider":"opencode","model":"reviewer-1","effort":"high","mode":"default","permissionMode":"read-only","providerOptions":[],"mcpCapabilities":["candidate.read","review.verdict.submit"],"fallbackChain":[]}
   },
   "defaults": {
     "launchPolicy":"manual",

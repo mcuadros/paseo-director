@@ -55,7 +55,7 @@ func TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect(t
 	})
 	t.Cleanup(environment.RemoveFixture)
 	controller := executionapp.NewController(store, environment, environment, environment)
-	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, facts)); err != nil {
+	if _, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, facts)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -255,7 +255,7 @@ func TestStartupReconciliationRejectsCommandConflictBeforeExternalMutation(t *te
 	})
 	t.Cleanup(environment.RemoveFixture)
 	controller := executionapp.NewController(store, environment, environment, environment)
-	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
+	if _, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
 	runBefore, err := store.Run(context.Background(), scope.RunID)
@@ -295,7 +295,7 @@ func TestStartupReconciliationScansEveryRunBeforeAnyEffect(t *testing.T) {
 	})
 	t.Cleanup(environmentOne.RemoveFixture)
 	controllerOne := executionapp.NewController(store, environmentOne, environmentOne, environmentOne)
-	if _, err := controllerOne.Start(context.Background(), startCommand(taskOne, scopeOne, sourceOne, worktreeOne, baseOne, eligibilityFacts(scopeOne, execution.LifecycleSurfaces{}))); err != nil {
+	if _, err := controllerOne.Start(context.Background(), startCommand(t, taskOne, scopeOne, sourceOne, worktreeOne, baseOne, eligibilityFacts(scopeOne, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -312,7 +312,7 @@ func TestStartupReconciliationScansEveryRunBeforeAnyEffect(t *testing.T) {
 	})
 	t.Cleanup(environmentTwo.RemoveFixture)
 	controllerTwo := executionapp.NewController(store, environmentTwo, environmentTwo, environmentTwo)
-	if _, err := controllerTwo.Start(context.Background(), startCommand(taskTwo, scopeTwo, sourceTwo, worktreeTwo, baseTwo, eligibilityFacts(scopeTwo, execution.LifecycleSurfaces{}))); err != nil {
+	if _, err := controllerTwo.Start(context.Background(), startCommand(t, taskTwo, scopeTwo, sourceTwo, worktreeTwo, baseTwo, eligibilityFacts(scopeTwo, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
 	runOne, err := store.Run(context.Background(), scopeOne.RunID)
@@ -368,7 +368,7 @@ func TestStartupReconciliationRequestReplayIsIdempotent(t *testing.T) {
 	})
 	t.Cleanup(environment.RemoveFixture)
 	controller := executionapp.NewController(store, environment, environment, environment)
-	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
+	if _, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
 	command := executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-replay-same", NowMillis: 1_001}
@@ -412,7 +412,7 @@ func TestStartupReconciliationParksAdmittedCandidateDriftWithoutCleanup(t *testi
 	})
 	t.Cleanup(environment.RemoveFixture)
 	controller := executionapp.NewController(store, environment, environment, environment)
-	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
+	if _, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
 	run := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
@@ -486,7 +486,7 @@ func TestStartupReconciliationRejectsAReplacementConnectorStaleCursor(t *testing
 	})
 	t.Cleanup(environment.RemoveFixture)
 	controller := executionapp.NewController(store, environment, environment, environment)
-	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
+	if _, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
 	runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
@@ -543,7 +543,7 @@ func TestStartupReconciliationRejectsPriorLiveResourceIdentityDrift(t *testing.T
 	})
 	t.Cleanup(environment.RemoveFixture)
 	controller := executionapp.NewController(store, environment, environment, environment)
-	if _, err := controller.Start(context.Background(), startCommand(task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
+	if _, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
 	runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {

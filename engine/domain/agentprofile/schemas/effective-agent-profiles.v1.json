@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mcuadros/paseo-director/engine/domain/agentprofile/schemas/effective-agent-profiles.v1.json",
+  "title": "Director Frozen Effective Agent Profiles",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "organizerRevision", "configurationSha256", "discoveryRevision", "discoverySha256", "roles"],
+  "properties": {
+    "schemaVersion": { "const": "director.effective-agent-profiles/v1" },
+    "organizerRevision": { "$ref": "#/$defs/gitObject" },
+    "configurationSha256": { "$ref": "#/$defs/sha256" },
+    "discoveryRevision": { "$ref": "#/$defs/sha256" },
+    "discoverySha256": { "$ref": "#/$defs/sha256" },
+    "roles": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/role" }
+    }
+  },
+  "$defs": {
+    "gitObject": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "token": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+    "providerOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value"],
+      "properties": {
+        "name": { "enum": ["networkAccess", "nativeWebSearch", "reasoningSummary"] },
+        "value": { "$ref": "#/$defs/token" }
+      }
+    },
+    "mcpCapability": {
+      "enum": ["project.read", "planning.command.submit", "task.read", "task.outcome.submit", "candidate.read", "review.verdict.submit"]
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model", "effort", "mode", "permissionMode", "providerOptions", "mcpCapabilities"],
+      "properties": {
+        "provider": { "enum": ["codex", "claude-code", "opencode"] },
+        "model": { "$ref": "#/$defs/token" },
+        "effort": { "$ref": "#/$defs/token" },
+        "mode": { "$ref": "#/$defs/token" },
+        "permissionMode": { "enum": ["read-only", "workspace-write"] },
+        "providerOptions": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/providerOption" } },
+        "mcpCapabilities": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/mcpCapability" } }
+      }
+    },
+    "explanation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "role", "selectionIndex", "provider"],
+      "properties": {
+        "code": {
+          "enum": ["provider_not_discovered", "provider_tuple_unsupported", "provider_unavailable", "model_unsupported", "combination_unsupported", "provider_options_unsupported", "mcp_capability_unsupported", "mcp_proof_unavailable"]
+        },
+        "role": { "enum": ["organizer", "worker", "reviewer"] },
+        "selectionIndex": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "provider": { "enum": ["codex", "claude-code", "opencode"] },
+        "diagnosticCode": { "enum": ["authentication_required", "service_unavailable", "capability_loss", "version_mismatch"] }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "selectedIndex", "configuredChainSha256", "selection", "priorExplanations"],
+      "properties": {
+        "role": { "enum": ["organizer", "worker", "reviewer"] },
+        "selectedIndex": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "configuredChainSha256": { "$ref": "#/$defs/sha256" },
+        "selection": { "$ref": "#/$defs/selection" },
+        "priorExplanations": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/explanation" } }
+      }
+    }
+  }
+}

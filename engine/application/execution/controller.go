@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mcuadros/director-engine/domain"
+	"github.com/mcuadros/director-engine/domain/agentprofile"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/ports/host"
 	reconciliationport "github.com/mcuadros/director-engine/ports/reconciliation"
@@ -52,18 +53,19 @@ func NewController(store storeport.TaskStore, runtime runtimeport.Port, hostPort
 
 // StartCommand freezes every identity and fact needed by the fake M1 Run.
 type StartCommand struct {
-	RequestID        string
-	Scope            domainexecution.Scope
-	RunNumber        uint64
-	SourcePath       string
-	WorktreePath     string
-	Branch           string
-	BaseSHA          string
-	TaskTitle        string
-	CriterionIDs     []string
-	InitialPrompt    string
-	RootWorkspaceID  string
-	EligibilityFacts eligibility.Facts
+	RequestID         string
+	Scope             domainexecution.Scope
+	RunNumber         uint64
+	SourcePath        string
+	WorktreePath      string
+	Branch            string
+	BaseSHA           string
+	TaskTitle         string
+	CriterionIDs      []string
+	InitialPrompt     string
+	RootWorkspaceID   string
+	EffectiveProfiles agentprofile.FrozenSet
+	EligibilityFacts  eligibility.Facts
 }
 
 // StartResult reports the pure eligibility result and the Run identity, if an
@@ -87,6 +89,13 @@ func stableID(prefix string, parts ...string) string {
 func hashText(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
+}
+
+func frozenProfilesHash(state domainexecution.State) string {
+	if state.EffectiveProfiles == nil {
+		return ""
+	}
+	return state.EffectiveProfiles.SHA256()
 }
 
 func repositoryBindingHash(scope domainexecution.Scope, sourcePath, worktreePath, branch, baseSHA string) string {
@@ -126,7 +135,10 @@ func validStart(command StartCommand, project domain.Project, task domain.Task) 
 		}
 		seenCriteria[criterionID] = struct{}{}
 	}
-	return identifierPattern.MatchString(command.RequestID) && command.RunNumber > 0 &&
+	return project.Organizer != nil && project.Organizer.Phase == domain.OrganizerPhaseActive &&
+		command.EffectiveProfiles.OrganizerRevision() == project.Organizer.OrganizerRevision &&
+		command.EffectiveProfiles.ConfigurationSHA256() == project.Organizer.ConfigurationSHA256 &&
+		identifierPattern.MatchString(command.RequestID) && command.RunNumber > 0 &&
 		command.Scope.ProjectID == project.ID && command.Scope.TaskID == task.ID &&
 		identifierPattern.MatchString(command.Scope.WorkspaceID) && identifierPattern.MatchString(command.Scope.RunID) &&
 		command.EligibilityFacts.Scope == command.Scope &&
@@ -135,7 +147,8 @@ func validStart(command StartCommand, project domain.Project, task domain.Task) 
 		len(command.WorktreePath) <= 4_096 && filepath.IsAbs(command.WorktreePath) && filepath.Clean(command.WorktreePath) == command.WorktreePath &&
 		command.SourcePath != command.WorktreePath && identifierPattern.MatchString(command.Branch) &&
 		!strings.Contains(command.Branch, "..") && !strings.Contains(command.Branch, "//") &&
-		command.TaskTitle == task.Title && strings.TrimSpace(command.InitialPrompt) != "" && len(command.InitialPrompt) <= 16*1_024
+		command.TaskTitle == task.Title && strings.TrimSpace(command.InitialPrompt) != "" && len(command.InitialPrompt) <= 16*1_024 &&
+		command.EffectiveProfiles.Valid()
 }
 
 func eventPayload(value any) json.RawMessage {
@@ -211,7 +224,8 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		if existing.TaskID != task.ID || existing.BaseSHA != command.BaseSHA ||
 			existing.Execution.StartCommandID != startCommandID ||
 			existing.Execution.EligibilityDecisionID != decision.DecisionID ||
-			existing.Execution.EligibilityFactsHash != decision.FactsHash {
+			existing.Execution.EligibilityFactsHash != decision.FactsHash ||
+			existing.Execution.EffectiveProfilesSHA256 != command.EffectiveProfiles.SHA256() {
 			return StartResult{}, errors.New("existing Run conflicts with start command")
 		}
 		result.Decision.Kind = eligibility.DecisionEligible
@@ -230,6 +244,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		return result, nil
 	}
 	commandID := startCommandID
+	profiles := command.EffectiveProfiles
 	state := domainexecution.State{
 		SchemaVersion: domainexecution.SchemaVersion, Scope: command.Scope,
 		StartCommandID:             commandID,
@@ -241,11 +256,13 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			command.Scope, command.SourcePath, command.WorktreePath, command.Branch, command.BaseSHA,
 		),
 		LifecycleDigest: decision.LifecycleDigest, IsolationDigest: decision.IsolationDigest,
-		LifecycleApproval: command.EligibilityFacts.LifecycleApproval,
-		Isolation:         command.EligibilityFacts.Isolation,
-		OperationalPolicy: command.EligibilityFacts.OperationalPolicy,
-		LifecycleSurfaces: command.EligibilityFacts.LifecycleSurfaces,
-		SourcePath:        command.SourcePath, WorktreePath: command.WorktreePath,
+		EffectiveProfiles:       &profiles,
+		EffectiveProfilesSHA256: command.EffectiveProfiles.SHA256(),
+		LifecycleApproval:       command.EligibilityFacts.LifecycleApproval,
+		Isolation:               command.EligibilityFacts.Isolation,
+		OperationalPolicy:       command.EligibilityFacts.OperationalPolicy,
+		LifecycleSurfaces:       command.EligibilityFacts.LifecycleSurfaces,
+		SourcePath:              command.SourcePath, WorktreePath: command.WorktreePath,
 		Branch: command.Branch, TaskTitle: command.TaskTitle,
 		RootWorkspaceID: command.RootWorkspaceID,
 		CriterionIDs:    append([]string(nil), command.CriterionIDs...),
@@ -264,7 +281,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		command.Scope,
 		hashText(strings.Join([]string{
 			state.RepositoryBindingHash, state.EligibilityFactsHash,
-			state.LifecycleDigest, state.IsolationDigest, state.InitialPromptHash,
+			state.LifecycleDigest, state.IsolationDigest, state.EffectiveProfilesSHA256, state.InitialPromptHash,
 			strings.Join(state.CriterionIDs, "\x1e"),
 		}, "\x1f")),
 	)
@@ -275,16 +292,18 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 	storeResult, err := controller.store.CreateRun(ctx, domain.CommandRequest{
 		IdempotencyKey: commandID, Type: "run.fake_execution.create", AggregateID: run.ID,
 		Payload: eventPayload(struct {
-			EligibilityDecisionID string `json:"eligibilityDecisionId"`
-			LifecycleDigest       string `json:"lifecycleDigest"`
-			IsolationDigest       string `json:"isolationDigest"`
-		}{decision.DecisionID, decision.LifecycleDigest, decision.IsolationDigest}),
+			EligibilityDecisionID   string `json:"eligibilityDecisionId"`
+			LifecycleDigest         string `json:"lifecycleDigest"`
+			IsolationDigest         string `json:"isolationDigest"`
+			EffectiveProfilesSHA256 string `json:"effectiveProfilesSha256"`
+		}{decision.DecisionID, decision.LifecycleDigest, decision.IsolationDigest, state.EffectiveProfilesSHA256}),
 	}, run, domain.Event{
 		ID: stableID("event", commandID), RunID: run.ID, Sequence: 1,
 		AggregateID: run.ID, AggregateVersion: 0, Type: "run.fake_execution.created",
 		Payload: eventPayload(struct {
-			EligibilityDecisionID string `json:"eligibilityDecisionId"`
-		}{decision.DecisionID}),
+			EligibilityDecisionID   string `json:"eligibilityDecisionId"`
+			EffectiveProfilesSHA256 string `json:"effectiveProfilesSha256"`
+		}{decision.DecisionID, state.EffectiveProfilesSHA256}),
 	})
 	if err != nil {
 		return StartResult{}, err
@@ -660,7 +679,7 @@ func preparationBarrier(state domainexecution.State) string {
 		setupHash = state.Setup.ExternalID
 	}
 	barrier, ok := domainexecution.PreparationBarrier(state.PreparationPlan, domainexecution.PreparationOutputs{
-		FrozenInputsHash:      state.RepositoryBindingHash,
+		FrozenInputsHash:      hashText(state.RepositoryBindingHash + "\x1f" + frozenProfilesHash(state)),
 		EligibilityHash:       state.EligibilityFactsHash,
 		SecurityAdmissionHash: hashText(state.LifecycleDigest + "\x1f" + state.IsolationDigest),
 		WorktreeHash:          state.Worktree.ExternalID,

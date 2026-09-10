@@ -136,6 +136,8 @@ func validateExecutionGraph(run domain.Run) error {
 		state.Scope.ProjectID == "" || state.Scope.WorkspaceID == "" ||
 		state.Scope.TaskID != run.TaskID || state.Scope.RunID != run.ID ||
 		state.StartCommandID == "" ||
+		state.EffectiveProfiles == nil || !state.EffectiveProfiles.Valid() ||
+		state.EffectiveProfilesSHA256 != state.EffectiveProfiles.SHA256() ||
 		state.RepositoryBindingHash != repositoryBindingHash(
 			state.Scope, state.SourcePath, state.WorktreePath, state.Branch, run.BaseSHA,
 		) {
