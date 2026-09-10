@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/mcuadros/director-engine/domain/agentbridge"
 	"github.com/mcuadros/director-engine/domain/execution"
 )
 
@@ -34,6 +36,7 @@ var (
 	workerIdentityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,199}$`)
 	workerPhasePattern    = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 	workerSHAPattern      = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	workerDigestPattern   = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 // WorkerRegistration is frozen before a public top-level agent create. Paseo
@@ -47,6 +50,9 @@ type WorkerRegistration struct {
 	Phase                string
 	CandidateSHA         string
 	BaseSHA              string
+	EffectID             string
+	ProfileSHA256        string
+	SessionSHA256        string
 	RegisteredAt         string
 	StartedAt            string
 }
@@ -75,6 +81,11 @@ func WorkerLabels(registration WorkerRegistration) (map[string]string, error) {
 		(registration.CandidateSHA != "" && !workerSHAPattern.MatchString(registration.CandidateSHA)) {
 		return nil, errors.New("worker launch registry commit identity is invalid")
 	}
+	if !workerIdentityPattern.MatchString(registration.EffectID) ||
+		!workerDigestPattern.MatchString(registration.ProfileSHA256) ||
+		!workerDigestPattern.MatchString(registration.SessionSHA256) {
+		return nil, errors.New("worker launch correlation is invalid")
+	}
 	for _, value := range []string{registration.RegisteredAt, registration.StartedAt} {
 		parsed, parseErr := time.Parse(time.RFC3339Nano, value)
 		if parseErr != nil || parsed.Location() != time.UTC {
@@ -92,6 +103,9 @@ func WorkerLabels(registration WorkerRegistration) (map[string]string, error) {
 		keys.Role:               string(registration.Role),
 		keys.Phase:              registration.Phase,
 		keys.Base:               registration.BaseSHA,
+		keys.Effect:             registration.EffectID,
+		keys.Profile:            registration.ProfileSHA256,
+		keys.Session:            registration.SessionSHA256,
 		keys.RegisteredAt:       registration.RegisteredAt,
 		keys.StartedAt:          registration.StartedAt,
 	}
@@ -137,6 +151,9 @@ func RegistrationFromVisibility(scope execution.Scope, visibility execution.Work
 		Phase:                visibility.Phase,
 		CandidateSHA:         visibility.CandidateSHA,
 		BaseSHA:              visibility.BaseSHA,
+		EffectID:             visibility.EffectID,
+		ProfileSHA256:        visibility.ProfileSHA256,
+		SessionSHA256:        visibility.SessionSHA256,
 		RegisteredAt:         visibility.RegisteredAt,
 		StartedAt:            visibility.StartedAt,
 	}, nil
@@ -173,8 +190,16 @@ func AdmitAgentCreate(command Command, registration WorkerRegistration) error {
 	if command.Arguments.InitialPrompt != ZeroWorkBootstrapPrompt || command.Arguments.NotifyOnFinish {
 		return errors.New("worker creation requires the exact zero-work bootstrap")
 	}
+	if registration.Role == WorkerRoleTaskAgent {
+		if err := admitPrimaryContext(command.Arguments, registration, false); err != nil {
+			return err
+		}
+	}
 	if command.Arguments.Scope != registration.Scope {
 		return errors.New("worker launch registration is bound to another Run")
+	}
+	if command.Arguments.EffectID != registration.EffectID {
+		return errors.New("worker launch registration is bound to another effect")
 	}
 	expectedCapability := CapabilityTaskAgentCreate
 	if registration.Role == WorkerRoleReviewer {
@@ -204,12 +229,15 @@ func ParseWorkerLabels(labels map[string]string) (WorkerRegistration, error) {
 			ProjectID: labels[keys.Project], WorkspaceID: labels[keys.Workspace],
 			TaskID: labels[keys.Task], RunID: labels[keys.Run],
 		},
-		Role:         WorkerRole(labels[keys.Role]),
-		Phase:        labels[keys.Phase],
-		CandidateSHA: labels[keys.Candidate],
-		BaseSHA:      labels[keys.Base],
-		RegisteredAt: labels[keys.RegisteredAt],
-		StartedAt:    labels[keys.StartedAt],
+		Role:          WorkerRole(labels[keys.Role]),
+		Phase:         labels[keys.Phase],
+		CandidateSHA:  labels[keys.Candidate],
+		BaseSHA:       labels[keys.Base],
+		EffectID:      labels[keys.Effect],
+		ProfileSHA256: labels[keys.Profile],
+		SessionSHA256: labels[keys.Session],
+		RegisteredAt:  labels[keys.RegisteredAt],
+		StartedAt:     labels[keys.StartedAt],
 	}
 	if err := ValidateWorkerLabels(labels, registration); err != nil {
 		return WorkerRegistration{}, err
@@ -238,6 +266,9 @@ func AdmitAgentCreateLabels(command Command) (WorkerRegistration, error) {
 	if registration.Scope != command.Arguments.Scope {
 		return WorkerRegistration{}, errors.New("worker launch registration is bound to another Run")
 	}
+	if registration.EffectID != command.Arguments.EffectID {
+		return WorkerRegistration{}, errors.New("worker launch registration is bound to another effect")
+	}
 	expectedCapability := CapabilityTaskAgentCreate
 	if registration.Role == WorkerRoleReviewer {
 		expectedCapability = CapabilityReviewerAgentCreate
@@ -245,7 +276,41 @@ func AdmitAgentCreateLabels(command Command) (WorkerRegistration, error) {
 	if command.Capability != expectedCapability {
 		return WorkerRegistration{}, errors.New("worker creation capability does not match its registered role")
 	}
+	if registration.Role == WorkerRoleTaskAgent {
+		if err := admitPrimaryContext(command.Arguments, registration, false); err != nil {
+			return WorkerRegistration{}, err
+		}
+	}
 	return registration, nil
+}
+
+func admitPrimaryContext(arguments Arguments, registration WorkerRegistration, bound bool) error {
+	contractHash, contractErr := agentbridge.SchemaSHA256()
+	if arguments.ClientMessageID == "" || arguments.BoundaryID == "" || arguments.OperationalObservationID == "" ||
+		arguments.Profile == nil || arguments.Session == nil ||
+		arguments.Profile.SHA256 != registration.ProfileSHA256 ||
+		arguments.Session.SessionSHA256 != registration.SessionSHA256 ||
+		arguments.Session.ContractVersion != agentbridge.ContractVersion ||
+		contractErr != nil || arguments.Session.ContractHash != contractHash || arguments.Session.Role != "worker" ||
+		arguments.Session.Provider != arguments.Profile.Provider ||
+		arguments.Session.Model != arguments.Profile.Model || len(arguments.Session.Tools) == 0 ||
+		arguments.Session.Server.Name == "" || arguments.Session.Server.Command == "" ||
+		arguments.Profile.Provider == "" || arguments.Profile.Model == "" ||
+		arguments.Profile.Effort == "" || arguments.Profile.Mode == "" ||
+		arguments.Profile.PermissionMode == "" {
+		return errors.New("worker profile or scoped MCP context is incomplete")
+	}
+	if !slices.IsSorted(arguments.Session.Tools) {
+		return errors.New("worker scoped MCP catalog is not canonical")
+	}
+	if bound {
+		if !workerDigestPattern.MatchString(arguments.SessionBindingSHA256) {
+			return errors.New("worker scoped MCP context is not bound to the native agent")
+		}
+	} else if arguments.SessionBindingSHA256 != "" {
+		return errors.New("bootstrap create carries a premature native session binding")
+	}
+	return nil
 }
 
 // AdmitAgentPrompt is the last engine-owned gate before real Task or Review
@@ -261,6 +326,11 @@ func AdmitAgentPrompt(command Command, registration WorkerRegistration, agentID 
 		command.Arguments.InitialPrompt == ZeroWorkBootstrapPrompt || !command.Arguments.NotifyOnFinish ||
 		len(command.Arguments.Labels) != 0 {
 		return errors.New("worker prompt is not bound to the persisted worker identity and notified real turn")
+	}
+	if registration.Role == WorkerRoleTaskAgent {
+		if err := admitPrimaryContext(command.Arguments, registration, true); err != nil {
+			return err
+		}
 	}
 	return nil
 }

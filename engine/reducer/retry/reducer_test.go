@@ -79,3 +79,23 @@ func TestReduceRequiresFreshBoundFactsAndFiniteAttempts(t *testing.T) {
 		t.Fatalf("misbound retry observation = %#v", decision)
 	}
 }
+
+func TestReduceNeverRepeatsARealPromptAfterPossibleHandoff(t *testing.T) {
+	facts := Facts{
+		SchemaVersion: SchemaVersion, BindingUnchanged: true,
+		PriorDispatcherAbsent: true, BudgetAvailable: true, TaskStoreNowMillis: 1_001,
+		Effect: execution.Effect{
+			ID: "prompt-1", Kind: execution.EffectAgentPrompt,
+			Phase: execution.EffectDispatching, Attempt: 1, AttemptLimit: 2,
+		},
+		Observation: execution.EffectObservation{
+			ID: "prompt-observation", EffectID: "prompt-1", Status: execution.ObservationAbsent,
+			ObservedAtMillis: 1_000, MaximumAgeMillis: 30_000,
+		},
+	}
+	facts.Observation.FactHash = execution.EffectObservationHash(facts.Observation)
+	decision := Reduce(facts)
+	if decision.Kind != DecisionEscalate || decision.Code != "nonrepeatable_prompt_result_ambiguous" {
+		t.Fatalf("lost real prompt = %#v", decision)
+	}
+}

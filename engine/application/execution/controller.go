@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package execution composes the pure M1 reducers with the TaskStore and thin
+// Package execution composes the pure reducers with the TaskStore and thin
 // effect ports. It persists intent and observations before dependent actions;
 // adapter responses and AgentOutcomeClaims are never treated as evidence.
 package execution
@@ -34,8 +34,10 @@ import (
 )
 
 var (
-	identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/-]*$`)
-	shaPattern        = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	identifierPattern           = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/-]*$`)
+	shaPattern                  = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	ErrProjectLeaseUnavailable  = errors.New("project execution lease is stale or belongs to another engine")
+	ErrRepositoryBindingChanged = errors.New("execution repository binding changed")
 )
 
 // Controller is restartable: it owns no workflow state outside TaskStore.
@@ -51,7 +53,7 @@ func NewController(store storeport.TaskStore, runtime runtimeport.Port, hostPort
 	return &Controller{store: store, runtime: runtime, host: hostPort, queue: queue}
 }
 
-// StartCommand freezes every identity and fact needed by the fake M1 Run.
+// StartCommand freezes every identity and fact needed by one primary Run.
 type StartCommand struct {
 	RequestID         string
 	Scope             domainexecution.Scope
@@ -64,6 +66,7 @@ type StartCommand struct {
 	CriterionIDs      []string
 	InitialPrompt     string
 	RootWorkspaceID   string
+	MCPServer         domainexecution.MCPServerLaunch
 	EffectiveProfiles agentprofile.FrozenSet
 	EligibilityFacts  eligibility.Facts
 }
@@ -98,11 +101,60 @@ func frozenProfilesHash(state domainexecution.State) string {
 	return state.EffectiveProfiles.SHA256()
 }
 
-func repositoryBindingHash(scope domainexecution.Scope, sourcePath, worktreePath, branch, baseSHA string) string {
-	return hashText(strings.Join([]string{
-		scope.ProjectID, scope.WorkspaceID, scope.TaskID, scope.RunID,
-		sourcePath, worktreePath, branch, baseSHA,
-	}, "\x1f"))
+func repositoryBinding(workspace domain.Workspace, worktreePath, branch, baseSHA string) domainexecution.RepositoryBinding {
+	return domainexecution.RepositoryBinding{
+		RepositoryID: workspace.Repository.ID, RepositoryKey: workspace.Repository.Key,
+		CanonicalRemote: workspace.Repository.CanonicalRemote, SourcePath: workspace.Repository.SourcePath,
+		SourceDevice: workspace.Repository.SourceDevice, SourceInode: workspace.Repository.SourceInode,
+		GitCommonDirectory: workspace.Repository.GitCommonDirectory,
+		GitCommonDevice:    workspace.Repository.GitCommonDevice, GitCommonInode: workspace.Repository.GitCommonInode,
+		WorktreePath: worktreePath, Branch: branch, BaseSHA: baseSHA,
+	}
+}
+
+func leaseBinding(project domain.Project) domainexecution.LeaseBinding {
+	if project.Lease == nil {
+		return domainexecution.LeaseBinding{}
+	}
+	return domainexecution.LeaseBinding{
+		HolderInstance:        project.Lease.HolderInstance,
+		HolderProcessIdentity: project.Lease.HolderProcessIdentity,
+		Epoch:                 project.Lease.Epoch,
+	}
+}
+
+func currentLease(project domain.Project, binding domainexecution.LeaseBinding, nowMillis int64) bool {
+	return domainexecution.ValidLeaseBinding(binding) && project.Lease != nil &&
+		project.Lease.DispatchAllowed && nowMillis >= project.Lease.AcquiredAtMillis &&
+		project.Lease.ExpiresAtMillis > nowMillis &&
+		leaseBinding(project) == binding
+}
+
+func exactRepository(run domain.Run, workspace domain.Workspace) bool {
+	state := run.Execution
+	want := repositoryBinding(workspace, state.WorktreePath, state.Branch, run.BaseSHA)
+	return state.SourcePath == workspace.Repository.SourcePath &&
+		state.RepositoryBinding == want &&
+		state.RepositoryBindingHash != "" &&
+		state.RepositoryBindingHash == domainexecution.RepositoryBindingSHA256(want)
+}
+
+func (controller *Controller) currentExecutionAuthority(ctx context.Context, run domain.Run, nowMillis int64) error {
+	project, err := controller.store.Project(ctx, run.Execution.Scope.ProjectID)
+	if err != nil {
+		return err
+	}
+	if !currentLease(project, run.Execution.LeaseBinding, nowMillis) {
+		return ErrProjectLeaseUnavailable
+	}
+	workspace, err := controller.store.Workspace(ctx, run.Execution.Scope.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	if !exactRepository(run, workspace) {
+		return ErrRepositoryBindingChanged
+	}
+	return nil
 }
 
 func newEffect(runID string, kind domainexecution.EffectKind, attempts uint32) domainexecution.Effect {
@@ -121,7 +173,7 @@ func setupRequired(surfaces domainexecution.LifecycleSurfaces) bool {
 	return false
 }
 
-func validStart(command StartCommand, project domain.Project, task domain.Task) bool {
+func validStart(command StartCommand, project domain.Project, workspace domain.Workspace, task domain.Task) bool {
 	if len(command.CriterionIDs) == 0 || len(command.CriterionIDs) > 128 {
 		return false
 	}
@@ -136,14 +188,19 @@ func validStart(command StartCommand, project domain.Project, task domain.Task) 
 		seenCriteria[criterionID] = struct{}{}
 	}
 	return project.Organizer != nil && project.Organizer.Phase == domain.OrganizerPhaseActive &&
+		project.Lease != nil && project.Lease.DispatchAllowed &&
+		command.EligibilityFacts.TaskStoreNowMillis >= project.Lease.AcquiredAtMillis &&
+		project.Lease.ExpiresAtMillis > command.EligibilityFacts.TaskStoreNowMillis &&
 		command.EffectiveProfiles.OrganizerRevision() == project.Organizer.OrganizerRevision &&
 		command.EffectiveProfiles.ConfigurationSHA256() == project.Organizer.ConfigurationSHA256 &&
 		identifierPattern.MatchString(command.RequestID) && command.RunNumber > 0 &&
 		command.Scope.ProjectID == project.ID && command.Scope.TaskID == task.ID &&
+		command.Scope.WorkspaceID == workspace.ID && workspace.ProjectID == project.ID &&
+		len(task.WorkspaceIDs) == 1 && task.WorkspaceIDs[0] == workspace.ID &&
 		identifierPattern.MatchString(command.Scope.WorkspaceID) && identifierPattern.MatchString(command.Scope.RunID) &&
 		command.EligibilityFacts.Scope == command.Scope &&
 		command.BaseSHA != "" && shaPattern.MatchString(command.BaseSHA) &&
-		len(command.SourcePath) <= 4_096 && filepath.IsAbs(command.SourcePath) && filepath.Clean(command.SourcePath) == command.SourcePath &&
+		command.SourcePath == workspace.Repository.SourcePath && len(command.SourcePath) <= 4_096 && filepath.IsAbs(command.SourcePath) && filepath.Clean(command.SourcePath) == command.SourcePath &&
 		len(command.WorktreePath) <= 4_096 && filepath.IsAbs(command.WorktreePath) && filepath.Clean(command.WorktreePath) == command.WorktreePath &&
 		command.SourcePath != command.WorktreePath && identifierPattern.MatchString(command.Branch) &&
 		!strings.Contains(command.Branch, "..") && !strings.Contains(command.Branch, "//") &&
@@ -214,18 +271,29 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 	if err != nil {
 		return StartResult{}, err
 	}
-	if !validStart(command, project, task) {
-		return StartResult{}, errors.New("invalid fake execution start command")
+	workspace, err := controller.store.Workspace(ctx, command.Scope.WorkspaceID)
+	if err != nil {
+		return StartResult{}, err
+	}
+	if !validStart(command, project, workspace, task) {
+		return StartResult{}, errors.New("invalid primary execution start command")
 	}
 	decision := eligibility.Reduce(command.EligibilityFacts)
 	result := StartResult{Decision: decision}
 	startCommandID := stableID("command", command.RequestID, "run-create")
 	if existing, err := controller.store.Run(ctx, command.Scope.RunID); err == nil {
+		expectedSession, sessionErr := domainexecution.NewPrimarySession(
+			command.Scope, stableID("effect", command.Scope.RunID, string(domainexecution.EffectAgentCreate)),
+			command.EffectiveProfiles, command.MCPServer,
+		)
 		if existing.TaskID != task.ID || existing.BaseSHA != command.BaseSHA ||
 			existing.Execution.StartCommandID != startCommandID ||
 			existing.Execution.EligibilityDecisionID != decision.DecisionID ||
 			existing.Execution.EligibilityFactsHash != decision.FactsHash ||
-			existing.Execution.EffectiveProfilesSHA256 != command.EffectiveProfiles.SHA256() {
+			existing.Execution.EffectiveProfilesSHA256 != command.EffectiveProfiles.SHA256() ||
+			existing.Execution.RepositoryBinding != repositoryBinding(workspace, command.WorktreePath, command.Branch, command.BaseSHA) ||
+			existing.Execution.LeaseBinding != leaseBinding(project) || sessionErr != nil ||
+			existing.Execution.PrimarySession.ReservationSHA256 != expectedSession.ReservationSHA256 {
 			return StartResult{}, errors.New("existing Run conflicts with start command")
 		}
 		result.Decision.Kind = eligibility.DecisionEligible
@@ -245,6 +313,15 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 	}
 	commandID := startCommandID
 	profiles := command.EffectiveProfiles
+	repository := repositoryBinding(workspace, command.WorktreePath, command.Branch, command.BaseSHA)
+	repositoryHash := domainexecution.RepositoryBindingSHA256(repository)
+	primarySession, err := domainexecution.NewPrimarySession(
+		command.Scope, stableID("effect", command.Scope.RunID, string(domainexecution.EffectAgentCreate)),
+		profiles, command.MCPServer,
+	)
+	if err != nil || repositoryHash == "" {
+		return StartResult{}, errors.New("primary execution binding is invalid")
+	}
 	state := domainexecution.State{
 		SchemaVersion: domainexecution.SchemaVersion, Scope: command.Scope,
 		StartCommandID:             commandID,
@@ -252,9 +329,8 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		EligibilityDecisionID:      decision.DecisionID, EligibilityFactsHash: decision.FactsHash,
 		CapacityReservationID: stableID("capacity", command.Scope.RunID),
 		BudgetReservationID:   stableID("budget", command.Scope.RunID),
-		RepositoryBindingHash: repositoryBindingHash(
-			command.Scope, command.SourcePath, command.WorktreePath, command.Branch, command.BaseSHA,
-		),
+		LeaseBinding:          leaseBinding(project),
+		RepositoryBinding:     repository, RepositoryBindingHash: repositoryHash,
 		LifecycleDigest: decision.LifecycleDigest, IsolationDigest: decision.IsolationDigest,
 		EffectiveProfiles:       &profiles,
 		EffectiveProfilesSHA256: command.EffectiveProfiles.SHA256(),
@@ -267,6 +343,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		RootWorkspaceID: command.RootWorkspaceID,
 		CriterionIDs:    append([]string(nil), command.CriterionIDs...),
 		InitialPrompt:   command.InitialPrompt, InitialPromptHash: hashText(command.InitialPrompt),
+		PrimarySession:                   primarySession,
 		Worktree:                         newEffect(command.Scope.RunID, domainexecution.EffectWorktreeCreate, 2),
 		HostView:                         newEffect(command.Scope.RunID, domainexecution.EffectHostViewCreate, 2),
 		Boundary:                         newEffect(command.Scope.RunID, domainexecution.EffectBoundaryMaterialize, 2),
@@ -281,7 +358,8 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		command.Scope,
 		hashText(strings.Join([]string{
 			state.RepositoryBindingHash, state.EligibilityFactsHash,
-			state.LifecycleDigest, state.IsolationDigest, state.EffectiveProfilesSHA256, state.InitialPromptHash,
+			state.LifecycleDigest, state.IsolationDigest, state.EffectiveProfilesSHA256,
+			state.PrimarySession.ReservationSHA256, state.InitialPromptHash,
 			strings.Join(state.CriterionIDs, "\x1e"),
 		}, "\x1f")),
 	)
@@ -290,20 +368,28 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		BaseSHA: command.BaseSHA, Execution: state,
 	}
 	storeResult, err := controller.store.CreateRun(ctx, domain.CommandRequest{
-		IdempotencyKey: commandID, Type: "run.fake_execution.create", AggregateID: run.ID,
+		IdempotencyKey: commandID, Type: "run.primary_execution.create", AggregateID: run.ID,
 		Payload: eventPayload(struct {
 			EligibilityDecisionID   string `json:"eligibilityDecisionId"`
 			LifecycleDigest         string `json:"lifecycleDigest"`
 			IsolationDigest         string `json:"isolationDigest"`
 			EffectiveProfilesSHA256 string `json:"effectiveProfilesSha256"`
-		}{decision.DecisionID, decision.LifecycleDigest, decision.IsolationDigest, state.EffectiveProfilesSHA256}),
+			RepositoryBindingSHA256 string `json:"repositoryBindingSha256"`
+			PrimarySessionSHA256    string `json:"primarySessionSha256"`
+			LeaseEpoch              uint64 `json:"leaseEpoch"`
+		}{decision.DecisionID, decision.LifecycleDigest, decision.IsolationDigest, state.EffectiveProfilesSHA256,
+			state.RepositoryBindingHash, state.PrimarySession.ReservationSHA256, state.LeaseBinding.Epoch}),
 	}, run, domain.Event{
 		ID: stableID("event", commandID), RunID: run.ID, Sequence: 1,
-		AggregateID: run.ID, AggregateVersion: 0, Type: "run.fake_execution.created",
+		AggregateID: run.ID, AggregateVersion: 0, Type: "run.primary_execution.created",
 		Payload: eventPayload(struct {
 			EligibilityDecisionID   string `json:"eligibilityDecisionId"`
 			EffectiveProfilesSHA256 string `json:"effectiveProfilesSha256"`
-		}{decision.DecisionID, state.EffectiveProfilesSHA256}),
+			RepositoryBindingSHA256 string `json:"repositoryBindingSha256"`
+			PrimarySessionSHA256    string `json:"primarySessionSha256"`
+			LeaseEpoch              uint64 `json:"leaseEpoch"`
+		}{decision.DecisionID, state.EffectiveProfilesSHA256, state.RepositoryBindingHash,
+			state.PrimarySession.ReservationSHA256, state.LeaseBinding.Epoch}),
 	})
 	if err != nil {
 		return StartResult{}, err
@@ -549,7 +635,7 @@ func completionEffectKind(event domainexecution.CompletionEvent, state domainexe
 	return ""
 }
 
-func (controller *Controller) persistRun(ctx context.Context, current, next domain.Run, transition string) error {
+func (controller *Controller) persistRunTransition(ctx context.Context, current, next domain.Run, transition string) (bool, error) {
 	next.Version = current.Version + 1
 	commandID := stableID("command", current.ID, fmt.Sprintf("version-%d", next.Version), transition)
 	result, err := controller.store.UpdateRun(ctx, domain.CommandRequest{
@@ -565,12 +651,17 @@ func (controller *Controller) persistRun(ctx context.Context, current, next doma
 		Payload: durableTransitionPayload(transition, next.Execution),
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if result.Outcome != domain.CommandApplied {
-		return errors.New("persist execution transition: version conflict")
+		return false, errors.New("persist execution transition: version conflict")
 	}
-	return nil
+	return !result.Replay, nil
+}
+
+func (controller *Controller) persistRun(ctx context.Context, current, next domain.Run, transition string) error {
+	_, err := controller.persistRunTransition(ctx, current, next, transition)
+	return err
 }
 
 func hashState(state domainexecution.State) string {
@@ -679,7 +770,7 @@ func preparationBarrier(state domainexecution.State) string {
 		setupHash = state.Setup.ExternalID
 	}
 	barrier, ok := domainexecution.PreparationBarrier(state.PreparationPlan, domainexecution.PreparationOutputs{
-		FrozenInputsHash:      hashText(state.RepositoryBindingHash + "\x1f" + frozenProfilesHash(state)),
+		FrozenInputsHash:      hashText(state.RepositoryBindingHash + "\x1f" + frozenProfilesHash(state) + "\x1f" + state.PrimarySession.ReservationSHA256),
 		EligibilityHash:       state.EligibilityFactsHash,
 		SecurityAdmissionHash: hashText(state.LifecycleDigest + "\x1f" + state.IsolationDigest),
 		WorktreeHash:          state.Worktree.ExternalID,
@@ -739,6 +830,32 @@ func hostCapability(kind domainexecution.EffectKind, observe bool) host.Capabili
 
 func hostArguments(run domain.Run, effect domainexecution.Effect) host.Arguments {
 	state := run.Execution
+	profile := &host.AgentProfile{
+		Provider: string(state.PrimarySession.Provider), Model: state.PrimarySession.Model,
+		Effort: state.PrimarySession.Effort, Mode: state.PrimarySession.Mode,
+		PermissionMode: state.PrimarySession.PermissionMode,
+		SHA256:         state.EffectiveProfilesSHA256,
+	}
+	profile.ProviderOptions = make([]host.ProviderOption, 0, len(state.PrimarySession.ProviderOptions))
+	for _, option := range state.PrimarySession.ProviderOptions {
+		profile.ProviderOptions = append(profile.ProviderOptions, host.ProviderOption{Name: string(option.Name), Value: option.Value})
+	}
+	session := &host.MCPSession{
+		ContractVersion: state.PrimarySession.MCPContractVersion,
+		ContractHash:    state.PrimarySession.MCPContractSHA256,
+		SessionSHA256:   state.PrimarySession.ReservationSHA256,
+		Role:            string(state.PrimarySession.Role), Provider: string(state.PrimarySession.Provider),
+		Model: state.PrimarySession.Model, Tools: append([]string(nil), state.PrimarySession.MCPTools...),
+		Server: host.MCPServer{
+			Name: state.PrimarySession.MCPServer.Name, Command: state.PrimarySession.MCPServer.Command,
+			Args: append([]string(nil), state.PrimarySession.MCPServer.Args...),
+			Env:  mapsClone(state.PrimarySession.MCPServer.Env),
+		},
+	}
+	operationalObservationID := ""
+	if state.OperationalObservation != nil {
+		operationalObservationID = state.OperationalObservation.ID
+	}
 	arguments := host.Arguments{
 		Scope: state.Scope, EffectKind: effect.Kind, EffectID: effect.ID,
 		WorktreeID: state.Worktree.ExternalID, WorktreePath: state.WorktreePath,
@@ -747,7 +864,9 @@ func hostArguments(run domain.Run, effect domainexecution.Effect) host.Arguments
 		ParentAgentID: nil, LifecycleDigest: state.LifecycleDigest,
 		IsolationDigest: state.IsolationDigest, PreparationReady: state.PreparationReady,
 		PreparationBarrierHash: state.PreparationBarrierHash,
-		BindingHash:            state.RepositoryBindingHash,
+		ClientMessageID:        stableID("message", effect.ID), BoundaryID: state.Boundary.ExternalID,
+		OperationalObservationID: operationalObservationID,
+		Profile:                  profile, Session: session, BindingHash: state.RepositoryBindingHash,
 	}
 	if effect.Kind == domainexecution.EffectAgentCreate {
 		arguments.InitialPrompt = host.ZeroWorkBootstrapPrompt
@@ -755,6 +874,7 @@ func hostArguments(run domain.Run, effect domainexecution.Effect) host.Arguments
 	if effect.Kind == domainexecution.EffectAgentPrompt {
 		arguments.InitialPrompt = state.InitialPrompt
 		arguments.NotifyOnFinish = true
+		arguments.SessionBindingSHA256 = state.PrimarySession.BindingSHA256
 	}
 	// The agent-create command carries the frozen registry labels so the host
 	// creates a worker that is already discoverable from its root workspace.
@@ -788,7 +908,8 @@ func hostResumeCursor(state domainexecution.State) uint64 {
 func runtimeRequest(run domain.Run, effect domainexecution.Effect) runtimeport.Request {
 	state := run.Execution
 	return runtimeport.Request{
-		Scope: state.Scope, Effect: effect, SourcePath: state.SourcePath,
+		Scope: state.Scope, Effect: effect, LeaseBinding: state.LeaseBinding,
+		Repository: state.RepositoryBinding, SourcePath: state.SourcePath,
 		WorktreePath: state.WorktreePath, Branch: state.Branch, BaseSHA: run.BaseSHA,
 		WorktreeID:        state.Worktree.ExternalID,
 		BindingHash:       state.RepositoryBindingHash,
@@ -838,7 +959,8 @@ func (controller *Controller) observeEffectAfter(ctx context.Context, run domain
 			ID:       stableID("host-observation", observed.RequestID, fmt.Sprintf("cursor-%d", observed.Cursor)),
 			EffectID: observed.Result.EffectID, Status: observed.Result.Status,
 			ExternalID: observed.Result.ExternalID, BindingHash: observed.Result.BindingHash,
-			Cursor: observed.Cursor, ObservedAt: observed.ObservedAt,
+			CorrelationHash: observed.Result.CorrelationHash,
+			Cursor:          observed.Cursor, ObservedAt: observed.ObservedAt,
 			ObservedAtMillis: observedAt.UnixMilli(), MaximumAgeMillis: observed.Result.MaximumAgeMillis,
 			PriorDispatcherAbsent: observed.Result.PriorDispatcherAbsent,
 		}
@@ -861,11 +983,36 @@ func (controller *Controller) dispatchEffect(ctx context.Context, run domain.Run
 		if err := controller.verifyHost(ctx); err != nil {
 			return err
 		}
-		_, err := controller.host.Invoke(ctx, host.Command{
+		command := host.Command{
 			RequestID:      stableID("request", effect.ID, fmt.Sprintf("attempt-%d", effect.Attempt)),
 			IdempotencyKey: effect.ID, ExpectedVersion: run.Version,
 			Capability: hostCapability(kind, false), Arguments: hostArguments(run, *effect),
-		})
+		}
+		if kind == domainexecution.EffectAgentCreate {
+			if run.Execution.WorkerVisibility == nil {
+				return errors.New("worker launch registration is missing")
+			}
+			registration, err := host.RegistrationFromVisibility(run.Execution.Scope, *run.Execution.WorkerVisibility)
+			if err != nil {
+				return err
+			}
+			if err := host.AdmitAgentCreate(command, registration); err != nil {
+				return err
+			}
+		}
+		if kind == domainexecution.EffectAgentPrompt {
+			if run.Execution.WorkerVisibility == nil {
+				return errors.New("worker launch registration is missing")
+			}
+			registration, err := host.RegistrationFromVisibility(run.Execution.Scope, *run.Execution.WorkerVisibility)
+			if err != nil {
+				return err
+			}
+			if err := host.AdmitAgentPrompt(command, registration, run.Execution.Agent.ExternalID); err != nil {
+				return err
+			}
+		}
+		_, err := controller.host.Invoke(ctx, command)
 		return err
 	}
 	return controller.runtime.DispatchEffect(ctx, runtimeRequest(run, *effect))
@@ -942,20 +1089,35 @@ func (controller *Controller) applyEffectDecision(
 		effect.Attempt++
 		effect.Observation = nil
 		next.Execution.OperationalObservationConsumed = true
-		if err := controller.persistRun(ctx, run, next, "run.effect_dispatching"); err != nil {
+		won, err := controller.persistRunTransition(ctx, run, next, "run.effect_dispatching")
+		if err != nil {
 			return StepResult{Run: run}, err
 		}
+		if !won {
+			current, readErr := controller.store.Run(ctx, run.ID)
+			return StepResult{Run: current}, readErr
+		}
 		next.Version = run.Version + 1
-		err := controller.dispatchEffect(ctx, next, kind)
+		err = controller.dispatchEffect(ctx, next, kind)
 		if err != nil {
 			return StepResult{Run: next, Progressed: true}, &EffectHandoffError{Kind: kind, err: err}
 		}
 		return StepResult{Run: next, Progressed: true}, nil
 	case "adopt":
+		if kind == domainexecution.EffectAgentCreate &&
+			(run.Execution.WorkerVisibility == nil ||
+				run.Execution.WorkerVisibility.Digest == "" ||
+				run.Execution.WorkerVisibility.Digest != effectPointer(&run.Execution, kind).Observation.CorrelationHash) {
+			return StepResult{Run: run, Progressed: true}, controller.parkRun(
+				ctx, run, domainexecution.NeedWorkerVisibilityMissing,
+			)
+		}
 		next := run
 		effect := effectPointer(&next.Execution, kind)
 		effect.Phase = domainexecution.EffectComplete
 		effect.ExternalID = effect.Observation.ExternalID
+		effect.ObservedFactHash = effect.Observation.FactHash
+		effect.ObservedCorrelation = effect.Observation.CorrelationHash
 		effect.Observation = nil
 		next.Execution.OperationalObservationConsumed = true
 		if err := controller.persistRun(ctx, run, next, "run.effect_completed"); err != nil {
@@ -972,6 +1134,7 @@ func (controller *Controller) applyRetryDecision(
 	run domain.Run,
 	kind domainexecution.EffectKind,
 	nowMillis int64,
+	recoveryAuthorized bool,
 ) (StepResult, error) {
 	effect := effectPointer(&run.Execution, kind)
 	if effect == nil || effect.Observation == nil {
@@ -986,6 +1149,9 @@ func (controller *Controller) applyRetryDecision(
 	})
 	switch decision.Kind {
 	case retry.DecisionDispatch:
+		if !recoveryAuthorized {
+			return StepResult{Run: run}, nil
+		}
 		return controller.applyEffectDecision(ctx, run, kind, "dispatch")
 	case retry.DecisionAdopt:
 		return controller.applyEffectDecision(ctx, run, kind, "adopt")
@@ -1031,6 +1197,9 @@ func (controller *Controller) commitWorkerVisibility(
 		Role:                 string(host.WorkerRoleTaskAgent),
 		Phase:                host.WorkerPhaseBuilding,
 		BaseSHA:              run.BaseSHA,
+		EffectID:             run.Execution.PrimarySession.AgentIntentID,
+		ProfileSHA256:        run.Execution.EffectiveProfilesSHA256,
+		SessionSHA256:        run.Execution.PrimarySession.ReservationSHA256,
 		RegisteredAt:         instant,
 		StartedAt:            instant,
 		Digest:               "pending",
@@ -1057,20 +1226,30 @@ func (controller *Controller) commitWorkerVisibility(
 }
 
 func (controller *Controller) commitWorkerIdentity(ctx context.Context, run domain.Run) (StepResult, error) {
-	if run.Execution.WorkerVisibility == nil || run.Execution.Agent.ExternalID == "" {
+	if run.Execution.WorkerVisibility == nil || run.Execution.Agent.ExternalID == "" ||
+		run.Execution.Agent.ObservedCorrelation != run.Execution.WorkerVisibility.Digest ||
+		run.Execution.Agent.ObservedFactHash == "" {
 		return StepResult{Run: run, Progressed: true}, controller.parkRun(
 			ctx, run, domainexecution.NeedWorkerVisibilityMissing,
 		)
 	}
 	next := run
 	next.Execution.WorkerVisibility.AgentID = run.Execution.Agent.ExternalID
+	next.Execution.WorkerVisibility.ObservedDigest = run.Execution.Agent.ObservedCorrelation
+	bound, err := domainexecution.BindPrimarySession(next.Execution.PrimarySession, run.Execution.Agent.ExternalID)
+	if err != nil {
+		return StepResult{Run: run, Progressed: true}, controller.parkRun(
+			ctx, run, domainexecution.NeedWorkerVisibilityMissing,
+		)
+	}
+	next.Execution.PrimarySession = bound
 	next.Execution.OperationalObservationConsumed = true
 	return StepResult{Run: next, Progressed: true}, controller.persistRun(
 		ctx, run, next, "run.worker_identity_persisted",
 	)
 }
 
-func (controller *Controller) stepLaunch(ctx context.Context, run domain.Run, nowMillis int64) (StepResult, error) {
+func (controller *Controller) stepLaunch(ctx context.Context, run domain.Run, nowMillis int64, recoveryAuthorized bool) (StepResult, error) {
 	operational := operationalResult(run, nowMillis)
 	lifecycle := domainexecution.AdmitLifecycle(
 		run.Execution.Scope, run.Execution.LifecycleSurfaces, run.Execution.LifecycleApproval,
@@ -1089,10 +1268,11 @@ func (controller *Controller) stepLaunch(ctx context.Context, run domain.Run, no
 		CapacityReserved:  run.Execution.CapacityReservationID != "",
 		BudgetReserved:    run.Execution.BudgetReservationID != "",
 		ImmutableRunReady: run.Execution.SchemaVersion == domainexecution.SchemaVersion,
-		ExactRepositoryBinding: run.Execution.RepositoryBindingHash == repositoryBindingHash(
-			run.Execution.Scope, run.Execution.SourcePath, run.Execution.WorktreePath,
-			run.Execution.Branch, run.BaseSHA,
-		) && launchBindingsExact(run.Execution),
+		ExactRepositoryBinding: run.Execution.RepositoryBindingHash == domainexecution.RepositoryBindingSHA256(run.Execution.RepositoryBinding) &&
+			run.Execution.RepositoryBinding.SourcePath == run.Execution.SourcePath &&
+			run.Execution.RepositoryBinding.WorktreePath == run.Execution.WorktreePath &&
+			run.Execution.RepositoryBinding.Branch == run.Execution.Branch &&
+			run.Execution.RepositoryBinding.BaseSHA == run.BaseSHA && launchBindingsExact(run.Execution),
 		LifecycleAdmissionDigest: func() string {
 			if lifecycle.Kind == domainexecution.AdmissionAllow && lifecycle.Digest == run.Execution.LifecycleDigest {
 				return lifecycle.Digest
@@ -1114,7 +1294,11 @@ func (controller *Controller) stepLaunch(ctx context.Context, run domain.Run, no
 		WorkerVisibilityDigest:    admittedWorkerVisibilityDigest(run.Execution),
 		WorkerIdentityPersisted: run.Execution.WorkerVisibility != nil &&
 			run.Execution.WorkerVisibility.AgentID != "" &&
-			run.Execution.WorkerVisibility.AgentID == run.Execution.Agent.ExternalID,
+			run.Execution.WorkerVisibility.AgentID == run.Execution.Agent.ExternalID &&
+			run.Execution.WorkerVisibility.ObservedDigest == run.Execution.WorkerVisibility.Digest &&
+			run.Execution.PrimarySession.NativeAgentID == run.Execution.Agent.ExternalID &&
+			run.Execution.PrimarySession.BindingSHA256 != "" &&
+			domainexecution.ValidPrimarySession(run.Execution.PrimarySession),
 		TaskStoreNowMillis: nowMillis,
 		Worktree:           run.Execution.Worktree, HostView: run.Execution.HostView,
 		Boundary: run.Execution.Boundary, Setup: run.Execution.Setup, Agent: run.Execution.Agent,
@@ -1142,7 +1326,7 @@ func (controller *Controller) stepLaunch(ctx context.Context, run domain.Run, no
 	case launch.DecisionAdopt:
 		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "adopt")
 	case launch.DecisionRetry:
-		return controller.applyRetryDecision(ctx, run, decision.EffectKind, nowMillis)
+		return controller.applyRetryDecision(ctx, run, decision.EffectKind, nowMillis, recoveryAuthorized)
 	case launch.DecisionCommitPreparationReady:
 		next := run
 		next.Execution.PreparationReady = true
@@ -1243,7 +1427,7 @@ func (controller *Controller) stepRouting(ctx context.Context, run domain.Run, n
 	}
 }
 
-func (controller *Controller) stepClosure(ctx context.Context, run domain.Run, nowMillis int64) (StepResult, error) {
+func (controller *Controller) stepClosure(ctx context.Context, run domain.Run, nowMillis int64, recoveryAuthorized bool) (StepResult, error) {
 	operational := operationalResult(run, nowMillis)
 	expectedCandidate := ""
 	if run.Execution.Claim != nil {
@@ -1255,10 +1439,11 @@ func (controller *Controller) stepClosure(ctx context.Context, run domain.Run, n
 		CriteriaClaimsSatisfied: allCriteriaClaimedSatisfied(run.Execution.Claim),
 		ExactOwnership: run.Execution.Agent.ExternalID != "" && run.Execution.HostView.ExternalID != "" &&
 			run.Execution.Worktree.ExternalID != "" && cleanupBindingsExact(run.Execution) &&
-			run.Execution.RepositoryBindingHash == repositoryBindingHash(
-				run.Execution.Scope, run.Execution.SourcePath, run.Execution.WorktreePath,
-				run.Execution.Branch, run.BaseSHA,
-			),
+			run.Execution.RepositoryBindingHash == domainexecution.RepositoryBindingSHA256(run.Execution.RepositoryBinding) &&
+			run.Execution.RepositoryBinding.SourcePath == run.Execution.SourcePath &&
+			run.Execution.RepositoryBinding.WorktreePath == run.Execution.WorktreePath &&
+			run.Execution.RepositoryBinding.Branch == run.Execution.Branch &&
+			run.Execution.RepositoryBinding.BaseSHA == run.BaseSHA,
 		OperationalLimitsAdmitted: operational.Kind == domainexecution.AdmissionAllow,
 		OperationalNeedCode:       operational.Code,
 		TaskStoreNowMillis:        nowMillis,
@@ -1297,7 +1482,7 @@ func (controller *Controller) stepClosure(ctx context.Context, run domain.Run, n
 	case closure.DecisionAdopt:
 		return controller.applyEffectDecision(ctx, run, decision.EffectKind, "adopt")
 	case closure.DecisionRetry:
-		return controller.applyRetryDecision(ctx, run, decision.EffectKind, nowMillis)
+		return controller.applyRetryDecision(ctx, run, decision.EffectKind, nowMillis, recoveryAuthorized)
 	case closure.DecisionTerminal:
 		next := run
 		next.Execution.Terminal = true
@@ -1310,7 +1495,7 @@ func (controller *Controller) stepClosure(ctx context.Context, run domain.Run, n
 
 // Step executes at most one durable transition or one already-persisted
 // adapter handoff. Constructing a new Controller between calls is supported.
-func (controller *Controller) Step(ctx context.Context, runID string, nowMillis int64) (StepResult, error) {
+func (controller *Controller) step(ctx context.Context, runID string, nowMillis int64, recoveryAuthorized bool) (StepResult, error) {
 	run, err := controller.store.Run(ctx, runID)
 	if err != nil {
 		return StepResult{}, err
@@ -1318,13 +1503,23 @@ func (controller *Controller) Step(ctx context.Context, runID string, nowMillis 
 	if run.Execution.NeedsYou != nil || run.Execution.Terminal {
 		return StepResult{Run: run}, nil
 	}
+	if err := controller.currentExecutionAuthority(ctx, run, nowMillis); err != nil {
+		return StepResult{Run: run}, err
+	}
 	if run.CurrentCandidateID != "" {
-		return controller.stepClosure(ctx, run, nowMillis)
+		return controller.stepClosure(ctx, run, nowMillis, recoveryAuthorized)
 	}
 	if run.Execution.AgentPrompt.Phase == domainexecution.EffectComplete {
 		return controller.stepRouting(ctx, run, nowMillis)
 	}
-	return controller.stepLaunch(ctx, run, nowMillis)
+	return controller.stepLaunch(ctx, run, nowMillis, recoveryAuthorized)
+}
+
+// Step advances ordinary event/command-driven execution. It deliberately
+// cannot retry an effect whose previous dispatcher may still be live; only a
+// complete startup reconciliation can supply that authorization.
+func (controller *Controller) Step(ctx context.Context, runID string, nowMillis int64) (StepResult, error) {
+	return controller.step(ctx, runID, nowMillis, false)
 }
 
 // SortedCriteria returns the stable criterion IDs retained by a completed

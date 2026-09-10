@@ -35,11 +35,11 @@ func dispatchingEffect(run domain.Run) execution.EffectKind {
 func TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect(t *testing.T) {
 	fixture := startVerticalDolt(t)
 	store := openVerticalStore(t, fixture)
-	project, task := createVerticalRecords(t, store, "startup-boundaries")
 	source, base := initializeRepository(t, "startup-boundaries")
+	project, task := createVerticalRecords(t, store, "startup-boundaries", source)
 	worktree := filepath.Join(filepath.Dir(source), "startup-boundaries-worktree")
 	scope := execution.Scope{
-		ProjectID: project.ID, WorkspaceID: "workspace-startup-boundaries",
+		ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0],
 		TaskID: task.ID, RunID: "run-startup-boundaries",
 	}
 	surfaces := execution.LifecycleSurfaces{Setup: []string{"fixture setup"}}
@@ -92,11 +92,12 @@ func TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect(t
 			}
 			restarted := environment.Restart()
 			restartedController := executionapp.NewController(store, restarted, restarted, restarted)
-			completion, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.AgentPrompt.ID, 1_001)
+			nowMillis := testNowMillis()
+			completion, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.AgentPrompt.ID, nowMillis)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := restartedController.RecordCompletionEvent(context.Background(), run.ID, completion, 1_001); err != nil {
+			if err := restartedController.RecordCompletionEvent(context.Background(), run.ID, completion, nowMillis); err != nil {
 				t.Fatal(err)
 			}
 			pending := claim
@@ -105,12 +106,13 @@ func TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect(t
 		}
 		if run.Execution.Agent.Observation != nil &&
 			run.Execution.Agent.Observation.Status == execution.ObservationOwnedPresent {
-			completion, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.Agent.ID, 1_001)
+			nowMillis := testNowMillis()
+			completion, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.Agent.ID, nowMillis)
 			if err != nil {
 				t.Fatal(err)
 			}
 			restarted := environment.Restart()
-			if err := executionapp.NewController(store, restarted, restarted, restarted).RecordCompletionEvent(context.Background(), run.ID, completion, 1_001); err != nil {
+			if err := executionapp.NewController(store, restarted, restarted, restarted).RecordCompletionEvent(context.Background(), run.ID, completion, nowMillis); err != nil {
 				t.Fatal(err)
 			}
 			continue
@@ -120,7 +122,7 @@ func TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect(t
 		result, err := executionapp.NewController(store, restarted, restarted, restarted).ReconcileStartup(
 			context.Background(), executionapp.StartupCommand{
 				SchemaVersion: executionapp.StartupCommandSchemaVersion,
-				RequestID:     fmt.Sprintf("startup-boundary-%03d", restart), NowMillis: 1_001,
+				RequestID:     fmt.Sprintf("startup-boundary-%03d", restart), NowMillis: testNowMillis(),
 			},
 		)
 		if err != nil {
@@ -242,11 +244,11 @@ func (store commandFaultStore) Command(ctx context.Context, key string) (domain.
 func TestStartupReconciliationRejectsCommandConflictBeforeExternalMutation(t *testing.T) {
 	fixture := startVerticalDolt(t)
 	store := openVerticalStore(t, fixture)
-	project, task := createVerticalRecords(t, store, "startup-command-conflict")
 	source, base := initializeRepository(t, "startup-command-conflict")
+	project, task := createVerticalRecords(t, store, "startup-command-conflict", source)
 	worktree := filepath.Join(filepath.Dir(source), "startup-command-conflict-worktree")
 	scope := execution.Scope{
-		ProjectID: project.ID, WorkspaceID: "workspace-startup-command-conflict",
+		ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0],
 		TaskID: task.ID, RunID: "run-startup-command-conflict",
 	}
 	environment := fake.NewEnvironment(fake.Options{
@@ -265,7 +267,7 @@ func TestStartupReconciliationRejectsCommandConflictBeforeExternalMutation(t *te
 	faulted := commandFaultStore{TaskStore: store, key: runBefore.Execution.StartCommandID}
 	restarted := environment.Restart()
 	_, err = executionapp.NewController(faulted, restarted, restarted, restarted).ReconcileStartup(
-		context.Background(), executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-command-conflict", NowMillis: 1_001},
+		context.Background(), executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-command-conflict", NowMillis: testNowMillis()},
 	)
 	if err == nil || !strings.Contains(err.Error(), "command outcome") {
 		t.Fatalf("command conflict = %v", err)
@@ -282,11 +284,11 @@ func TestStartupReconciliationRejectsCommandConflictBeforeExternalMutation(t *te
 func TestStartupReconciliationScansEveryRunBeforeAnyEffect(t *testing.T) {
 	fixture := startVerticalDolt(t)
 	store := openVerticalStore(t, fixture)
-	projectOne, taskOne := createVerticalRecords(t, store, "global-first")
 	sourceOne, baseOne := initializeRepository(t, "global-first")
+	projectOne, taskOne := createVerticalRecords(t, store, "global-first", sourceOne)
 	worktreeOne := filepath.Join(filepath.Dir(sourceOne), "global-first-worktree")
 	scopeOne := execution.Scope{
-		ProjectID: projectOne.ID, WorkspaceID: "workspace-global-first",
+		ProjectID: projectOne.ID, WorkspaceID: taskOne.WorkspaceIDs[0],
 		TaskID: taskOne.ID, RunID: "run-global-first",
 	}
 	environmentOne := fake.NewEnvironment(fake.Options{
@@ -299,11 +301,11 @@ func TestStartupReconciliationScansEveryRunBeforeAnyEffect(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	projectTwo, taskTwo := createVerticalRecords(t, store, "global-second")
 	sourceTwo, baseTwo := initializeRepository(t, "global-second")
+	projectTwo, taskTwo := createVerticalRecords(t, store, "global-second", sourceTwo)
 	worktreeTwo := filepath.Join(filepath.Dir(sourceTwo), "global-second-worktree")
 	scopeTwo := execution.Scope{
-		ProjectID: projectTwo.ID, WorkspaceID: "workspace-global-second",
+		ProjectID: projectTwo.ID, WorkspaceID: taskTwo.WorkspaceIDs[0],
 		TaskID: taskTwo.ID, RunID: "run-global-second",
 	}
 	environmentTwo := fake.NewEnvironment(fake.Options{
@@ -328,7 +330,7 @@ func TestStartupReconciliationScansEveryRunBeforeAnyEffect(t *testing.T) {
 	_, err = executionapp.NewController(faulted, restarted, restarted, restarted).ReconcileStartup(
 		context.Background(), executionapp.StartupCommand{
 			SchemaVersion: executionapp.StartupCommandSchemaVersion,
-			RequestID:     "startup-global-scan", NowMillis: 1_001,
+			RequestID:     "startup-global-scan", NowMillis: testNowMillis(),
 		},
 	)
 	if err == nil || !strings.Contains(err.Error(), "command outcome") {
@@ -354,11 +356,11 @@ func TestStartupReconciliationScansEveryRunBeforeAnyEffect(t *testing.T) {
 func TestStartupReconciliationRequestReplayIsIdempotent(t *testing.T) {
 	fixture := startVerticalDolt(t)
 	store := openVerticalStore(t, fixture)
-	project, task := createVerticalRecords(t, store, "startup-replay")
 	source, base := initializeRepository(t, "startup-replay")
+	project, task := createVerticalRecords(t, store, "startup-replay", source)
 	worktree := filepath.Join(filepath.Dir(source), "startup-replay-worktree")
 	scope := execution.Scope{
-		ProjectID: project.ID, WorkspaceID: "workspace-startup-replay",
+		ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0],
 		TaskID: task.ID, RunID: "run-startup-replay",
 	}
 	environment := fake.NewEnvironment(fake.Options{
@@ -371,7 +373,7 @@ func TestStartupReconciliationRequestReplayIsIdempotent(t *testing.T) {
 	if _, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
 		t.Fatal(err)
 	}
-	command := executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-replay-same", NowMillis: 1_001}
+	command := executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-replay-same", NowMillis: testNowMillis()}
 	for attempt := 0; attempt < 2; attempt++ {
 		restarted := environment.Restart()
 		if _, err := executionapp.NewController(store, restarted, restarted, restarted).ReconcileStartup(context.Background(), command); err != nil {
@@ -399,11 +401,11 @@ func TestStartupReconciliationRequestReplayIsIdempotent(t *testing.T) {
 func TestStartupReconciliationParksAdmittedCandidateDriftWithoutCleanup(t *testing.T) {
 	fixture := startVerticalDolt(t)
 	store := openVerticalStore(t, fixture)
-	project, task := createVerticalRecords(t, store, "startup-candidate-drift")
 	source, base := initializeRepository(t, "startup-candidate-drift")
+	project, task := createVerticalRecords(t, store, "startup-candidate-drift", source)
 	worktree := filepath.Join(filepath.Dir(source), "startup-candidate-drift-worktree")
 	scope := execution.Scope{
-		ProjectID: project.ID, WorkspaceID: "workspace-startup-candidate-drift",
+		ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0],
 		TaskID: task.ID, RunID: "run-startup-candidate-drift",
 	}
 	environment := fake.NewEnvironment(fake.Options{
@@ -426,11 +428,12 @@ func TestStartupReconciliationParksAdmittedCandidateDriftWithoutCleanup(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	completion, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.AgentPrompt.ID, 1_001)
+	nowMillis := testNowMillis()
+	completion, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.AgentPrompt.ID, nowMillis)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := controller.RecordCompletionEvent(context.Background(), run.ID, completion, 1_001); err != nil {
+	if err := controller.RecordCompletionEvent(context.Background(), run.ID, completion, nowMillis); err != nil {
 		t.Fatal(err)
 	}
 	run = runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
@@ -447,7 +450,7 @@ func TestStartupReconciliationParksAdmittedCandidateDriftWithoutCleanup(t *testi
 	}
 	restarted := environment.Restart()
 	result, err := executionapp.NewController(store, restarted, restarted, restarted).ReconcileStartup(
-		context.Background(), executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-candidate-drift", NowMillis: 1_001},
+		context.Background(), executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-candidate-drift", NowMillis: testNowMillis()},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -472,11 +475,11 @@ func TestStartupReconciliationParksAdmittedCandidateDriftWithoutCleanup(t *testi
 func TestStartupReconciliationRejectsAReplacementConnectorStaleCursor(t *testing.T) {
 	fixture := startVerticalDolt(t)
 	store := openVerticalStore(t, fixture)
-	project, task := createVerticalRecords(t, store, "startup-stale-cursor")
 	source, base := initializeRepository(t, "startup-stale-cursor")
+	project, task := createVerticalRecords(t, store, "startup-stale-cursor", source)
 	worktree := filepath.Join(filepath.Dir(source), "startup-stale-cursor-worktree")
 	scope := execution.Scope{
-		ProjectID: project.ID, WorkspaceID: "workspace-startup-stale-cursor",
+		ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0],
 		TaskID: task.ID, RunID: "run-startup-stale-cursor",
 	}
 	environment := fake.NewEnvironment(fake.Options{
@@ -494,7 +497,7 @@ func TestStartupReconciliationRejectsAReplacementConnectorStaleCursor(t *testing
 	})
 	restarted := environment.Restart()
 	if _, err := executionapp.NewController(store, restarted, restarted, restarted).ReconcileStartup(
-		context.Background(), executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-cursor-baseline", NowMillis: 1_001},
+		context.Background(), executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-cursor-baseline", NowMillis: testNowMillis()},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -509,7 +512,7 @@ func TestStartupReconciliationRejectsAReplacementConnectorStaleCursor(t *testing
 	result, err := executionapp.NewController(
 		store, restarted, staleCursorHost{Port: restarted, cursor: priorCursor}, restarted,
 	).ReconcileStartup(
-		context.Background(), executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-cursor-stale", NowMillis: 1_001},
+		context.Background(), executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion, RequestID: "startup-cursor-stale", NowMillis: testNowMillis()},
 	)
 	if err == nil || !strings.Contains(err.Error(), "observation envelope is invalid") {
 		t.Fatalf("stale cursor startup result = %#v, %v", result, err)
@@ -530,11 +533,11 @@ func TestStartupReconciliationRejectsAReplacementConnectorStaleCursor(t *testing
 func TestStartupReconciliationRejectsPriorLiveResourceIdentityDrift(t *testing.T) {
 	fixture := startVerticalDolt(t)
 	store := openVerticalStore(t, fixture)
-	project, task := createVerticalRecords(t, store, "startup-identity-drift")
 	source, base := initializeRepository(t, "startup-identity-drift")
+	project, task := createVerticalRecords(t, store, "startup-identity-drift", source)
 	worktree := filepath.Join(filepath.Dir(source), "startup-identity-drift-worktree")
 	scope := execution.Scope{
-		ProjectID: project.ID, WorkspaceID: "workspace-startup-identity-drift",
+		ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0],
 		TaskID: task.ID, RunID: "run-startup-identity-drift",
 	}
 	environment := fake.NewEnvironment(fake.Options{
@@ -555,7 +558,7 @@ func TestStartupReconciliationRejectsPriorLiveResourceIdentityDrift(t *testing.T
 	).ReconcileStartup(
 		context.Background(), executionapp.StartupCommand{
 			SchemaVersion: executionapp.StartupCommandSchemaVersion,
-			RequestID:     "startup-identity-drift", NowMillis: 1_001,
+			RequestID:     "startup-identity-drift", NowMillis: testNowMillis(),
 		},
 	)
 	if err != nil {

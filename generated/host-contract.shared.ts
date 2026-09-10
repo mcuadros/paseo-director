@@ -4,7 +4,7 @@
 // This generated boundary contains transport types only and owns no policy.
 
 export const HOST_CONTRACT_VERSION = "director-host/v1" as const;
-export const HOST_CONTRACT_SHA256 = "59487c3e133a28991f027a2762d5079284db5e4f5f635d447688acc6db08ef83" as const;
+export const HOST_CONTRACT_SHA256 = "267d2b2ac63df875c9e9e94198175a8e82fbeacb78b663d4b426bc2fb0f2d7d6" as const;
 export const HOST_CREDENTIAL_SCOPE = "full-daemon-operator" as const;
 export const HOST_CAPABILITIES = [
   "executionWorkspace.createManaged",
@@ -50,6 +50,9 @@ export const WORKER_LABEL = {
   phase: "director.phase",
   candidate: "director.candidate",
   base: "director.base",
+  effect: "director.effect",
+  profile: "director.profile",
+  session: "director.session",
   registeredAt: "director.registered-at",
   startedAt: "director.started-at",
 } as const;
@@ -96,6 +99,39 @@ export type HostEffectKind =
   | "task_agent.archive"
   | "host_view.archive";
 
+export interface HostProviderOption {
+  name: string;
+  value: string;
+}
+
+export interface HostAgentProfile {
+  provider: string;
+  model: string;
+  effort: string;
+  mode: string;
+  permissionMode: string;
+  providerOptions: readonly Readonly<HostProviderOption>[];
+  sha256: string;
+}
+
+export interface HostMCPServer {
+  name: string;
+  command: string;
+  args: readonly string[];
+  env: Readonly<Record<string, string>>;
+}
+
+export interface HostMCPSession {
+  contractVersion: string;
+  contractHash: string;
+  sessionSha256: string;
+  role: string;
+  provider: string;
+  model: string;
+  tools: readonly string[];
+  server: Readonly<HostMCPServer>;
+}
+
 export interface HostCommandArguments {
   scope: Readonly<HostScope>;
   effectKind: HostEffectKind;
@@ -113,6 +149,12 @@ export interface HostCommandArguments {
   preparationReady?: boolean;
   preparationBarrierHash?: string;
   notifyOnFinish?: boolean;
+  clientMessageId?: string;
+  boundaryId?: string;
+  operationalObservationId?: string;
+  profile?: Readonly<HostAgentProfile>;
+  session?: Readonly<HostMCPSession>;
+  sessionBindingSha256?: string;
   labels?: Readonly<Record<string, string>>;
 }
 
@@ -140,6 +182,7 @@ export interface HostObservationResult {
   status: HostObservationStatus;
   externalId?: string;
   bindingHash: string;
+  correlationHash?: string;
   priorDispatcherAbsent: boolean;
   maximumAgeMillis: number;
   factHash: string;

@@ -9,7 +9,7 @@ import (
 
 const testBoardQuery = `"boardQuery":{"name":"board.snapshot","method":"GET","path":"/v1/board","schemaVersion":1,"maximumTasks":1000,"maximumBytes":2097152,"states":["needs_you","queued","building","validating","in_review","ready"]}`
 
-const testWorkerRegistry = `"workerRegistry":{"schemaVersion":1,"roles":["task-agent","reviewer"],"labels":{"project":"director.project","rootWorkspace":"director.root-workspace","workspace":"director.workspace","executionWorkspace":"director.execution-workspace","task":"director.task","run":"director.run","role":"director.role","phase":"director.phase","candidate":"director.candidate","base":"director.base","registeredAt":"director.registered-at","startedAt":"director.started-at"}}`
+const testWorkerRegistry = `"workerRegistry":{"schemaVersion":1,"roles":["task-agent","reviewer"],"labels":{"project":"director.project","rootWorkspace":"director.root-workspace","workspace":"director.workspace","executionWorkspace":"director.execution-workspace","task":"director.task","run":"director.run","role":"director.role","phase":"director.phase","candidate":"director.candidate","base":"director.base","effect":"director.effect","profile":"director.profile","session":"director.session","registeredAt":"director.registered-at","startedAt":"director.started-at"}}`
 
 func TestRenderIsDeterministicAndCarriesContract(t *testing.T) {
 	schema := []byte("{\n  \"schemaVersion\": 1,\n  \"contractVersion\": \"test/v1\",\n  \"credentialScope\": \"scope\",\n  \"capabilities\": [\"one\", \"two\"],\n  " + testBoardQuery + ",\n  " + testWorkerRegistry + "\n}\n")
@@ -38,6 +38,8 @@ func TestRenderIsDeterministicAndCarriesContract(t *testing.T) {
 		[]byte(`"task-agent"`),
 		[]byte(`labels?: Readonly<Record<string, string>>`),
 		[]byte(`notifyOnFinish?: boolean`),
+		[]byte(`sessionBindingSha256?: string`),
+		[]byte(`session: "director.session"`),
 		[]byte(`| "agent.send_prompt"`),
 	} {
 		if !bytes.Contains(first, expected) {
@@ -52,7 +54,7 @@ func TestRenderIsDeterministicAndCarriesContract(t *testing.T) {
 func TestRenderIgnoresSchemaWhitespaceAndObjectKeyOrder(t *testing.T) {
 	first := []byte(`{"schemaVersion":1,"contractVersion":"test/v1","credentialScope":"scope","capabilities":["one","two"],` + testBoardQuery + `,` + testWorkerRegistry + `}`)
 	second := []byte(`{
-		"workerRegistry": {"labels":{"startedAt":"director.started-at","registeredAt":"director.registered-at","base":"director.base","candidate":"director.candidate","phase":"director.phase","role":"director.role","run":"director.run","task":"director.task","executionWorkspace":"director.execution-workspace","workspace":"director.workspace","rootWorkspace":"director.root-workspace","project":"director.project"},"roles":["task-agent","reviewer"],"schemaVersion":1},
+		"workerRegistry": {"labels":{"startedAt":"director.started-at","registeredAt":"director.registered-at","session":"director.session","profile":"director.profile","effect":"director.effect","base":"director.base","candidate":"director.candidate","phase":"director.phase","role":"director.role","run":"director.run","task":"director.task","executionWorkspace":"director.execution-workspace","workspace":"director.workspace","rootWorkspace":"director.root-workspace","project":"director.project"},"roles":["task-agent","reviewer"],"schemaVersion":1},
 		"boardQuery": {"states":["needs_you","queued","building","validating","in_review","ready"],"maximumBytes":2097152,"maximumTasks":1000,"schemaVersion":1,"path":"/v1/board","method":"GET","name":"board.snapshot"},
 		"capabilities": ["one", "two"],
 		"credentialScope": "scope",

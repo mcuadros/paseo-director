@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mcuadros/director-engine/domain/agentbridge"
 	"github.com/mcuadros/director-engine/domain/execution"
 )
 
@@ -16,7 +17,8 @@ func workerRegistration(role WorkerRole) WorkerRegistration {
 		Scope: execution.Scope{ProjectID: "project-1", WorkspaceID: "repository-1", TaskID: "dir-m2.17", RunID: "run-1"},
 		Role:  role, Phase: WorkerPhaseBuilding, BaseSHA: strings.Repeat("1", 40),
 		CandidateSHA: strings.Repeat("2", 40), RegisteredAt: "2026-09-09T16:00:00Z",
-		StartedAt: "2026-09-09T16:00:01Z",
+		StartedAt: "2026-09-09T16:00:01Z", EffectID: "effect-1",
+		ProfileSHA256: strings.Repeat("a", 64), SessionSHA256: strings.Repeat("b", 64),
 	}
 }
 
@@ -78,8 +80,29 @@ func workerVisibility(t *testing.T, registration WorkerRegistration) execution.W
 		ExecutionWorkspaceID: registration.ExecutionWorkspaceID,
 		Role:                 string(registration.Role), Phase: registration.Phase,
 		CandidateSHA: registration.CandidateSHA, BaseSHA: registration.BaseSHA,
-		RegisteredAt: registration.RegisteredAt, StartedAt: registration.StartedAt,
+		EffectID: registration.EffectID, ProfileSHA256: registration.ProfileSHA256,
+		SessionSHA256: registration.SessionSHA256,
+		RegisteredAt:  registration.RegisteredAt, StartedAt: registration.StartedAt,
 		Digest: digest,
+	}
+}
+
+func primaryArguments(registration WorkerRegistration) Arguments {
+	contractHash, _ := agentbridge.SchemaSHA256()
+	return Arguments{
+		ClientMessageID: "message-1", BoundaryID: "boundary-1",
+		OperationalObservationID: "operational-1",
+		Profile: &AgentProfile{
+			Provider: "codex", Model: "gpt-5.4-mini", Effort: "high", Mode: "default",
+			PermissionMode: "workspace-write", ProviderOptions: []ProviderOption{},
+			SHA256: registration.ProfileSHA256,
+		},
+		Session: &MCPSession{
+			ContractVersion: agentbridge.ContractVersion, ContractHash: contractHash,
+			SessionSHA256: registration.SessionSHA256, Role: "worker", Provider: "codex",
+			Model: "gpt-5.4-mini", Tools: []string{"director_task_outcome_submit", "director_task_read"},
+			Server: MCPServer{Name: "director-session-mcp", Command: "/usr/bin/director-agent-runtime", Args: []string{}, Env: map[string]string{}},
+		},
 	}
 }
 
@@ -163,6 +186,12 @@ func TestAdmitAgentCreateIsTheLastGateBeforeAnInvisibleWorker(t *testing.T) {
 			InitialPrompt: ZeroWorkBootstrapPrompt,
 		},
 	}
+	context := primaryArguments(registration)
+	command.Arguments.ClientMessageID = context.ClientMessageID
+	command.Arguments.BoundaryID = context.BoundaryID
+	command.Arguments.OperationalObservationID = context.OperationalObservationID
+	command.Arguments.Profile = context.Profile
+	command.Arguments.Session = context.Session
 	if err := AdmitAgentCreate(command, registration); err != nil {
 		t.Fatalf("AdmitAgentCreate() error = %v", err)
 	}
@@ -194,6 +223,13 @@ func TestAdmitAgentPromptRequiresPersistedIdentityAndNotification(t *testing.T) 
 		EffectID: "prompt-1", WorkspaceID: registration.ExecutionWorkspaceID,
 		AgentID: "agent-1", InitialPrompt: "perform the exact Task", NotifyOnFinish: true,
 	}}
+	context := primaryArguments(registration)
+	command.Arguments.ClientMessageID = context.ClientMessageID
+	command.Arguments.BoundaryID = context.BoundaryID
+	command.Arguments.OperationalObservationID = context.OperationalObservationID
+	command.Arguments.Profile = context.Profile
+	command.Arguments.Session = context.Session
+	command.Arguments.SessionBindingSHA256 = strings.Repeat("d", 64)
 	if err := AdmitAgentPrompt(command, registration, "agent-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -215,6 +251,7 @@ func TestAdmitAgentPromptRequiresPersistedIdentityAndNotification(t *testing.T) 
 
 func TestReviewerUsesTheSameBootstrapThenPromptContract(t *testing.T) {
 	registration := workerRegistration(WorkerRoleReviewer)
+	registration.EffectID = "reviewer-create"
 	labels, err := WorkerLabels(registration)
 	if err != nil {
 		t.Fatal(err)

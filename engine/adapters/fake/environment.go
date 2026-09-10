@@ -17,8 +17,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/mcuadros/director-engine/domain/execution"
+	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 	"github.com/mcuadros/director-engine/ports/host"
 	reconciliationport "github.com/mcuadros/director-engine/ports/reconciliation"
 	runtimeport "github.com/mcuadros/director-engine/ports/runtime"
@@ -164,17 +167,64 @@ func pathPresent(path string) bool {
 }
 
 func (environment *Environment) exactRequest(request runtimeport.Request) bool {
-	return request.Scope.RunID != "" && request.BindingHash != "" &&
-		request.SourcePath == environment.options.SourcePath &&
-		request.WorktreePath == environment.options.WorktreePath &&
-		request.Branch == environment.options.Branch && request.BaseSHA == environment.options.BaseSHA
+	if request.Scope.RunID == "" || request.BindingHash == "" ||
+		!execution.ValidLeaseBinding(request.LeaseBinding) ||
+		execution.RepositoryBindingSHA256(request.Repository) != request.BindingHash ||
+		request.SourcePath != environment.options.SourcePath ||
+		request.WorktreePath != environment.options.WorktreePath ||
+		request.Branch != environment.options.Branch || request.BaseSHA != environment.options.BaseSHA {
+		return false
+	}
+	sourceStatus, sourceErr := os.Stat(request.SourcePath)
+	commonStatus, commonErr := os.Stat(request.Repository.GitCommonDirectory)
+	sourceIdentity, sourceIdentityOK := sourceStatusSys(sourceStatus)
+	commonIdentity, commonIdentityOK := sourceStatusSys(commonStatus)
+	remoteValue, remoteErr := runGit(request.SourcePath, "remote", "get-url", "origin")
+	remote, canonicalErr := repositorydomain.CanonicalRemote(remoteValue)
+	if sourceErr != nil || commonErr != nil || !sourceIdentityOK || !commonIdentityOK ||
+		remoteErr != nil || canonicalErr != nil || remote.ID != request.Repository.RepositoryID ||
+		remote.Key != request.Repository.RepositoryKey || remote.Canonical != request.Repository.CanonicalRemote ||
+		sourceIdentity[0] != request.Repository.SourceDevice || sourceIdentity[1] != request.Repository.SourceInode ||
+		commonIdentity[0] != request.Repository.GitCommonDevice || commonIdentity[1] != request.Repository.GitCommonInode {
+		return false
+	}
+	if _, err := runGit(request.SourcePath, "cat-file", "-e", request.BaseSHA+"^{commit}"); err != nil {
+		return false
+	}
+	if pathPresent(request.WorktreePath) {
+		branch, err := runGit(request.WorktreePath, "symbolic-ref", "HEAD")
+		return err == nil && branch == "refs/heads/"+request.Branch
+	}
+	if request.Effect.Kind == execution.EffectWorktreeCreate && request.Effect.Phase == execution.EffectIntentRecorded {
+		return gitRefAbsent(request.SourcePath, "refs/heads/"+request.Branch)
+	}
+	return true
 }
 
-func effectObservation(effect execution.Effect, status execution.ObservationStatus, external, bindingHash string, sequence uint64) execution.EffectObservation {
+func gitRefAbsent(directory, ref string) bool {
+	command := exec.Command("git", "show-ref", "--verify", "--quiet", ref)
+	command.Dir = directory
+	err := command.Run()
+	var failure *exec.ExitError
+	return errors.As(err, &failure) && failure.ExitCode() == 1
+}
+
+func sourceStatusSys(status os.FileInfo) ([2]uint64, bool) {
+	if status == nil {
+		return [2]uint64{}, false
+	}
+	identity, ok := status.Sys().(*syscall.Stat_t)
+	if !ok {
+		return [2]uint64{}, false
+	}
+	return [2]uint64{uint64(identity.Dev), identity.Ino}, true
+}
+
+func effectObservation(effect execution.Effect, status execution.ObservationStatus, external, bindingHash string, sequence uint64, observedAtMillis int64) execution.EffectObservation {
 	observation := execution.EffectObservation{
 		ID: fmt.Sprintf("observation-%d", sequence), EffectID: effect.ID,
 		Status: status, ExternalID: external, BindingHash: bindingHash,
-		PriorDispatcherAbsent: true, ObservedAtMillis: 1_000, MaximumAgeMillis: 30_000,
+		PriorDispatcherAbsent: true, ObservedAtMillis: observedAtMillis, MaximumAgeMillis: 30_000,
 	}
 	observation.FactHash = digest(observation)
 	return observation
@@ -186,29 +236,29 @@ func (environment *Environment) ObserveEffect(_ context.Context, request runtime
 	defer environment.mu.Unlock()
 	environment.observationSeq++
 	if !environment.exactRequest(request) {
-		return effectObservation(request.Effect, execution.ObservationDifferent, "", request.BindingHash, environment.observationSeq), nil
+		return effectObservation(request.Effect, execution.ObservationDifferent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	}
 	switch request.Effect.Kind {
 	case execution.EffectWorktreeCreate:
 		if !pathPresent(environment.options.WorktreePath) {
-			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq), nil
+			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, environment.world.worktreeID, request.BindingHash, environment.observationSeq), nil
+		return effectObservation(request.Effect, execution.ObservationDesired, environment.world.worktreeID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case execution.EffectBoundaryMaterialize:
 		if !environment.world.boundaryReady {
-			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq), nil
+			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, environment.world.boundaryID, request.BindingHash, environment.observationSeq), nil
+		return effectObservation(request.Effect, execution.ObservationDesired, environment.world.boundaryID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case execution.EffectSetupRun:
 		if !environment.world.setupComplete {
-			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq), nil
+			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, externalID("setup", request.Effect.ID), request.BindingHash, environment.observationSeq), nil
+		return effectObservation(request.Effect, execution.ObservationDesired, externalID("setup", request.Effect.ID), request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case execution.EffectWorktreeRemove:
 		if pathPresent(environment.options.WorktreePath) {
-			return effectObservation(request.Effect, execution.ObservationOwnedPresent, environment.world.worktreeID, request.BindingHash, environment.observationSeq), nil
+			return effectObservation(request.Effect, execution.ObservationOwnedPresent, environment.world.worktreeID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, environment.world.worktreeID, request.BindingHash, environment.observationSeq), nil
+		return effectObservation(request.Effect, execution.ObservationDesired, environment.world.worktreeID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	default:
 		return execution.EffectObservation{}, fmt.Errorf("unsupported fake runtime observation %q", request.Effect.Kind)
 	}
@@ -292,7 +342,7 @@ func (environment *Environment) ObserveCandidate(_ context.Context, request runt
 			ID:      fmt.Sprintf("candidate-observation-%d", environment.observationSeq),
 			ClaimID: request.Claim.ID, WorktreeID: request.WorktreeID,
 			BindingHash: request.BindingHash, CommitSHA: request.Claim.CandidateSHA,
-			BaseSHA: request.Claim.BaseSHA, ObservedAtMillis: 1_000, MaximumAgeMillis: 30_000,
+			BaseSHA: request.Claim.BaseSHA, ObservedAtMillis: environment.operational.ObservedAtMillis, MaximumAgeMillis: 30_000,
 		}
 		observation.FactHash = digest(observation)
 		return observation, nil
@@ -305,7 +355,7 @@ func (environment *Environment) ObserveCandidate(_ context.Context, request runt
 		ID:      fmt.Sprintf("candidate-observation-%d", environment.observationSeq),
 		ClaimID: request.Claim.ID, WorktreeID: request.WorktreeID,
 		BindingHash: request.BindingHash, CommitSHA: request.Claim.CandidateSHA,
-		BaseSHA: request.Claim.BaseSHA, ObservedAtMillis: 1_000, MaximumAgeMillis: 30_000,
+		BaseSHA: request.Claim.BaseSHA, ObservedAtMillis: environment.operational.ObservedAtMillis, MaximumAgeMillis: 30_000,
 		Clean: statusErr == nil && status == "", Reachable: reachableErr == nil,
 		Owned:            headErr == nil && head == request.Claim.CandidateSHA && request.WorktreeID == environment.world.worktreeID,
 		DescendsFromBase: ancestryErr == nil, NoConflict: statusErr == nil,
@@ -319,16 +369,23 @@ func (environment *Environment) Describe(_ context.Context) (host.Descriptor, er
 	return host.ExpectedDescriptor()
 }
 
-func hostObservation(command host.Command, status execution.ObservationStatus, external string, sequence uint64) host.Observation {
+func hostObservation(command host.Command, status execution.ObservationStatus, external string, sequence uint64, observedAtMillis int64) host.Observation {
+	correlation := ""
+	if command.Arguments.EffectKind == execution.EffectAgentCreate {
+		if registration, err := host.ParseWorkerLabels(command.Arguments.Labels); err == nil {
+			correlation, _ = host.RegistrationDigest(registration)
+		}
+	}
 	result := host.ObservationResult{
 		EffectID: command.Arguments.EffectID, Status: status, ExternalID: external,
-		BindingHash: command.Arguments.BindingHash, PriorDispatcherAbsent: true,
-		MaximumAgeMillis: 30_000,
+		BindingHash: command.Arguments.BindingHash, CorrelationHash: correlation,
+		PriorDispatcherAbsent: true,
+		MaximumAgeMillis:      30_000,
 	}
 	result.FactHash = host.ObservationResultHash(result)
 	return host.Observation{
 		RequestID: command.RequestID, Cursor: sequence,
-		ObservedAt: "1970-01-01T00:00:01Z", Result: result,
+		ObservedAt: time.UnixMilli(observedAtMillis).UTC().Format(time.RFC3339Nano), Result: result,
 	}
 }
 
@@ -343,17 +400,17 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 	case host.CapabilityWorkspaceObserve:
 		if arguments.EffectKind == execution.EffectHostViewArchive {
 			if environment.world.hostViewArchived {
-				return hostObservation(command, execution.ObservationDesired, environment.world.hostViewID, environment.observationSeq), nil
+				return hostObservation(command, execution.ObservationDesired, environment.world.hostViewID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
 			if environment.world.hostViewActive {
-				return hostObservation(command, execution.ObservationOwnedPresent, environment.world.hostViewID, environment.observationSeq), nil
+				return hostObservation(command, execution.ObservationOwnedPresent, environment.world.hostViewID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
-			return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq), nil
+			return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
 		if environment.world.hostViewActive {
-			return hostObservation(command, execution.ObservationDesired, environment.world.hostViewID, environment.observationSeq), nil
+			return hostObservation(command, execution.ObservationDesired, environment.world.hostViewID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq), nil
+		return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case host.CapabilityWorkspaceCreate:
 		if !pathPresent(arguments.WorktreePath) || arguments.WorktreeID != environment.world.worktreeID || arguments.LifecycleDigest == "" {
 			return host.Observation{}, errors.New("fake host view registration lacks the admitted Director worktree")
@@ -396,24 +453,24 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 	case host.CapabilityAgentObserve:
 		if arguments.EffectKind == execution.EffectAgentArchive {
 			if environment.world.agentArchived {
-				return hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq), nil
+				return hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
 			if environment.world.agentActive {
-				return hostObservation(command, execution.ObservationOwnedPresent, environment.world.agentID, environment.observationSeq), nil
+				return hostObservation(command, execution.ObservationOwnedPresent, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
-			return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq), nil
+			return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
 		if arguments.EffectKind == execution.EffectAgentCreate {
 			if !environment.world.agentActive {
-				return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq), nil
+				return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
-			return hostObservation(command, environment.world.bootstrapStatus, environment.world.agentID, environment.observationSeq), nil
+			return hostObservation(command, environment.world.bootstrapStatus, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
 		if arguments.EffectKind == execution.EffectAgentPrompt {
 			if environment.world.promptEffectID == "" {
-				return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq), nil
+				return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
-			return hostObservation(command, environment.world.promptStatus, environment.world.agentID, environment.observationSeq), nil
+			return hostObservation(command, environment.world.promptStatus, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
 		return host.Observation{}, errors.New("fake agent observation effect is unsupported")
 	case host.CapabilityAgentArchive:

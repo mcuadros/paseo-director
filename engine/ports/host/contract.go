@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
@@ -65,8 +66,52 @@ type WorkerRegistryLabels struct {
 	Phase              string `json:"phase"`
 	Candidate          string `json:"candidate"`
 	Base               string `json:"base"`
+	Effect             string `json:"effect"`
+	Profile            string `json:"profile"`
+	Session            string `json:"session"`
 	RegisteredAt       string `json:"registeredAt"`
 	StartedAt          string `json:"startedAt"`
+}
+
+// ProviderOption is one already-authorized non-secret provider-native value.
+type ProviderOption struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// AgentProfile is the exact immutable m3.2 Worker selection transported to a
+// host. A connector translates these fields to the public Paseo v0.7 request;
+// it never chooses a replacement or broadens them.
+type AgentProfile struct {
+	Provider        string           `json:"provider"`
+	Model           string           `json:"model"`
+	Effort          string           `json:"effort"`
+	Mode            string           `json:"mode"`
+	PermissionMode  string           `json:"permissionMode"`
+	ProviderOptions []ProviderOption `json:"providerOptions"`
+	SHA256          string           `json:"sha256"`
+}
+
+// MCPServer is the credential-free stdio process descriptor authorized by
+// the engine for this exact Run.
+type MCPServer struct {
+	Name    string            `json:"name"`
+	Command string            `json:"command"`
+	Args    []string          `json:"args"`
+	Env     map[string]string `json:"env"`
+}
+
+// MCPSession is the m3.3 transport descriptor fixed to the primary session
+// reservation. Scope selectors remain absent from model-facing tool inputs.
+type MCPSession struct {
+	ContractVersion string    `json:"contractVersion"`
+	ContractHash    string    `json:"contractHash"`
+	SessionSHA256   string    `json:"sessionSha256"`
+	Role            string    `json:"role"`
+	Provider        string    `json:"provider"`
+	Model           string    `json:"model"`
+	Tools           []string  `json:"tools"`
+	Server          MCPServer `json:"server"`
 }
 
 // Descriptor is the complete information a connector may advertise at handshake.
@@ -96,26 +141,32 @@ const (
 // parentless worker. It deliberately authorizes no Task or Review activity.
 const ZeroWorkBootstrapPrompt = "Director bootstrap only. Do not inspect files, call tools, or perform Task or Review work. Finish this turn immediately."
 
-// Arguments is the typed M1 subset of the host command union. ParentAgentID is
-// a pointer so a top-level Task Agent request proves the field was omitted.
+// Arguments is the typed host command union. ParentAgentID is a pointer so a
+// Director-launched Task Agent or Reviewer proves the field was omitted.
 type Arguments struct {
-	Scope                  execution.Scope      `json:"scope"`
-	EffectKind             execution.EffectKind `json:"effectKind"`
-	EffectID               string               `json:"effectId"`
-	WorktreeID             string               `json:"worktreeId,omitempty"`
-	WorktreePath           string               `json:"worktreePath,omitempty"`
-	WorkspaceID            string               `json:"workspaceId,omitempty"`
-	AgentID                string               `json:"agentId,omitempty"`
-	Title                  string               `json:"title,omitempty"`
-	InitialPrompt          string               `json:"initialPrompt,omitempty"`
-	ParentAgentID          *string              `json:"parentAgentId,omitempty"`
-	LifecycleDigest        string               `json:"lifecycleDigest,omitempty"`
-	IsolationDigest        string               `json:"isolationDigest,omitempty"`
-	PreparationReady       bool                 `json:"preparationReady,omitempty"`
-	PreparationBarrierHash string               `json:"preparationBarrierHash,omitempty"`
-	NotifyOnFinish         bool                 `json:"notifyOnFinish,omitempty"`
-	Labels                 map[string]string    `json:"labels,omitempty"`
-	BindingHash            string               `json:"bindingHash"`
+	Scope                    execution.Scope      `json:"scope"`
+	EffectKind               execution.EffectKind `json:"effectKind"`
+	EffectID                 string               `json:"effectId"`
+	WorktreeID               string               `json:"worktreeId,omitempty"`
+	WorktreePath             string               `json:"worktreePath,omitempty"`
+	WorkspaceID              string               `json:"workspaceId,omitempty"`
+	AgentID                  string               `json:"agentId,omitempty"`
+	Title                    string               `json:"title,omitempty"`
+	InitialPrompt            string               `json:"initialPrompt,omitempty"`
+	ParentAgentID            *string              `json:"parentAgentId,omitempty"`
+	LifecycleDigest          string               `json:"lifecycleDigest,omitempty"`
+	IsolationDigest          string               `json:"isolationDigest,omitempty"`
+	PreparationReady         bool                 `json:"preparationReady,omitempty"`
+	PreparationBarrierHash   string               `json:"preparationBarrierHash,omitempty"`
+	NotifyOnFinish           bool                 `json:"notifyOnFinish,omitempty"`
+	ClientMessageID          string               `json:"clientMessageId,omitempty"`
+	BoundaryID               string               `json:"boundaryId,omitempty"`
+	OperationalObservationID string               `json:"operationalObservationId,omitempty"`
+	Profile                  *AgentProfile        `json:"profile,omitempty"`
+	Session                  *MCPSession          `json:"session,omitempty"`
+	SessionBindingSHA256     string               `json:"sessionBindingSha256,omitempty"`
+	Labels                   map[string]string    `json:"labels,omitempty"`
+	BindingHash              string               `json:"bindingHash"`
 }
 
 // Command is the exact typed request accepted by a host connector.
@@ -135,6 +186,7 @@ type ObservationResult struct {
 	Status                execution.ObservationStatus `json:"status"`
 	ExternalID            string                      `json:"externalId,omitempty"`
 	BindingHash           string                      `json:"bindingHash"`
+	CorrelationHash       string                      `json:"correlationHash,omitempty"`
 	PriorDispatcherAbsent bool                        `json:"priorDispatcherAbsent"`
 	MaximumAgeMillis      int64                       `json:"maximumAgeMillis"`
 	FactHash              string                      `json:"factHash"`
@@ -177,6 +229,12 @@ func ValidateObservation(command Command, observation Observation) error {
 		observation.Result.FactHash == "" ||
 		observation.Result.FactHash != ObservationResultHash(observation.Result) {
 		return errors.New("host observation envelope is invalid")
+	}
+	if observation.Result.CorrelationHash != "" &&
+		(len(observation.Result.CorrelationHash) != 64 || strings.IndexFunc(observation.Result.CorrelationHash, func(character rune) bool {
+			return !strings.ContainsRune("0123456789abcdef", character)
+		}) >= 0) {
+		return errors.New("host observation correlation is invalid")
 	}
 	switch observation.Result.Status {
 	case execution.ObservationDesired, execution.ObservationAbsent,
@@ -268,6 +326,7 @@ func ParseDefinition(schema []byte) (Definition, error) {
 		Workspace: "director.workspace", ExecutionWorkspace: "director.execution-workspace",
 		Task: "director.task", Run: "director.run", Role: "director.role",
 		Phase: "director.phase", Candidate: "director.candidate", Base: "director.base",
+		Effect: "director.effect", Profile: "director.profile", Session: "director.session",
 		RegisteredAt: "director.registered-at", StartedAt: "director.started-at",
 	}
 	if definition.WorkerRegistry.Labels != expectedLabels {

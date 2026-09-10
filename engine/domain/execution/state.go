@@ -18,7 +18,7 @@ const StartupReconciliationSchemaVersion = "director.startup-reconciliation/v1"
 // recovery did not append a second logical command.
 const MaximumMCPCommandReceipts = 64
 
-// EffectKind is the closed M1 effect vocabulary. Host-view operations cross
+// EffectKind is the closed primary execution effect vocabulary. Host-view operations cross
 // the engine-owned host port; the remaining operations use engine adapters.
 type EffectKind string
 
@@ -70,6 +70,7 @@ type EffectObservation struct {
 	ObservedAtMillis      int64             `json:"observedAtMillis"`
 	MaximumAgeMillis      int64             `json:"maximumAgeMillis"`
 	BindingHash           string            `json:"bindingHash"`
+	CorrelationHash       string            `json:"correlationHash,omitempty"`
 	PriorDispatcherAbsent bool              `json:"priorDispatcherAbsent"`
 	FactHash              string            `json:"factHash"`
 }
@@ -77,13 +78,15 @@ type EffectObservation struct {
 // Effect is one immutable intent with bounded attempts and its latest
 // unconsumed observation.
 type Effect struct {
-	ID           string             `json:"id"`
-	Kind         EffectKind         `json:"kind"`
-	Phase        EffectPhase        `json:"phase"`
-	Attempt      uint32             `json:"attempt"`
-	AttemptLimit uint32             `json:"attemptLimit"`
-	ExternalID   string             `json:"externalId,omitempty"`
-	Observation  *EffectObservation `json:"observation,omitempty"`
+	ID                  string             `json:"id"`
+	Kind                EffectKind         `json:"kind"`
+	Phase               EffectPhase        `json:"phase"`
+	Attempt             uint32             `json:"attempt"`
+	AttemptLimit        uint32             `json:"attemptLimit"`
+	ExternalID          string             `json:"externalId,omitempty"`
+	ObservedFactHash    string             `json:"observedFactHash,omitempty"`
+	ObservedCorrelation string             `json:"observedCorrelation,omitempty"`
+	Observation         *EffectObservation `json:"observation,omitempty"`
 }
 
 // NeedsYou is a typed fail-closed park. CleanupAuthorized is structurally
@@ -209,7 +212,7 @@ type StartupReconciliation struct {
 	FactHash                   string              `json:"factHash"`
 }
 
-// State is the durable M1 execution projection stored inside its Run record.
+// State is the durable primary execution projection stored inside its Run record.
 // A zero State belongs to pre-execution TaskStore records created by older M1
 // skeletons and remains valid.
 type State struct {
@@ -221,6 +224,8 @@ type State struct {
 	EligibilityFactsHash             string                   `json:"eligibilityFactsHash,omitempty"`
 	CapacityReservationID            string                   `json:"capacityReservationId,omitempty"`
 	BudgetReservationID              string                   `json:"budgetReservationId,omitempty"`
+	LeaseBinding                     LeaseBinding             `json:"leaseBinding,omitempty"`
+	RepositoryBinding                RepositoryBinding        `json:"repositoryBinding,omitempty"`
 	RepositoryBindingHash            string                   `json:"repositoryBindingHash,omitempty"`
 	LifecycleDigest                  string                   `json:"lifecycleDigest,omitempty"`
 	LifecycleApproval                *LifecycleApproval       `json:"lifecycleApproval,omitempty"`
@@ -238,6 +243,7 @@ type State struct {
 	CriterionIDs                     []string                 `json:"criterionIds,omitempty"`
 	InitialPrompt                    string                   `json:"initialPrompt,omitempty"`
 	InitialPromptHash                string                   `json:"initialPromptHash,omitempty"`
+	PrimarySession                   PrimarySession           `json:"primarySession,omitempty"`
 	Worktree                         Effect                   `json:"worktree,omitempty"`
 	HostView                         Effect                   `json:"hostView,omitempty"`
 	Boundary                         Effect                   `json:"boundary,omitempty"`
@@ -279,9 +285,13 @@ type WorkerVisibility struct {
 	Phase                string `json:"phase"`
 	CandidateSHA         string `json:"candidateSha,omitempty"`
 	BaseSHA              string `json:"baseSha"`
+	EffectID             string `json:"effectId"`
+	ProfileSHA256        string `json:"profileSha256"`
+	SessionSHA256        string `json:"sessionSha256"`
 	RegisteredAt         string `json:"registeredAt"`
 	StartedAt            string `json:"startedAt"`
 	Digest               string `json:"digest"`
+	ObservedDigest       string `json:"observedDigest,omitempty"`
 }
 
 // ValidWorkerVisibility rejects a structurally incomplete registration. It
@@ -290,5 +300,6 @@ type WorkerVisibility struct {
 func ValidWorkerVisibility(visibility WorkerVisibility) bool {
 	return visibility.RootWorkspaceID != "" && visibility.ExecutionWorkspaceID != "" &&
 		visibility.Role != "" && visibility.Phase != "" && visibility.BaseSHA != "" &&
+		visibility.EffectID != "" && validSHA256(visibility.ProfileSHA256) && validSHA256(visibility.SessionSHA256) &&
 		visibility.RegisteredAt != "" && visibility.StartedAt != "" && visibility.Digest != ""
 }
