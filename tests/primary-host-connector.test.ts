@@ -35,7 +35,7 @@ type FakeAgent = PaseoAgent & {
 function fakePaseo() {
   const workspaces: PaseoWorkspace[] = [];
   const agents: FakeAgent[] = [];
-  const calls = { connect: 0, workspaceCreates: 0, agentCreates: 0, sends: 0 };
+  const calls = { connect: 0, workspaceCreates: 0, agentCreates: 0, sends: 0, agentArchives: 0 };
   const createdInputs: unknown[] = [];
   const pageInfo = { hasMore: false, nextCursor: null, previousCursor: null };
 
@@ -70,6 +70,7 @@ function fakePaseo() {
       agent.activeTurn = { turnId: `turn-${calls.sends}`, startedAt: "2026-09-10T08:00:00Z" };
     },
     async archive() {
+      calls.agentArchives++;
       const agent = agents.find((entry) => entry.id === id)!;
       agent.status = "closed";
       agent.archivedAt = "2026-09-10T08:01:00Z";
@@ -164,7 +165,10 @@ function connector(client: ConnectorClient): PaseoHostConnector {
     client,
     { mode: "development" } as EngineSelection,
     { async load() { throw new Error("unused"); } },
-    { async query() { throw new Error("unused"); } },
+    {
+      async query() { throw new Error("unused"); },
+      async mutate() { throw new Error("unused"); },
+    },
   );
 }
 
@@ -320,6 +324,51 @@ test("public connector creates one host view and one parentless primary then sen
   assert.equal(duplicate.result.status, "ambiguous");
 });
 
+test("control observations wait at an active boundary and archive exactly once", async () => {
+  const world = fakePaseo();
+  const host = connector(world.client);
+  const base = primaryArguments();
+  const workspace = await host.invoke(command("executionWorkspace.createManaged", {
+    ...base, effectKind: "host_view.create", effectId: "effect-control-host-view",
+  }));
+  const labels = { ...base.labels!, [WORKER_LABEL.executionWorkspace]: workspace.result.externalId! };
+  const createArguments = { ...base, workspaceId: workspace.result.externalId, labels };
+  const created = await host.invoke(command("taskAgent.createWithBootstrap", createArguments));
+  const agent = world.agents[0]!;
+  const boundaryArguments: HostCommandArguments = {
+    ...createArguments,
+    effectKind: "control_agent.observe_safe_boundary",
+    effectId: "effect-control-boundary",
+    agentId: created.result.externalId,
+    initialPrompt: undefined,
+    clientMessageId: undefined,
+    profile: undefined,
+    session: undefined,
+  };
+  const active = await host.invoke(command("agent.observe", boundaryArguments, created.cursor));
+  assert.equal(active.result.status, "owned_present");
+  assert.equal(active.result.priorDispatcherAbsent, false);
+  assert.equal(world.calls.agentArchives, 0);
+
+  agent.status = "idle";
+  agent.activeTurn = null;
+  const safe = await host.invoke(command("agent.observe", boundaryArguments, active.cursor));
+  assert.equal(safe.result.status, "desired");
+  const archiveArguments: HostCommandArguments = {
+    ...boundaryArguments,
+    effectKind: "control_agent.archive",
+    effectId: "effect-control-archive",
+  };
+  agent.status = "running";
+  agent.activeTurn = { turnId: "turn-control", startedAt: "2026-09-10T08:00:00Z" };
+  const archived = await host.invoke(command("agent.archive", archiveArguments, safe.cursor));
+  assert.equal(archived.result.status, "desired");
+  assert.equal(world.calls.agentArchives, 1);
+  const replay = await host.invoke(command("agent.archive", archiveArguments, archived.cursor));
+  assert.equal(replay.result.status, "desired");
+  assert.equal(world.calls.agentArchives, 1);
+});
+
 test("connector replacement advances the durable cursor and refuses partial workspace registration", async () => {
   const world = fakePaseo();
   const first = connector(world.client);
@@ -425,11 +474,24 @@ test("connector observes and archives only the exact parent-bound helper", async
   }, observed.cursor));
   assert.equal(wrongParent.result.status, "different");
 
+  const controlBoundary = await directorHost.invoke(command("agent.observe", {
+    ...helperArguments, effectKind: "control_agent.observe_safe_boundary",
+    effectId: "effect-helper-control-boundary", agentId: "helper-native-1",
+  }, wrongParent.cursor));
+  assert.equal(controlBoundary.result.status, "owned_present");
+  assert.equal(controlBoundary.result.priorDispatcherAbsent, false);
+  const controlArchived = await directorHost.invoke(command("agent.archive", {
+    ...helperArguments, effectKind: "control_agent.archive",
+    effectId: "effect-helper-control-archive", agentId: "helper-native-1",
+  }, controlBoundary.cursor));
+  assert.equal(controlArchived.result.status, "desired");
+  assert.deepEqual(controlArchived.result.usage, undefined);
+
   const archiveArguments: HostCommandArguments = {
     ...helperArguments, effectKind: "helper_agent.archive", effectId: "effect-helper-archive",
     agentId: "helper-native-1",
   };
-  const archived = await directorHost.invoke(command("agent.archive", archiveArguments, wrongParent.cursor));
+  const archived = await directorHost.invoke(command("agent.archive", archiveArguments, controlArchived.cursor));
   assert.equal(archived.result.status, "desired");
   const helper = world.agents.find((agent) => agent.id === "helper-native-1")!;
   assert.equal(helper.status, "closed");

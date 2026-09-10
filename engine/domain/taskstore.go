@@ -60,6 +60,7 @@ type Project struct {
 	LastLeaseEpoch   uint64
 	Lease            *ProjectLease
 	LeaseObservation *ProjectLeaseObservation
+	Control          execution.ProjectControl
 }
 
 // Task is one mutable planning unit. It belongs to exactly one Project,

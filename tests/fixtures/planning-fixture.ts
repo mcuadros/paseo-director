@@ -211,6 +211,7 @@ export class DeterministicPlanningFixture implements PlanningClient {
       state: "active",
       workspaceCount: "25",
       taskCounts: { open: "500", done: "10000", needsYou: "1" },
+      control: null,
       allowedActions: [
         action("project.update", projectId, "9", { label: "Edit project" }),
         action("epic.create", projectId, "9", { label: "Create epic" }),
@@ -393,6 +394,7 @@ export class DeterministicPlanningFixture implements PlanningClient {
       message: preview ? "Configuration preview is ready" : "Intent accepted",
       updatedVersion: preview ? null : input.expectedVersion,
       preview,
+      confirmationRef: null,
     });
   }
 

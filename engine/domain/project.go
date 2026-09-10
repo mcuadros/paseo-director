@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/mcuadros/director-engine/domain/execution"
 	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 )
 
@@ -219,7 +220,9 @@ func ValidateProject(project Project) error {
 		(project.State != "active" && project.State != "paused" && project.State != "degraded" && project.State != "archived") ||
 		project.Organizer == nil || project.Organizer.ID != OrganizerID(project.ID) || !validLease(project.Lease) ||
 		(project.Lease != nil && project.LastLeaseEpoch != project.Lease.Epoch) ||
-		!validLeaseObservation(project.ID, project.Lease, project.LeaseObservation) {
+		!validLeaseObservation(project.ID, project.Lease, project.LeaseObservation) ||
+		!execution.ValidProjectControl(project.Control, project.ID) ||
+		!execution.ValidProjectControlState(project.Control, project.State) {
 		return ErrInvalidProject
 	}
 	return nil

@@ -116,6 +116,7 @@ func normalizedHumanInput(task domain.Task, run *domain.Run) projection.HumanInp
 }
 
 func taskStateFacts(
+	project domain.Project,
 	task domain.Task,
 	dependencyBlocked bool,
 	run *domain.Run,
@@ -124,6 +125,16 @@ func taskStateFacts(
 	decision := projection.EligibilityEligible
 	if dependencyBlocked {
 		decision = projection.EligibilityDependencyWait
+	}
+	if run != nil && run.Execution.Terminal && run.Execution.Control.RelaunchBlocked &&
+		run.Execution.Control.Phase == execution.ControlCancelled {
+		emergencyResumed := run.Execution.Control.Intent.Kind == execution.ControlEmergencyStop &&
+			project.State == "active" && project.Control.Intent.Kind == execution.ControlResumeProject &&
+			project.Control.Phase == execution.ControlComplete && !project.Control.ResumeRequired &&
+			project.Control.Generation > run.Execution.Control.ProjectGeneration
+		if !emergencyResumed {
+			decision = projection.EligibilityPolicyWait
+		}
 	}
 	facts := projection.TaskStateFacts{
 		TaskID: task.ID, TaskVersion: task.Version,
@@ -227,7 +238,7 @@ func (source *TaskStoreFactSource) TaskProjectionInputs(ctx context.Context) ([]
 				Key: task.Key, Title: task.Title, Priority: domain.EffectivePriority(task.Priority),
 				Labels: append([]string(nil), task.Labels...), QueuedAtUnixMillis: task.QueuedAtUnixMillis,
 				UpdatedAtUnixMillis: task.QueuedAtUnixMillis,
-				Facts:               taskStateFacts(task, dependency.Blocked, run, candidate),
+				Facts:               taskStateFacts(project, task, dependency.Blocked, run, candidate),
 			})
 		}
 	}

@@ -20,6 +20,7 @@ import (
 
 	"github.com/mcuadros/director-engine/adapters/dolt"
 	"github.com/mcuadros/director-engine/application/board"
+	executionapp "github.com/mcuadros/director-engine/application/execution"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 )
@@ -185,6 +186,9 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 	handler := http.NewServeMux()
 	handler.Handle(boardQueryPath, newBoardHandler(board.NewReader(store)))
 	handler.Handle(planningport.QueryPath, newPlanningHandler(board.NewPlanningReader(store)))
+	handler.Handle(planningport.MutationPath, newPlanningMutationHandler(
+		store, executionapp.NewController(store, nil, nil, nil),
+	))
 	server := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,

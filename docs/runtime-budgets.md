@@ -83,6 +83,12 @@ correction churn, unavailable/ambiguous provider usage, clock regression,
 overflow, invalid ledger state, and lease fencing. All budget parking has
 `cleanupAuthorized=false`.
 
+Explicit Pause takes precedence over the soft-budget boundary. Task Cancel and
+confirmed Emergency stop take precedence over hard-budget attention so
+containment and recovery do not depend on more budget-consuming work. Emergency
+stop remains lease-fenced and cannot be inferred from a budget or agent claim.
+See [Execution controls](execution-controls.md).
+
 Organizer planning results expose the policy revision, current/soft/hard/
 unavailable state, exact reason code, all four consumptive dimensions,
 outstanding reservations, the four count budgets, and Worker/helper/Reviewer/

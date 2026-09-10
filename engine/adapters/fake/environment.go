@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,6 +77,9 @@ type world struct {
 	promptStatus              execution.ObservationStatus
 	bootstrapObservedAtMillis int64
 	promptObservedAtMillis    int64
+	recoveryID                string
+	recoveryReady             bool
+	recoveryPath              string
 	bindingHash               string
 }
 
@@ -190,6 +194,60 @@ func pathPresent(path string) bool {
 	return err == nil
 }
 
+func copyRecoveryTree(source, destination string) error {
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		return err
+	}
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		if relative == ".git" || strings.HasPrefix(relative, ".git"+string(filepath.Separator)) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if relative == "." {
+			return nil
+		}
+		target := filepath.Join(destination, relative)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.Mkdir(target, 0o700)
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("fake recovery refuses non-regular worktree material")
+		}
+		input, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			_ = input.Close()
+			return err
+		}
+		_, copyErr := io.CopyBuffer(output, input, make([]byte, 64*1024))
+		inputCloseErr := input.Close()
+		closeErr := output.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if inputCloseErr != nil {
+			return inputCloseErr
+		}
+		return closeErr
+	})
+}
+
 func (environment *Environment) exactRequest(request runtimeport.Request) bool {
 	if request.Scope.RunID == "" || request.BindingHash == "" ||
 		!execution.ValidLeaseBinding(request.LeaseBinding) ||
@@ -283,6 +341,11 @@ func (environment *Environment) ObserveEffect(_ context.Context, request runtime
 			return effectObservation(request.Effect, execution.ObservationOwnedPresent, environment.world.worktreeID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
 		return effectObservation(request.Effect, execution.ObservationDesired, environment.world.worktreeID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+	case execution.EffectRecoverySnapshot:
+		if !environment.world.recoveryReady {
+			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		}
+		return effectObservation(request.Effect, execution.ObservationDesired, environment.world.recoveryID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	default:
 		return execution.EffectObservation{}, fmt.Errorf("unsupported fake runtime observation %q", request.Effect.Kind)
 	}
@@ -333,12 +396,52 @@ func (environment *Environment) DispatchEffect(_ context.Context, request runtim
 		}
 		environment.world.setupComplete = true
 	case execution.EffectWorktreeRemove:
-		if !environment.world.agentArchived || !environment.world.hostViewArchived || request.WorktreeID != environment.world.worktreeID {
+		controlRecovery := !request.ControlCleanupAuthorized ||
+			(request.ControlRecoveryArtifactID != "" && request.ControlRecoveryArtifactID == environment.world.recoveryID && environment.world.recoveryReady)
+		if !environment.world.agentArchived || !environment.world.hostViewArchived || !controlRecovery || request.WorktreeID != environment.world.worktreeID {
 			return errors.New("fake worktree cleanup lacks exact terminal ownership facts")
 		}
-		if _, err := runGit(environment.options.SourcePath, "worktree", "remove", environment.options.WorktreePath); err != nil {
+		if _, err := runGit(environment.options.SourcePath, "worktree", "remove", "--force", environment.options.WorktreePath); err != nil {
 			return err
 		}
+	case execution.EffectRecoverySnapshot:
+		if !pathPresent(environment.options.WorktreePath) || request.WorktreeID != environment.world.worktreeID {
+			return errors.New("fake recovery snapshot lacks the exact owned worktree")
+		}
+		recoveryPath := filepath.Join(
+			filepath.Dir(environment.options.WorktreePath),
+			"."+filepath.Base(environment.options.WorktreePath)+"-recovery-"+strings.TrimPrefix(request.Effect.ID, "effect-"),
+		)
+		if pathPresent(recoveryPath) {
+			return errors.New("fake recovery artifact already exists before dispatch")
+		}
+		if err := copyRecoveryTree(environment.options.WorktreePath, recoveryPath); err != nil {
+			return err
+		}
+		if len(request.RecoveryWorktreePaths) > 0 {
+			helperRoot := filepath.Join(recoveryPath, "helpers")
+			if err := os.Mkdir(helperRoot, 0o700); err != nil {
+				return err
+			}
+			for _, helperPath := range request.RecoveryWorktreePaths {
+				owned := false
+				for helperID, helper := range environment.helpers {
+					if helper.checkoutID != "" && helperPath == execution.HelperWorktreePath(environment.options.WorktreePath, helperID, execution.HelperWriter) {
+						owned = true
+						break
+					}
+				}
+				if !owned || !pathPresent(helperPath) {
+					return errors.New("fake recovery helper checkout identity is invalid")
+				}
+				if err := copyRecoveryTree(helperPath, filepath.Join(helperRoot, filepath.Base(helperPath))); err != nil {
+					return err
+				}
+			}
+		}
+		environment.world.recoveryID = externalID("recovery", request.Effect.ID)
+		environment.world.recoveryReady = true
+		environment.world.recoveryPath = recoveryPath
 	default:
 		return fmt.Errorf("unsupported fake runtime mutation %q", request.Effect.Kind)
 	}
@@ -400,7 +503,9 @@ func hostObservation(command host.Command, status execution.ObservationStatus, e
 			correlation, _ = host.RegistrationDigest(registration)
 		}
 	}
-	if command.Arguments.EffectKind == execution.EffectHelperAgentObserve || command.Arguments.EffectKind == execution.EffectHelperAgentArchive {
+	if command.Arguments.EffectKind == execution.EffectHelperAgentObserve || command.Arguments.EffectKind == execution.EffectHelperAgentArchive ||
+		((command.Arguments.EffectKind == execution.EffectControlAgentBoundary || command.Arguments.EffectKind == execution.EffectControlAgentArchive) &&
+			command.Arguments.ParentAgentID != nil) {
 		correlation = digest(command.Arguments.Labels)
 	}
 	result := host.ObservationResult{
@@ -410,7 +515,8 @@ func hostObservation(command host.Command, status execution.ObservationStatus, e
 		MaximumAgeMillis:      30_000,
 	}
 	if (command.Arguments.EffectKind == execution.EffectAgentCreate ||
-		command.Arguments.EffectKind == execution.EffectAgentPrompt) &&
+		command.Arguments.EffectKind == execution.EffectAgentPrompt ||
+		command.Arguments.EffectKind == execution.EffectControlAgentArchive) &&
 		(status == execution.ObservationDesired || status == execution.ObservationErrored || status == execution.ObservationPermission) {
 		result.Usage = &runtimebudget.ProviderUsage{
 			State: runtimebudget.UsageCurrent, SourceRevision: "usage:" + command.Arguments.EffectID,
@@ -504,6 +610,54 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 		environment.world.promptStatus = execution.ObservationOwnedPresent
 		return host.Observation{}, environment.recordMutation(arguments.EffectKind)
 	case host.CapabilityAgentObserve:
+		if (arguments.EffectKind == execution.EffectControlAgentBoundary || arguments.EffectKind == execution.EffectControlAgentArchive) &&
+			arguments.ParentAgentID != nil {
+			for _, helper := range environment.helpers {
+				if helper.agentID != arguments.AgentID || helper.parentAgentID != dereference(arguments.ParentAgentID) ||
+					helper.workspaceID != arguments.WorkspaceID || digest(helper.labels) != digest(arguments.Labels) {
+					continue
+				}
+				if helper.agentArchived {
+					return hostObservation(command, execution.ObservationDesired, helper.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				}
+				if helper.agentActive {
+					observation := hostObservation(command, execution.ObservationOwnedPresent, helper.agentID, environment.observationSeq, environment.operational.ObservedAtMillis)
+					observation.Result.PriorDispatcherAbsent = false
+					observation.Result.FactHash = host.ObservationResultHash(observation.Result)
+					return observation, nil
+				}
+				return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			}
+			return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		}
+		if arguments.EffectKind == execution.EffectControlAgentBoundary {
+			if arguments.AgentID != environment.world.agentID {
+				return hostObservation(command, execution.ObservationDifferent, arguments.AgentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			}
+			if environment.world.agentArchived || environment.world.promptStatus == execution.ObservationDesired ||
+				environment.world.promptStatus == execution.ObservationErrored || environment.world.promptStatus == execution.ObservationPermission {
+				return hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			}
+			if environment.world.agentActive {
+				observation := hostObservation(command, execution.ObservationOwnedPresent, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis)
+				observation.Result.PriorDispatcherAbsent = false
+				observation.Result.FactHash = host.ObservationResultHash(observation.Result)
+				return observation, nil
+			}
+			return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		}
+		if arguments.EffectKind == execution.EffectControlAgentArchive {
+			if arguments.AgentID != environment.world.agentID {
+				return hostObservation(command, execution.ObservationDifferent, arguments.AgentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			}
+			if environment.world.agentArchived {
+				return hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			}
+			if environment.world.agentActive {
+				return hostObservation(command, execution.ObservationOwnedPresent, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			}
+			return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		}
 		if arguments.EffectKind == execution.EffectAgentArchive {
 			if environment.world.agentArchived {
 				return hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
@@ -535,7 +689,8 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 		}
 		return host.Observation{}, errors.New("fake agent observation effect is unsupported")
 	case host.CapabilityAgentArchive:
-		if arguments.EffectKind == execution.EffectHelperAgentArchive {
+		if arguments.EffectKind == execution.EffectHelperAgentArchive ||
+			(arguments.EffectKind == execution.EffectControlAgentArchive && arguments.ParentAgentID != nil) {
 			for _, helper := range environment.helpers {
 				if helper.agentID == arguments.AgentID && helper.parentAgentID == dereference(arguments.ParentAgentID) && helper.agentActive {
 					helper.agentActive = false
@@ -545,7 +700,8 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 			}
 			return host.Observation{}, errors.New("fake helper archive identity mismatch")
 		}
-		if arguments.AgentID != environment.world.agentID || !environment.world.agentActive {
+		if arguments.AgentID != environment.world.agentID || !environment.world.agentActive ||
+			(arguments.EffectKind != execution.EffectAgentArchive && arguments.EffectKind != execution.EffectControlAgentArchive) {
 			return host.Observation{}, errors.New("fake agent archive identity mismatch")
 		}
 		environment.world.agentActive = false
@@ -734,9 +890,39 @@ func (environment *Environment) WorktreePresent() bool {
 	return pathPresent(environment.options.WorktreePath)
 }
 
+// RefreshObservationsAt advances only the fake world's replaceable external
+// sample clock. Long crash-frontier tests call it before a new authoritative
+// scan so a 30-second freshness policy is tested rather than wall-clock load.
+func (environment *Environment) RefreshObservationsAt(nowMillis int64) {
+	environment.mu.Lock()
+	defer environment.mu.Unlock()
+	if nowMillis > environment.operational.ObservedAtMillis {
+		environment.operational.ObservedAtMillis = nowMillis
+	}
+}
+
+// RecoveryFile reads one relative file from the owner-scoped private fake
+// artifact. It is test evidence only and never enters a product projection.
+func (environment *Environment) RecoveryFile(relative string) ([]byte, error) {
+	environment.mu.Lock()
+	defer environment.mu.Unlock()
+	if !environment.world.recoveryReady || environment.world.recoveryPath == "" || filepath.IsAbs(relative) ||
+		filepath.Clean(relative) != relative || strings.HasPrefix(relative, "..") {
+		return nil, errors.New("fake recovery artifact file is unavailable")
+	}
+	return os.ReadFile(filepath.Join(environment.world.recoveryPath, relative))
+}
+
 // RemoveFixture is best-effort test teardown for a deliberately parked path.
 func (environment *Environment) RemoveFixture() {
 	if pathPresent(environment.options.WorktreePath) {
 		_, _ = runGit(environment.options.SourcePath, "worktree", "remove", "--force", environment.options.WorktreePath)
+	}
+	environment.mu.Lock()
+	recoveryPath := environment.world.recoveryPath
+	environment.mu.Unlock()
+	if recoveryPath != "" && filepath.Dir(recoveryPath) == filepath.Dir(environment.options.WorktreePath) &&
+		strings.HasPrefix(filepath.Base(recoveryPath), "."+filepath.Base(environment.options.WorktreePath)+"-recovery-") {
+		_ = os.RemoveAll(recoveryPath)
 	}
 }

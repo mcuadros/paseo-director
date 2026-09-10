@@ -28,6 +28,7 @@ type projectData struct {
 	LastLeaseEpoch   uint64                          `json:"lastLeaseEpoch"`
 	Lease            *domain.ProjectLease            `json:"lease,omitempty"`
 	LeaseObservation *domain.ProjectLeaseObservation `json:"leaseObservation,omitempty"`
+	Control          execution.ProjectControl        `json:"control,omitempty"`
 }
 
 type organizerData struct {
@@ -170,7 +171,7 @@ func validateProject(project domain.Project) error {
 		return fmt.Errorf("%w: invalid Organizer identity", storeport.ErrInvalidRecord)
 	}
 	if organizer.Phase == domain.OrganizerPhaseActive {
-		if !validGitObjectID(organizer.OrganizerRevision) || len(organizer.PendingConfiguration) != 0 || project.State != "active" {
+		if !validGitObjectID(organizer.OrganizerRevision) || len(organizer.PendingConfiguration) != 0 {
 			return fmt.Errorf("%w: invalid active Organizer", storeport.ErrInvalidRecord)
 		}
 	} else {
@@ -400,6 +401,23 @@ func validateRun(run domain.Run) error {
 			}
 			seenMCPCommands[receipt.CommandKey] = struct{}{}
 		}
+		legacyControlState := state.ControlPolicy == (execution.ControlPolicy{}) && state.Control.SchemaVersion == "" &&
+			len(state.ControlledAgents) == 0
+		if (!execution.ValidControlPolicy(state.ControlPolicy) && !legacyControlState) || !execution.ValidRunControl(state.Control, state) ||
+			len(state.ControlledAgents) > execution.MaximumControlledAgents {
+			return fmt.Errorf("%w: invalid Run execution control", storeport.ErrInvalidRecord)
+		}
+		seenControlledAgents := make(map[string]struct{}, len(state.ControlledAgents))
+		for _, identity := range state.ControlledAgents {
+			if !execution.ValidControlledAgentIdentity(identity, state.Scope) ||
+				(identity.Role != execution.ControlledReviewer && identity.WorkspaceID != state.HostView.ExternalID) {
+				return fmt.Errorf("%w: invalid controlled agent identity", storeport.ErrInvalidRecord)
+			}
+			if _, duplicate := seenControlledAgents[identity.ID]; duplicate {
+				return fmt.Errorf("%w: duplicate controlled agent identity", storeport.ErrInvalidRecord)
+			}
+			seenControlledAgents[identity.ID] = struct{}{}
+		}
 	}
 	return nil
 }
@@ -481,6 +499,7 @@ func (store *DoltTaskStore) CreateProject(
 		Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer),
 		LastLeaseEpoch: project.LastLeaseEpoch,
 		Lease:          storedLease(project.Lease), LeaseObservation: storedLeaseObservation(project.LeaseObservation),
+		Control: project.Control,
 	})
 	if err != nil {
 		return domain.CommandResult{}, err
@@ -515,6 +534,7 @@ func (store *DoltTaskStore) UpdateProject(
 		Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer),
 		LastLeaseEpoch: project.LastLeaseEpoch,
 		Lease:          storedLease(project.Lease), LeaseObservation: storedLeaseObservation(project.LeaseObservation),
+		Control: project.Control,
 	})
 	if err != nil {
 		return domain.CommandResult{}, err
@@ -536,6 +556,13 @@ func (store *DoltTaskStore) UpdateProject(
 		if current.LastLeaseEpoch != project.LastLeaseEpoch || !reflect.DeepEqual(current.Lease, project.Lease) ||
 			!reflect.DeepEqual(current.LeaseObservation, project.LeaseObservation) {
 			return mutationResult{}, fmt.Errorf("%w: generic Project update cannot change lease evidence", storeport.ErrInvalidRecord)
+		}
+		if !reflect.DeepEqual(current.Control, project.Control) && !strings.HasPrefix(command.Type, "project.control.") {
+			return mutationResult{}, fmt.Errorf("%w: only a control command may change Project control state", storeport.ErrInvalidRecord)
+		}
+		if current.State != project.State && current.Organizer.Phase == domain.OrganizerPhaseActive &&
+			!strings.HasPrefix(command.Type, "project.control.") && !strings.HasPrefix(command.Type, "organizer.") {
+			return mutationResult{}, fmt.Errorf("%w: active Project state changes require an engine control command", storeport.ErrInvalidRecord)
 		}
 		return updateAggregate(ctx, tx, project.ID, aggregateProject, command.ExpectedVersion, project.Version, data)
 	})
@@ -586,6 +613,7 @@ func encodeProject(project domain.Project) ([]byte, error) {
 		Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer),
 		LastLeaseEpoch: project.LastLeaseEpoch,
 		Lease:          storedLease(project.Lease), LeaseObservation: storedLeaseObservation(project.LeaseObservation),
+		Control: project.Control,
 	})
 }
 
@@ -776,6 +804,7 @@ func projectByIDForUpdate(ctx context.Context, tx *sql.Tx, id string) (domain.Pr
 	project.Name, project.State, project.Organizer = data.Name, data.State, reloadedOrganizer(data.Organizer)
 	project.LastLeaseEpoch, project.Lease = data.LastLeaseEpoch, storedLease(data.Lease)
 	project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
+	project.Control = data.Control
 	if err := validateReloaded(validateProject(project)); err != nil {
 		return domain.Project{}, err
 	}
@@ -1417,6 +1446,7 @@ func projectByID(ctx context.Context, query rowQuerier, id string) (domain.Proje
 	project.Name, project.State, project.Organizer = data.Name, data.State, reloadedOrganizer(data.Organizer)
 	project.LastLeaseEpoch, project.Lease = data.LastLeaseEpoch, storedLease(data.Lease)
 	project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
+	project.Control = data.Control
 	if err := validateReloaded(validateProject(project)); err != nil {
 		return domain.Project{}, err
 	}
@@ -1451,6 +1481,7 @@ func (store *DoltTaskStore) Projects(ctx context.Context) ([]domain.Project, err
 		project.Name, project.State, project.Organizer = data.Name, data.State, reloadedOrganizer(data.Organizer)
 		project.LastLeaseEpoch, project.Lease = data.LastLeaseEpoch, storedLease(data.Lease)
 		project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
+		project.Control = data.Control
 		if err := validateReloaded(validateProject(project)); err != nil {
 			return nil, err
 		}

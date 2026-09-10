@@ -76,6 +76,7 @@ type StartCommand struct {
 	BudgetPolicy      runtimebudget.Policy
 	TurnBudgetDemand  runtimebudget.Demand
 	HelperPolicy      domainexecution.HelperPolicy
+	ControlPolicy     domainexecution.ControlPolicy
 	EligibilityFacts  eligibility.Facts
 }
 
@@ -220,6 +221,23 @@ func setupRequired(surfaces domainexecution.LifecycleSurfaces) bool {
 	return false
 }
 
+func latestControlRelaunchBlocked(project domain.Project, runs []domain.Run) bool {
+	for _, run := range runs {
+		control := run.Execution.Control
+		if !run.Execution.Terminal || !control.RelaunchBlocked || control.Phase != domainexecution.ControlCancelled {
+			continue
+		}
+		if control.Intent.Kind == domainexecution.ControlEmergencyStop && project.State == "active" &&
+			project.Control.Intent.Kind == domainexecution.ControlResumeProject &&
+			project.Control.Phase == domainexecution.ControlComplete && !project.Control.ResumeRequired &&
+			project.Control.Generation > control.ProjectGeneration {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func validStart(command StartCommand, project domain.Project, workspace domain.Workspace, task domain.Task) bool {
 	if len(command.CriterionIDs) == 0 || len(command.CriterionIDs) > 128 {
 		return false
@@ -234,7 +252,12 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 		}
 		seenCriteria[criterionID] = struct{}{}
 	}
-	return project.Organizer != nil && project.Organizer.Phase == domain.OrganizerPhaseActive &&
+	controlPolicy := command.ControlPolicy
+	if controlPolicy == (domainexecution.ControlPolicy{}) {
+		controlPolicy = domainexecution.DefaultControlPolicy()
+	}
+	return project.State == "active" && !project.Control.ResumeRequired &&
+		project.Organizer != nil && project.Organizer.Phase == domain.OrganizerPhaseActive &&
 		project.Lease != nil && project.Lease.DispatchAllowed &&
 		command.EligibilityFacts.TaskStoreNowMillis >= project.Lease.AcquiredAtMillis &&
 		project.Lease.ExpiresAtMillis > command.EligibilityFacts.TaskStoreNowMillis &&
@@ -257,7 +280,7 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 		command.TurnBudgetDemand.WallTimeMilliseconds > 0 && command.TurnBudgetDemand.Tokens > 0 &&
 		command.TurnBudgetDemand.Turns == 1 &&
 		(command.BudgetPolicy.CostLimitMicrousd == 0 || command.TurnBudgetDemand.CostMicrousd > 0) &&
-		domainexecution.ValidHelperPolicy(command.HelperPolicy)
+		domainexecution.ValidHelperPolicy(command.HelperPolicy) && domainexecution.ValidControlPolicy(controlPolicy)
 }
 
 func eventPayload(value any) json.RawMessage {
@@ -334,6 +357,10 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 	result := StartResult{Decision: decision}
 	startCommandID := stableID("command", command.RequestID, "run-create")
 	if existing, err := controller.store.Run(ctx, command.Scope.RunID); err == nil {
+		controlPolicy := command.ControlPolicy
+		if controlPolicy == (domainexecution.ControlPolicy{}) {
+			controlPolicy = domainexecution.DefaultControlPolicy()
+		}
 		expectedSession, sessionErr := domainexecution.NewPrimarySession(
 			command.Scope, stableID("effect", command.Scope.RunID, string(domainexecution.EffectAgentCreate)),
 			command.EffectiveProfiles, command.MCPServer,
@@ -348,7 +375,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			existing.Execution.PrimarySession.ReservationSHA256 != expectedSession.ReservationSHA256 ||
 			existing.Execution.Budget.Policy != command.BudgetPolicy ||
 			existing.Execution.TurnBudgetDemand != command.TurnBudgetDemand ||
-			existing.Execution.HelperPolicy != command.HelperPolicy {
+			existing.Execution.HelperPolicy != command.HelperPolicy || existing.Execution.ControlPolicy != controlPolicy {
 			return StartResult{}, errors.New("existing Run conflicts with start command")
 		}
 		result.Decision.Kind = eligibility.DecisionEligible
@@ -356,6 +383,13 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		return result, nil
 	} else if !errors.Is(err, storeport.ErrNotFound) {
 		return StartResult{}, err
+	}
+	taskRuns, err := controller.store.Runs(ctx, task.ID)
+	if err != nil {
+		return StartResult{}, err
+	}
+	if latestControlRelaunchBlocked(project, taskRuns) {
+		return StartResult{}, errors.New("cancelled Task requires an explicit engine-authorized relaunch")
 	}
 	if decision.Kind == eligibility.DecisionEscalate {
 		if err := controller.persistTaskAttention(ctx, task, command.RequestID, command.Scope, domainexecution.NeedCode(decision.Code)); err != nil {
@@ -398,8 +432,14 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		OperationalPolicy:       command.EligibilityFacts.OperationalPolicy,
 		Budget:                  budget,
 		TurnBudgetDemand:        command.TurnBudgetDemand,
-		LifecycleSurfaces:       command.EligibilityFacts.LifecycleSurfaces,
-		SourcePath:              command.SourcePath, WorktreePath: command.WorktreePath,
+		ControlPolicy: func() domainexecution.ControlPolicy {
+			if command.ControlPolicy == (domainexecution.ControlPolicy{}) {
+				return domainexecution.DefaultControlPolicy()
+			}
+			return command.ControlPolicy
+		}(),
+		LifecycleSurfaces: command.EligibilityFacts.LifecycleSurfaces,
+		SourcePath:        command.SourcePath, WorktreePath: command.WorktreePath,
 		Branch: command.Branch, TaskTitle: command.TaskTitle,
 		RootWorkspaceID: command.RootWorkspaceID,
 		CriterionIDs:    append([]string(nil), command.CriterionIDs...),
@@ -423,6 +463,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			state.LifecycleDigest, state.IsolationDigest, state.EffectiveProfilesSHA256,
 			state.PrimarySession.ReservationSHA256, state.InitialPromptHash,
 			hashText(string(eventPayload(state.Budget.Policy))), hashText(string(eventPayload(state.TurnBudgetDemand))),
+			hashText(string(eventPayload(state.ControlPolicy))),
 			strings.Join(state.CriterionIDs, "\x1e"),
 		}, "\x1f")),
 	)
@@ -440,10 +481,12 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			RepositoryBindingSHA256 string `json:"repositoryBindingSha256"`
 			PrimarySessionSHA256    string `json:"primarySessionSha256"`
 			BudgetPolicySHA256      string `json:"budgetPolicySha256"`
+			ControlPolicySHA256     string `json:"controlPolicySha256"`
 			LeaseEpoch              uint64 `json:"leaseEpoch"`
 		}{decision.DecisionID, decision.LifecycleDigest, decision.IsolationDigest, state.EffectiveProfilesSHA256,
 			state.RepositoryBindingHash, state.PrimarySession.ReservationSHA256,
-			hashText(string(eventPayload(state.Budget.Policy))), state.LeaseBinding.Epoch}),
+			hashText(string(eventPayload(state.Budget.Policy))), hashText(string(eventPayload(state.ControlPolicy))),
+			state.LeaseBinding.Epoch}),
 	}, run, domain.Event{
 		ID: stableID("event", commandID), RunID: run.ID, Sequence: 1,
 		AggregateID: run.ID, AggregateVersion: 0, Type: "run.primary_execution.created",
@@ -453,9 +496,11 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			RepositoryBindingSHA256 string `json:"repositoryBindingSha256"`
 			PrimarySessionSHA256    string `json:"primarySessionSha256"`
 			BudgetPolicySHA256      string `json:"budgetPolicySha256"`
+			ControlPolicySHA256     string `json:"controlPolicySha256"`
 			LeaseEpoch              uint64 `json:"leaseEpoch"`
 		}{decision.DecisionID, state.EffectiveProfilesSHA256, state.RepositoryBindingHash,
-			state.PrimarySession.ReservationSHA256, hashText(string(eventPayload(state.Budget.Policy))), state.LeaseBinding.Epoch}),
+			state.PrimarySession.ReservationSHA256, hashText(string(eventPayload(state.Budget.Policy))),
+			hashText(string(eventPayload(state.ControlPolicy))), state.LeaseBinding.Epoch}),
 	})
 	if err != nil {
 		return StartResult{}, err
@@ -624,6 +669,21 @@ func (controller *Controller) RecordCompletionEvent(
 			EventID: event.ID, EventFactHash: event.FactHash, Event: event, Cursor: event.Cursor,
 			Phase: domainexecution.CompletionReceiptIntent,
 		})
+		for index := range next.Execution.Control.Targets {
+			target := &next.Execution.Control.Targets[index]
+			if target.Identity.ID != event.AgentID {
+				continue
+			}
+			target.TerminalEventID = event.ID
+			target.TerminalEventHash = event.FactHash
+			target.TerminalCursor = event.Cursor
+			if target.Boundary.Observation != nil && target.Boundary.Observation.Status == domainexecution.ObservationOwnedPresent {
+				target.Boundary.Observation = nil
+			}
+			if target.Archive.Observation != nil && target.Archive.Observation.Status == domainexecution.ObservationOwnedPresent {
+				target.Archive.Observation = nil
+			}
+		}
 		pending := effectPointer(&next.Execution, completionEffectKind(event, next.Execution))
 		pending.Observation = nil
 		next.Execution.OperationalObservationConsumed = true
@@ -748,6 +808,18 @@ func currentEffectObservation(state domainexecution.State) *domainexecution.Effe
 			return &observation
 		}
 	}
+	for _, target := range state.Control.Targets {
+		for _, effect := range []domainexecution.Effect{target.Boundary, target.Archive} {
+			if effect.Observation != nil {
+				observation := *effect.Observation
+				return &observation
+			}
+		}
+	}
+	if state.Control.Recovery.Snapshot.Observation != nil {
+		observation := *state.Control.Recovery.Snapshot.Observation
+		return &observation
+	}
 	return nil
 }
 
@@ -839,6 +911,7 @@ func preparationBarrier(state domainexecution.State) string {
 		FrozenInputsHash: hashText(strings.Join([]string{
 			state.RepositoryBindingHash, frozenProfilesHash(state), state.PrimarySession.ReservationSHA256,
 			hashText(string(eventPayload(state.Budget.Policy))), hashText(string(eventPayload(state.TurnBudgetDemand))),
+			hashText(string(eventPayload(state.ControlPolicy))),
 		}, "\x1f")),
 		EligibilityHash:       state.EligibilityFactsHash,
 		SecurityAdmissionHash: hashText(state.LifecycleDigest + "\x1f" + state.IsolationDigest),
@@ -971,11 +1044,25 @@ func hostResumeCursor(state domainexecution.State) uint64 {
 			cursor = effect.Observation.Cursor
 		}
 	}
+	for _, target := range state.Control.Targets {
+		for _, effect := range []domainexecution.Effect{target.Boundary, target.Archive} {
+			if effect.Observation != nil && effect.Observation.Cursor > cursor {
+				cursor = effect.Observation.Cursor
+			}
+		}
+	}
 	return cursor
 }
 
 func runtimeRequest(run domain.Run, effect domainexecution.Effect) runtimeport.Request {
 	state := run.Execution
+	recoveryPaths := make([]string, 0, len(state.Helpers))
+	for _, helper := range state.Helpers {
+		if helper.Mode == domainexecution.HelperWriter && helper.Phase != domainexecution.HelperTerminal && helper.WorktreePath != "" {
+			recoveryPaths = append(recoveryPaths, helper.WorktreePath)
+		}
+	}
+	sort.Strings(recoveryPaths)
 	return runtimeport.Request{
 		Scope: state.Scope, Effect: effect, LeaseBinding: state.LeaseBinding,
 		Repository: state.RepositoryBinding, SourcePath: state.SourcePath,
@@ -986,6 +1073,8 @@ func runtimeRequest(run domain.Run, effect domainexecution.Effect) runtimeport.R
 		LifecycleApproval: state.LifecycleApproval,
 		LifecycleDigest:   state.LifecycleDigest,
 		Isolation:         state.Isolation, IsolationDigest: state.IsolationDigest,
+		RecoveryWorktreePaths: recoveryPaths, ControlRecoveryArtifactID: state.Control.Recovery.ArtifactID,
+		ControlCleanupAuthorized: state.Control.Recovery.CleanupAuthorized,
 	}
 }
 
@@ -1531,6 +1620,27 @@ func (controller *Controller) commitWorkerIdentity(ctx context.Context, run doma
 		)
 	}
 	next.Execution.PrimarySession = bound
+	registration, err := host.RegistrationFromVisibility(next.Execution.Scope, *next.Execution.WorkerVisibility)
+	if err != nil {
+		return StepResult{Run: run, Progressed: true}, controller.parkRun(
+			ctx, run, domainexecution.NeedWorkerVisibilityMissing,
+		)
+	}
+	labels, err := host.WorkerLabels(registration)
+	if err != nil {
+		return StepResult{Run: run, Progressed: true}, controller.parkRun(
+			ctx, run, domainexecution.NeedWorkerVisibilityMissing,
+		)
+	}
+	identity := domainexecution.ControlledAgentIdentity{
+		ID: run.Execution.Agent.ExternalID, Role: domainexecution.ControlledTaskAgent,
+		WorkspaceID: run.Execution.HostView.ExternalID, Title: run.Execution.TaskTitle,
+		WorktreePath: run.Execution.WorktreePath, Labels: labels,
+		ProfileSHA256: run.Execution.EffectiveProfilesSHA256,
+	}
+	if existing := controlledAgentIndex(next.Execution.ControlledAgents, identity.ID); existing < 0 {
+		next.Execution.ControlledAgents = append(next.Execution.ControlledAgents, identity)
+	}
 	next.Execution.OperationalObservationConsumed = true
 	return StepResult{Run: next, Progressed: true}, controller.persistRun(
 		ctx, run, next, "run.worker_identity_persisted",
@@ -1858,6 +1968,16 @@ func (controller *Controller) step(ctx context.Context, runID string, nowMillis 
 	}
 	if err := controller.currentExecutionAuthority(ctx, run, nowMillis); err != nil {
 		return StepResult{Run: run}, err
+	}
+	if run.Execution.Control.SchemaVersion != "" && run.Execution.Control.Phase != domainexecution.ControlComplete {
+		return controller.stepRunControl(ctx, run, nowMillis)
+	}
+	project, err := controller.store.Project(ctx, run.Execution.Scope.ProjectID)
+	if err != nil {
+		return StepResult{Run: run}, err
+	}
+	if project.State != "active" || project.Control.ResumeRequired {
+		return StepResult{Run: run}, nil
 	}
 	if run.Execution.NeedsYou != nil {
 		return controller.stepPausedEvidence(ctx, run, nowMillis)

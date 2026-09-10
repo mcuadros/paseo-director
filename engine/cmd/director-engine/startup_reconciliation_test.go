@@ -119,10 +119,12 @@ func TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect(t
 		}
 
 		restarted := environment.Restart()
+		nowMillis := testNowMillis()
+		environment.RefreshObservationsAt(nowMillis)
 		result, err := executionapp.NewController(store, restarted, restarted, restarted).ReconcileStartup(
 			context.Background(), executionapp.StartupCommand{
 				SchemaVersion: executionapp.StartupCommandSchemaVersion,
-				RequestID:     fmt.Sprintf("startup-boundary-%03d", restart), NowMillis: testNowMillis(),
+				RequestID:     fmt.Sprintf("startup-boundary-%03d", restart), NowMillis: nowMillis,
 			},
 		)
 		if err != nil {

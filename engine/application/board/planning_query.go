@@ -4,6 +4,8 @@ package board
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mcuadros/director-engine/domain"
+	"github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	"github.com/mcuadros/director-engine/domain/scheduling"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
@@ -27,6 +30,7 @@ type planningProjectFacts struct {
 	epics           []domain.Epic
 	inputs          []projection.TaskProjectionInput
 	activeRuns      map[string]bool
+	latestRuns      map[string]domain.Run
 	counts          planningCounts
 	workspaceCounts map[string]planningCounts
 	epicProgress    map[string]planningProgress
@@ -130,6 +134,7 @@ func (reader *PlanningReader) loadFacts(ctx context.Context) (planningFacts, err
 		projectFacts := planningProjectFacts{
 			project: project, workspaces: workspaces, epics: epics,
 			inputs: make([]projection.TaskProjectionInput, 0, len(tasks)), activeRuns: make(map[string]bool),
+			latestRuns:      make(map[string]domain.Run),
 			workspaceCounts: make(map[string]planningCounts, len(workspaces)),
 			epicProgress:    make(map[string]planningProgress, len(epics)),
 		}
@@ -180,6 +185,7 @@ func (reader *PlanningReader) loadFacts(ctx context.Context) (planningFacts, err
 			var candidate *domain.Candidate
 			if latest, exists := latestTaskRun(runs); exists {
 				run = &latest
+				projectFacts.latestRuns[task.ID] = latest
 				projectFacts.activeRuns[task.ID] = !latest.Execution.Terminal
 				if latest.CurrentCandidateID != "" {
 					current, exists := candidatesByID[latest.CurrentCandidateID]
@@ -216,7 +222,7 @@ func (reader *PlanningReader) loadFacts(ctx context.Context) (planningFacts, err
 				Key: defaultPlanningKey(task.Key, task.ID), Title: task.Title,
 				Priority: domain.EffectivePriority(task.Priority), Labels: cloneText(task.Labels),
 				QueuedAtUnixMillis: task.QueuedAtUnixMillis, UpdatedAtUnixMillis: updatedAt,
-				Facts: taskStateFacts(task, dependency.Blocked, run, candidate),
+				Facts: taskStateFacts(project, task, dependency.Blocked, run, candidate),
 			}
 			if run != nil && runtimebudget.ValidLedger(run.Execution.Budget) {
 				budget := run.Execution.Budget
@@ -325,6 +331,22 @@ func taskCounts(counts planningCounts) planningport.TaskCounts {
 }
 
 func explanationMessage(code string) string {
+	switch code {
+	case "project_paused_at_safe_boundary":
+		return "Project is paused at a safe boundary; active turns were allowed to finish"
+	case "project_resume_reconciled":
+		return "Project resume reconciles every durable and external fact before dispatch"
+	case "task_cancelled_recovery_preserved":
+		return "Task Run was cancelled; configured recovery material is preserved"
+	case "emergency_stop_recovery_preserved":
+		return "Emergency stop cancelled active Project Runs; configured recovery material is preserved"
+	case "control_recovery_ambiguous":
+		return "Control recovery is ambiguous; relaunch and destructive cleanup remain blocked"
+	case "control_external_observation_unavailable":
+		return "Control is waiting for a fresh authoritative external observation"
+	case "emergency_stop_confirmation_required":
+		return "Emergency stop requires a fresh confirmation from this authenticated human session"
+	}
 	message := strings.ReplaceAll(code, "_", " ")
 	if message == "" {
 		return "Engine fact is unavailable"
@@ -468,7 +490,40 @@ func runtimeBudgetSummary(input projection.TaskProjectionInput) *planningport.Ru
 	}
 }
 
-func taskSummary(row projection.TaskProjectionRow, input projection.TaskProjectionInput, workspaces map[string]domain.Workspace, cursor string) planningport.TaskSummary {
+func action(kind, label, target string, version uint64, approval *string, emphasis string) planningport.AllowedAction {
+	digest := sha256.Sum256([]byte(kind + "\x1f" + target + "\x1f" + strconv.FormatUint(version, 10)))
+	request := "action-" + strings.ReplaceAll(kind, ".", "-") + "-" + hex.EncodeToString(digest[:16])
+	var targetID *string
+	if target != "" {
+		value := target
+		targetID = &value
+	}
+	return planningport.AllowedAction{
+		Kind: kind, Label: label, TargetID: targetID, RequestID: request,
+		IdempotencyKey: request, ExpectedVersion: strconv.FormatUint(version, 10),
+		HumanApprovalRef: approval, Emphasis: emphasis,
+	}
+}
+
+func runControlExplanation(run *domain.Run) *planningport.Explanation {
+	if run == nil || run.Execution.Control.SchemaVersion == "" || run.Execution.Control.ExplanationCode == "" {
+		return nil
+	}
+	code := run.Execution.Control.ExplanationCode
+	wake := "explicit_control_reconciliation"
+	human := false
+	if run.Execution.Control.Phase == execution.ControlPaused {
+		wake, human = "explicit_project_resume", true
+	}
+	if run.Execution.Control.Phase == execution.ControlNeedsYou {
+		wake, human = "fresh_control_reconciliation_or_human_recovery", true
+	}
+	return &planningport.Explanation{
+		Code: code, Message: explanationMessage(code), WakeCondition: &wake, HumanActionRequired: human,
+	}
+}
+
+func taskSummary(row projection.TaskProjectionRow, input projection.TaskProjectionInput, project domain.Project, run *domain.Run, workspaces map[string]domain.Workspace, cursor string) planningport.TaskSummary {
 	state := string(row.Projection.State)
 	if row.Projection.DoneMember {
 		state = "done"
@@ -487,12 +542,23 @@ func taskSummary(row projection.TaskProjectionRow, input projection.TaskProjecti
 		disposition = "eligible"
 	}
 	explanations := append(slices.Clone(blockers), needs...)
+	if control := runControlExplanation(run); control != nil {
+		explanations = append(explanations, *control)
+		if len(needs) == 0 {
+			blockers = append(blockers, *control)
+		}
+	}
+	actions := []planningport.AllowedAction{}
+	if run != nil && !run.Execution.Terminal && run.Execution.Control.Phase != execution.ControlContaining &&
+		project.Control.Intent.Kind != execution.ControlEmergencyStop {
+		actions = append(actions, action("task.cancel", "Cancel Task", run.ID, run.Version, nil, "danger"))
+	}
 	return planningport.TaskSummary{
 		ID: row.TaskID, ProjectID: row.ProjectID, WorkspaceID: row.WorkspaceID, EpicID: epicID,
 		Version: strconv.FormatUint(input.Facts.TaskVersion, 10), Key: row.Key, Title: row.Title,
 		DerivedState: state, Priority: string(row.Priority), Labels: cloneText(row.Labels),
 		UpdatedAt: time.UnixMilli(row.UpdatedAtUnixMillis).UTC().Format(time.RFC3339Nano),
-		Blockers:  blockers, NeedsYou: needs, AllowedActions: []planningport.AllowedAction{},
+		Blockers:  blockers, NeedsYou: needs, AllowedActions: actions,
 		SchedulingFacts: planningport.SchedulerFacts{
 			LaunchMode: launchMode(workspaces, row.WorkspaceID), LaunchDisposition: disposition,
 			FactsRevision: cursor, Explanations: explanations,
@@ -503,12 +569,45 @@ func taskSummary(row projection.TaskProjectionRow, input projection.TaskProjecti
 
 func projectSummaries(facts planningFacts) []planningport.ProjectSummary {
 	result := make([]planningport.ProjectSummary, 0, len(facts.projects))
-	for _, project := range facts.projects {
+	for _, current := range facts.projects {
+		project := current.project
+		actions := []planningport.AllowedAction{}
+		var control *planningport.Explanation
+		if project.Control.SchemaVersion != "" {
+			wake := "control_reconciliation"
+			human := false
+			if project.Control.Phase == execution.ControlAwaitingConfirmation {
+				wake, human = "fresh_authenticated_human_confirmation", true
+			}
+			control = &planningport.Explanation{
+				Code: project.Control.ExplanationCode, Message: explanationMessage(project.Control.ExplanationCode),
+				WakeCondition: &wake, HumanActionRequired: human,
+			}
+		}
+		if project.Control.Phase == execution.ControlAwaitingConfirmation && project.Control.Confirmation != nil {
+			approval := project.Control.Confirmation.ID
+			if project.State == "active" {
+				actions = append(actions, action("project.pause", "Pause Project", project.ID, project.Version, nil, "secondary"))
+			}
+			actions = append(actions, action("project.emergency-stop.confirm", "Confirm emergency stop", project.ID, project.Version, &approval, "danger"))
+		} else if project.State == "active" {
+			actions = append(actions,
+				action("project.pause", "Pause Project", project.ID, project.Version, nil, "secondary"),
+				action("project.emergency-stop.prepare", "Emergency stop…", project.ID, project.Version, nil, "danger"),
+			)
+		} else if project.State == "paused" {
+			if project.Control.Phase != execution.ControlContaining {
+				actions = append(actions, action("project.resume", "Resume Project", project.ID, project.Version, nil, "primary"))
+			}
+			if !project.Control.EmergencyLatched {
+				actions = append(actions, action("project.emergency-stop.prepare", "Emergency stop…", project.ID, project.Version, nil, "danger"))
+			}
+		}
 		result = append(result, planningport.ProjectSummary{
-			ID: project.project.ID, Version: strconv.FormatUint(project.project.Version, 10),
-			Name: project.project.Name, State: project.project.State,
-			WorkspaceCount: strconv.Itoa(len(project.workspaces)), TaskCounts: taskCounts(project.counts),
-			AllowedActions: []planningport.AllowedAction{},
+			ID: project.ID, Version: strconv.FormatUint(project.Version, 10),
+			Name: project.Name, State: project.State,
+			WorkspaceCount: strconv.Itoa(len(current.workspaces)), TaskCounts: taskCounts(current.counts),
+			Control: control, AllowedActions: actions,
 		})
 	}
 	return result
@@ -663,7 +762,18 @@ func (reader *PlanningReader) project(input planningport.QueryInput, cursor uint
 	}
 	tasks := make([]planningport.TaskSummary, 0, len(page.Tasks))
 	for _, row := range page.Tasks {
-		tasks = append(tasks, taskSummary(row, inputByID[row.TaskID], workspaces, page.SnapshotCursor))
+		var run *domain.Run
+		if project != nil {
+			if latest, ok := project.latestRuns[row.TaskID]; ok {
+				value := latest
+				run = &value
+			}
+		}
+		projectValue := domain.Project{}
+		if project != nil {
+			projectValue = project.project
+		}
+		tasks = append(tasks, taskSummary(row, inputByID[row.TaskID], projectValue, run, workspaces, page.SnapshotCursor))
 	}
 	definition, err := planningport.EmbeddedDefinition()
 	if err != nil {

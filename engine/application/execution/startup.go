@@ -132,6 +132,35 @@ func effectProgressed(effect domainexecution.Effect) bool {
 	return effect.Phase != domainexecution.EffectIntentRecorded || effect.Attempt > 0 || effect.Observation != nil
 }
 
+func controlContainmentComplete(state domainexecution.State) bool {
+	if state.Control.SchemaVersion == "" ||
+		(state.Control.Intent.Kind != domainexecution.ControlCancelTask && state.Control.Intent.Kind != domainexecution.ControlEmergencyStop) {
+		return false
+	}
+	for _, target := range state.Control.Targets {
+		if target.Archive.Phase != domainexecution.EffectComplete || !target.Archived || !target.ProcessAbsent {
+			return false
+		}
+	}
+	return true
+}
+
+func controlCleanupComplete(state domainexecution.State) bool {
+	if !controlContainmentComplete(state) || !state.Control.Recovery.Preserved {
+		return false
+	}
+	switch state.Control.Recovery.Mode {
+	case domainexecution.RecoveryRetain:
+		return state.HostViewArchive.ID == "" && state.WorktreeRemove.ID == ""
+	case domainexecution.RecoverySnapshotThenDelete:
+		return state.Control.Recovery.Snapshot.Phase == domainexecution.EffectComplete &&
+			state.Control.Recovery.ArtifactID != "" && state.Control.Recovery.CleanupAuthorized &&
+			state.HostViewArchive.Phase == domainexecution.EffectComplete && state.WorktreeRemove.Phase == domainexecution.EffectComplete
+	default:
+		return false
+	}
+}
+
 func validateExecutionGraph(run domain.Run) error {
 	state := run.Execution
 	if state.SchemaVersion != domainexecution.SchemaVersion ||
@@ -158,6 +187,9 @@ func validateExecutionGraph(run domain.Run) error {
 		!runtimebudget.ValidTurnDemand(state.Budget.Policy, state.TurnBudgetDemand) ||
 		state.Budget.Policy.Revision != state.EffectiveProfiles.ConfigurationSHA256() {
 		return errors.New("Run runtime budget is invalid")
+	}
+	if !domainexecution.ValidControlPolicy(state.ControlPolicy) || !domainexecution.ValidRunControl(state.Control, state) {
+		return errors.New("Run execution control is invalid")
 	}
 	if state.LastStartupReconciliation != nil &&
 		!domainexecution.ValidStartupReconciliation(*state.LastStartupReconciliation) {
@@ -266,18 +298,18 @@ func validateExecutionGraph(run domain.Run) error {
 	if run.CurrentCandidateID != "" && state.CandidateObservation == nil {
 		return errors.New("current Candidate lacks its admission observation")
 	}
-	if state.AgentArchive.ID != "" && run.CurrentCandidateID == "" {
+	controlContainment := controlContainmentComplete(state)
+	if state.AgentArchive.ID != "" && run.CurrentCandidateID == "" && state.Control.SchemaVersion == "" {
 		return errors.New("cleanup intent precedes Candidate admission")
 	}
-	if state.HostViewArchive.ID != "" && state.AgentArchive.Phase != domainexecution.EffectComplete {
+	if state.HostViewArchive.ID != "" && state.AgentArchive.Phase != domainexecution.EffectComplete && !controlContainment {
 		return errors.New("host-view cleanup precedes agent termination")
 	}
 	if state.WorktreeRemove.ID != "" && state.HostViewArchive.Phase != domainexecution.EffectComplete {
 		return errors.New("worktree cleanup precedes host-view archival")
 	}
-	if state.Terminal && (state.AgentArchive.Phase != domainexecution.EffectComplete ||
-		state.HostViewArchive.Phase != domainexecution.EffectComplete ||
-		state.WorktreeRemove.Phase != domainexecution.EffectComplete) {
+	if state.Terminal && !controlCleanupComplete(state) && (state.AgentArchive.Phase != domainexecution.EffectComplete ||
+		state.HostViewArchive.Phase != domainexecution.EffectComplete || state.WorktreeRemove.Phase != domainexecution.EffectComplete) {
 		return errors.New("terminal Run lacks completed cleanup facts")
 	}
 	return nil
@@ -393,13 +425,36 @@ func (controller *Controller) scanDurableRun(ctx context.Context, project domain
 }
 
 func cleanupIntentFacts(state domainexecution.State) []domainexecution.CleanupIntentFact {
-	result := make([]domainexecution.CleanupIntentFact, 0, 3)
+	result := make([]domainexecution.CleanupIntentFact, 0, 3+len(state.Helpers)+len(state.Control.Targets))
 	for _, effect := range []domainexecution.Effect{state.AgentArchive, state.HostViewArchive, state.WorktreeRemove} {
 		if effect.ID != "" {
 			result = append(result, domainexecution.CleanupIntentFact{
 				EffectID: effect.ID, Kind: effect.Kind, Phase: effect.Phase, Attempt: effect.Attempt,
 			})
 		}
+	}
+	for _, helper := range state.Helpers {
+		for _, effect := range []domainexecution.Effect{helper.Archive, helper.CheckoutRemove} {
+			if effect.ID != "" {
+				result = append(result, domainexecution.CleanupIntentFact{
+					EffectID: effect.ID, Kind: effect.Kind, Phase: effect.Phase, Attempt: effect.Attempt,
+				})
+			}
+		}
+	}
+	for _, target := range state.Control.Targets {
+		if target.Archive.ID != "" {
+			result = append(result, domainexecution.CleanupIntentFact{
+				EffectID: target.Archive.ID, Kind: target.Archive.Kind,
+				Phase: target.Archive.Phase, Attempt: target.Archive.Attempt,
+			})
+		}
+	}
+	if state.Control.Recovery.Snapshot.ID != "" {
+		effect := state.Control.Recovery.Snapshot
+		result = append(result, domainexecution.CleanupIntentFact{
+			EffectID: effect.ID, Kind: effect.Kind, Phase: effect.Phase, Attempt: effect.Attempt,
+		})
 	}
 	return result
 }
@@ -823,6 +878,24 @@ func (controller *Controller) ReconcileStartup(ctx context.Context, command Star
 		if err != nil {
 			return StartupResult{}, err
 		}
+		if run.Execution.Control.SchemaVersion != "" &&
+			run.Execution.Control.Intent.Kind == domainexecution.ControlCancelTask &&
+			run.Execution.Control.Phase != domainexecution.ControlCancelled &&
+			run.Execution.Control.Phase != domainexecution.ControlComplete &&
+			run.Execution.Control.Phase != domainexecution.ControlNeedsYou {
+			step, stepErr := controller.stepRunControl(ctx, run, command.NowMillis)
+			entry = startupRunResult(step.Run)
+			entry.Progressed = step.Progressed
+			if stepErr != nil {
+				var handoff *EffectHandoffError
+				if !errors.As(stepErr, &handoff) {
+					return StartupResult{}, stepErr
+				}
+				entry.HandoffUnknown = true
+			}
+			result.Runs = append(result.Runs, entry)
+			continue
+		}
 		if observed.durable.project.State != "active" || observed.durable.task.Attention != nil || run.Execution.NeedsYou != nil {
 			entry = startupRunResult(run)
 			if observed.durable.task.Attention != nil {
@@ -863,6 +936,21 @@ func (controller *Controller) ReconcileStartup(ctx context.Context, command Star
 		updated.Progressed = entry.Progressed
 		updated.HandoffUnknown = entry.HandoffUnknown
 		result.Runs = append(result.Runs, updated)
+	}
+	// Project controls are recovered after the complete ordinary external scan.
+	// Each control reconciler advances at most one durable frontier per Run and
+	// reuses the same lease/CAS gates as command-driven execution.
+	for _, project := range projects {
+		if project.Control.SchemaVersion == "" || project.Control.Phase == domainexecution.ControlAwaitingConfirmation ||
+			project.Control.Phase == domainexecution.ControlPaused || project.Control.Phase == domainexecution.ControlComplete {
+			continue
+		}
+		if _, err := controller.ReconcileProjectControl(ctx, ReconcileControlCommand{
+			RequestID: stableID("startup-control", command.RequestID, project.ID),
+			ProjectID: project.ID, Lease: leaseBinding(project), NowMillis: command.NowMillis,
+		}); err != nil {
+			return StartupResult{}, fmt.Errorf("startup control reconciliation %s: %w", project.ID, err)
+		}
 	}
 	sort.Slice(result.Runs, func(left, right int) bool { return result.Runs[left].RunID < result.Runs[right].RunID })
 	return result, nil
