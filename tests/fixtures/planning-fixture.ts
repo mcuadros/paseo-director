@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Deterministic test-only engine adapter for the generated planning client.
 
+import { createHash } from "node:crypto";
+
 import {
   PLANNING_CONTRACT_SHA256,
   PLANNING_CONTRACT_VERSION,
@@ -14,9 +16,11 @@ import {
   taskDetailSnapshotSchema,
   type AllowedAction,
   type AllowedActionKind,
+  type AttentionCode,
   type ConfigurationEntry,
   type ConfigurationOverride,
   type ConfigurationPreview,
+  type DerivedState,
   type PlanningClient,
   type PlanningMutationInput,
   type PlanningQueryInput,
@@ -107,7 +111,7 @@ function makeTask(index: number, historical: boolean): TaskSummary {
     : [];
   const needsYou = index === 0
     ? [{
-        code: "dependency-override-approval",
+        code: "policy_override_required",
         message: "A human may approve a scoped dependency override",
         wakeCondition: "approval revision 4 is applied",
         humanActionRequired: true,
@@ -178,7 +182,7 @@ export class DeterministicPlanningFixture implements PlanningClient {
   readonly historicalTaskCount = 10_000;
   readonly requests: PlanningQueryInput[] = [];
   readonly mutations: PlanningMutationInput[] = [];
-  #cursor = 0;
+  #snapshot = 1;
 
   constructor() {
     this.projects = [{
@@ -230,6 +234,8 @@ export class DeterministicPlanningFixture implements PlanningClient {
     }
     if (input.states.length > 0) {
       matches = matches.filter((task) => input.states.includes(task.derivedState));
+    } else {
+      matches = matches.filter((task) => task.derivedState !== "done");
     }
     if (input.priorities.length > 0) {
       matches = matches.filter((task) => input.priorities.includes(task.priority));
@@ -239,6 +245,13 @@ export class DeterministicPlanningFixture implements PlanningClient {
         input.labels.every((label) => task.labels.includes(label)),
       );
     }
+    if (input.attention.length > 0) {
+      matches = matches.filter((task) =>
+        task.needsYou.some((explanation) => input.attention.includes(
+          explanation.code as AttentionCode,
+        )),
+      );
+    }
     if (input.search !== null) {
       const search = input.search.toLocaleLowerCase("en-US");
       matches = matches.filter((task) =>
@@ -246,15 +259,17 @@ export class DeterministicPlanningFixture implements PlanningClient {
       );
     }
     matches = this.sortTasks(matches, input.sort);
-    const offset = input.cursor === null ? 0 : Number(BigInt(input.cursor));
+    const fingerprint = this.queryFingerprint(input);
+    const offset = input.cursor === null
+      ? 0
+      : this.decodeCursor(input.cursor, fingerprint);
     const selected = matches.slice(offset, offset + input.pageSize);
     const nextOffset = offset + selected.length;
-    this.#cursor += 1;
     return planningSnapshotSchema.parse({
       schemaVersion: PLANNING_SCHEMA_VERSION,
       contractVersion: PLANNING_CONTRACT_VERSION,
       contractHash: PLANNING_CONTRACT_SHA256,
-      cursor: count(this.#cursor),
+      cursor: count(this.#snapshot),
       page: {
         selectedProjectId,
         selectedWorkspaceIds: input.workspaceIds,
@@ -294,7 +309,9 @@ export class DeterministicPlanningFixture implements PlanningClient {
           action("project.create", null, "0", { label: "Create Project" }),
         ],
         totalTasks: count(matches.length),
-        nextCursor: nextOffset < matches.length ? count(nextOffset) : null,
+        nextCursor: nextOffset < matches.length
+          ? this.encodeCursor(nextOffset, fingerprint)
+          : null,
       },
     });
   }
@@ -303,12 +320,11 @@ export class DeterministicPlanningFixture implements PlanningClient {
     const input = taskDetailQueryInputSchema.parse(rawInput);
     const summary = this.tasks.find((task) => task.id === input.taskId);
     if (!summary) throw new Error("fixture task not found");
-    this.#cursor += 1;
     return taskDetailSnapshotSchema.parse({
       schemaVersion: PLANNING_SCHEMA_VERSION,
       contractVersion: PLANNING_CONTRACT_VERSION,
       contractHash: PLANNING_CONTRACT_SHA256,
-      cursor: count(this.#cursor),
+      cursor: count(this.#snapshot),
       detail: {
         summary,
         objective: "Render only engine-owned planning facts and submit typed intents.",
@@ -344,7 +360,7 @@ export class DeterministicPlanningFixture implements PlanningClient {
   async mutate(rawInput: PlanningMutationInput) {
     const input = planningMutationInputSchema.parse(rawInput);
     this.mutations.push(input);
-    this.#cursor += 1;
+    this.#snapshot += 1;
     const preview = input.intent.type === "configuration.preview"
       ? this.previewFor(input.intent.target, input.intent.overrides, input.expectedVersion)
       : null;
@@ -352,7 +368,7 @@ export class DeterministicPlanningFixture implements PlanningClient {
       schemaVersion: PLANNING_SCHEMA_VERSION,
       contractVersion: PLANNING_CONTRACT_VERSION,
       contractHash: PLANNING_CONTRACT_SHA256,
-      cursor: count(this.#cursor),
+      cursor: count(this.#snapshot),
       requestId: input.requestId,
       status: "accepted",
       message: preview ? "Configuration preview is ready" : "Intent accepted",
@@ -396,16 +412,78 @@ export class DeterministicPlanningFixture implements PlanningClient {
 
   private sortTasks(tasks: readonly TaskSummary[], sort: StableSort): TaskSummary[] {
     const result = [...tasks];
-    if (sort === "scheduler_order") return result;
+    const priorityRank: Record<Priority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+    if (sort === "scheduler_order") {
+      const stateRank = new Map<DerivedState, number>(
+        openStates.map((state, index) => [state, index]),
+      );
+      stateRank.set("done", openStates.length);
+      return result.sort(
+        (left, right) =>
+          (stateRank.get(left.derivedState) ?? 99) - (stateRank.get(right.derivedState) ?? 99) ||
+          priorityRank[left.priority] - priorityRank[right.priority] ||
+          left.key.localeCompare(right.key) ||
+          left.id.localeCompare(right.id),
+      );
+    }
     if (sort === "updated_desc") {
-      return result.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      return result.sort(
+        (left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id),
+      );
     }
     if (sort === "key_asc") {
       return result.sort((left, right) => left.key.localeCompare(right.key));
     }
-    const rank: Record<Priority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
     return result.sort(
-      (left, right) => rank[left.priority] - rank[right.priority] || left.key.localeCompare(right.key),
+      (left, right) =>
+        priorityRank[left.priority] - priorityRank[right.priority] ||
+        left.key.localeCompare(right.key) ||
+        left.id.localeCompare(right.id),
     );
+  }
+
+  private queryFingerprint(input: PlanningQueryInput): string {
+    const canonical = {
+      ...input,
+      workspaceIds: [...input.workspaceIds].sort(),
+      epicIds: [...input.epicIds].sort(),
+      states: [...input.states].sort(),
+      priorities: [...input.priorities].sort(),
+      labels: [...input.labels].sort(),
+      attention: [...input.attention].sort(),
+      search: input.search?.toLocaleLowerCase("en-US") ?? null,
+      cursor: null,
+    };
+    return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+  }
+
+  private encodeCursor(offset: number, fingerprint: string): string {
+    return Buffer.from(JSON.stringify({
+      v: 1,
+      snapshot: count(this.#snapshot),
+      filter: fingerprint,
+      offset,
+    })).toString("base64url");
+  }
+
+  private decodeCursor(cursor: string, fingerprint: string): number {
+    let value: unknown;
+    try {
+      value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    } catch {
+      throw new Error("fixture cursor is invalid");
+    }
+    if (
+      value === null ||
+      typeof value !== "object" ||
+      (value as Record<string, unknown>).v !== 1 ||
+      (value as Record<string, unknown>).snapshot !== count(this.#snapshot) ||
+      (value as Record<string, unknown>).filter !== fingerprint ||
+      !Number.isSafeInteger((value as Record<string, unknown>).offset) ||
+      Number((value as Record<string, unknown>).offset) < 0
+    ) {
+      throw new Error("fixture cursor belongs to another snapshot or filter");
+    }
+    return Number((value as Record<string, unknown>).offset);
   }
 }

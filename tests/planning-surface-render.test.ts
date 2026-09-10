@@ -219,6 +219,11 @@ test("wide planning presentation renders engine navigation, Board, capacity, det
   ]) {
     assert.match(text, expected);
   }
+  const groupByEpic = renderer.root.findByProps({
+    accessibilityLabel: "Group tasks by epic",
+  });
+  await act(async () => groupByEpic.props.onPress());
+  assert.match(renderedText(renderer), /M2-1 · Milestone epic 1/);
 
   const task = renderer.root.findByProps({
     accessibilityHint: "Opens task details",
@@ -265,9 +270,13 @@ test("wide planning presentation renders engine navigation, Board, capacity, det
 
   const modal = renderer.root.find((node) => String(node.type) === "Modal");
   await act(async () => modal.props.onOpenChange(false));
-  const launchTask = renderer.root.findByProps({
-    accessibilityLabel: "DIR-00002, Open task 2, Queued, high priority",
+  await act(async () => {
+    await waitForText(renderer, /Open task 2/);
   });
+  const launchTask = renderer.root
+    .findAllByProps({ accessibilityHint: "Opens task details" })
+    .find((node) => String(node.props.accessibilityLabel).includes(", Queued,"));
+  assert.ok(launchTask);
   await act(async () => launchTask.props.onPress());
   await act(async () => {
     await waitForText(renderer, /Launch now/);
@@ -315,6 +324,7 @@ test("compact List uses bounded virtualized rendering and stable opaque keys", a
     selectedTab.findAll((node) => String(node.type) === "Text").map((node) => node.children.join("")).join(" "),
     /List/,
   );
+  assert.match(renderedText(renderer), /M2-1 · Milestone epic 1/);
   const lists = renderer.root.findAll((node) => String(node.type) === "FlatList");
   const workspaceList = lists.find((node) =>
     Array.isArray(node.props.data) && node.props.data.length === 25,
@@ -322,17 +332,83 @@ test("compact List uses bounded virtualized rendering and stable opaque keys", a
   assert.ok(workspaceList);
   assert.equal(workspaceList.props.initialNumToRender, 10);
   const taskList = lists.find((node) =>
-    Array.isArray(node.props.data) && node.props.data[0]?.id === "task-0",
+    Array.isArray(node.props.data) &&
+    node.props.data.some((row: { kind?: string; task?: { id?: string } }) =>
+      row.kind === "task" && row.task?.id === "task-0"),
   );
   assert.ok(taskList);
   assert.equal(taskList.props.initialNumToRender, 16);
   assert.equal(taskList.props.maxToRenderPerBatch, 16);
   assert.equal(taskList.props.windowSize, 7);
   assert.equal(taskList.props.removeClippedSubviews, true);
-  assert.equal(taskList.props.keyExtractor(taskList.props.data[0]), "task-0");
+  const taskRow = taskList.props.data.find(
+    (row: { kind?: string; task?: { id?: string } }) => row.task?.id === "task-0",
+  );
+  assert.equal(taskList.props.keyExtractor(taskRow), "task:task-0");
   assert.ok(
     renderer.root.findAllByProps({ accessibilityHint: "Opens task details" }).length <= 16,
   );
+
+  const done = renderer.root.findByProps({ accessibilityLabel: "Filter state Done" });
+  await act(async () => done.props.onPress());
+  await act(async () => {
+    await waitForText(renderer, /Historical task/);
+  });
+  assert.deepEqual(fixture.requests.at(-1)?.states, ["done"]);
+  assert.match(renderedText(renderer), /10000\s+matching tasks/);
+  assert.ok(
+    renderer.root.findAllByProps({ accessibilityHint: "Opens task details" }).length <= 16,
+  );
+
+  await act(async () => renderer.unmount());
+  queryClient.clear();
+});
+
+test("paged cursor invalidation fails closed and refreshes from the first snapshot", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
+  const fixture = new DeterministicPlanningFixture();
+  const PlanningSurface = loadPlanningSurface();
+  const queryClient = new ReactQuery.QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  let renderer!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      React.createElement(
+        ReactQuery.QueryClientProvider,
+        { client: queryClient },
+        React.createElement(PlanningSurface, props(fixture, true)),
+      ),
+    );
+  });
+  await act(async () => {
+    await waitForText(renderer, /Contract-first planning UI shell/);
+  });
+  const detail = await fixture.taskDetail({ taskId: "task-0", afterCursor: null });
+  const action = detail.detail.summary.allowedActions.find(
+    (candidate) => candidate.kind === "configuration.preview",
+  );
+  assert.ok(action);
+  await fixture.mutate(PlanningContract.bindPlanningMutation(action, {
+    type: "configuration.preview",
+    target: detail.detail.configurationTarget,
+    overrides: [],
+  }));
+
+  const next = renderer.root.findByProps({ accessibilityLabel: "Load next task page" });
+  await act(async () => next.props.onPress());
+  await act(async () => {
+    await waitForText(renderer, /Planning data is unavailable/);
+  });
+  const refresh = renderer.root.findByProps({
+    accessibilityLabel: "Refresh planning data from the first page",
+  });
+  await act(async () => refresh.props.onPress());
+  await act(async () => {
+    await waitForText(renderer, /Contract-first planning UI shell/);
+  });
+  assert.equal(fixture.requests.at(-1)?.cursor, null);
 
   await act(async () => renderer.unmount());
   queryClient.clear();
@@ -349,6 +425,7 @@ test("loading, initial error, retry, stale refresh, and updated data preserve ca
     states: [],
     priorities: [],
     labels: [],
+    attention: [],
     search: null,
     sort: "scheduler_order",
     cursor: null,
@@ -406,6 +483,7 @@ test("loading, initial error, retry, stale refresh, and updated data preserve ca
     await waitForText(renderer, /Contract-first planning UI shell/, /Updating engine snapshot/);
   });
   assert.doesNotMatch(renderedText(renderer), /Planning data is unavailable/);
+  assert.match(renderedText(renderer), /Showing the last engine snapshot/);
 
   const updated: PlanningSnapshot = PlanningContract.planningSnapshotSchema.parse({
     ...firstSnapshot,
@@ -492,6 +570,17 @@ test("selections and query controls submit engine inputs without card movement o
   await act(async () => {
     await waitForText(renderer, /Contract-first planning UI shell/);
   });
+  const attention = renderer.root.findByProps({
+    accessibilityLabel: "Filter attention Policy override required",
+  });
+  await act(async () => {
+    attention.props.onPress();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  });
+  assert.deepEqual(fixture.requests.at(-1)?.attention, ["policy_override_required"]);
+  await act(async () => {
+    await waitForText(renderer, /Contract-first planning UI shell/);
+  });
 
   const task = renderer.root.findAllByProps({ accessibilityHint: "Opens task details" })[0];
   assert.ok(task);
@@ -507,7 +596,8 @@ test("selections and query controls submit engine inputs without card movement o
   assert.doesNotMatch(source, /PanResponder|draggable|onDrag|onDrop|localStorage|location\./);
   assert.doesNotMatch(source, /\.sort\s*\(/);
   assert.doesNotMatch(source, /#[0-9a-f]{3,8}/i);
-  assert.match(source, /useInfiniteQuery/);
+  assert.match(source, /useQuery/);
+  assert.doesNotMatch(source, /useInfiniteQuery/);
   assert.match(source, /useRpc\(planningQueryRpc\)/);
   assert.doesNotMatch(source, /QueryClientProvider|new QueryClient/);
 

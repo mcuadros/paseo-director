@@ -5,7 +5,6 @@ import type { PluginWorkspacePanelProps } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin";
 import { Modal } from "@getpaseo/plugin/react-native";
 import {
-  useInfiniteQuery,
   useMutation,
   useQuery,
 } from "@tanstack/react-query";
@@ -23,12 +22,14 @@ import {
 
 import {
   bindPlanningMutation,
+  PLANNING_ATTENTION_CODES,
   PLANNING_DERIVED_STATES,
   PLANNING_PRIORITIES,
   type AllowedAction,
   type ConfigurationOverride,
   type ConfigurationValue,
   type DerivedState,
+  type EpicSummary,
   type PlanningClient,
   type PlanningMutationInput,
   type PlanningMutationIntent,
@@ -43,7 +44,7 @@ import {
   planningTaskDetailRpc,
 } from "../rpc/planning.shared.ts";
 
-const pageSize = 50;
+const pageSize = 100;
 const initialRequest: Omit<PlanningQueryInput, "cursor"> = {
   projectId: null,
   workspaceIds: [],
@@ -51,6 +52,7 @@ const initialRequest: Omit<PlanningQueryInput, "cursor"> = {
   states: [],
   priorities: [],
   labels: [],
+  attention: [],
   search: null,
   sort: "scheduler_order",
   pageSize,
@@ -80,10 +82,67 @@ function valueLabel(value: ConfigurationValue): string {
   return value;
 }
 
+function attentionLabel(value: string): string {
+  const label = value.replaceAll("_", " ");
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
 function toggleValue<T>(values: readonly T[], value: T): readonly T[] {
   return values.includes(value)
     ? values.filter((candidate) => candidate !== value)
     : [...values, value];
+}
+
+export type PlanningTaskGroup = {
+  id: string;
+  label: string;
+  tasks: readonly TaskSummary[];
+};
+
+export type PlanningGroupRow =
+  | { kind: "header"; id: string; label: string }
+  | { kind: "task"; id: string; task: TaskSummary };
+
+// Grouping preserves the exact engine order within and between first-seen
+// groups. It is presentation structure only and never derives state or rank.
+export function groupPlanningTasks(
+  tasks: readonly TaskSummary[],
+  epics: readonly EpicSummary[],
+): readonly PlanningTaskGroup[] {
+  const labels = new Map(
+    epics.map((epic) => [epic.id, `${epic.key} · ${epic.title}`]),
+  );
+  const groups = new Map<string, PlanningTaskGroup>();
+  for (const task of tasks) {
+    const groupKey = task.epicId ?? "standalone";
+    const existing = groups.get(groupKey);
+    if (existing) {
+      groups.set(groupKey, { ...existing, tasks: [...existing.tasks, task] });
+      continue;
+    }
+    groups.set(groupKey, {
+      id: task.epicId === null ? "standalone" : `epic:${task.epicId}`,
+      label: task.epicId === null
+        ? "Standalone tasks"
+        : labels.get(task.epicId) ?? task.epicId,
+      tasks: [task],
+    });
+  }
+  return [...groups.values()];
+}
+
+export function planningGroupRows(
+  tasks: readonly TaskSummary[],
+  epics: readonly EpicSummary[],
+): readonly PlanningGroupRow[] {
+  return groupPlanningTasks(tasks, epics).flatMap((group) => [
+    { kind: "header" as const, id: `group:${group.id}`, label: group.label },
+    ...group.tasks.map((task) => ({
+      kind: "task" as const,
+      id: `task:${task.id}`,
+      task,
+    })),
+  ]);
 }
 
 type PlanningSurfaceProps = Pick<
@@ -115,18 +174,24 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
   const [request, setRequest] = useState(initialRequest);
   const [searchDraft, setSearchDraft] = useState("");
   const [compactLane, setCompactLane] = useState<DerivedState>("queued");
+  const [grouping, setGrouping] = useState<"flat" | "epic">(
+    layout.compact ? "epic" : "flat",
+  );
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [pageCursor, setPageCursor] = useState<string | null>(null);
+  const [previousCursors, setPreviousCursors] = useState<
+    readonly (string | null)[]
+  >([]);
 
-  const planning = useInfiniteQuery({
-    queryKey: ["director", "planning", request],
-    queryFn: ({ pageParam }) => client.query({ ...request, cursor: pageParam }),
-    initialPageParam: null as string | null,
-    getNextPageParam: (lastPage) => lastPage.page.nextCursor ?? undefined,
+  const planning = useQuery({
+    queryKey: ["director", "planning", request, pageCursor],
+    queryFn: () => client.query({ ...request, cursor: pageCursor }),
+    gcTime: 0,
     retry: false,
   });
-  const pages = planning.data?.pages ?? [];
-  const snapshot = pages.at(-1);
-  const tasks = pages.flatMap((page) => page.page.tasks);
+  const snapshot = planning.data;
+  const tasks = snapshot?.page.tasks ?? [];
+  const selectedSummary = tasks.find((task) => task.id === selectedTaskId);
 
   const detail = useQuery({
     queryKey: ["director", "planning-task", selectedTaskId],
@@ -276,6 +341,12 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
         laneTitle: { color: theme.colors.foreground, fontWeight: "700" },
         laneCount: { color: theme.colors.foregroundMuted, fontSize: 12 },
         laneTasks: { gap: 8 },
+        taskGroup: { gap: 7 },
+        taskGroupTitle: {
+          color: theme.colors.foregroundMuted,
+          fontSize: 12,
+          fontWeight: "700",
+        },
         task: {
           padding: 11,
           gap: 5,
@@ -340,6 +411,33 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
 
   function updateRequest(patch: Partial<typeof request>) {
     setRequest((current) => ({ ...current, ...patch }));
+    setPageCursor(null);
+    setPreviousCursors([]);
+    setSelectedTaskId(null);
+  }
+
+  function openNextPage() {
+    const next = snapshot?.page.nextCursor;
+    if (!next) return;
+    setPreviousCursors((current) => [...current, pageCursor]);
+    setPageCursor(next);
+    setSelectedTaskId(null);
+  }
+
+  function openPreviousPage() {
+    const previous = previousCursors.at(-1);
+    if (previous === undefined) return;
+    setPreviousCursors((current) => current.slice(0, -1));
+    setPageCursor(previous);
+    setSelectedTaskId(null);
+  }
+
+  function refreshFromFirstPage() {
+    const alreadyFirst = pageCursor === null;
+    setPageCursor(null);
+    setPreviousCursors([]);
+    setSelectedTaskId(null);
+    if (alreadyFirst) void planning.refetch();
   }
 
   function submitAction(action: AllowedAction, intent: PlanningMutationIntent) {
@@ -409,7 +507,7 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
     );
   }
 
-  function virtualizedTasks(data: readonly TaskSummary[]) {
+  function virtualizedTasks(data: readonly TaskSummary[], scrollEnabled = true) {
     return (
       <FlatList
         data={data}
@@ -418,6 +516,7 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
         maxToRenderPerBatch={12}
         removeClippedSubviews
         renderItem={({ item }) => taskCard(item)}
+        scrollEnabled={scrollEnabled}
         style={{ flexGrow: 0 }}
         contentContainerStyle={styles.laneTasks}
         windowSize={5}
@@ -425,14 +524,52 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
     );
   }
 
+  function virtualizedGroups(
+    data: readonly TaskSummary[],
+    scrollEnabled = true,
+  ) {
+    const rows = planningGroupRows(data, snapshot?.page.epics ?? []);
+    return (
+      <FlatList
+        data={rows}
+        initialNumToRender={16}
+        keyExtractor={(row) => row.id}
+        maxToRenderPerBatch={16}
+        removeClippedSubviews
+        renderItem={({ item: row }) =>
+          row.kind === "header" ? (
+            <View accessibilityLabel={row.label} style={styles.taskGroup}>
+              <Text accessibilityRole="header" style={styles.taskGroupTitle}>
+                {row.label}
+              </Text>
+            </View>
+          ) : taskCard(row.task)
+        }
+        style={{ flexGrow: 0 }}
+        contentContainerStyle={styles.laneTasks}
+        scrollEnabled={scrollEnabled}
+        windowSize={7}
+      />
+    );
+  }
+
   function renderBoard() {
+    const selectedProject = snapshot?.page.projects.find(
+      (project) => project.id === snapshot.page.selectedProjectId,
+    );
     const states = PLANNING_DERIVED_STATES.filter(
       (state) =>
         state !== "done" || snapshot?.page.appliedQuery.states.includes("done"),
     ).filter(
-      (state) => state !== "needs_you" || tasks.some((task) => task.derivedState === state),
+      (state) =>
+        state !== "needs_you" ||
+        selectedProject?.taskCounts.needsYou !== "0" ||
+        tasks.some((task) => task.derivedState === state),
     );
-    const visibleStates = layout.compact ? [compactLane] : states;
+    const selectedCompactLane = states.includes(compactLane)
+      ? compactLane
+      : states[0] ?? "queued";
+    const visibleStates = layout.compact ? [selectedCompactLane] : states;
     return (
       <View style={{ gap: 8 }}>
         {layout.compact ? (
@@ -445,7 +582,7 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
             keyExtractor={(state) => state}
             maxToRenderPerBatch={7}
             renderItem={({ item: state }) => {
-              const selected = compactLane === state;
+              const selected = selectedCompactLane === state;
               return (
                 <Pressable
                   accessibilityLabel={`Show ${stateLabels[state]} lane`}
@@ -483,8 +620,10 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
                 </View>
                 {laneTasks.length === 0 ? (
                   <Text style={styles.muted}>No tasks</Text>
+                ) : grouping === "epic" ? (
+                  virtualizedGroups(laneTasks, !layout.compact)
                 ) : (
-                  virtualizedTasks(laneTasks)
+                  virtualizedTasks(laneTasks, !layout.compact)
                 )}
               </View>
             );
@@ -745,7 +884,10 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
                   accessibilityRole="tab"
                   accessibilityState={{ selected }}
                   key={choice}
-                  onPress={() => setView(choice)}
+                  onPress={() => {
+                    setView(choice);
+                    setGrouping(choice === "list" ? "epic" : "flat");
+                  }}
                   style={[styles.chip, selected && styles.chipSelected]}
                 >
                   <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
@@ -755,6 +897,28 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
               );
             })}
           </View>
+        </View>
+
+        <View accessibilityRole="tablist" style={styles.row}>
+          {(["flat", "epic"] as const).map((choice) => {
+            const selected = grouping === choice;
+            return (
+              <Pressable
+                accessibilityLabel={choice === "flat"
+                  ? "Show flat tasks"
+                  : "Group tasks by epic"}
+                accessibilityRole="tab"
+                accessibilityState={{ selected }}
+                key={choice}
+                onPress={() => setGrouping(choice)}
+                style={[styles.chip, selected && styles.chipSelected]}
+              >
+                <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
+                  {choice === "flat" ? "Flat" : "By epic"}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
 
         {snapshot ? (
@@ -775,7 +939,13 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
                       accessibilityLabel={`Open project ${project.name}`}
                       accessibilityRole="button"
                       accessibilityState={{ selected }}
-                      onPress={() => setRequest({ ...initialRequest, projectId: project.id })}
+                      onPress={() => {
+                        setRequest({ ...initialRequest, projectId: project.id });
+                        setSearchDraft("");
+                        setPageCursor(null);
+                        setPreviousCursors([]);
+                        setSelectedTaskId(null);
+                      }}
                       style={[styles.chip, selected && styles.chipSelected]}
                     >
                       <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
@@ -921,6 +1091,30 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
                 })}
               </View>
               <View style={styles.wrap}>
+                {PLANNING_ATTENTION_CODES.map((code) => {
+                  const selected =
+                    snapshot.page.appliedQuery.attention.includes(code);
+                  return (
+                    <Pressable
+                      accessibilityLabel={
+                        `Filter attention ${attentionLabel(code)}`
+                      }
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      key={code}
+                      onPress={() => updateRequest({
+                        attention: toggleValue(request.attention, code),
+                      })}
+                      style={[styles.chip, selected && styles.chipSelected]}
+                    >
+                      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
+                        {attentionLabel(code)}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <View style={styles.wrap}>
                 {snapshot.page.availableSorts.map((sort) => {
                   const selected = snapshot.page.appliedQuery.sort === sort;
                   return (
@@ -985,12 +1179,16 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
               Director Engine did not provide a validated planning snapshot.
             </Text>
             <Pressable
-              accessibilityLabel="Try loading planning data again"
+              accessibilityLabel={pageCursor === null
+                ? "Try loading planning data again"
+                : "Refresh planning data from the first page"}
               accessibilityRole="button"
-              onPress={() => void planning.refetch()}
+              onPress={refreshFromFirstPage}
               style={styles.primaryButton}
             >
-              <Text style={styles.primaryButtonText}>Try again</Text>
+              <Text style={styles.primaryButtonText}>
+                {pageCursor === null ? "Try again" : "Refresh from first page"}
+              </Text>
             </Pressable>
           </View>
         ) : null}
@@ -998,6 +1196,22 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
           <View accessibilityLiveRegion="polite" style={styles.row}>
             <ActivityIndicator color={theme.colors.accent} size="small" />
             <Text style={styles.muted}>Updating engine snapshot</Text>
+          </View>
+        ) : null}
+        {snapshot && planning.isError ? (
+          <View accessibilityLiveRegion="polite" style={styles.live}>
+            <Text style={styles.liveTitle}>Showing the last engine snapshot</Text>
+            <Text style={styles.liveBody}>
+              The latest planning refresh failed. Tasks below may be stale.
+            </Text>
+            <Pressable
+              accessibilityLabel="Try refreshing planning data again"
+              accessibilityRole="button"
+              onPress={() => void planning.refetch()}
+              style={styles.secondaryButton}
+            >
+              <Text style={styles.secondaryButtonText}>Try again</Text>
+            </Pressable>
           </View>
         ) : null}
         {snapshot && snapshot.page.projects.length === 0 ? (
@@ -1017,19 +1231,15 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
         {snapshot && tasks.length > 0
           ? view === "board"
             ? renderBoard()
-            : (
+            : grouping === "epic"
+              ? virtualizedGroups(tasks, false)
+              : (
                 <FlatList
                   contentContainerStyle={styles.listContent}
                   data={tasks}
                   initialNumToRender={16}
                   keyExtractor={(task) => task.id}
                   maxToRenderPerBatch={16}
-                  onEndReached={() => {
-                    if (planning.hasNextPage && !planning.isFetchingNextPage) {
-                      void planning.fetchNextPage();
-                    }
-                  }}
-                  onEndReachedThreshold={0.6}
                   removeClippedSubviews
                   renderItem={({ item }) => taskCard(item)}
                   scrollEnabled={false}
@@ -1037,19 +1247,38 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
                 />
               )
           : null}
-        {planning.hasNextPage ? (
-          <View style={styles.footer}>
-            <Pressable
-              accessibilityLabel="Load more tasks"
-              accessibilityRole="button"
-              disabled={planning.isFetchingNextPage}
-              onPress={() => void planning.fetchNextPage()}
-              style={styles.secondaryButton}
-            >
-              <Text style={styles.secondaryButtonText}>
-                {planning.isFetchingNextPage ? "Loading more" : "Load more"}
-              </Text>
-            </Pressable>
+        {snapshot &&
+        (previousCursors.length > 0 || snapshot.page.nextCursor !== null) ? (
+          <View
+            accessibilityLabel={`Task page ${previousCursors.length + 1}`}
+            style={styles.footer}
+          >
+            <Text style={styles.muted}>
+              Page {previousCursors.length + 1} · {snapshot.page.totalTasks} matching
+              tasks
+            </Text>
+            <View style={styles.row}>
+              {previousCursors.length > 0 ? (
+                <Pressable
+                  accessibilityLabel="Load previous task page"
+                  accessibilityRole="button"
+                  onPress={openPreviousPage}
+                  style={styles.secondaryButton}
+                >
+                  <Text style={styles.secondaryButtonText}>Previous</Text>
+                </Pressable>
+              ) : null}
+              {snapshot.page.nextCursor !== null ? (
+                <Pressable
+                  accessibilityLabel="Load next task page"
+                  accessibilityRole="button"
+                  onPress={openNextPage}
+                  style={styles.secondaryButton}
+                >
+                  <Text style={styles.secondaryButtonText}>Next</Text>
+                </Pressable>
+              ) : null}
+            </View>
           </View>
         ) : null}
       </ScrollView>
@@ -1071,6 +1300,20 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
           {detail.isError ? (
             <View accessibilityLiveRegion="polite" style={styles.live}>
               <Text style={styles.liveTitle}>Task details are unavailable</Text>
+              {selectedSummary ? (
+                <View
+                  accessible
+                  accessibilityLabel={taskAccessibilityLabel(selectedSummary)}
+                >
+                  <Text style={styles.sectionLabel}>{selectedSummary.key}</Text>
+                  <Text accessibilityRole="header" style={styles.modalTitle}>
+                    {selectedSummary.title}
+                  </Text>
+                  <Text style={styles.liveBody}>
+                    {stateLabels[selectedSummary.derivedState]} · {selectedSummary.priority} priority
+                  </Text>
+                </View>
+              ) : null}
             </View>
           ) : null}
           {detail.data ? renderDetail(detail.data.detail) : null}

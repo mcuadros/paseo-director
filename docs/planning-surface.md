@@ -1,11 +1,11 @@
 # Contract-first M2 planning presentation
 
 The M2 planning shell is a complete React Native presentation over one
-transport-neutral Director Engine contract. It does not implement or claim the
-runtime Project, Workspace, Epic, Task, dependency, scheduler, or TaskStore
-behavior owned by the remaining M2 Tasks. Configuration inheritance,
-revision activation and security-envelope admission live in the standalone Go
-engine and are never reproduced by this surface.
+Director Engine contract. Its Board/List query is backed by the standalone Go
+engine's TaskStore fact reader and pure projection; the connector only
+transports the result. Configuration inheritance, revision activation,
+scheduling decisions, and security-envelope admission live in the engine and
+are never reproduced by this surface.
 
 ## Contract ownership
 
@@ -22,22 +22,24 @@ Every snapshot envelope binds:
 
 - schema version;
 - planning contract version and canonical hash;
-- a decimal-string monotonic cursor; and
+- a decimal-string monotonic snapshot cursor; and
 - a closed `PlanningPage` or `TaskDetail` projection.
 
-Identifiers are opaque strings. Versions and cursors are canonical unsigned
-64-bit decimal strings in TypeScript, avoiding JavaScript numeric precision
-loss. Read models include Project, Workspace, Epic, Task summary and detail,
+Identifiers are opaque strings. Versions and snapshot cursors are canonical
+unsigned 64-bit decimal strings in TypeScript, avoiding JavaScript numeric
+precision loss. Page cursors are opaque URL-safe values bound to the snapshot,
+normalized filters, selected sort, and complete last-row comparison key. Read
+models include Project, Workspace, Epic, Task summary and detail,
 engine-derived state and explanations, engine-returned allowed actions,
 scheduler/capacity facts, and configuration inheritance, effective source, and
 preview diff.
 
 Queries accept only the declared Project, Workspace, Epic, derived-state,
-priority, label, and search filters, one engine-declared stable sort, a cursor,
-and a bounded page size. The client does not filter or sort Task results; the
-test-only adapter implements those operations as a deterministic stand-in for
-future engine readers. Board lanes only group the already-derived state present
-on each returned Task.
+priority, label, attention, and search filters, one engine-declared stable
+sort, a cursor, and a bounded page size. The client does not filter or sort Task results. The
+runtime engine implements those operations, while the test-only adapter mirrors
+the same snapshot-bound contract. Board lanes only group the already-derived
+state present on each returned Task.
 
 Every mutation transports one of the closed Project, Epic, Task, dependency,
 configuration Preview/Apply, Launch-now, or audited dependency-override
@@ -56,10 +58,11 @@ active-revision acknowledgement bindings.
 The Project Board plugin panel now supplies:
 
 - Project switching and virtualized Workspace/Epic navigation;
-- Board/List modes over the same query;
-- Project, Workspace, Epic, state, priority, label, search, and stable-sort
+- Board/List modes over the same query, with flat or Epic grouping that
+  preserves engine order;
+- Project, Workspace, Epic, state, priority, label, attention, search, and stable-sort
   inputs;
-- cursor paging and bounded `FlatList` rendering;
+- snapshot-bound Previous/Next paging and bounded `FlatList` rendering;
 - accessible Task cards/rows and a host-owned compact-sheet/wide-dialog Task
   detail modal;
 - blocker, Needs-you, scheduler, capacity, and allowed-action displays; and
@@ -79,14 +82,22 @@ uses React Native primitives plus Paseo's `Modal`, takes every color from
 `theme.colors`, and switches density/layout from `layout.compact`. It uses no
 DOM, browser storage, native-route workaround, direct TaskStore access, raw
 Paseo domain call, drag-to-state behavior, or TypeScript lifecycle policy.
+Initial, empty, data, updating, stale-cache, page-invalidated, and unavailable
+states are visible and accessible. Wide layouts default to a flat Board;
+compact/mobile layouts default to an Epic-grouped List and use one Board lane
+at a time.
 
 ## Deliberate runtime boundary
 
-The v0.7 RPCs validate generated input and output schemas on both sides. Their
-current connector methods fail explicitly with `PLANNING_SURFACE_NOT_WIRED`.
-They do not call fixtures, infer a fallback, or pretend a backend exists. The
-runtime implementation and transport wiring remain with `dir-m2.3` through
-`dir-m2.8` and must implement this generated contract rather than recreate it.
+The v0.7 RPCs validate generated input and output schemas on both sides. The
+planning query uses one strict request to the engine's loopback-only
+`POST /v1/planning/query` endpoint, verifies the exact response origin and
+contract headers, rejects redirects, and bounds requests at 64 KiB and
+responses at 4 MiB. It owns no
+retry, filter, state, sorting, pagination, or TaskStore policy. Task-detail and
+mutation methods remain explicitly unwired until their complete application
+command/read contracts are available; they never call a fixture or infer a
+fallback.
 
 The deterministic adapter under `tests/fixtures/` is compiled only by tests.
 It contains exactly 25 Workspaces, 500 open Tasks, and 10,000 historical Tasks,

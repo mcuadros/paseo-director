@@ -8,6 +8,9 @@
     "planning.task-detail"
   ],
   "mutationName": "planning.mutate",
+  "queryPath": "/v1/planning/query",
+  "maximumRequestBytes": 65536,
+  "maximumResponseBytes": 4194304,
   "maximumPageSize": 100,
   "maximumProjects": 100,
   "maximumWorkspaces": 100,
@@ -32,6 +35,20 @@
     "updated_desc",
     "priority_fifo",
     "key_asc"
+  ],
+  "attentionCodes": [
+    "permission_required",
+    "correction_budget_exhausted",
+    "replacement_budget_exhausted",
+    "git_state_irreconcilable",
+    "configuration_required",
+    "credential_required",
+    "policy_override_required",
+    "soft_budget_acknowledgment_required",
+    "hard_budget_exhausted",
+    "recovery_ambiguous",
+    "review_decision_required",
+    "feedback_decision_required"
   ],
   "allowedActions": [
     "project.create",
@@ -71,6 +88,12 @@
       "type": "string",
       "pattern": "^(?:0|[1-9][0-9]{0,19})$"
     },
+    "pageCursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 5500,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
     "derivedState": {
       "enum": [
         "needs_you",
@@ -96,6 +119,22 @@
         "updated_desc",
         "priority_fifo",
         "key_asc"
+      ]
+    },
+    "attentionCode": {
+      "enum": [
+        "permission_required",
+        "correction_budget_exhausted",
+        "replacement_budget_exhausted",
+        "git_state_irreconcilable",
+        "configuration_required",
+        "credential_required",
+        "policy_override_required",
+        "soft_budget_acknowledgment_required",
+        "hard_budget_exhausted",
+        "recovery_ambiguous",
+        "review_decision_required",
+        "feedback_decision_required"
       ]
     },
     "allowedActionKind": {
@@ -431,6 +470,7 @@
         "states",
         "priorities",
         "labels",
+        "attention",
         "search",
         "sort",
         "cursor",
@@ -468,6 +508,11 @@
           "maxItems": 64,
           "items": { "$ref": "#/$defs/opaqueId" }
         },
+        "attention": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "$ref": "#/$defs/attentionCode" }
+        },
         "search": {
           "anyOf": [
             { "type": "string", "minLength": 1, "maxLength": 256 },
@@ -477,7 +522,7 @@
         "sort": { "$ref": "#/$defs/stableSort" },
         "cursor": {
           "anyOf": [
-            { "$ref": "#/$defs/uint64Decimal" },
+            { "$ref": "#/$defs/pageCursor" },
             { "type": "null" }
           ]
         },
@@ -561,7 +606,7 @@
         "totalTasks": { "$ref": "#/$defs/uint64Decimal" },
         "nextCursor": {
           "anyOf": [
-            { "$ref": "#/$defs/uint64Decimal" },
+            { "$ref": "#/$defs/pageCursor" },
             { "type": "null" }
           ]
         }

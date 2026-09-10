@@ -121,6 +121,11 @@ func TestTaskQueryPaginationMatchesIndependentOracleMembership(t *testing.T) {
 	}); !errors.Is(err, ErrTaskQueryCursorSnapshot) {
 		t.Fatalf("cross-filter cursor error = %v", err)
 	}
+	if _, err := QueryTaskProjections(inputs, snapshot, TaskQuery{
+		Membership: TaskMembershipAll, Limit: 3, After: first.NextCursor,
+	}); !errors.Is(err, ErrTaskQueryCursorSnapshot) {
+		t.Fatalf("cross-page-size cursor error = %v", err)
+	}
 }
 
 func TestTaskQueryFiltersBoardDoneAndPlanningMetadata(t *testing.T) {
