@@ -53,6 +53,10 @@ export function generatePlanningClient(repositoryRoot, schemaPath) {
   return generate(repositoryRoot, schemaPath, "./cmd/generate-planning-client");
 }
 
+export function generateAgentMCPClient(repositoryRoot, schemaPath) {
+  return generate(repositoryRoot, schemaPath, "./cmd/generate-agent-mcp-client");
+}
+
 export function generatedClientMatches(repositoryRoot, schemaPath) {
   const generated = generateClient(repositoryRoot, schemaPath);
   const committed = readFileSync(
@@ -69,6 +73,14 @@ export function generatedPlanningClientMatches(repositoryRoot, schemaPath) {
   return generated.equals(committed);
 }
 
+export function generatedAgentMCPClientMatches(repositoryRoot, schemaPath) {
+  const generated = generateAgentMCPClient(repositoryRoot, schemaPath);
+  const committed = readFileSync(
+    resolve(repositoryRoot, "generated/agent-mcp-contract.shared.ts"),
+  );
+  return generated.equals(committed);
+}
+
 function run(repositoryRoot) {
   const hostSchemaPath = resolve(
     repositoryRoot,
@@ -77,6 +89,10 @@ function run(repositoryRoot) {
   const planningSchemaPath = resolve(
     repositoryRoot,
     "engine/ports/planning/planning-surface.v1.json",
+  );
+  const agentMCPSchemaPath = resolve(
+    repositoryRoot,
+    "engine/domain/agentbridge/schemas/director-agent-mcp.v1.json",
   );
   if (!generatedClientMatches(repositoryRoot, hostSchemaPath)) {
     console.error(
@@ -90,7 +106,13 @@ function run(repositoryRoot) {
     );
     return 1;
   }
-  console.log("Engine-owned host and planning schemas match their generated TypeScript clients.");
+  if (!generatedAgentMCPClientMatches(repositoryRoot, agentMCPSchemaPath)) {
+    console.error(
+      "Generated agent MCP client drifted; run npm run contract:generate and review the result.",
+    );
+    return 1;
+  }
+  console.log("Engine-owned host, planning, and agent MCP schemas match their generated TypeScript clients.");
   return 0;
 }
 

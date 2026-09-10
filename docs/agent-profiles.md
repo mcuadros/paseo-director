@@ -62,4 +62,7 @@ sets are ordered canonically before hashing; a timestamp refresh does not hide
 capability drift, and reordered equivalent facts do not create a false drift.
 
 MCP capability IDs are policy inputs only. The scoped stdio MCP bridge and its
-tool implementations remain owned by M3.3.
+tool implementations are defined by
+[`director.agent-mcp/v1`](agent-mcp.md). Existing Runs retain the exact tools
+derived from these immutable profile bytes; later configuration or discovery
+drift cannot widen their catalogs.

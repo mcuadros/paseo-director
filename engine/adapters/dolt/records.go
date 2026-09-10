@@ -384,6 +384,19 @@ func validateRun(run domain.Run) error {
 			!execution.ValidStartupReconciliation(*state.LastStartupReconciliation) {
 			return fmt.Errorf("%w: invalid startup reconciliation", storeport.ErrInvalidRecord)
 		}
+		if len(state.MCPCommandReceipts) > execution.MaximumMCPCommandReceipts {
+			return fmt.Errorf("%w: invalid MCP command receipt count", storeport.ErrInvalidRecord)
+		}
+		seenMCPCommands := make(map[string]struct{}, len(state.MCPCommandReceipts))
+		for _, receipt := range state.MCPCommandReceipts {
+			if !execution.ValidMCPCommandReceipt(receipt) {
+				return fmt.Errorf("%w: invalid MCP command receipt", storeport.ErrInvalidRecord)
+			}
+			if _, duplicate := seenMCPCommands[receipt.CommandKey]; duplicate {
+				return fmt.Errorf("%w: duplicate MCP command receipt", storeport.ErrInvalidRecord)
+			}
+			seenMCPCommands[receipt.CommandKey] = struct{}{}
+		}
 	}
 	return nil
 }

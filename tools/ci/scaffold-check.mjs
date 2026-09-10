@@ -60,6 +60,7 @@ const ENGINE_ALLOWED_PREFIXES = [
   "engine/cmd/director-engine/",
   "engine/cmd/generate-host-client/",
   "engine/cmd/generate-planning-client/",
+  "engine/cmd/generate-agent-mcp-client/",
   "engine/domain/",
   "engine/internal/planningtestkit/",
   "engine/internal/testkit/projectionoracle/",

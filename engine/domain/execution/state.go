@@ -2,11 +2,21 @@
 
 package execution
 
-import "github.com/mcuadros/director-engine/domain/agentprofile"
+import (
+	"strings"
+
+	"github.com/mcuadros/director-engine/domain/agentprofile"
+)
 
 const SchemaVersion = "director.execution/v1"
 
 const StartupReconciliationSchemaVersion = "director.startup-reconciliation/v1"
+
+// MaximumMCPCommandReceipts bounds the durable per-Run ingress ledger. The
+// complete bounded command payload remains immutable in the TaskStore Command
+// row; this ledger carries only the identities needed to prove replay and
+// recovery did not append a second logical command.
+const MaximumMCPCommandReceipts = 64
 
 // EffectKind is the closed M1 effect vocabulary. Host-view operations cross
 // the engine-owned host port; the remaining operations use engine adapters.
@@ -115,6 +125,50 @@ type CandidateObservation struct {
 	NoConflict       bool   `json:"noConflict"`
 }
 
+// MCPCommandReceipt is the bounded per-Run proof that one fixed-scope MCP
+// mutation reached the durable Command path. The complete canonical payload
+// remains in the immutable Command row and is addressed by CommandKey.
+type MCPCommandReceipt struct {
+	CommandKey              string `json:"commandKey"`
+	ToolName                string `json:"toolName"`
+	Capability              string `json:"capability"`
+	Role                    string `json:"role"`
+	SessionSHA256           string `json:"sessionSha256"`
+	PayloadSHA256           string `json:"payloadSha256"`
+	EffectiveProfilesSHA256 string `json:"effectiveProfilesSha256"`
+	ConfigurationSHA256     string `json:"configurationSha256"`
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	return strings.IndexFunc(value, func(character rune) bool {
+		return !strings.ContainsRune("0123456789abcdef", character)
+	}) < 0
+}
+
+// ValidMCPCommandReceipt verifies the closed tool/capability/role mapping and
+// every immutable digest carried by the compact recovery ledger.
+func ValidMCPCommandReceipt(receipt MCPCommandReceipt) bool {
+	if !strings.HasPrefix(receipt.CommandKey, "mcp-command-") || len(receipt.CommandKey) != len("mcp-command-")+64 ||
+		!validSHA256(strings.TrimPrefix(receipt.CommandKey, "mcp-command-")) || !validSHA256(receipt.SessionSHA256) ||
+		!validSHA256(receipt.PayloadSHA256) || !validSHA256(receipt.EffectiveProfilesSHA256) ||
+		!validSHA256(receipt.ConfigurationSHA256) {
+		return false
+	}
+	switch receipt.Role {
+	case "organizer":
+		return receipt.ToolName == "director_planning_command_submit" && receipt.Capability == "planning.command.submit"
+	case "worker":
+		return receipt.ToolName == "director_task_outcome_submit" && receipt.Capability == "task.outcome.submit"
+	case "reviewer":
+		return receipt.ToolName == "director_review_verdict_submit" && receipt.Capability == "review.verdict.submit"
+	default:
+		return false
+	}
+}
+
 // CleanupIntentFact is the bounded durable identity of one cleanup intent
 // recovered at engine startup. It contains no path, command, or model text.
 type CleanupIntentFact struct {
@@ -197,6 +251,7 @@ type State struct {
 	LastCompletionEvent              *CompletionEvent         `json:"lastCompletionEvent,omitempty"`
 	CompletionEventCursor            uint64                   `json:"completionEventCursor,omitempty"`
 	CompletionEventReceipts          []CompletionEventReceipt `json:"completionEventReceipts,omitempty"`
+	MCPCommandReceipts               []MCPCommandReceipt      `json:"mcpCommandReceipts,omitempty"`
 	Claim                            *CompletedClaim          `json:"claim,omitempty"`
 	CandidateObservation             *CandidateObservation    `json:"candidateObservation,omitempty"`
 	OperationalObservation           *OperationalObservation  `json:"operationalObservation,omitempty"`

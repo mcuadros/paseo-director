@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schemaVersion": 1,
+  "contractVersion": "director.agent-mcp/v1",
+  "supportedPaseoVersion": "0.7.2",
+  "maximumRequestBytes": 65536,
+  "maximumResponseBytes": 65536,
+  "maximumCommandsPerRun": 64,
+  "providerCliVersions": {
+    "codex": "0.147.0",
+    "claude-code": "2.1.258",
+    "opencode": "1.18.18"
+  },
+  "roles": ["organizer", "worker", "reviewer"],
+  "capabilities": [
+    "project.read",
+    "planning.command.submit",
+    "task.read",
+    "task.outcome.submit",
+    "candidate.read",
+    "review.verdict.submit"
+  ],
+  "tools": [
+    {
+      "name": "director_project_read",
+      "description": "Read the bounded Director Project projection fixed to this session.",
+      "capability": "project.read",
+      "roles": ["organizer", "worker"],
+      "mutating": false,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "name": "director_planning_command_submit",
+      "description": "Submit one bounded Task update proposal for deterministic Director Engine admission in the fixed session scope.",
+      "capability": "planning.command.submit",
+      "roles": ["organizer"],
+      "mutating": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "title", "objective", "acceptanceCriteria", "priority", "labels"],
+        "properties": {
+          "kind": { "const": "task_update_proposal" },
+          "title": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "objective": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "acceptanceCriteria": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 128,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 2048 }
+          },
+          "priority": { "enum": ["urgent", "high", "normal", "low"] },
+          "labels": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        }
+      }
+    },
+    {
+      "name": "director_task_read",
+      "description": "Read the bounded Task and Run projection fixed to this Worker session.",
+      "capability": "task.read",
+      "roles": ["worker"],
+      "mutating": false,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "name": "director_task_outcome_submit",
+      "description": "Submit exactly one closed AgentOutcomeClaim for deterministic Director Engine processing in the fixed Worker scope.",
+      "capability": "task.outcome.submit",
+      "roles": ["worker"],
+      "mutating": true,
+      "inputSchema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "candidateSha", "baseSha", "criteriaResults", "residualRiskCodes"],
+            "properties": {
+              "outcome": { "const": "completed" },
+              "candidateSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+              "baseSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+              "criteriaResults": {
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 128,
+                "propertyNames": { "minLength": 1, "maxLength": 128 },
+                "additionalProperties": { "enum": ["claimed_satisfied", "claimed_unsatisfied"] }
+              },
+              "residualRiskCodes": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "candidateSha", "baseSha", "checkIds"],
+            "properties": {
+              "outcome": { "const": "needs_validation" },
+              "candidateSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+              "baseSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+              "checkIds": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 128,
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "candidateSha", "baseSha", "criterionIds"],
+            "properties": {
+              "outcome": { "const": "needs_review" },
+              "candidateSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+              "baseSha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+              "criterionIds": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 128,
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "questionCode", "question", "options", "affectedScope", "resumeCondition"],
+            "properties": {
+              "outcome": { "const": "needs_human_decision" },
+              "questionCode": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "question": { "type": "string", "minLength": 1, "maxLength": 2048 },
+              "options": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 8,
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+              },
+              "affectedScope": { "enum": ["task", "run", "candidate"] },
+              "resumeCondition": { "type": "string", "minLength": 1, "maxLength": 512 }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "dependencyIds", "wakePredicate"],
+            "properties": {
+              "outcome": { "const": "blocked_by_dependency" },
+              "dependencyIds": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 128,
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+              },
+              "wakePredicate": { "type": "string", "minLength": 1, "maxLength": 512 }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "operationCode", "failureFingerprint"],
+            "oneOf": [
+              { "required": ["capabilityCode"], "not": { "required": ["resourceCode"] } },
+              { "required": ["resourceCode"], "not": { "required": ["capabilityCode"] } }
+            ],
+            "properties": {
+              "outcome": { "const": "blocked_by_access" },
+              "capabilityCode": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "resourceCode": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "operationCode": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "failureFingerprint": { "type": "string", "minLength": 1, "maxLength": 256 }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "budgetDimension", "observedAmount", "unit"],
+            "properties": {
+              "outcome": { "const": "budget_exhausted" },
+              "budgetDimension": { "enum": ["time", "cost", "tokens", "turns"] },
+              "observedAmount": { "type": "number", "minimum": 0 },
+              "unit": { "type": "string", "minLength": 1, "maxLength": 32 }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "director_candidate_read",
+      "description": "Read the bounded exact Candidate projection fixed to this Reviewer session.",
+      "capability": "candidate.read",
+      "roles": ["reviewer"],
+      "mutating": false,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "name": "director_review_verdict_submit",
+      "description": "Submit one structured exact-Candidate review claim for deterministic Director Engine processing.",
+      "capability": "review.verdict.submit",
+      "roles": ["reviewer"],
+      "mutating": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["verdict", "coverage", "findings", "residualRiskCodes"],
+        "properties": {
+          "verdict": { "enum": ["approve_candidate", "changes_requested", "needs_human_decision"] },
+          "coverage": {
+            "type": "array",
+            "minItems": 8,
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": { "enum": ["acceptance", "correctness", "security", "maintainability", "readability", "design", "quality", "rigor"] }
+          },
+          "findings": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["code", "severity", "dimension", "summary", "references"],
+              "properties": {
+                "code": { "type": "string", "minLength": 1, "maxLength": 64 },
+                "severity": { "enum": ["P0", "P1", "P2", "P3"] },
+                "dimension": { "enum": ["acceptance", "correctness", "security", "maintainability", "readability", "design", "quality", "rigor"] },
+                "summary": { "type": "string", "minLength": 1, "maxLength": 1024 },
+                "references": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "uniqueItems": true,
+                  "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+                }
+              }
+            }
+          },
+          "residualRiskCodes": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1, "maxLength": 64 }
+          }
+        }
+      }
+    }
+  ]
+}
