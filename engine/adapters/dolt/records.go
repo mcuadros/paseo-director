@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mcuadros/director-engine/domain"
+	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	"github.com/mcuadros/director-engine/domain/execution"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
@@ -341,7 +342,7 @@ func validateDependencyOverride(override domain.DependencyOverride) error {
 }
 
 func validSHA(value string) bool {
-	if len(value) != 40 {
+	if len(value) != 40 && len(value) != 64 {
 		return false
 	}
 	for _, character := range value {
@@ -422,16 +423,48 @@ func validateRun(run domain.Run) error {
 			}
 			seenControlledAgents[identity.ID] = struct{}{}
 		}
+		if (state.CandidateClaim == nil) != (state.CandidateObservation == nil) {
+			return fmt.Errorf("%w: partial Candidate admission evidence", storeport.ErrInvalidRecord)
+		}
+		if state.CandidateClaim != nil {
+			if !candidatedomain.ValidClaim(*state.CandidateClaim) || !candidatedomain.ValidObservation(*state.CandidateObservation) ||
+				state.CandidateObservationRunVersion == 0 || state.CandidateObservationRunVersion > run.Version ||
+				state.CandidateClaim.ExpectedRunVersion != state.CandidateObservationRunVersion ||
+				state.CandidateClaim.RunID != run.ID || state.CandidateClaim.TaskID != run.TaskID ||
+				state.CandidateClaim.BaseSHA != run.BaseSHA || state.CandidateClaim.Branch != state.Branch ||
+				state.CandidateClaim.BaseRef != state.BaseRef || state.CandidateClaim.LeaseEpoch != state.LeaseBinding.Epoch ||
+				state.CandidateObservation.ClaimSHA256 != candidatedomain.ClaimSHA256(*state.CandidateClaim) ||
+				state.CandidateObservation.RepositoryBindingSHA256 != state.RepositoryBindingHash {
+				return fmt.Errorf("%w: invalid Candidate admission evidence", storeport.ErrInvalidRecord)
+			}
+		} else if state.CandidateObservationRunVersion != 0 {
+			return fmt.Errorf("%w: orphan Candidate observation version", storeport.ErrInvalidRecord)
+		}
+		if state.CandidateAuthority != nil {
+			if !candidatedomain.ValidAuthority(*state.CandidateAuthority) || run.CurrentCandidateID != state.CandidateAuthority.CandidateID {
+				return fmt.Errorf("%w: invalid Candidate authority", storeport.ErrInvalidRecord)
+			}
+		} else if run.CurrentCandidateID != "" {
+			return fmt.Errorf("%w: current Candidate lacks authority", storeport.ErrInvalidRecord)
+		}
 	}
 	return nil
 }
 
 func validateCandidate(candidate domain.Candidate) error {
 	if !safeIdentifier(candidate.ID, 128) || !safeIdentifier(candidate.RunID, 128) ||
-		candidate.Sequence == 0 || !validSHA(candidate.CommitSHA) {
+		candidate.SchemaVersion != domain.CandidateSchemaVersion || candidate.Sequence == 0 || !validSHA(candidate.CommitSHA) ||
+		!candidatedomain.ValidClaim(candidate.Claim) || !candidatedomain.ValidManifest(candidate.Manifest) ||
+		candidate.Claim.RunID != candidate.RunID || candidate.Claim.CandidateSHA != candidate.CommitSHA ||
+		candidate.Manifest.CandidateSHA != candidate.CommitSHA || candidate.Manifest.BaseSHA != candidate.Claim.BaseSHA ||
+		candidate.Manifest.ClaimSHA256 != candidatedomain.ClaimSHA256(candidate.Claim) || candidate.AdmittedAtMillis < 0 {
 		return fmt.Errorf("%w: invalid Candidate", storeport.ErrInvalidRecord)
 	}
 	return nil
+}
+
+func encodedCandidate(candidate domain.Candidate) ([]byte, error) {
+	return marshalRecord(candidate)
 }
 
 func validateReloadedEvent(event domain.Event) error {
@@ -1363,6 +1396,27 @@ func (store *DoltTaskStore) AppendCandidate(
 		if err := decodeRecord(rawData, &current); err != nil {
 			return mutationResult{}, err
 		}
+		var maximumSequence sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT MAX(sequence) FROM candidates WHERE run_id = ?`, candidate.RunID).Scan(&maximumSequence); err != nil {
+			return mutationResult{}, err
+		}
+		expectedSequence := uint64(1)
+		if maximumSequence.Valid {
+			expectedSequence = uint64(maximumSequence.Int64) + 1
+		}
+		if candidate.Sequence != expectedSequence {
+			return mutationResult{}, storeport.ErrReferentialIntegrity
+		}
+		candidateData, err := encodedCandidate(candidate)
+		if err != nil {
+			return mutationResult{}, err
+		}
+		generation := uint64(0)
+		if current.Execution.CandidateAuthority != nil {
+			generation = current.Execution.CandidateAuthority.Generation
+		}
+		authority := candidatedomain.NewAuthority(generation, candidate.ID, candidate.Claim.Branch, candidate.Claim.TaskVersion, candidate.Manifest)
+		current.Execution.CandidateAuthority = &authority
 		current.CurrentCandidateID = candidate.ID
 		data, err := marshalRecord(current)
 		if err != nil {
@@ -1384,8 +1438,8 @@ func (store *DoltTaskStore) AppendCandidate(
 			return mutationResult{}, errConcurrentWrite
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO candidates (id, run_id, sequence, commit_sha) VALUES (?, ?, ?, ?)`,
-			candidate.ID, candidate.RunID, candidate.Sequence, candidate.CommitSHA,
+			`INSERT INTO candidates (id, run_id, sequence, commit_sha, data) VALUES (?, ?, ?, ?, ?)`,
+			candidate.ID, candidate.RunID, candidate.Sequence, candidate.CommitSHA, candidateData,
 		); err != nil {
 			if isDuplicateError(err) {
 				return mutationResult{}, storeport.ErrAlreadyExists
@@ -2078,15 +2132,22 @@ func (store *DoltTaskStore) Candidate(ctx context.Context, id string) (domain.Ca
 	}
 	defer connection.Close()
 	var candidate domain.Candidate
+	var data []byte
 	err = connection.QueryRowContext(ctx,
-		`SELECT id, run_id, sequence, commit_sha FROM candidates WHERE id = ?`, id,
-	).Scan(&candidate.ID, &candidate.RunID, &candidate.Sequence, &candidate.CommitSHA)
+		`SELECT id, run_id, sequence, commit_sha, data FROM candidates WHERE id = ?`, id,
+	).Scan(&candidate.ID, &candidate.RunID, &candidate.Sequence, &candidate.CommitSHA, &data)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Candidate{}, storeport.ErrNotFound
 	}
 	if err != nil {
 		return domain.Candidate{}, queryFailure()
 	}
+	var stored domain.Candidate
+	if err := decodeRecord(data, &stored); err != nil || stored.ID != candidate.ID || stored.RunID != candidate.RunID ||
+		stored.Sequence != candidate.Sequence || stored.CommitSHA != candidate.CommitSHA {
+		return domain.Candidate{}, backendFailure(storeport.HealthStoredRecordInvalid)
+	}
+	candidate = stored
 	if err := validateReloaded(validateCandidate(candidate)); err != nil {
 		return domain.Candidate{}, err
 	}
@@ -2104,7 +2165,7 @@ func (store *DoltTaskStore) Candidates(ctx context.Context, runID string) ([]dom
 	}
 	defer connection.Close()
 	rows, err := connection.QueryContext(ctx,
-		`SELECT id, run_id, sequence, commit_sha FROM candidates WHERE run_id = ? ORDER BY sequence`, runID,
+		`SELECT id, run_id, sequence, commit_sha, data FROM candidates WHERE run_id = ? ORDER BY sequence`, runID,
 	)
 	if err != nil {
 		return nil, queryFailure()
@@ -2113,9 +2174,16 @@ func (store *DoltTaskStore) Candidates(ctx context.Context, runID string) ([]dom
 	var candidates []domain.Candidate
 	for rows.Next() {
 		var candidate domain.Candidate
-		if err := rows.Scan(&candidate.ID, &candidate.RunID, &candidate.Sequence, &candidate.CommitSHA); err != nil {
+		var data []byte
+		if err := rows.Scan(&candidate.ID, &candidate.RunID, &candidate.Sequence, &candidate.CommitSHA, &data); err != nil {
 			return nil, scanFailure()
 		}
+		var stored domain.Candidate
+		if err := decodeRecord(data, &stored); err != nil || stored.ID != candidate.ID || stored.RunID != candidate.RunID ||
+			stored.Sequence != candidate.Sequence || stored.CommitSHA != candidate.CommitSHA {
+			return nil, backendFailure(storeport.HealthStoredRecordInvalid)
+		}
+		candidate = stored
 		if err := validateReloaded(validateCandidate(candidate)); err != nil {
 			return nil, err
 		}
@@ -2143,7 +2211,7 @@ func (store *DoltTaskStore) PlanningCandidates(ctx context.Context, projectID st
 		return nil, err
 	}
 	rows, err := connection.QueryContext(ctx,
-		`SELECT candidate.id, candidate.run_id, candidate.sequence, candidate.commit_sha
+		`SELECT candidate.id, candidate.run_id, candidate.sequence, candidate.commit_sha, candidate.data
 		FROM aggregates AS run
 		JOIN candidates AS candidate ON candidate.run_id = run.id
 			AND candidate.id = JSON_UNQUOTE(JSON_EXTRACT(run.data, '$.currentCandidateId'))
@@ -2159,9 +2227,16 @@ func (store *DoltTaskStore) PlanningCandidates(ctx context.Context, projectID st
 	candidates := make([]domain.Candidate, 0)
 	for rows.Next() {
 		var candidate domain.Candidate
-		if err := rows.Scan(&candidate.ID, &candidate.RunID, &candidate.Sequence, &candidate.CommitSHA); err != nil {
+		var data []byte
+		if err := rows.Scan(&candidate.ID, &candidate.RunID, &candidate.Sequence, &candidate.CommitSHA, &data); err != nil {
 			return nil, scanFailure()
 		}
+		var stored domain.Candidate
+		if err := decodeRecord(data, &stored); err != nil || stored.ID != candidate.ID || stored.RunID != candidate.RunID ||
+			stored.Sequence != candidate.Sequence || stored.CommitSHA != candidate.CommitSHA {
+			return nil, backendFailure(storeport.HealthStoredRecordInvalid)
+		}
+		candidate = stored
 		if err := validateReloaded(validateCandidate(candidate)); err != nil {
 			return nil, err
 		}

@@ -418,8 +418,14 @@ type candidateOutput struct {
 		BaseSHA string `json:"baseSha"`
 	} `json:"run"`
 	Candidate struct {
-		ID        string `json:"id"`
-		CommitSHA string `json:"commitSha"`
+		ID                    string `json:"id"`
+		Sequence              uint64 `json:"sequence"`
+		CommitSHA             string `json:"commitSha"`
+		BaseSHA               string `json:"baseSha"`
+		TreeSHA               string `json:"treeSha"`
+		DiffSHA256            string `json:"diffSha256"`
+		ChangedPathsSHA256    string `json:"changedPathsSha256"`
+		ManifestBindingSHA256 string `json:"manifestBindingSha256"`
 	} `json:"candidate"`
 	RequiredCoverage []string `json:"requiredCoverage"`
 }
@@ -505,7 +511,13 @@ func readCandidate(facts scopeFacts) (json.RawMessage, error) {
 	output.Run.ID = facts.run.ID
 	output.Run.BaseSHA = facts.run.BaseSHA
 	output.Candidate.ID = facts.candidate.ID
+	output.Candidate.Sequence = facts.candidate.Sequence
 	output.Candidate.CommitSHA = facts.candidate.CommitSHA
+	output.Candidate.BaseSHA = facts.candidate.Manifest.BaseSHA
+	output.Candidate.TreeSHA = facts.candidate.Manifest.TreeSHA
+	output.Candidate.DiffSHA256 = facts.candidate.Manifest.DiffSHA256
+	output.Candidate.ChangedPathsSHA256 = facts.candidate.Manifest.ChangedPathsSHA256
+	output.Candidate.ManifestBindingSHA256 = facts.candidate.Manifest.BindingSHA256
 	return boundedOutput(output)
 }
 

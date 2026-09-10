@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mcuadros/director-engine/domain/agentprofile"
+	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
 )
 
@@ -125,23 +126,9 @@ type CompletedClaim struct {
 	ResidualRiskCodes []string          `json:"residualRiskCodes"`
 }
 
-// CandidateObservation contains external Git facts, not model narration.
-type CandidateObservation struct {
-	ID               string `json:"id"`
-	ClaimID          string `json:"claimId"`
-	WorktreeID       string `json:"worktreeId"`
-	BindingHash      string `json:"bindingHash"`
-	FactHash         string `json:"factHash"`
-	ObservedAtMillis int64  `json:"observedAtMillis"`
-	MaximumAgeMillis int64  `json:"maximumAgeMillis"`
-	CommitSHA        string `json:"commitSha"`
-	BaseSHA          string `json:"baseSha"`
-	Clean            bool   `json:"clean"`
-	Reachable        bool   `json:"reachable"`
-	Owned            bool   `json:"owned"`
-	DescendsFromBase bool   `json:"descendsFromBase"`
-	NoConflict       bool   `json:"noConflict"`
-}
+// CandidateObservation is retained as an execution-facing alias while the
+// exact Git contract is owned by domain/candidate.
+type CandidateObservation = candidatedomain.Observation
 
 // MCPCommandReceipt is the bounded per-Run proof that one fixed-scope MCP
 // mutation reached the durable Command path. The complete canonical payload
@@ -240,69 +227,76 @@ type StartupReconciliation struct {
 // A zero State belongs to pre-execution TaskStore records created by older M1
 // skeletons and remains valid.
 type State struct {
-	SchemaVersion                    string                    `json:"schemaVersion,omitempty"`
-	Scope                            Scope                     `json:"scope,omitempty"`
-	StartCommandID                   string                    `json:"startCommandId,omitempty"`
-	EligibilityDecisionVersion       string                    `json:"eligibilityDecisionVersion,omitempty"`
-	EligibilityDecisionID            string                    `json:"eligibilityDecisionId,omitempty"`
-	EligibilityFactsHash             string                    `json:"eligibilityFactsHash,omitempty"`
-	CapacityReservationID            string                    `json:"capacityReservationId,omitempty"`
-	BudgetReservationID              string                    `json:"budgetReservationId,omitempty"`
-	LeaseBinding                     LeaseBinding              `json:"leaseBinding,omitempty"`
-	RepositoryBinding                RepositoryBinding         `json:"repositoryBinding,omitempty"`
-	RepositoryBindingHash            string                    `json:"repositoryBindingHash,omitempty"`
-	LifecycleDigest                  string                    `json:"lifecycleDigest,omitempty"`
-	LifecycleApproval                *LifecycleApproval        `json:"lifecycleApproval,omitempty"`
-	IsolationDigest                  string                    `json:"isolationDigest,omitempty"`
-	EffectiveProfiles                *agentprofile.FrozenSet   `json:"effectiveProfiles,omitempty"`
-	EffectiveProfilesSHA256          string                    `json:"effectiveProfilesSha256,omitempty"`
-	Isolation                        IsolationObservation      `json:"isolation,omitempty"`
-	OperationalPolicy                OperationalPolicy         `json:"operationalPolicy,omitempty"`
-	LifecycleSurfaces                LifecycleSurfaces         `json:"lifecycleSurfaces,omitempty"`
-	SourcePath                       string                    `json:"sourcePath,omitempty"`
-	WorktreePath                     string                    `json:"worktreePath,omitempty"`
-	Branch                           string                    `json:"branch,omitempty"`
-	RootWorkspaceID                  string                    `json:"rootWorkspaceId,omitempty"`
-	TaskTitle                        string                    `json:"taskTitle,omitempty"`
-	CriterionIDs                     []string                  `json:"criterionIds,omitempty"`
-	InitialPrompt                    string                    `json:"initialPrompt,omitempty"`
-	InitialPromptHash                string                    `json:"initialPromptHash,omitempty"`
-	PrimarySession                   PrimarySession            `json:"primarySession,omitempty"`
-	HelperPolicy                     HelperPolicy              `json:"helperPolicy,omitempty"`
-	Helpers                          []Helper                  `json:"helpers,omitempty"`
-	Worktree                         Effect                    `json:"worktree,omitempty"`
-	HostView                         Effect                    `json:"hostView,omitempty"`
-	Boundary                         Effect                    `json:"boundary,omitempty"`
-	Setup                            Effect                    `json:"setup,omitempty"`
-	PreparationPlan                  PreparationPlan           `json:"preparationPlan,omitempty"`
-	PreparationReady                 bool                      `json:"preparationReady,omitempty"`
-	PreparationBarrierHash           string                    `json:"preparationBarrierHash,omitempty"`
-	Agent                            Effect                    `json:"agent,omitempty"`
-	AgentPrompt                      Effect                    `json:"agentPrompt,omitempty"`
-	WorkerVisibility                 *WorkerVisibility         `json:"workerVisibility,omitempty"`
-	LastCompletionEvent              *CompletionEvent          `json:"lastCompletionEvent,omitempty"`
-	CompletionEventCursor            uint64                    `json:"completionEventCursor,omitempty"`
-	CompletionEventReceipts          []CompletionEventReceipt  `json:"completionEventReceipts,omitempty"`
-	MCPCommandReceipts               []MCPCommandReceipt       `json:"mcpCommandReceipts,omitempty"`
-	Claim                            *CompletedClaim           `json:"claim,omitempty"`
-	CandidateObservation             *CandidateObservation     `json:"candidateObservation,omitempty"`
-	OperationalObservation           *OperationalObservation   `json:"operationalObservation,omitempty"`
-	OperationalObservationRunVersion uint64                    `json:"operationalObservationRunVersion,omitempty"`
-	OperationalObservationConsumed   bool                      `json:"operationalObservationConsumed,omitempty"`
-	Budget                           runtimebudget.Ledger      `json:"budget"`
-	TurnBudgetDemand                 runtimebudget.Demand      `json:"turnBudgetDemand"`
-	ControlPolicy                    ControlPolicy             `json:"controlPolicy"`
-	ControlledAgents                 []ControlledAgentIdentity `json:"controlledAgents,omitempty"`
-	Control                          RunControl                `json:"control,omitempty"`
-	RecoveryPolicy                   PrimaryRecoveryPolicy     `json:"recoveryPolicy,omitempty"`
-	PrimaryRecovery                  PrimaryRecovery           `json:"primaryRecovery,omitempty"`
-	FakeTerminalRung                 bool                      `json:"fakeTerminalRung,omitempty"`
-	AgentArchive                     Effect                    `json:"agentArchive,omitempty"`
-	HostViewArchive                  Effect                    `json:"hostViewArchive,omitempty"`
-	WorktreeRemove                   Effect                    `json:"worktreeRemove,omitempty"`
-	NeedsYou                         *NeedsYou                 `json:"needsYou,omitempty"`
-	LastStartupReconciliation        *StartupReconciliation    `json:"lastStartupReconciliation,omitempty"`
-	Terminal                         bool                      `json:"terminal,omitempty"`
+	SchemaVersion                    string                       `json:"schemaVersion,omitempty"`
+	Scope                            Scope                        `json:"scope,omitempty"`
+	StartCommandID                   string                       `json:"startCommandId,omitempty"`
+	EligibilityDecisionVersion       string                       `json:"eligibilityDecisionVersion,omitempty"`
+	EligibilityDecisionID            string                       `json:"eligibilityDecisionId,omitempty"`
+	EligibilityFactsHash             string                       `json:"eligibilityFactsHash,omitempty"`
+	CapacityReservationID            string                       `json:"capacityReservationId,omitempty"`
+	BudgetReservationID              string                       `json:"budgetReservationId,omitempty"`
+	LeaseBinding                     LeaseBinding                 `json:"leaseBinding,omitempty"`
+	RepositoryBinding                RepositoryBinding            `json:"repositoryBinding,omitempty"`
+	RepositoryBindingHash            string                       `json:"repositoryBindingHash,omitempty"`
+	LifecycleDigest                  string                       `json:"lifecycleDigest,omitempty"`
+	LifecycleApproval                *LifecycleApproval           `json:"lifecycleApproval,omitempty"`
+	IsolationDigest                  string                       `json:"isolationDigest,omitempty"`
+	EffectiveProfiles                *agentprofile.FrozenSet      `json:"effectiveProfiles,omitempty"`
+	EffectiveProfilesSHA256          string                       `json:"effectiveProfilesSha256,omitempty"`
+	Isolation                        IsolationObservation         `json:"isolation,omitempty"`
+	OperationalPolicy                OperationalPolicy            `json:"operationalPolicy,omitempty"`
+	LifecycleSurfaces                LifecycleSurfaces            `json:"lifecycleSurfaces,omitempty"`
+	SourcePath                       string                       `json:"sourcePath,omitempty"`
+	WorktreePath                     string                       `json:"worktreePath,omitempty"`
+	Branch                           string                       `json:"branch,omitempty"`
+	BaseRef                          string                       `json:"baseRef,omitempty"`
+	RootWorkspaceID                  string                       `json:"rootWorkspaceId,omitempty"`
+	TaskTitle                        string                       `json:"taskTitle,omitempty"`
+	CriterionIDs                     []string                     `json:"criterionIds,omitempty"`
+	InitialPrompt                    string                       `json:"initialPrompt,omitempty"`
+	InitialPromptHash                string                       `json:"initialPromptHash,omitempty"`
+	PrimarySession                   PrimarySession               `json:"primarySession,omitempty"`
+	HelperPolicy                     HelperPolicy                 `json:"helperPolicy,omitempty"`
+	Helpers                          []Helper                     `json:"helpers,omitempty"`
+	Worktree                         Effect                       `json:"worktree,omitempty"`
+	HostView                         Effect                       `json:"hostView,omitempty"`
+	Boundary                         Effect                       `json:"boundary,omitempty"`
+	Setup                            Effect                       `json:"setup,omitempty"`
+	PreparationPlan                  PreparationPlan              `json:"preparationPlan,omitempty"`
+	PreparationReady                 bool                         `json:"preparationReady,omitempty"`
+	PreparationBarrierHash           string                       `json:"preparationBarrierHash,omitempty"`
+	Agent                            Effect                       `json:"agent,omitempty"`
+	AgentPrompt                      Effect                       `json:"agentPrompt,omitempty"`
+	WorkerVisibility                 *WorkerVisibility            `json:"workerVisibility,omitempty"`
+	LastCompletionEvent              *CompletionEvent             `json:"lastCompletionEvent,omitempty"`
+	CompletionEventCursor            uint64                       `json:"completionEventCursor,omitempty"`
+	CompletionEventReceipts          []CompletionEventReceipt     `json:"completionEventReceipts,omitempty"`
+	MCPCommandReceipts               []MCPCommandReceipt          `json:"mcpCommandReceipts,omitempty"`
+	Claim                            *CompletedClaim              `json:"claim,omitempty"`
+	CandidateClaim                   *candidatedomain.Claim       `json:"candidateClaim,omitempty"`
+	CandidateObservation             *candidatedomain.Observation `json:"candidateObservation,omitempty"`
+	CandidateObservationRunVersion   uint64                       `json:"candidateObservationRunVersion,omitempty"`
+	AcceptanceSHA256                 string                       `json:"acceptanceSha256,omitempty"`
+	DecisionContextSHA256            string                       `json:"decisionContextSha256,omitempty"`
+	FindingContextSHA256             string                       `json:"findingContextSha256,omitempty"`
+	CandidateAuthority               *candidatedomain.Authority   `json:"candidateAuthority,omitempty"`
+	OperationalObservation           *OperationalObservation      `json:"operationalObservation,omitempty"`
+	OperationalObservationRunVersion uint64                       `json:"operationalObservationRunVersion,omitempty"`
+	OperationalObservationConsumed   bool                         `json:"operationalObservationConsumed,omitempty"`
+	Budget                           runtimebudget.Ledger         `json:"budget"`
+	TurnBudgetDemand                 runtimebudget.Demand         `json:"turnBudgetDemand"`
+	ControlPolicy                    ControlPolicy                `json:"controlPolicy"`
+	ControlledAgents                 []ControlledAgentIdentity    `json:"controlledAgents,omitempty"`
+	Control                          RunControl                   `json:"control,omitempty"`
+	RecoveryPolicy                   PrimaryRecoveryPolicy        `json:"recoveryPolicy,omitempty"`
+	PrimaryRecovery                  PrimaryRecovery              `json:"primaryRecovery,omitempty"`
+	FakeTerminalRung                 bool                         `json:"fakeTerminalRung,omitempty"`
+	AgentArchive                     Effect                       `json:"agentArchive,omitempty"`
+	HostViewArchive                  Effect                       `json:"hostViewArchive,omitempty"`
+	WorktreeRemove                   Effect                       `json:"worktreeRemove,omitempty"`
+	NeedsYou                         *NeedsYou                    `json:"needsYou,omitempty"`
+	LastStartupReconciliation        *StartupReconciliation       `json:"lastStartupReconciliation,omitempty"`
+	Terminal                         bool                         `json:"terminal,omitempty"`
 }
 
 // WorkerVisibility is the frozen root-workspace launch registration a

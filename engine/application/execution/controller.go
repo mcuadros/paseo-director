@@ -21,8 +21,10 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/agentprofile"
+	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
+	gitport "github.com/mcuadros/director-engine/ports/git"
 	"github.com/mcuadros/director-engine/ports/host"
 	reconciliationport "github.com/mcuadros/director-engine/ports/reconciliation"
 	runtimeport "github.com/mcuadros/director-engine/ports/runtime"
@@ -37,7 +39,7 @@ import (
 
 var (
 	identifierPattern           = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/-]*$`)
-	shaPattern                  = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	shaPattern                  = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 	ErrProjectLeaseUnavailable  = errors.New("project execution lease is stale or belongs to another engine")
 	ErrRepositoryBindingChanged = errors.New("execution repository binding changed")
 	ErrRuntimeBudgetLeaseFenced = errors.New(string(runtimebudget.ReasonLeaseFenced))
@@ -47,6 +49,7 @@ var (
 type Controller struct {
 	store           storeport.TaskStore
 	runtime         runtimeport.Port
+	candidateGit    gitport.CandidateObserver
 	helperRuntime   runtimeport.HelperPort
 	recoveryRuntime runtimeport.PrimaryRecoveryPort
 	host            host.Port
@@ -57,7 +60,16 @@ type Controller struct {
 func NewController(store storeport.TaskStore, runtime runtimeport.Port, hostPort host.Port, queue reconciliationport.Queue) *Controller {
 	helperRuntime, _ := runtime.(runtimeport.HelperPort)
 	recoveryRuntime, _ := runtime.(runtimeport.PrimaryRecoveryPort)
-	return &Controller{store: store, runtime: runtime, helperRuntime: helperRuntime, recoveryRuntime: recoveryRuntime, host: hostPort, queue: queue}
+	candidateGit, _ := runtime.(gitport.CandidateObserver)
+	return &Controller{store: store, runtime: runtime, candidateGit: candidateGit, helperRuntime: helperRuntime, recoveryRuntime: recoveryRuntime, host: hostPort, queue: queue}
+}
+
+// NewControllerWithGit composes a dedicated production Git observer while
+// retaining the existing runtime and host ports for their own effects.
+func NewControllerWithGit(store storeport.TaskStore, runtime runtimeport.Port, gitObserver gitport.CandidateObserver, hostPort host.Port, queue reconciliationport.Queue) *Controller {
+	controller := NewController(store, runtime, hostPort, queue)
+	controller.candidateGit = gitObserver
+	return controller
 }
 
 // StartCommand freezes every identity and fact needed by one primary Run.
@@ -384,6 +396,10 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			existing.Execution.EligibilityFactsHash != decision.FactsHash ||
 			existing.Execution.EffectiveProfilesSHA256 != command.EffectiveProfiles.SHA256() ||
 			existing.Execution.RepositoryBinding != repositoryBinding(workspace, command.WorktreePath, command.Branch, command.BaseSHA) ||
+			existing.Execution.BaseRef != "refs/heads/"+workspace.DefaultBaseBranch ||
+			existing.Execution.AcceptanceSHA256 != candidatedomain.AcceptanceSHA256(
+				task.ID, task.Version, task.Objective, task.AcceptanceCriteria, command.CriterionIDs,
+			) ||
 			existing.Execution.LeaseBinding != leaseBinding(project) || sessionErr != nil ||
 			existing.Execution.PrimarySession.ReservationSHA256 != expectedSession.ReservationSHA256 ||
 			existing.Execution.Budget.Policy != command.BudgetPolicy ||
@@ -455,10 +471,15 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		RecoveryPolicy:    effectiveRecoveryPolicy(command.RecoveryPolicy),
 		LifecycleSurfaces: command.EligibilityFacts.LifecycleSurfaces,
 		SourcePath:        command.SourcePath, WorktreePath: command.WorktreePath,
-		Branch: command.Branch, TaskTitle: command.TaskTitle,
+		Branch: command.Branch, BaseRef: "refs/heads/" + workspace.DefaultBaseBranch, TaskTitle: command.TaskTitle,
 		RootWorkspaceID: command.RootWorkspaceID,
 		CriterionIDs:    append([]string(nil), command.CriterionIDs...),
 		InitialPrompt:   command.InitialPrompt, InitialPromptHash: hashText(command.InitialPrompt),
+		AcceptanceSHA256: candidatedomain.AcceptanceSHA256(
+			task.ID, task.Version, task.Objective, task.AcceptanceCriteria, command.CriterionIDs,
+		),
+		DecisionContextSHA256:            candidatedomain.EmptyContextSHA256(),
+		FindingContextSHA256:             candidatedomain.EmptyContextSHA256(),
 		PrimarySession:                   primarySession,
 		HelperPolicy:                     command.HelperPolicy,
 		Worktree:                         newEffect(command.Scope.RunID, domainexecution.EffectWorktreeCreate, 2),
@@ -631,7 +652,9 @@ func (controller *Controller) RecordCompletedClaim(ctx context.Context, runID st
 	next := run
 	cloned := cloneClaim(claim)
 	next.Execution.Claim = &cloned
+	next.Execution.CandidateClaim = nil
 	next.Execution.CandidateObservation = nil
+	next.Execution.CandidateObservationRunVersion = 0
 	next.Execution.OperationalObservationConsumed = true
 	return controller.persistRun(ctx, run, next, "agent.claim.recorded")
 }
@@ -1808,6 +1831,7 @@ func (controller *Controller) stepRouting(ctx context.Context, run domain.Run, n
 		RepositoryBindingHash:     run.Execution.RepositoryBindingHash,
 		OperationalLimitsAdmitted: operational.Kind == domainexecution.AdmissionAllow,
 		OperationalNeedCode:       operational.Code, Claim: run.Execution.Claim,
+		CandidateClaim:       run.Execution.CandidateClaim,
 		CandidateObservation: run.Execution.CandidateObservation,
 		TaskStoreNowMillis:   nowMillis,
 	}
@@ -1824,25 +1848,82 @@ func (controller *Controller) stepRouting(ctx context.Context, run domain.Run, n
 	case routing.DecisionWaitAgent:
 		return StepResult{Run: run}, nil
 	case routing.DecisionObserveCandidate:
-		observation, err := controller.runtime.ObserveCandidate(ctx, runtimeport.CandidateRequest{
-			Scope: run.Execution.Scope, SourcePath: run.Execution.SourcePath,
-			WorktreePath: run.Execution.WorktreePath, Branch: run.Execution.Branch,
-			WorktreeID:  run.Execution.Worktree.ExternalID,
-			BindingHash: run.Execution.RepositoryBindingHash, Claim: *run.Execution.Claim,
+		if controller.candidateGit == nil {
+			return StepResult{Run: run}, errors.New("exact Candidate Git observer is unavailable")
+		}
+		task, taskErr := controller.store.Task(ctx, run.TaskID)
+		if taskErr != nil {
+			return StepResult{Run: run}, taskErr
+		}
+		candidateClaim := candidatedomain.Claim{
+			SchemaVersion: candidatedomain.ClaimSchemaVersion, ID: run.Execution.Claim.ID,
+			ProjectID: run.Execution.Scope.ProjectID, WorkspaceID: run.Execution.Scope.WorkspaceID,
+			TaskID: run.TaskID, RunID: run.ID, ActorID: run.Execution.Claim.AgentID,
+			WorktreeID: run.Execution.Worktree.ExternalID, Branch: run.Execution.Branch,
+			BaseRef: run.Execution.BaseRef, CandidateSHA: run.Execution.Claim.CandidateSHA, BaseSHA: run.BaseSHA,
+			LeaseEpoch: run.Execution.LeaseBinding.Epoch, ExpectedRunVersion: run.Version + 1, TaskVersion: task.Version,
+			AcceptanceSHA256: candidatedomain.AcceptanceSHA256(
+				task.ID, task.Version, task.Objective, task.AcceptanceCriteria, run.Execution.CriterionIDs,
+			),
+			ConfigurationSHA256: run.Execution.PrimarySession.ConfigurationSHA256,
+			ProfileSHA256:       run.Execution.EffectiveProfilesSHA256,
+			ContextSHA256:       run.Execution.PreparationBarrierHash,
+			DecisionsSHA256:     run.Execution.DecisionContextSHA256,
+			FindingsSHA256:      run.Execution.FindingContextSHA256,
+		}
+		if !candidatedomain.ValidClaim(candidateClaim) || candidateClaim.AcceptanceSHA256 != run.Execution.AcceptanceSHA256 {
+			return StepResult{Run: run, Progressed: true}, controller.parkRun(ctx, run, domainexecution.NeedCode("candidate_claim_binding_invalid"))
+		}
+		observation, err := controller.candidateGit.ObserveCandidate(ctx, gitport.CandidateRequest{
+			Claim: candidateClaim, Repository: run.Execution.RepositoryBinding,
+			RepositoryBindingSHA256: run.Execution.RepositoryBindingHash, TaskStoreNowMillis: nowMillis,
 		})
 		if err != nil {
 			return StepResult{Run: run}, err
 		}
 		next := run
+		next.Execution.CandidateClaim = &candidateClaim
 		next.Execution.CandidateObservation = &observation
+		next.Execution.CandidateObservationRunVersion = run.Version + 1
 		next.Execution.OperationalObservationConsumed = true
 		return StepResult{Run: next, Progressed: true}, controller.persistRun(ctx, run, next, "run.candidate_observed")
 	case routing.DecisionAdmitCandidate:
-		candidate := domain.Candidate{
-			ID:    stableID("candidate", run.ID, "1", decision.CandidateSHA),
-			RunID: run.ID, Sequence: 1, CommitSHA: decision.CandidateSHA,
+		if decision.Manifest == nil || run.Execution.CandidateClaim == nil || run.Execution.CandidateObservation == nil {
+			return StepResult{Run: run}, errors.New("Candidate admission lacks immutable claim or manifest")
 		}
-		commandID := stableID("command", run.ID, "candidate-1", decision.CandidateSHA)
+		claim := run.Execution.CandidateClaim
+		task, err := controller.store.Task(ctx, run.TaskID)
+		if err != nil {
+			return StepResult{Run: run}, err
+		}
+		if claim.ExpectedRunVersion != run.Execution.CandidateObservationRunVersion || claim.ExpectedRunVersion > run.Version ||
+			claim.ProjectID != run.Execution.Scope.ProjectID || claim.WorkspaceID != run.Execution.Scope.WorkspaceID ||
+			claim.TaskID != run.TaskID || claim.RunID != run.ID || claim.ActorID != run.Execution.Agent.ExternalID ||
+			claim.WorktreeID != run.Execution.Worktree.ExternalID || claim.Branch != run.Execution.Branch ||
+			claim.BaseRef != run.Execution.BaseRef || claim.BaseSHA != run.BaseSHA || claim.LeaseEpoch != run.Execution.LeaseBinding.Epoch ||
+			claim.TaskVersion != task.Version || claim.AcceptanceSHA256 != candidatedomain.AcceptanceSHA256(
+			task.ID, task.Version, task.Objective, task.AcceptanceCriteria, run.Execution.CriterionIDs,
+		) || claim.AcceptanceSHA256 != run.Execution.AcceptanceSHA256 ||
+			claim.ConfigurationSHA256 != run.Execution.PrimarySession.ConfigurationSHA256 ||
+			claim.ProfileSHA256 != run.Execution.EffectiveProfilesSHA256 ||
+			claim.ContextSHA256 != run.Execution.PreparationBarrierHash ||
+			claim.DecisionsSHA256 != run.Execution.DecisionContextSHA256 ||
+			claim.FindingsSHA256 != run.Execution.FindingContextSHA256 {
+			return StepResult{Run: run, Progressed: true}, controller.parkRun(ctx, run, domainexecution.NeedCode("candidate_claim_binding_changed"))
+		}
+		candidates, err := controller.store.Candidates(ctx, run.ID)
+		if err != nil {
+			return StepResult{Run: run}, err
+		}
+		sequence := uint64(len(candidates) + 1)
+		candidate := domain.Candidate{
+			SchemaVersion: domain.CandidateSchemaVersion,
+			ID:            candidatedomain.RecordID(run.ID, sequence, decision.CandidateSHA),
+			RunID:         run.ID, Sequence: sequence, CommitSHA: decision.CandidateSHA,
+			Claim: *run.Execution.CandidateClaim, Manifest: *decision.Manifest,
+			AdmittedAtMillis: nowMillis,
+		}
+		commandID := stableID("command", run.ID, fmt.Sprintf("candidate-%d", sequence), decision.CandidateSHA)
 		result, err := controller.store.AppendCandidate(ctx, domain.CommandRequest{
 			IdempotencyKey: commandID, Type: "candidate.admit", AggregateID: run.ID,
 			ExpectedVersion: run.Version,
@@ -1850,7 +1931,8 @@ func (controller *Controller) stepRouting(ctx context.Context, run domain.Run, n
 				ClaimID       string `json:"claimId"`
 				ObservationID string `json:"observationId"`
 				CandidateID   string `json:"candidateId"`
-			}{run.Execution.Claim.ID, run.Execution.CandidateObservation.ID, candidate.ID}),
+				BindingSHA256 string `json:"bindingSha256"`
+			}{run.Execution.Claim.ID, run.Execution.CandidateObservation.ID, candidate.ID, candidate.Manifest.BindingSHA256}),
 		}, candidate, domain.Event{
 			ID: stableID("event", commandID), RunID: run.ID, Sequence: run.Version + 2,
 			AggregateID: run.ID, AggregateVersion: run.Version + 1,
@@ -2057,6 +2139,26 @@ func (controller *Controller) step(ctx context.Context, runID string, nowMillis 
 		return StepResult{Run: next, Progressed: persistErr == nil}, persistErr
 	}
 	if run.CurrentCandidateID != "" {
+		if run.Execution.WorktreeRemove.Phase != domainexecution.EffectDispatching &&
+			run.Execution.WorktreeRemove.Phase != domainexecution.EffectComplete {
+			authority, authorityErr := controller.ReconcileCandidateAuthority(ctx, CandidateAuthorityCommand{
+				SchemaVersion: CandidateAuthorityCommandSchemaVersion,
+				RequestID:     stableID("candidate-authority", run.ID, fmt.Sprintf("version-%d", run.Version)),
+				RunID:         run.ID, ExpectedRunVersion: run.Version,
+				LeaseEpoch: run.Execution.LeaseBinding.Epoch, NowMillis: nowMillis,
+			})
+			if authorityErr != nil {
+				return StepResult{Run: run}, authorityErr
+			}
+			if authority.Invalidated {
+				return StepResult{Run: authority.Run, Progressed: true}, nil
+			}
+			if authority.Run.Execution.CandidateAuthority != nil && authority.Run.Execution.CandidateAuthority.Invalidated {
+				return StepResult{Run: run, Progressed: true}, controller.parkRun(
+					ctx, run, domainexecution.NeedCode("candidate_authority_invalidated"),
+				)
+			}
+		}
 		for _, helper := range run.Execution.Helpers {
 			if helper.Phase == domainexecution.HelperTerminal {
 				continue

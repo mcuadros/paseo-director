@@ -2,7 +2,12 @@
 
 package execution
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+)
 
 func TestEffectAndCandidateEvidenceRequireCurrentSelfConsistentFacts(t *testing.T) {
 	effect := EffectObservation{
@@ -24,18 +29,25 @@ func TestEffectAndCandidateEvidenceRequireCurrentSelfConsistentFacts(t *testing.
 	}
 
 	candidate := CandidateObservation{
-		ID: "candidate-observation-1", ClaimID: "claim-1",
-		WorktreeID: "worktree-1", BindingHash: "binding-1",
-		CommitSHA: "1111111111111111111111111111111111111111",
-		BaseSHA:   "0000000000000000000000000000000000000000",
-		Clean:     true, Reachable: true, Owned: true, DescendsFromBase: true, NoConflict: true,
-		ObservedAtMillis: 1_000, MaximumAgeMillis: 30_000,
+		ClaimSHA256: strings.Repeat("a", 64), RepositoryBindingSHA256: strings.Repeat("b", 64),
+		ObservedAtMillis: 1_000, MaximumAgeMillis: candidatedomain.MaximumObservationAgeMS,
+		ObjectFormat: "sha1", CommitSHA: strings.Repeat("1", 40), BaseSHA: strings.Repeat("0", 40),
+		ParentSHA: strings.Repeat("0", 40), TreeSHA: strings.Repeat("2", 40),
+		BranchHeadSHA: strings.Repeat("1", 40), BaseRefHeadSHA: strings.Repeat("0", 40),
+		DiffSHA256: strings.Repeat("3", 64), ChangedPathsSHA256: strings.Repeat("4", 64),
+		SourceDevice: 1, SourceInode: 2, CommonDevice: 1, CommonInode: 3, WorktreeDevice: 1, WorktreeInode: 4,
+		RepositoryExact: true, RemoteExact: true, PathsCanonical: true, RegistrationExact: true,
+		ObjectPresent: true, ObjectStoreOwned: true, BranchStable: true, BaseStable: true,
+		DescendsFromBase: true, DirectParent: true, WorktreeClean: true, IndexClean: true,
+		UntrackedAbsent: true, IgnoredAbsent: true, SubmodulesClean: true, ConflictFree: true,
+		IntentToAddAbsent: true, SparseCheckoutAbsent: true, FilesystemExact: true,
+		SnapshotSHA256: strings.Repeat("5", 64), Code: candidatedomain.CodeOK,
 	}
-	candidate.FactHash = CandidateObservationHash(candidate)
-	if !CurrentCandidateObservation(candidate, 31_000) {
+	candidate = candidatedomain.SealObservation(candidate)
+	if !CurrentCandidateObservation(candidate, 6_000) {
 		t.Fatal("Candidate observation rejected its exact freshness boundary")
 	}
-	if CurrentCandidateObservation(candidate, 999) {
+	if CurrentCandidateObservation(candidate, 6_001) || CurrentCandidateObservation(candidate, 999) {
 		t.Fatal("future Candidate observation remained current")
 	}
 }

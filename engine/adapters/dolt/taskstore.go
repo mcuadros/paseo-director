@@ -28,9 +28,9 @@ const (
 	aggregateRun            = "run"
 	maximumJSONBytes        = 64 * 1024
 	maximumProjectJSONBytes = 1152 * 1024
-	// Store-only contention retries remain finite while covering the tested
-	// eight-writer Event allocation envelope.
-	writeAttempts = 16
+	// Store-only contention retries remain finite while covering the M4 exact
+	// Candidate admission envelope of 32 concurrent coordinators.
+	writeAttempts = 64
 )
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/-]*$`)

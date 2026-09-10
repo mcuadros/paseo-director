@@ -83,7 +83,8 @@ var schemaStatements = []string{
 		id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL PRIMARY KEY,
 		run_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
 		sequence BIGINT UNSIGNED NOT NULL,
-		commit_sha CHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+		commit_sha VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+		data JSON NOT NULL,
 		UNIQUE KEY uq_candidate_run_sequence (run_id, sequence),
 		CONSTRAINT fk_candidate_run FOREIGN KEY (run_id) REFERENCES aggregates(id)
 	)`,
@@ -211,7 +212,7 @@ var schemaStatements = []string{
 		singleton TINYINT NOT NULL PRIMARY KEY,
 		schema_version INT NOT NULL
 	)`,
-	`INSERT INTO schema_metadata (singleton, schema_version) VALUES (1, 1)`,
+	`INSERT INTO schema_metadata (singleton, schema_version) VALUES (1, 2)`,
 }
 
 func setAndVerifySafeCommitMode(ctx context.Context, connection *sql.Conn, global bool) error {
@@ -465,7 +466,7 @@ func verifyCompleteSchema(ctx context.Context, connection *sql.Conn) error {
 	return nil
 }
 
-// Bootstrap installs schema version one only into an empty selected database,
+// Bootstrap installs schema version two only into an empty selected database,
 // or verifies an existing store. Partial or unknown schemas fail closed.
 func (store *DoltTaskStore) Bootstrap(ctx context.Context) error {
 	connection, err := store.control.Conn(ctx)
