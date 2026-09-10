@@ -312,7 +312,7 @@ func ValidPrimarySession(session PrimarySession) bool {
 	seenTools := make(map[string]struct{}, len(session.MCPTools))
 	for _, tool := range session.MCPTools {
 		if tool != "director_project_read" && tool != "director_task_read" &&
-			tool != "director_task_outcome_submit" {
+			tool != "director_task_outcome_submit" && tool != "director_task_helper_request" {
 			return false
 		}
 		if _, exists := seenTools[tool]; exists {

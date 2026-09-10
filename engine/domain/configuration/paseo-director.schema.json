@@ -106,6 +106,7 @@
         "planning.command.submit",
         "task.read",
         "task.outcome.submit",
+        "task.helper.request",
         "candidate.read",
         "review.verdict.submit"
       ]

@@ -40,6 +40,23 @@ type Options struct {
 	BaseSHA                   string
 	Operational               execution.OperationalObservation
 	LoseEveryMutationResponse bool
+	GlobalActiveAgents        uint32
+}
+
+type helperWorld struct {
+	helperID        string
+	agentID         string
+	parentAgentID   string
+	workspaceID     string
+	labels          map[string]string
+	checkoutID      string
+	boundaryID      string
+	boundaryReady   bool
+	importedCommit  string
+	agentActive     bool
+	agentArchived   bool
+	bootstrapDone   bool
+	primaryFactHash string
 }
 
 type world struct {
@@ -77,6 +94,8 @@ type Environment struct {
 	agentRequest        host.Arguments
 	promptRequest       host.Arguments
 	reconciliations     map[string]reconciliationport.Receipt
+	helpers             map[string]*helperWorld
+	helperReservations  map[string]execution.Scope
 	reconciliationCount int
 	eventSeq            uint64
 }
@@ -101,9 +120,11 @@ var _ reconciliationport.Queue = (*RestartedEnvironment)(nil)
 func NewEnvironment(options Options) *Environment {
 	return &Environment{
 		options: options, operational: options.Operational,
-		mutations:       make(map[execution.EffectKind]int),
-		lost:            make(map[execution.EffectKind]bool),
-		reconciliations: make(map[string]reconciliationport.Receipt),
+		mutations:          make(map[execution.EffectKind]int),
+		lost:               make(map[execution.EffectKind]bool),
+		reconciliations:    make(map[string]reconciliationport.Receipt),
+		helpers:            make(map[string]*helperWorld),
+		helperReservations: make(map[string]execution.Scope),
 	}
 }
 
@@ -379,6 +400,9 @@ func hostObservation(command host.Command, status execution.ObservationStatus, e
 			correlation, _ = host.RegistrationDigest(registration)
 		}
 	}
+	if command.Arguments.EffectKind == execution.EffectHelperAgentObserve || command.Arguments.EffectKind == execution.EffectHelperAgentArchive {
+		correlation = digest(command.Arguments.Labels)
+	}
 	result := host.ObservationResult{
 		EffectID: command.Arguments.EffectID, Status: status, ExternalID: external,
 		BindingHash: command.Arguments.BindingHash, CorrelationHash: correlation,
@@ -410,6 +434,22 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 	environment.observationSeq++
 	arguments := command.Arguments
 	switch command.Capability {
+	case host.CapabilityHelperAgentObserve:
+		for _, helper := range environment.helpers {
+			if helper.parentAgentID != dereference(arguments.ParentAgentID) || helper.workspaceID != arguments.WorkspaceID ||
+				digest(helper.labels) != digest(arguments.Labels) || (arguments.AgentID != "" && arguments.AgentID != helper.agentID) {
+				continue
+			}
+			status := execution.ObservationOwnedPresent
+			if arguments.EffectKind != execution.EffectHelperAgentArchive && helper.bootstrapDone {
+				status = execution.ObservationDesired
+			}
+			if helper.agentArchived {
+				status = execution.ObservationDesired
+			}
+			return hostObservation(command, status, helper.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		}
+		return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case host.CapabilityWorkspaceObserve:
 		if arguments.EffectKind == execution.EffectHostViewArchive {
 			if environment.world.hostViewArchived {
@@ -495,6 +535,16 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 		}
 		return host.Observation{}, errors.New("fake agent observation effect is unsupported")
 	case host.CapabilityAgentArchive:
+		if arguments.EffectKind == execution.EffectHelperAgentArchive {
+			for _, helper := range environment.helpers {
+				if helper.agentID == arguments.AgentID && helper.parentAgentID == dereference(arguments.ParentAgentID) && helper.agentActive {
+					helper.agentActive = false
+					helper.agentArchived = true
+					return host.Observation{}, environment.recordMutation(arguments.EffectKind)
+				}
+			}
+			return host.Observation{}, errors.New("fake helper archive identity mismatch")
+		}
 		if arguments.AgentID != environment.world.agentID || !environment.world.agentActive {
 			return host.Observation{}, errors.New("fake agent archive identity mismatch")
 		}
@@ -511,6 +561,13 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 	default:
 		return host.Observation{}, fmt.Errorf("unsupported fake host capability %q", command.Capability)
 	}
+}
+
+func dereference(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 // CandidateRequest fixes the fake provider claim fields supplied by a test.

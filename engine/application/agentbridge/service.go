@@ -19,6 +19,7 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 	domainbridge "github.com/mcuadros/director-engine/domain/agentbridge"
 	"github.com/mcuadros/director-engine/domain/agentprofile"
+	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
 	providerport "github.com/mcuadros/director-engine/ports/provider"
@@ -97,6 +98,7 @@ type scopeFacts struct {
 	run       domain.Run
 	candidate *domain.Candidate
 	role      agentprofile.FrozenRole
+	helper    *domainexecution.Helper
 }
 
 // Service composes typed aggregate facts with normalized provider discovery.
@@ -206,9 +208,43 @@ func immutableScope(binding domainbridge.SessionBinding, facts *scopeFacts) erro
 		profiles.ConfigurationSHA256() != binding.ConfigurationSHA256 {
 		return fail(CodeScopeMismatch)
 	}
-	role, exists := profiles.Role(binding.Role)
+	profileRole := binding.Role
+	if binding.Role == agentprofile.RoleHelper {
+		profileRole = agentprofile.RoleWorker
+	}
+	role, exists := profiles.Role(profileRole)
 	if !exists {
 		return fail(CodeScopeMismatch)
+	}
+	if binding.Role == agentprofile.RoleHelper {
+		helperCapabilityFrozen := false
+		for _, capability := range role.Selection.MCPCapabilities {
+			if capability == domainconfig.MCPTaskHelperRequest {
+				helperCapabilityFrozen = true
+				break
+			}
+		}
+		if !helperCapabilityFrozen {
+			return fail(CodeScopeMismatch)
+		}
+		role.Role = agentprofile.RoleHelper
+		role.Selection.MCPCapabilities = []domainconfig.MCPCapability{
+			domainconfig.MCPTaskRead, domainconfig.MCPHelperContributionSubmit,
+		}
+		index := domainexecution.HelperIndex(facts.run.Execution.Helpers, binding.HelperID)
+		if index < 0 {
+			return fail(CodeScopeMismatch)
+		}
+		helper := facts.run.Execution.Helpers[index]
+		if helper.Scope != facts.run.Execution.Scope || helper.NativeAgentID == "" ||
+			helper.NativeAgentID != binding.NativeAgentID || helper.ParentAgentID != facts.run.Execution.Agent.ExternalID ||
+			helper.Phase == domainexecution.HelperTerminal {
+			return fail(CodeScopeMismatch)
+		}
+		if helper.Mode == domainexecution.HelperReadOnly {
+			role.Selection.PermissionMode = "read-only"
+		}
+		facts.helper = &helper
 	}
 	facts.role = role
 	if binding.Role == agentprofile.RoleWorker && facts.run.Execution.Agent.ExternalID != "" &&
@@ -352,6 +388,13 @@ type taskOutput struct {
 		Version                 uint64 `json:"version"`
 		EffectiveProfilesSHA256 string `json:"effectiveProfilesSha256"`
 	} `json:"run"`
+	Helpers []struct {
+		ID               string `json:"id"`
+		Mode             string `json:"mode"`
+		Phase            string `json:"phase"`
+		AdmissionID      string `json:"admissionId,omitempty"`
+		HandoffCommitSHA string `json:"handoffCommitSha,omitempty"`
+	} `json:"helpers"`
 }
 
 var requiredReviewDimensions = []string{
@@ -420,6 +463,29 @@ func readTask(facts scopeFacts) (json.RawMessage, error) {
 	output.Run.BaseSHA = facts.run.BaseSHA
 	output.Run.Version = facts.run.Version
 	output.Run.EffectiveProfilesSHA256 = facts.run.Execution.EffectiveProfilesSHA256
+	output.Helpers = make([]struct {
+		ID               string `json:"id"`
+		Mode             string `json:"mode"`
+		Phase            string `json:"phase"`
+		AdmissionID      string `json:"admissionId,omitempty"`
+		HandoffCommitSHA string `json:"handoffCommitSha,omitempty"`
+	}, 0, len(facts.run.Execution.Helpers))
+	for _, helper := range facts.run.Execution.Helpers {
+		row := struct {
+			ID               string `json:"id"`
+			Mode             string `json:"mode"`
+			Phase            string `json:"phase"`
+			AdmissionID      string `json:"admissionId,omitempty"`
+			HandoffCommitSHA string `json:"handoffCommitSha,omitempty"`
+		}{ID: helper.ID, Mode: string(helper.Mode), Phase: string(helper.Phase)}
+		if helper.Admission != nil {
+			row.AdmissionID = helper.Admission.ID
+		}
+		if helper.Handoff != nil {
+			row.HandoffCommitSHA = helper.Handoff.CommitSHA
+		}
+		output.Helpers = append(output.Helpers, row)
+	}
 	return boundedOutput(output)
 }
 
@@ -457,6 +523,7 @@ type commandPayload struct {
 	WorkspaceID              string            `json:"workspaceId"`
 	TaskID                   string            `json:"taskId"`
 	RunID                    string            `json:"runId"`
+	HelperID                 string            `json:"helperId,omitempty"`
 	CandidateID              string            `json:"candidateId"`
 	CandidateSHA             string            `json:"candidateSha"`
 	NativeAgentID            string            `json:"nativeAgentId"`
@@ -480,6 +547,7 @@ type commandOutput struct {
 	Status          string `json:"status"`
 	ObservedVersion uint64 `json:"observedVersion"`
 	Replay          bool   `json:"replay"`
+	HelperID        string `json:"helperId,omitempty"`
 }
 
 func commandIdentity(binding domainbridge.SessionBinding, requestID string) string {
@@ -491,7 +559,7 @@ func canonicalCommandPayload(binding domainbridge.SessionBinding, descriptor Des
 	payload := commandPayload{
 		SchemaVersion: domainbridge.ContractVersion, SessionSHA256: descriptor.SessionSHA256,
 		Role: binding.Role, ProjectID: binding.ProjectID, WorkspaceID: binding.WorkspaceID,
-		TaskID: binding.TaskID, RunID: binding.RunID, CandidateID: binding.CandidateID,
+		TaskID: binding.TaskID, RunID: binding.RunID, HelperID: binding.HelperID, CandidateID: binding.CandidateID,
 		CandidateSHA: binding.CandidateSHA, NativeAgentID: binding.NativeAgentID, TurnID: binding.TurnID,
 		ToolName: tool.Name, Capability: string(tool.Capability), ExpectedProjectVersion: binding.ExpectedProjectVersion,
 		ExpectedWorkspaceVersion: binding.ExpectedWorkspaceVersion, ExpectedTaskVersion: binding.ExpectedTaskVersion,
@@ -516,6 +584,10 @@ func commandType(tool string) string {
 		return "agent.mcp.planning_command.submit"
 	case "director_task_outcome_submit":
 		return "agent.mcp.task_outcome.submit"
+	case "director_task_helper_request":
+		return "agent.mcp.task_helper.request"
+	case "director_helper_contribution_submit":
+		return "agent.mcp.helper_contribution.submit"
 	case "director_review_verdict_submit":
 		return "agent.mcp.review_verdict.submit"
 	default:
@@ -564,9 +636,22 @@ func (session *Session) replay(ctx context.Context, key, kind string, payload []
 	if stored.Outcome == domain.CommandRejectedVersionConflict {
 		status = "version_conflict"
 	}
+	helperID := session.binding.HelperID
+	if kind == "agent.mcp.task_helper.request" {
+		run, runErr := session.store.Run(ctx, session.binding.RunID)
+		if runErr != nil {
+			return Result{}, true, fail(CodeStoreUnavailable)
+		}
+		for _, helper := range run.Execution.Helpers {
+			if helper.RequestID == key {
+				helperID = helper.ID
+				break
+			}
+		}
+	}
 	output, err := boundedOutput(commandOutput{
 		SchemaVersion: domainbridge.ContractVersion, CommandKey: key, Status: status,
-		ObservedVersion: stored.ObservedVersion, Replay: true,
+		ObservedVersion: stored.ObservedVersion, Replay: true, HelperID: helperID,
 	})
 	return Result{Payload: output}, true, err
 }
@@ -606,6 +691,46 @@ func (session *Session) mutate(ctx context.Context, requestID string, tool domai
 		EffectiveProfilesSHA256: session.binding.EffectiveProfilesSHA256,
 		ConfigurationSHA256:     session.binding.ConfigurationSHA256,
 	})
+	helperID := session.binding.HelperID
+	switch tool.Name {
+	case "director_task_helper_request":
+		var request struct {
+			Mode    domainexecution.HelperMode `json:"mode"`
+			Purpose string                     `json:"purpose"`
+		}
+		if json.Unmarshal(arguments, &request) != nil {
+			return Result{}, fail(CodeInputInvalid)
+		}
+		if facts.run.CurrentCandidateID != "" || facts.run.Execution.AgentPrompt.Phase != domainexecution.EffectComplete ||
+			facts.run.Execution.Agent.ExternalID != session.binding.NativeAgentID {
+			return Result{}, fail(CodeScopeMismatch)
+		}
+		helperID = "helper-" + strings.TrimPrefix(key, "mcp-command-")[:32]
+		path := domainexecution.HelperWorktreePath(next.Execution.WorktreePath, helperID, request.Mode)
+		state, appendErr := domainexecution.AppendHelperRequest(
+			next.Execution, helperID, key, session.binding.NativeAgentID, request.Mode, request.Purpose, path,
+		)
+		if appendErr != nil {
+			return Result{}, fail(CodeScopeMismatch)
+		}
+		next.Execution = state
+	case "director_helper_contribution_submit":
+		var contribution domainexecution.HelperContribution
+		if json.Unmarshal(arguments, &contribution) != nil {
+			return Result{}, fail(CodeInputInvalid)
+		}
+		index := domainexecution.HelperIndex(next.Execution.Helpers, session.binding.HelperID)
+		if index < 0 || next.Execution.Helpers[index].Mode != domainexecution.HelperWriter ||
+			next.Execution.Helpers[index].Phase != domainexecution.HelperActive ||
+			next.Execution.Helpers[index].NativeAgentID != session.binding.NativeAgentID || contribution.BaseSHA != facts.run.BaseSHA {
+			return Result{}, fail(CodeScopeMismatch)
+		}
+		if next.Execution.Helpers[index].Contribution != nil {
+			return Result{}, fail(CodeIdempotencyConflict)
+		}
+		next.Execution.Helpers[index].Contribution = &contribution
+		next.Execution.Helpers[index].Phase = domainexecution.HelperContributionReady
+	}
 	eventPayload, _ := json.Marshal(next.Execution.MCPCommandReceipts[len(next.Execution.MCPCommandReceipts)-1])
 	result, err := session.store.UpdateRun(ctx, domain.CommandRequest{
 		IdempotencyKey: key, Type: kind, AggregateID: session.binding.RunID,
@@ -627,7 +752,7 @@ func (session *Session) mutate(ctx context.Context, requestID string, tool domai
 	}
 	output, err := boundedOutput(commandOutput{
 		SchemaVersion: domainbridge.ContractVersion, CommandKey: key, Status: status,
-		ObservedVersion: result.ObservedVersion, Replay: result.Replay,
+		ObservedVersion: result.ObservedVersion, Replay: result.Replay, HelperID: helperID,
 	})
 	return Result{Payload: output}, err
 }

@@ -30,7 +30,7 @@
       }
     },
     "mcpCapability": {
-      "enum": ["project.read", "planning.command.submit", "task.read", "task.outcome.submit", "candidate.read", "review.verdict.submit"]
+      "enum": ["project.read", "planning.command.submit", "task.read", "task.outcome.submit", "task.helper.request", "helper.contribution.submit", "candidate.read", "review.verdict.submit"]
     },
     "variant": {
       "type": "object",

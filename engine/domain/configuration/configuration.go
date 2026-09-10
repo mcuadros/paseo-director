@@ -97,12 +97,14 @@ const (
 type MCPCapability string
 
 const (
-	MCPProjectRead           MCPCapability = "project.read"
-	MCPPlanningCommandSubmit MCPCapability = "planning.command.submit"
-	MCPTaskRead              MCPCapability = "task.read"
-	MCPTaskOutcomeSubmit     MCPCapability = "task.outcome.submit"
-	MCPCandidateRead         MCPCapability = "candidate.read"
-	MCPReviewVerdictSubmit   MCPCapability = "review.verdict.submit"
+	MCPProjectRead              MCPCapability = "project.read"
+	MCPPlanningCommandSubmit    MCPCapability = "planning.command.submit"
+	MCPTaskRead                 MCPCapability = "task.read"
+	MCPTaskOutcomeSubmit        MCPCapability = "task.outcome.submit"
+	MCPTaskHelperRequest        MCPCapability = "task.helper.request"
+	MCPHelperContributionSubmit MCPCapability = "helper.contribution.submit"
+	MCPCandidateRead            MCPCapability = "candidate.read"
+	MCPReviewVerdictSubmit      MCPCapability = "review.verdict.submit"
 )
 
 // Project identifies the one Director Project represented by an Organizer.
@@ -533,7 +535,8 @@ func capabilityAllowed(role string, capability MCPCapability) bool {
 	case "organizer":
 		return capability == MCPProjectRead || capability == MCPPlanningCommandSubmit
 	case "worker":
-		return capability == MCPProjectRead || capability == MCPTaskRead || capability == MCPTaskOutcomeSubmit
+		return capability == MCPProjectRead || capability == MCPTaskRead || capability == MCPTaskOutcomeSubmit ||
+			capability == MCPTaskHelperRequest
 	case "reviewer":
 		return capability == MCPCandidateRead || capability == MCPReviewVerdictSubmit
 	default:

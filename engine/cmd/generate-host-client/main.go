@@ -117,6 +117,8 @@ export type HostEffectKind =
   | "host_view.create"
   | "task_agent.create_with_bootstrap"
   | "agent.send_prompt"
+  | "helper_agent.observe"
+  | "helper_agent.archive"
   | "task_agent.archive"
   | "host_view.archive";
 

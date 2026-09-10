@@ -21,7 +21,7 @@ func productionLedger(t *testing.T) budget.Ledger {
 func TestRuntimeBudgetBlackBoxConformsToIntegratedExecutionOracle(t *testing.T) {
 	softLedger := productionLedger(t)
 	_, soft, err := budget.Reserve(softLedger, budget.ReserveRequest{
-		ID: "reservation-soft", EffectID: "effect-soft", Activity: budget.ActivityWorkerTurn,
+		ID: "reservation-soft", EffectID: "effect-soft", Activity: budget.ActivityHelperTurn,
 		LeaseEpoch: 1, PolicyRevision: softLedger.Policy.Revision,
 		Demand: budget.Demand{WallTimeMilliseconds: 1, Tokens: 85, Turns: 1, CostMicrousd: 1},
 	}, 0)
@@ -39,7 +39,7 @@ func TestRuntimeBudgetBlackBoxConformsToIntegratedExecutionOracle(t *testing.T) 
 
 	hardLedger := productionLedger(t)
 	_, hard, err := budget.Reserve(hardLedger, budget.ReserveRequest{
-		ID: "reservation-hard", EffectID: "effect-hard", Activity: budget.ActivityWorkerTurn,
+		ID: "reservation-hard", EffectID: "effect-hard", Activity: budget.ActivityHelperTurn,
 		LeaseEpoch: 1, PolicyRevision: hardLedger.Policy.Revision,
 		Demand: budget.Demand{WallTimeMilliseconds: 1, Tokens: 100, Turns: 1, CostMicrousd: 1},
 	}, 0)

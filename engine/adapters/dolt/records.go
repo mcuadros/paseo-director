@@ -384,6 +384,9 @@ func validateRun(run domain.Run) error {
 			!execution.ValidStartupReconciliation(*state.LastStartupReconciliation) {
 			return fmt.Errorf("%w: invalid startup reconciliation", storeport.ErrInvalidRecord)
 		}
+		if !execution.ValidHelpers(state) {
+			return fmt.Errorf("%w: invalid helper execution state", storeport.ErrInvalidRecord)
+		}
 		if len(state.MCPCommandReceipts) > execution.MaximumMCPCommandReceipts {
 			return fmt.Errorf("%w: invalid MCP command receipt count", storeport.ErrInvalidRecord)
 		}

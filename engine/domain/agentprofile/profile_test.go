@@ -328,8 +328,8 @@ func TestFrozenProfilesAreDefensiveAndRestartDeterministic(t *testing.T) {
 
 func TestClosedSchemasHashesAndParsersRejectMutation(t *testing.T) {
 	expectedHashes := map[string]string{
-		"discovery": "5b504ccc87ab1600953edb007e67d7e8f1acec21e140f08ea4478470479163b7",
-		"frozen":    "c2883458d6c1f69dfd729d4eb7b2aab71a50a5b46f7aaaca9cad76d9a8dffd0c",
+		"discovery": "b24f996491a706c9a1da957dc802bc971f0cdbbd3f0b3d8214546832b03eba6e",
+		"frozen":    "c961897556e407ca8b817522f671b61265574f8a6eabb2ca09d5039528f4b384",
 	}
 	for name, schemaAndHash := range map[string]struct {
 		schema []byte
