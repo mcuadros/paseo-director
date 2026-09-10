@@ -345,6 +345,41 @@ test("configuration oracle is an exact test-only architecture role", () => {
   }
 });
 
+test("product tests alone may import the exact scheduler oracle", () => {
+  const oracle = `${modulePath}/internal/testkit/scheduleroracle`;
+  assert.deepEqual(
+    goDependencyErrors([
+      {
+        importPath: `${modulePath}/reducer/scheduler`,
+        imports: ["slices"],
+        testImports: ["testing", oracle],
+      },
+      {
+        importPath: oracle,
+        imports: ["slices"],
+        xTestImports: ["testing", oracle],
+      },
+    ]),
+    [],
+  );
+  assert.ok(
+    goDependencyErrors([
+      {
+        importPath: `${modulePath}/reducer/scheduler`,
+        imports: [oracle],
+      },
+    ]).some((error) => error.includes("reducer boundary cannot import testkit")),
+  );
+  assert.ok(
+    goDependencyErrors([
+      {
+        importPath: oracle,
+        imports: [`${modulePath}/reducer/scheduler`],
+      },
+    ]).some((error) => error.includes("testkit boundary cannot import reducer")),
+  );
+});
+
 test("adapters and agent runtime cannot declare lifecycle policy", () => {
   assert.deepEqual(
     policyOwnershipErrors(

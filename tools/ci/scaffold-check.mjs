@@ -64,6 +64,7 @@ const ENGINE_ALLOWED_PREFIXES = [
   "engine/internal/planningtestkit/",
   "engine/internal/testkit/projectionoracle/",
   "engine/internal/testkit/configoracle/",
+  "engine/internal/testkit/scheduleroracle/",
   "engine/ports/",
   "engine/projection/",
   "engine/reducer/",
