@@ -13,8 +13,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  generateAgentMCPClient,
   generateClient,
   generatePlanningClient,
+  generatedAgentMCPClientMatches,
   generatedClientMatches,
   generatedPlanningClientMatches,
 } from "./contract-check.mjs";
@@ -28,6 +30,10 @@ const planningSchemaPath = resolve(
   repositoryRoot,
   "engine/ports/planning/planning-surface.v1.json",
 );
+const agentMCPSchemaPath = resolve(
+  repositoryRoot,
+  "engine/domain/agentbridge/schemas/director-agent-mcp.v1.json",
+);
 
 test("the committed client is generated from the exact engine schema", () => {
   assert.equal(generatedClientMatches(repositoryRoot, schemaPath), true);
@@ -35,6 +41,30 @@ test("the committed client is generated from the exact engine schema", () => {
     generatedPlanningClientMatches(repositoryRoot, planningSchemaPath),
     true,
   );
+  assert.equal(
+    generatedAgentMCPClientMatches(repositoryRoot, agentMCPSchemaPath),
+    true,
+  );
+});
+
+test("the agent MCP client drifts with its canonical engine schema", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "director-agent-mcp-drift-"));
+  try {
+    const changedSchema = join(temporaryRoot, "changed.json");
+    writeFileSync(
+      changedSchema,
+      readFileSync(agentMCPSchemaPath, "utf8").replace(
+        "director.agent-mcp/v1",
+        "director.agent-mcp/v999",
+      ),
+    );
+    assert.throws(
+      () => generateAgentMCPClient(repositoryRoot, changedSchema),
+      /agent MCP contract metadata does not match/,
+    );
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 test("the planning client drifts with its canonical engine schema", () => {

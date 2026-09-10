@@ -147,6 +147,19 @@ func validateExecutionGraph(run domain.Run) error {
 		!domainexecution.ValidStartupReconciliation(*state.LastStartupReconciliation) {
 		return errors.New("last startup reconciliation is invalid")
 	}
+	if len(state.MCPCommandReceipts) > domainexecution.MaximumMCPCommandReceipts {
+		return errors.New("MCP command receipt ledger exceeds its bound")
+	}
+	seenMCPCommands := make(map[string]struct{}, len(state.MCPCommandReceipts))
+	for _, receipt := range state.MCPCommandReceipts {
+		if !domainexecution.ValidMCPCommandReceipt(receipt) {
+			return errors.New("MCP command receipt is invalid")
+		}
+		if _, duplicate := seenMCPCommands[receipt.CommandKey]; duplicate {
+			return errors.New("MCP command receipt is duplicated")
+		}
+		seenMCPCommands[receipt.CommandKey] = struct{}{}
+	}
 	for _, fixture := range []struct {
 		effect   domainexecution.Effect
 		kind     domainexecution.EffectKind

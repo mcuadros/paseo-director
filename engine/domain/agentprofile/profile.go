@@ -230,6 +230,20 @@ func DiscoverySchemaSHA256() (string, error) { return schemaHash(discoverySchema
 // FrozenSchemaSHA256 identifies the exact closed Run profile contract.
 func FrozenSchemaSHA256() (string, error) { return schemaHash(frozenSchema) }
 
+// ValidateDiscoverySnapshot exposes the same closed structural and revision
+// checks used by profile freezing so later engine-owned launch preflight never
+// has to trust a connector assertion that provider facts are well formed.
+func ValidateDiscoverySnapshot(snapshot DiscoverySnapshot) error {
+	return validateDiscovery(snapshot)
+}
+
+// SupportedCLIVersion returns the exact ADR-0005 compatibility point for one
+// admitted provider. Unknown providers have no implicit fallback.
+func SupportedCLIVersion(provider domainconfig.Provider) (string, bool) {
+	version, ok := admittedCLI[provider]
+	return version, ok
+}
+
 func validToken(value string) bool { return tokenPattern.MatchString(value) }
 
 func validDiagnostic(code DiagnosticCode) bool {
