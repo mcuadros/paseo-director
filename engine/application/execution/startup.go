@@ -10,9 +10,10 @@ import (
 	"strings"
 
 	"github.com/mcuadros/director-engine/domain"
+	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
-	runtimeport "github.com/mcuadros/director-engine/ports/runtime"
+	gitport "github.com/mcuadros/director-engine/ports/git"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
 
@@ -318,8 +319,9 @@ func validateExecutionGraph(run domain.Run) error {
 		return errors.New("completion-event receipt ledger exceeds its bound")
 	}
 	if state.CandidateObservation != nil {
-		if state.Claim == nil || state.CandidateObservation.ClaimID != state.Claim.ID ||
-			state.CandidateObservation.BindingHash != state.RepositoryBindingHash ||
+		if state.Claim == nil || state.CandidateClaim == nil || state.CandidateClaim.ID != state.Claim.ID ||
+			state.CandidateObservation.ClaimSHA256 != candidatedomain.ClaimSHA256(*state.CandidateClaim) ||
+			state.CandidateObservation.RepositoryBindingSHA256 != state.RepositoryBindingHash ||
 			!domainexecution.ValidCandidateObservation(*state.CandidateObservation) {
 			return errors.New("Run Candidate observation is invalid")
 		}
@@ -371,7 +373,7 @@ func commandForEvent(run domain.Run, event domain.Event, candidate *domain.Candi
 		if candidate == nil {
 			return "", "", errors.New("Candidate event lacks an immutable Candidate")
 		}
-		return stableID("command", run.ID, "candidate-1", candidate.CommitSHA), "candidate.admit", nil
+		return stableID("command", run.ID, fmt.Sprintf("candidate-%d", candidate.Sequence), candidate.CommitSHA), "candidate.admit", nil
 	default:
 		if event.AggregateVersion == 0 {
 			return "", "", errors.New("Run transition has a create version")
@@ -397,20 +399,24 @@ func (controller *Controller) scanDurableRun(ctx context.Context, project domain
 			return result, errors.New("Run has an unprojected Candidate")
 		}
 	} else {
-		if len(candidates) != 1 || candidates[0].ID != run.CurrentCandidateID ||
-			candidates[0].RunID != run.ID || run.Execution.Claim == nil ||
-			candidates[0].Sequence != 1 ||
-			candidates[0].ID != stableID("candidate", run.ID, "1", run.Execution.Claim.CandidateSHA) ||
-			candidates[0].CommitSHA != run.Execution.Claim.CandidateSHA ||
+		if len(candidates) == 0 || candidates[len(candidates)-1].ID != run.CurrentCandidateID ||
+			run.Execution.Claim == nil || run.Execution.CandidateClaim == nil ||
+			candidates[len(candidates)-1].RunID != run.ID ||
+			candidates[len(candidates)-1].Sequence != uint64(len(candidates)) ||
+			candidates[len(candidates)-1].ID != candidatedomain.RecordID(run.ID, uint64(len(candidates)), run.Execution.Claim.CandidateSHA) ||
+			candidates[len(candidates)-1].CommitSHA != run.Execution.Claim.CandidateSHA ||
 			run.Execution.CandidateObservation == nil ||
-			run.Execution.CandidateObservation.CommitSHA != candidates[0].CommitSHA ||
+			run.Execution.CandidateObservation.CommitSHA != candidates[len(candidates)-1].CommitSHA ||
 			run.Execution.CandidateObservation.BaseSHA != run.BaseSHA ||
-			!run.Execution.CandidateObservation.Clean || !run.Execution.CandidateObservation.Reachable ||
-			!run.Execution.CandidateObservation.Owned || !run.Execution.CandidateObservation.DescendsFromBase ||
-			!run.Execution.CandidateObservation.NoConflict {
+			run.Execution.CandidateAuthority == nil || run.Execution.CandidateAuthority.CandidateID != run.CurrentCandidateID {
 			return result, errors.New("Run Candidate projection is invalid")
 		}
-		candidate := candidates[0]
+		for index, candidate := range candidates {
+			if candidate.Sequence != uint64(index+1) {
+				return result, errors.New("Run Candidate sequence is invalid")
+			}
+		}
+		candidate := candidates[len(candidates)-1]
 		result.candidate = &candidate
 	}
 	events, err := loadRunEvents(ctx, controller.store, run.ID)
@@ -599,14 +605,15 @@ func exactCleanupIdentity(state domainexecution.State, kind domainexecution.Effe
 }
 
 func exactCandidateFacts(run domain.Run, observation domainexecution.CandidateObservation, nowMillis int64) bool {
-	return run.Execution.Claim != nil &&
-		domainexecution.CurrentCandidateObservation(observation, nowMillis) &&
-		observation.ClaimID == run.Execution.Claim.ID &&
-		observation.WorktreeID == run.Execution.Worktree.ExternalID &&
-		observation.BindingHash == run.Execution.RepositoryBindingHash &&
-		observation.CommitSHA == run.Execution.Claim.CandidateSHA &&
-		observation.BaseSHA == run.BaseSHA && observation.Clean && observation.Reachable &&
-		observation.Owned && observation.DescendsFromBase && observation.NoConflict
+	if run.Execution.CandidateClaim == nil {
+		return false
+	}
+	decision := candidatedomain.Evaluate(*run.Execution.CandidateClaim, observation, run.Execution.RepositoryBindingHash, nowMillis)
+	return decision.Kind == candidatedomain.DecisionAdmit && decision.Manifest != nil &&
+		run.Execution.CandidateAuthority != nil &&
+		decision.Manifest.CandidateSHA == run.Execution.CandidateAuthority.CandidateSHA &&
+		decision.Manifest.BaseSHA == run.Execution.CandidateAuthority.BaseSHA &&
+		decision.Manifest.TreeSHA != "" && decision.Manifest.DiffSHA256 != "" && decision.Manifest.ChangedPathsSHA256 != ""
 }
 
 func (controller *Controller) observeStartupRun(ctx context.Context, durable durableStartupRun, nowMillis int64) (observedStartupRun, error) {
@@ -655,9 +662,12 @@ func (controller *Controller) observeStartupRun(ctx context.Context, durable dur
 			result.unsafeCode = domainexecution.NeedCode("startup_execution_identity_mismatch")
 		}
 	}
-	if run.Execution.Claim != nil &&
+	if run.Execution.CandidateClaim != nil &&
 		(run.Execution.WorktreeRemove.ID == "" || run.Execution.WorktreeRemove.Phase == domainexecution.EffectIntentRecorded) {
-		observation, err := controller.runtime.ObserveCandidate(ctx, candidateRequest(run))
+		if controller.candidateGit == nil {
+			return result, errors.New("startup Candidate Git observer is unavailable")
+		}
+		observation, err := controller.candidateGit.ObserveCandidate(ctx, candidateRequest(run, nowMillis))
 		if err != nil {
 			return result, err
 		}
@@ -672,12 +682,10 @@ func (controller *Controller) observeStartupRun(ctx context.Context, durable dur
 	return result, nil
 }
 
-func candidateRequest(run domain.Run) runtimeport.CandidateRequest {
-	return runtimeport.CandidateRequest{
-		Scope: run.Execution.Scope, SourcePath: run.Execution.SourcePath,
-		WorktreePath: run.Execution.WorktreePath, Branch: run.Execution.Branch,
-		WorktreeID:  run.Execution.Worktree.ExternalID,
-		BindingHash: run.Execution.RepositoryBindingHash, Claim: *run.Execution.Claim,
+func candidateRequest(run domain.Run, nowMillis int64) gitport.CandidateRequest {
+	return gitport.CandidateRequest{
+		Claim: *run.Execution.CandidateClaim, Repository: run.Execution.RepositoryBinding,
+		RepositoryBindingSHA256: run.Execution.RepositoryBindingHash, TaskStoreNowMillis: nowMillis,
 	}
 }
 
@@ -732,7 +740,7 @@ func startupSnapshot(request StartupCommand, observed observedStartupRun) domain
 	}
 	if observed.candidateObservation != nil {
 		snapshot.CandidateObservationID = observed.candidateObservation.ID
-		snapshot.CandidateObservationHash = observed.candidateObservation.FactHash
+		snapshot.CandidateObservationHash = observed.candidateObservation.FactSHA256
 	}
 	snapshot.FactHash = domainexecution.StartupReconciliationHash(snapshot)
 	return snapshot
@@ -759,10 +767,6 @@ func (controller *Controller) persistStartupRun(ctx context.Context, request Sta
 			observation := *observed.frontierObservation
 			effect.Observation = &observation
 		}
-	}
-	if observed.candidateObservation != nil {
-		observation := *observed.candidateObservation
-		next.Execution.CandidateObservation = &observation
 	}
 	commandID := stableID("command", run.ID, fmt.Sprintf("version-%d", next.Version), "run.startup_reconciled")
 	payload := struct {

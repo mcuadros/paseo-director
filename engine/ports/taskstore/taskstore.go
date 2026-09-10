@@ -12,7 +12,9 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 )
 
-const SchemaVersion = 1
+// SchemaVersion 2 adds immutable Candidate claim/manifest JSON. Existing
+// version-one stores fail closed; M5 owns backup/restore migration tooling.
+const SchemaVersion = 2
 
 var (
 	ErrNotFound             = errors.New("taskstore record not found")

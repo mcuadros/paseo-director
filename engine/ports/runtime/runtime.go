@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/mcuadros/director-engine/domain/execution"
+	gitport "github.com/mcuadros/director-engine/ports/git"
 )
 
 // Request binds one effect to its exact source, worktree, branch, and Run.
@@ -33,16 +34,9 @@ type Request struct {
 	ControlCleanupAuthorized  bool                           `json:"controlCleanupAuthorized"`
 }
 
-// CandidateRequest asks for external Git facts bound to one immutable claim.
-type CandidateRequest struct {
-	Scope        execution.Scope          `json:"scope"`
-	SourcePath   string                   `json:"sourcePath"`
-	WorktreePath string                   `json:"worktreePath"`
-	Branch       string                   `json:"branch"`
-	WorktreeID   string                   `json:"worktreeId"`
-	BindingHash  string                   `json:"bindingHash"`
-	Claim        execution.CompletedClaim `json:"claim"`
-}
+// CandidateRequest is a compatibility alias for callers compiled against the
+// former mixed runtime port. New code depends on the dedicated Git port.
+type CandidateRequest = gitport.CandidateRequest
 
 // PrimaryRecoveryRequest fixes the complete durable Run binding for one
 // read-only recovery observation. CandidateSHA is empty before admission.
@@ -116,5 +110,4 @@ type Port interface {
 	ObserveEffect(context.Context, Request) (execution.EffectObservation, error)
 	DispatchEffect(context.Context, Request) error
 	ObserveOperational(context.Context, execution.Scope, execution.OperationalPolicy) (execution.OperationalObservation, error)
-	ObserveCandidate(context.Context, CandidateRequest) (execution.CandidateObservation, error)
 }

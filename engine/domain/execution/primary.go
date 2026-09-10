@@ -25,7 +25,7 @@ const PrimarySessionSchemaVersion = "director.primary-session/v1"
 var (
 	primaryIdentityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$`)
 	primarySHA256Pattern   = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	primaryGitOIDPattern   = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	primaryGitOIDPattern   = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 	primarySecretPattern   = regexp.MustCompile(`(?i)^--?(?:token|secret|password|credential|authorization|github|paseo|socket)(?:=|$)|(?:gh[pousr]_|sk-)[A-Za-z0-9_-]{16,}`)
 )
 

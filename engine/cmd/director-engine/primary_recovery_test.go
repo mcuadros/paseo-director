@@ -22,7 +22,7 @@ import (
 	"github.com/mcuadros/director-engine/reducer/eligibility"
 )
 
-type runtimeWithoutRecovery struct{ inner runtimeport.Port }
+type runtimeWithoutRecovery struct{ inner *fake.Environment }
 
 func (runtime runtimeWithoutRecovery) ObserveEffect(ctx context.Context, request runtimeport.Request) (execution.EffectObservation, error) {
 	return runtime.inner.ObserveEffect(ctx, request)

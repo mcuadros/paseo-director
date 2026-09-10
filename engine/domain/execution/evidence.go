@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"slices"
+
+	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 )
 
 func evidenceDigest(value any) string {
@@ -97,20 +99,17 @@ func CurrentEffectObservation(observation EffectObservation, nowMillis int64) bo
 
 // CandidateObservationHash returns the canonical identity of exact Git facts.
 func CandidateObservationHash(observation CandidateObservation) string {
-	observation.FactHash = ""
-	return evidenceDigest(observation)
+	return candidatedomain.ObservationSHA256(observation)
 }
 
 // ValidCandidateObservation rejects a partial or self-inconsistent Git fact.
 func ValidCandidateObservation(observation CandidateObservation) bool {
-	return observation.FactHash != "" && observation.FactHash == CandidateObservationHash(observation)
+	return candidatedomain.ValidObservation(observation)
 }
 
 // CurrentCandidateObservation applies the positive finite Git-fact window.
 func CurrentCandidateObservation(observation CandidateObservation, nowMillis int64) bool {
-	return ValidCandidateObservation(observation) && observation.MaximumAgeMillis > 0 &&
-		observation.ObservedAtMillis >= 0 && observation.ObservedAtMillis <= nowMillis &&
-		nowMillis-observation.ObservedAtMillis <= observation.MaximumAgeMillis
+	return candidatedomain.CurrentObservation(observation, nowMillis)
 }
 
 // StartupReconciliationHash binds one startup scan to its complete bounded

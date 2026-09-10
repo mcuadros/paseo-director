@@ -22,6 +22,8 @@ import (
 	"syscall"
 	"time"
 
+	gitadapter "github.com/mcuadros/director-engine/adapters/git"
+	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	"github.com/mcuadros/director-engine/domain/execution"
 	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
@@ -471,36 +473,23 @@ func (environment *Environment) ObserveOperational(_ context.Context, _ executio
 }
 
 // ObserveCandidate derives exact Candidate facts from Git rather than a claim.
-func (environment *Environment) ObserveCandidate(_ context.Context, request runtimeport.CandidateRequest) (execution.CandidateObservation, error) {
+func (environment *Environment) ObserveCandidate(ctx context.Context, request runtimeport.CandidateRequest) (execution.CandidateObservation, error) {
 	environment.mu.Lock()
 	defer environment.mu.Unlock()
 	environment.observationSeq++
-	if request.SourcePath != environment.options.SourcePath || request.WorktreePath != environment.options.WorktreePath ||
-		request.Branch != environment.options.Branch || request.WorktreeID != environment.world.worktreeID {
-		observation := execution.CandidateObservation{
-			ID:      fmt.Sprintf("candidate-observation-%d", environment.observationSeq),
-			ClaimID: request.Claim.ID, WorktreeID: request.WorktreeID,
-			BindingHash: request.BindingHash, CommitSHA: request.Claim.CandidateSHA,
-			BaseSHA: request.Claim.BaseSHA, ObservedAtMillis: environment.operational.ObservedAtMillis, MaximumAgeMillis: 30_000,
-		}
-		observation.FactHash = digest(observation)
+	if request.Claim.WorktreeID != environment.world.worktreeID ||
+		request.Repository.SourcePath != environment.options.SourcePath ||
+		request.Repository.WorktreePath != environment.options.WorktreePath ||
+		request.Repository.Branch != environment.options.Branch || request.Repository.BaseSHA != environment.options.BaseSHA {
+		observation := candidatedomain.SealObservation(candidatedomain.Observation{
+			ClaimSHA256:             candidatedomain.ClaimSHA256(request.Claim),
+			RepositoryBindingSHA256: request.RepositoryBindingSHA256,
+			ObservedAtMillis:        request.TaskStoreNowMillis, MaximumAgeMillis: candidatedomain.MaximumObservationAgeMS,
+			Code: candidatedomain.CodeRepositoryMismatch,
+		})
 		return observation, nil
 	}
-	status, statusErr := runGit(request.WorktreePath, "status", "--porcelain=v1")
-	head, headErr := runGit(request.WorktreePath, "rev-parse", "HEAD")
-	_, reachableErr := runGit(request.WorktreePath, "cat-file", "-e", request.Claim.CandidateSHA+"^{commit}")
-	_, ancestryErr := runGit(request.WorktreePath, "merge-base", "--is-ancestor", request.Claim.BaseSHA, request.Claim.CandidateSHA)
-	observation := execution.CandidateObservation{
-		ID:      fmt.Sprintf("candidate-observation-%d", environment.observationSeq),
-		ClaimID: request.Claim.ID, WorktreeID: request.WorktreeID,
-		BindingHash: request.BindingHash, CommitSHA: request.Claim.CandidateSHA,
-		BaseSHA: request.Claim.BaseSHA, ObservedAtMillis: environment.operational.ObservedAtMillis, MaximumAgeMillis: 30_000,
-		Clean: statusErr == nil && status == "", Reachable: reachableErr == nil,
-		Owned:            headErr == nil && head == request.Claim.CandidateSHA && request.WorktreeID == environment.world.worktreeID,
-		DescendsFromBase: ancestryErr == nil, NoConflict: statusErr == nil,
-	}
-	observation.FactHash = digest(observation)
-	return observation, nil
+	return gitadapter.New().ObserveCandidate(ctx, request)
 }
 
 // ObservePrimaryRecovery re-proves the exact disposable Git/worktree and fake

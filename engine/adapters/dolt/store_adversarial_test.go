@@ -263,10 +263,7 @@ func faultPortCalls(t *testing.T) []portCall {
 			_, err := store.AppendCandidate(
 				ctx,
 				command("fault-append-candidate", "candidate.append", run.ID, 1, `{"candidateId":"new-candidate"}`),
-				domain.Candidate{
-					ID: "new-candidate", RunID: run.ID, Sequence: 2,
-					CommitSHA: "abcdef0123456789abcdef0123456789abcdef01",
-				},
+				storedCandidate("new-candidate", run.ID, 2, "abcdef0123456789abcdef0123456789abcdef01"),
 				event("fault-append-candidate-event", run.ID, 3, run.ID, 2, "candidate.appended"),
 			)
 			return err
@@ -325,10 +322,7 @@ func seedFaultStore(t *testing.T, store storeport.TaskStore) {
 	result, err = store.AppendCandidate(
 		ctx,
 		command("fault-candidate-create", "candidate.append", run.ID, 0, `{"candidateId":"fault-candidate"}`),
-		domain.Candidate{
-			ID: "fault-candidate", RunID: run.ID, Sequence: 1,
-			CommitSHA: "abcdef0123456789abcdef0123456789abcdef01",
-		},
+		storedCandidate("fault-candidate", run.ID, 1, "abcdef0123456789abcdef0123456789abcdef01"),
 		event("fault-candidate-create-event", run.ID, 2, run.ID, 1, "candidate.appended"),
 	)
 	requireApplied(t, result, err)
@@ -812,7 +806,7 @@ func TestSingularAndCollectionReloadsRejectInvalidRecords(t *testing.T) {
 	}
 
 	if _, err := inspection.ExecContext(ctx,
-		`INSERT INTO candidates (id, run_id, sequence, commit_sha) VALUES ('invalid-candidate', 'fault-run', 99, REPEAT('z', 40))`,
+		`INSERT INTO candidates (id, run_id, sequence, commit_sha, data) VALUES ('invalid-candidate', 'fault-run', 99, REPEAT('z', 40), JSON_OBJECT())`,
 	); err != nil {
 		t.Fatalf("inject invalid Candidate: %v", err)
 	}
@@ -1222,10 +1216,7 @@ func TestRunIdentityFieldsStayConsistent(t *testing.T) {
 		event("other-run-create-event", otherRun.ID, 1, otherRun.ID, 0, "run.created"),
 	)
 	requireApplied(t, result, err)
-	otherCandidate := domain.Candidate{
-		ID: "other-candidate", RunID: otherRun.ID, Sequence: 1,
-		CommitSHA: "fedcba9876543210fedcba9876543210fedcba98",
-	}
+	otherCandidate := storedCandidate("other-candidate", otherRun.ID, 1, "fedcba9876543210fedcba9876543210fedcba98")
 	result, err = store.AppendCandidate(
 		ctx,
 		command("other-candidate-create", "candidate.append", otherRun.ID, 0, `{"candidateId":"other-candidate"}`),

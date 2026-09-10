@@ -296,22 +296,36 @@ func TestDoltPlanningBulkFactsStayProjectBoundAndTyped(t *testing.T) {
 		event("run-bulk-created", run.ID, 1, run.ID, 0, "run.created"),
 	)
 	requireApplied(t, result, err)
-	candidate := domain.Candidate{
-		ID: "candidate-bulk", RunID: run.ID, Sequence: 1,
-		CommitSHA: "abcdef0123456789abcdef0123456789abcdef01",
-	}
+	candidate := storedCandidate("candidate-bulk", run.ID, 1, "abcdef0123456789abcdef0123456789abcdef01")
 	result, err = store.AppendCandidate(
 		ctx, command("candidate-bulk-append", "candidate.append", run.ID, 0, `{"candidateId":"candidate-bulk"}`), candidate,
 		event("candidate-bulk-appended", run.ID, 2, run.ID, 1, "candidate.appended"),
 	)
 	requireApplied(t, result, err)
+	gap := storedCandidate("candidate-gap", run.ID, 3, "123456789abcdef0123456789abcdef012345678")
+	if _, err := store.AppendCandidate(
+		ctx, command("candidate-gap-append", "candidate.append", run.ID, 1, `{"candidateId":"candidate-gap"}`), gap,
+		event("candidate-gap-appended", run.ID, 3, run.ID, 2, "candidate.appended"),
+	); !errors.Is(err, storeport.ErrReferentialIntegrity) {
+		t.Fatalf("out-of-order Candidate sequence error = %v", err)
+	}
+	secondCandidate := storedCandidate("candidate-bulk-2", run.ID, 2, "123456789abcdef0123456789abcdef012345678")
+	result, err = store.AppendCandidate(
+		ctx, command("candidate-bulk-2-append", "candidate.append", run.ID, 1, `{"candidateId":"candidate-bulk-2"}`), secondCandidate,
+		event("candidate-bulk-2-appended", run.ID, 3, run.ID, 2, "candidate.appended"),
+	)
+	requireApplied(t, result, err)
+	history, err := store.Candidates(ctx, run.ID)
+	if err != nil || len(history) != 2 || history[0] != candidate || history[1] != secondCandidate {
+		t.Fatalf("Candidate history = %#v, %v", history, err)
+	}
 
 	runs, err := store.PlanningRuns(ctx, project.ID)
 	if err != nil || len(runs) != 1 || runs[0].ID != run.ID || runs[0].TaskID != task.ID {
 		t.Fatalf("bulk planning Runs = %#v, %v", runs, err)
 	}
 	candidates, err := store.PlanningCandidates(ctx, project.ID)
-	if err != nil || len(candidates) != 1 || candidates[0] != candidate {
+	if err != nil || len(candidates) != 1 || candidates[0] != secondCandidate {
 		t.Fatalf("bulk planning Candidates = %#v, %v", candidates, err)
 	}
 	updates, err := store.PlanningTaskUpdatedAt(ctx, project.ID)

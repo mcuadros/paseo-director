@@ -5,6 +5,7 @@ package domain
 import (
 	"encoding/json"
 
+	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	"github.com/mcuadros/director-engine/domain/execution"
 )
 
@@ -99,12 +100,20 @@ type Run struct {
 	Version            uint64
 }
 
-// Candidate is an immutable exact Git commit produced by a Run.
+const CandidateSchemaVersion = "director.candidate/v1"
+
+// Candidate is an immutable exact Git commit and its complete admitted claim
+// and manifest. Later evidence may refer only to Manifest.BindingSHA256; it
+// cannot reinterpret this record after Candidate, base, or context changes.
 type Candidate struct {
-	ID        string
-	RunID     string
-	Sequence  uint64
-	CommitSHA string
+	SchemaVersion    string                   `json:"schemaVersion"`
+	ID               string                   `json:"id"`
+	RunID            string                   `json:"runId"`
+	Sequence         uint64                   `json:"sequence"`
+	CommitSHA        string                   `json:"commitSha"`
+	Claim            candidatedomain.Claim    `json:"claim"`
+	Manifest         candidatedomain.Manifest `json:"manifest"`
+	AdmittedAtMillis int64                    `json:"admittedAtMillis"`
 }
 
 // Command is the immutable request and durable outcome stored for one

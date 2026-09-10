@@ -469,10 +469,7 @@ func runPortContract(t *testing.T, store storeport.TaskStore) {
 		event("event-run-create", run.ID, 1, run.ID, 0, "run.created"),
 	)
 	requireApplied(t, result, err)
-	candidate := domain.Candidate{
-		ID: "candidate-1", RunID: run.ID, Sequence: 1,
-		CommitSHA: "abcdef0123456789abcdef0123456789abcdef01",
-	}
+	candidate := storedCandidate("candidate-1", run.ID, 1, "abcdef0123456789abcdef0123456789abcdef01")
 	result, err = store.AppendCandidate(
 		ctx,
 		command("command-candidate-append", "candidate.append", run.ID, 0, `{"candidateId":"candidate-1"}`),
@@ -1561,7 +1558,7 @@ func TestDoltSchemaGuardsAndExternalInspection(t *testing.T) {
 		t.Fatalf("disable foreign key checks for guard probe: %v", err)
 	}
 	if _, err := connection.ExecContext(ctx,
-		`INSERT INTO candidates (id, run_id, sequence, commit_sha) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO candidates (id, run_id, sequence, commit_sha, data) VALUES (?, ?, ?, ?, JSON_OBJECT())`,
 		"candidate-orphan", "run-missing", 99, baseSHA,
 	); err == nil {
 		t.Fatal("append-only parent guard accepted an orphan Candidate")
@@ -1598,7 +1595,7 @@ func TestDoltSchemaGuardsAndExternalInspection(t *testing.T) {
 	if restoredVersion != storeport.SchemaVersion || restoredTasks != 1 {
 		t.Fatalf("restored backup changed schema/data: version=%d tasks=%d", restoredVersion, restoredTasks)
 	}
-	if _, err := inspection.ExecContext(ctx, `UPDATE schema_metadata SET schema_version = 2 WHERE singleton = 1`); err != nil {
+	if _, err := inspection.ExecContext(ctx, `UPDATE schema_metadata SET schema_version = 3 WHERE singleton = 1`); err != nil {
 		t.Fatalf("inject schema-version drift: %v", err)
 	}
 	if _, err := store.SchemaVersion(ctx); !errors.Is(err, storeport.ErrSchemaVersion) {
