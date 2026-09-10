@@ -19,20 +19,27 @@ const StartupReconciliationSchemaVersion = "director.startup-reconciliation/v1"
 // recovery did not append a second logical command.
 const MaximumMCPCommandReceipts = 64
 
-// EffectKind is the closed primary execution effect vocabulary. Host-view operations cross
-// the engine-owned host port; the remaining operations use engine adapters.
+// EffectKind is the closed execution effect vocabulary. Host-view and agent
+// operations cross the engine-owned host port; Git and boundary operations use
+// engine runtime adapters.
 type EffectKind string
 
 const (
-	EffectWorktreeCreate      EffectKind = "worktree.create"
-	EffectHostViewCreate      EffectKind = "host_view.create"
-	EffectBoundaryMaterialize EffectKind = "rootless_oci.materialize"
-	EffectSetupRun            EffectKind = "lifecycle_setup.run"
-	EffectAgentCreate         EffectKind = "task_agent.create_with_bootstrap"
-	EffectAgentPrompt         EffectKind = "agent.send_prompt"
-	EffectAgentArchive        EffectKind = "task_agent.archive"
-	EffectHostViewArchive     EffectKind = "host_view.archive"
-	EffectWorktreeRemove      EffectKind = "worktree.remove"
+	EffectWorktreeCreate       EffectKind = "worktree.create"
+	EffectHostViewCreate       EffectKind = "host_view.create"
+	EffectBoundaryMaterialize  EffectKind = "rootless_oci.materialize"
+	EffectSetupRun             EffectKind = "lifecycle_setup.run"
+	EffectAgentCreate          EffectKind = "task_agent.create_with_bootstrap"
+	EffectAgentPrompt          EffectKind = "agent.send_prompt"
+	EffectHelperCheckoutCreate EffectKind = "helper_checkout.create"
+	EffectHelperBoundary       EffectKind = "helper_boundary.materialize"
+	EffectHelperAgentObserve   EffectKind = "helper_agent.observe"
+	EffectHelperCommitHandoff  EffectKind = "helper_commit.handoff"
+	EffectHelperAgentArchive   EffectKind = "helper_agent.archive"
+	EffectHelperCheckoutRemove EffectKind = "helper_checkout.remove"
+	EffectAgentArchive         EffectKind = "task_agent.archive"
+	EffectHostViewArchive      EffectKind = "host_view.archive"
+	EffectWorktreeRemove       EffectKind = "worktree.remove"
 )
 
 // EffectPhase records intent before any adapter handoff and keeps a possible
@@ -166,7 +173,10 @@ func ValidMCPCommandReceipt(receipt MCPCommandReceipt) bool {
 	case "organizer":
 		return receipt.ToolName == "director_planning_command_submit" && receipt.Capability == "planning.command.submit"
 	case "worker":
-		return receipt.ToolName == "director_task_outcome_submit" && receipt.Capability == "task.outcome.submit"
+		return (receipt.ToolName == "director_task_outcome_submit" && receipt.Capability == "task.outcome.submit") ||
+			(receipt.ToolName == "director_task_helper_request" && receipt.Capability == "task.helper.request")
+	case "helper":
+		return receipt.ToolName == "director_helper_contribution_submit" && receipt.Capability == "helper.contribution.submit"
 	case "reviewer":
 		return receipt.ToolName == "director_review_verdict_submit" && receipt.Capability == "review.verdict.submit"
 	default:
@@ -201,6 +211,8 @@ type StartupReconciliation struct {
 	WorktreeID                 string              `json:"worktreeId,omitempty"`
 	WorkspaceID                string              `json:"workspaceId,omitempty"`
 	AgentID                    string              `json:"agentId,omitempty"`
+	HelperCount                uint64              `json:"helperCount,omitempty"`
+	HelperChainHash            string              `json:"helperChainHash,omitempty"`
 	CandidateID                string              `json:"candidateId,omitempty"`
 	CandidateSHA               string              `json:"candidateSha,omitempty"`
 	CleanupIntents             []CleanupIntentFact `json:"cleanupIntents,omitempty"`
@@ -246,6 +258,8 @@ type State struct {
 	InitialPrompt                    string                   `json:"initialPrompt,omitempty"`
 	InitialPromptHash                string                   `json:"initialPromptHash,omitempty"`
 	PrimarySession                   PrimarySession           `json:"primarySession,omitempty"`
+	HelperPolicy                     HelperPolicy             `json:"helperPolicy,omitempty"`
+	Helpers                          []Helper                 `json:"helpers,omitempty"`
 	Worktree                         Effect                   `json:"worktree,omitempty"`
 	HostView                         Effect                   `json:"hostView,omitempty"`
 	Boundary                         Effect                   `json:"boundary,omitempty"`

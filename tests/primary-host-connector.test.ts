@@ -365,3 +365,77 @@ test("primary creation fails before Paseo when frozen profile or session correla
   );
   assert.equal(world.calls.agentCreates, 0);
 });
+
+test("connector observes and archives only the exact parent-bound helper", async () => {
+  const world = fakePaseo();
+  const directorHost = connector(world.client);
+  const base = primaryArguments();
+  const workspace = await directorHost.invoke(command("executionWorkspace.createManaged", {
+    ...base, effectKind: "host_view.create", effectId: "effect-helper-host-view",
+  }));
+  const primaryLabels = { ...base.labels!, [WORKER_LABEL.executionWorkspace]: workspace.result.externalId! };
+  const primary = await directorHost.invoke(command("taskAgent.createWithBootstrap", {
+    ...base, workspaceId: workspace.result.externalId, labels: primaryLabels,
+  }));
+  const parent = world.agents.find((agent) => agent.id === primary.result.externalId)!;
+  const helperLabels = {
+    [WORKER_LABEL.project]: "project-1", [WORKER_LABEL.rootWorkspace]: "wks_root_1",
+    [WORKER_LABEL.workspace]: "repository-1", [WORKER_LABEL.executionWorkspace]: workspace.result.externalId!,
+    [WORKER_LABEL.task]: "task-1", [WORKER_LABEL.run]: "run-1", [WORKER_LABEL.role]: "helper",
+    [WORKER_LABEL.phase]: "building", [WORKER_LABEL.base]: "1".repeat(40),
+    [WORKER_LABEL.effect]: "effect-helper-observe", [WORKER_LABEL.profile]: "a".repeat(64),
+    [WORKER_LABEL.session]: "7".repeat(64), [WORKER_LABEL.registeredAt]: "2026-09-10T08:00:00Z",
+    [WORKER_LABEL.startedAt]: "2026-09-10T08:00:00Z",
+  };
+  world.agents.push({
+    ...parent,
+    id: "helper-native-1",
+    title: "Helper helper-1",
+    labels: { ...helperLabels, "paseo.parent-agent-id": parent.id },
+    timelineEntries: [{ item: {
+      type: "user_message",
+      text: "Director helper bootstrap only. Do not inspect files, call tools, or perform Task work. Finish immediately.",
+      clientMessageId: "message-helper-bootstrap",
+    } }],
+  });
+  world.agents.at(-1)!.lastUsage = {
+    inputTokens: 9, cachedInputTokens: 4, outputTokens: 3, totalCostUsd: 0.0004,
+  };
+  const helperArguments: HostCommandArguments = {
+    scope: base.scope, effectKind: "helper_agent.observe", effectId: "effect-helper-observe",
+    bindingHash: base.bindingHash, worktreeId: "worktree-1", worktreePath: base.worktreePath,
+    workspaceId: workspace.result.externalId, title: "Helper helper-1",
+    parentAgentId: parent.id, labels: helperLabels,
+    initialPrompt: "Director helper bootstrap only. Do not inspect files, call tools, or perform Task work. Finish immediately.",
+    clientMessageId: "message-helper-bootstrap",
+  };
+  const observed = await directorHost.invoke(command("helperAgent.observe", helperArguments));
+  assert.equal(observed.result.status, "owned_present");
+  assert.equal(observed.result.externalId, "helper-native-1");
+  assert.equal(observed.result.correlationHash?.length, 64);
+  assert.deepEqual(observed.result.usage, {
+    state: "current", sourceRevision: world.agents.at(-1)!.updatedAt,
+    inputTokensPresent: true, inputTokens: 9, cachedInputTokens: 4,
+    outputTokensPresent: true, outputTokens: 3,
+    costMicrousdPresent: true, costMicrousd: 400,
+  });
+
+  const wrongParent = await directorHost.invoke(command("helperAgent.observe", {
+    ...helperArguments, parentAgentId: "another-parent", effectId: "effect-helper-wrong-parent",
+  }, observed.cursor));
+  assert.equal(wrongParent.result.status, "different");
+
+  const archiveArguments: HostCommandArguments = {
+    ...helperArguments, effectKind: "helper_agent.archive", effectId: "effect-helper-archive",
+    agentId: "helper-native-1",
+  };
+  const archived = await directorHost.invoke(command("agent.archive", archiveArguments, wrongParent.cursor));
+  assert.equal(archived.result.status, "desired");
+  const helper = world.agents.find((agent) => agent.id === "helper-native-1")!;
+  assert.equal(helper.status, "closed");
+  assert.ok(helper.archivedAt);
+
+  const replayed = await directorHost.invoke(command("agent.archive", archiveArguments, archived.cursor));
+  assert.equal(replayed.result.status, "desired");
+  assert.equal(world.agents.filter((agent) => agent.labels["paseo.parent-agent-id"] === parent.id).length, 1);
+});

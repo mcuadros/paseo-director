@@ -4,7 +4,7 @@ The standalone Director Engine owns contract `director.agent-mcp/v1`. Its
 canonical schema is
 `engine/domain/agentbridge/schemas/director-agent-mcp.v1.json`; the current
 canonical SHA-256 is
-`ea3cb5f3b7500f2f282334e2b774ac0c25882f4d3b6fdd45b208587904dea26f`.
+`9cf116e305b6620d85725dd680c8bc0c52119f03a70dbc22c16c42ab5ff8faaf`.
 The generated TypeScript transport constants are checked for byte-for-byte
 drift in CI.
 
@@ -17,11 +17,16 @@ drift in CI.
 | Worker | `project.read` when configured | `director_project_read` |
 | Worker | `task.read` | `director_task_read` |
 | Worker | `task.outcome.submit` | `director_task_outcome_submit` |
+| Worker | `task.helper.request` when configured | `director_task_helper_request` |
+| Helper | `task.read` | `director_task_read` |
+| Helper | `helper.contribution.submit` | `director_helper_contribution_submit` |
 | Reviewer | `candidate.read` | `director_candidate_read` |
 | Reviewer | `review.verdict.submit` | `director_review_verdict_submit` |
 
-The catalog is derived only from the immutable effective role stored in the
-Run. There is no tool for arbitrary queries, raw TaskStore access, filesystem,
+The Worker catalog is derived only from its immutable effective role stored in
+the Run. A helper inherits the exact Worker provider tuple but receives the
+strict helper catalog only after a one-use engine admission binds its native
+identity and parent. There is no tool for arbitrary queries, raw TaskStore access, filesystem,
 Git, process, credentials, provider selection, lifecycle effects, or another
 Run. Unknown tools and fields fail closed.
 
@@ -77,4 +82,6 @@ an engine-authorized launch descriptor. It produces the documented per-session
 `mcpServers` stdio entry and one exact `toolPolicy.preapproved` grant per
 engine-authorized tool. It owns no provider selection, workflow decision,
 TaskStore access, or lifecycle implementation. Primary agent/worktree lifecycle
-and injection dispatch remain with M3.4.
+and injection dispatch remain with M3.4. Controlled helper admission, fixed
+helper scope, and contribution handoff are defined in
+[Controlled helper lifecycle](controlled-helpers.md).

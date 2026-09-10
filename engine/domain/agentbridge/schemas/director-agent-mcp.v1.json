@@ -11,12 +11,14 @@
     "claude-code": "2.1.258",
     "opencode": "1.18.18"
   },
-  "roles": ["organizer", "worker", "reviewer"],
+  "roles": ["organizer", "worker", "helper", "reviewer"],
   "capabilities": [
     "project.read",
     "planning.command.submit",
     "task.read",
     "task.outcome.submit",
+    "task.helper.request",
+    "helper.contribution.submit",
     "candidate.read",
     "review.verdict.submit"
   ],
@@ -68,7 +70,7 @@
       "name": "director_task_read",
       "description": "Read the bounded Task and Run projection fixed to this Worker session.",
       "capability": "task.read",
-      "roles": ["worker"],
+      "roles": ["worker", "helper"],
       "mutating": false,
       "inputSchema": {
         "type": "object",
@@ -204,6 +206,38 @@
             }
           }
         ]
+      }
+    },
+    {
+      "name": "director_task_helper_request",
+      "description": "Request one optional helper for deterministic Director Engine admission in this fixed Worker Run.",
+      "capability": "task.helper.request",
+      "roles": ["worker"],
+      "mutating": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["mode", "purpose"],
+        "properties": {
+          "mode": { "enum": ["writer", "read_only"] },
+          "purpose": { "type": "string", "minLength": 1, "maxLength": 2048 }
+        }
+      }
+    },
+    {
+      "name": "director_helper_contribution_submit",
+      "description": "Submit the exact commit produced in this fixed writer-helper checkout for engine verification and parent handoff.",
+      "capability": "helper.contribution.submit",
+      "roles": ["helper"],
+      "mutating": true,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["commitSha", "baseSha"],
+        "properties": {
+          "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+          "baseSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+        }
       }
     },
     {

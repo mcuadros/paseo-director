@@ -45,15 +45,17 @@ var (
 
 // Controller is restartable: it owns no workflow state outside TaskStore.
 type Controller struct {
-	store   storeport.TaskStore
-	runtime runtimeport.Port
-	host    host.Port
-	queue   reconciliationport.Queue
+	store         storeport.TaskStore
+	runtime       runtimeport.Port
+	helperRuntime runtimeport.HelperPort
+	host          host.Port
+	queue         reconciliationport.Queue
 }
 
 // NewController wires the engine-owned ports without importing an adapter.
 func NewController(store storeport.TaskStore, runtime runtimeport.Port, hostPort host.Port, queue reconciliationport.Queue) *Controller {
-	return &Controller{store: store, runtime: runtime, host: hostPort, queue: queue}
+	helperRuntime, _ := runtime.(runtimeport.HelperPort)
+	return &Controller{store: store, runtime: runtime, helperRuntime: helperRuntime, host: hostPort, queue: queue}
 }
 
 // StartCommand freezes every identity and fact needed by one primary Run.
@@ -73,6 +75,7 @@ type StartCommand struct {
 	EffectiveProfiles agentprofile.FrozenSet
 	BudgetPolicy      runtimebudget.Policy
 	TurnBudgetDemand  runtimebudget.Demand
+	HelperPolicy      domainexecution.HelperPolicy
 	EligibilityFacts  eligibility.Facts
 }
 
@@ -253,7 +256,8 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 		command.BudgetPolicy.Revision == command.EffectiveProfiles.ConfigurationSHA256() &&
 		command.TurnBudgetDemand.WallTimeMilliseconds > 0 && command.TurnBudgetDemand.Tokens > 0 &&
 		command.TurnBudgetDemand.Turns == 1 &&
-		(command.BudgetPolicy.CostLimitMicrousd == 0 || command.TurnBudgetDemand.CostMicrousd > 0)
+		(command.BudgetPolicy.CostLimitMicrousd == 0 || command.TurnBudgetDemand.CostMicrousd > 0) &&
+		domainexecution.ValidHelperPolicy(command.HelperPolicy)
 }
 
 func eventPayload(value any) json.RawMessage {
@@ -343,7 +347,8 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			existing.Execution.LeaseBinding != leaseBinding(project) || sessionErr != nil ||
 			existing.Execution.PrimarySession.ReservationSHA256 != expectedSession.ReservationSHA256 ||
 			existing.Execution.Budget.Policy != command.BudgetPolicy ||
-			existing.Execution.TurnBudgetDemand != command.TurnBudgetDemand {
+			existing.Execution.TurnBudgetDemand != command.TurnBudgetDemand ||
+			existing.Execution.HelperPolicy != command.HelperPolicy {
 			return StartResult{}, errors.New("existing Run conflicts with start command")
 		}
 		result.Decision.Kind = eligibility.DecisionEligible
@@ -400,6 +405,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		CriterionIDs:    append([]string(nil), command.CriterionIDs...),
 		InitialPrompt:   command.InitialPrompt, InitialPromptHash: hashText(command.InitialPrompt),
 		PrimarySession:                   primarySession,
+		HelperPolicy:                     command.HelperPolicy,
 		Worktree:                         newEffect(command.Scope.RunID, domainexecution.EffectWorktreeCreate, 2),
 		HostView:                         newEffect(command.Scope.RunID, domainexecution.EffectHostViewCreate, 2),
 		Boundary:                         newEffect(command.Scope.RunID, domainexecution.EffectBoundaryMaterialize, 2),
@@ -1862,6 +1868,21 @@ func (controller *Controller) step(ctx context.Context, runID string, nowMillis 
 		return StepResult{Run: next, Progressed: persistErr == nil}, persistErr
 	}
 	if run.CurrentCandidateID != "" {
+		for _, helper := range run.Execution.Helpers {
+			if helper.Phase == domainexecution.HelperTerminal {
+				continue
+			}
+			if helper.Phase == domainexecution.HelperCleanupRequested {
+				result, helperErr := controller.StepHelper(ctx, run.ID, helper.ID, nowMillis)
+				return StepResult{Run: result.Run, Progressed: result.Progressed}, helperErr
+			}
+			if helper.Phase == domainexecution.HelperHandoffReady ||
+				(helper.Mode == domainexecution.HelperReadOnly && helper.Phase == domainexecution.HelperActive) {
+				result, helperErr := controller.RequestHelperCleanup(ctx, run.ID, helper.ID, nowMillis)
+				return StepResult{Run: result.Run, Progressed: result.Progressed}, helperErr
+			}
+			return StepResult{Run: run, Progressed: true}, controller.parkRun(ctx, run, domainexecution.NeedHelperCleanupUnproven)
+		}
 		return controller.stepClosure(ctx, run, nowMillis, recoveryAuthorized)
 	}
 	if run.Execution.AgentPrompt.Phase == domainexecution.EffectComplete {

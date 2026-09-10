@@ -104,6 +104,7 @@ type SessionBinding struct {
 	WorkspaceID               string            `json:"workspaceId"`
 	TaskID                    string            `json:"taskId"`
 	RunID                     string            `json:"runId"`
+	HelperID                  string            `json:"helperId,omitempty"`
 	CandidateID               string            `json:"candidateId"`
 	CandidateSHA              string            `json:"candidateSha"`
 	NativeAgentID             string            `json:"nativeAgentId"`
@@ -191,6 +192,8 @@ func expectedCapabilities() []domainconfig.MCPCapability {
 		domainconfig.MCPPlanningCommandSubmit,
 		domainconfig.MCPTaskRead,
 		domainconfig.MCPTaskOutcomeSubmit,
+		domainconfig.MCPTaskHelperRequest,
+		domainconfig.MCPHelperContributionSubmit,
 		domainconfig.MCPCandidateRead,
 		domainconfig.MCPReviewVerdictSubmit,
 	}
@@ -201,7 +204,10 @@ func toolRoleAllowed(capability domainconfig.MCPCapability, role agentprofile.Ro
 	case agentprofile.RoleOrganizer:
 		return capability == domainconfig.MCPProjectRead || capability == domainconfig.MCPPlanningCommandSubmit
 	case agentprofile.RoleWorker:
-		return capability == domainconfig.MCPProjectRead || capability == domainconfig.MCPTaskRead || capability == domainconfig.MCPTaskOutcomeSubmit
+		return capability == domainconfig.MCPProjectRead || capability == domainconfig.MCPTaskRead || capability == domainconfig.MCPTaskOutcomeSubmit ||
+			capability == domainconfig.MCPTaskHelperRequest
+	case agentprofile.RoleHelper:
+		return capability == domainconfig.MCPTaskRead || capability == domainconfig.MCPHelperContributionSubmit
 	case agentprofile.RoleReviewer:
 		return capability == domainconfig.MCPCandidateRead || capability == domainconfig.MCPReviewVerdictSubmit
 	default:
@@ -217,12 +223,14 @@ type expectedTool struct {
 
 func expectedTools() map[domainconfig.MCPCapability]expectedTool {
 	return map[domainconfig.MCPCapability]expectedTool{
-		domainconfig.MCPProjectRead:           {"director_project_read", []agentprofile.Role{agentprofile.RoleOrganizer, agentprofile.RoleWorker}, false},
-		domainconfig.MCPPlanningCommandSubmit: {"director_planning_command_submit", []agentprofile.Role{agentprofile.RoleOrganizer}, true},
-		domainconfig.MCPTaskRead:              {"director_task_read", []agentprofile.Role{agentprofile.RoleWorker}, false},
-		domainconfig.MCPTaskOutcomeSubmit:     {"director_task_outcome_submit", []agentprofile.Role{agentprofile.RoleWorker}, true},
-		domainconfig.MCPCandidateRead:         {"director_candidate_read", []agentprofile.Role{agentprofile.RoleReviewer}, false},
-		domainconfig.MCPReviewVerdictSubmit:   {"director_review_verdict_submit", []agentprofile.Role{agentprofile.RoleReviewer}, true},
+		domainconfig.MCPProjectRead:              {"director_project_read", []agentprofile.Role{agentprofile.RoleOrganizer, agentprofile.RoleWorker}, false},
+		domainconfig.MCPPlanningCommandSubmit:    {"director_planning_command_submit", []agentprofile.Role{agentprofile.RoleOrganizer}, true},
+		domainconfig.MCPTaskRead:                 {"director_task_read", []agentprofile.Role{agentprofile.RoleWorker, agentprofile.RoleHelper}, false},
+		domainconfig.MCPTaskOutcomeSubmit:        {"director_task_outcome_submit", []agentprofile.Role{agentprofile.RoleWorker}, true},
+		domainconfig.MCPTaskHelperRequest:        {"director_task_helper_request", []agentprofile.Role{agentprofile.RoleWorker}, true},
+		domainconfig.MCPHelperContributionSubmit: {"director_helper_contribution_submit", []agentprofile.Role{agentprofile.RoleHelper}, true},
+		domainconfig.MCPCandidateRead:            {"director_candidate_read", []agentprofile.Role{agentprofile.RoleReviewer}, false},
+		domainconfig.MCPReviewVerdictSubmit:      {"director_review_verdict_submit", []agentprofile.Role{agentprofile.RoleReviewer}, true},
 	}
 }
 
@@ -244,9 +252,9 @@ func ParseDefinition(schema []byte) (Definition, error) {
 		definition.MaximumRequestBytes != MaximumRequestBytes ||
 		definition.MaximumResponseBytes != MaximumResponseBytes ||
 		definition.MaximumCommands != MaximumCommandsPerRun ||
-		!slices.Equal(definition.Roles, []agentprofile.Role{agentprofile.RoleOrganizer, agentprofile.RoleWorker, agentprofile.RoleReviewer}) ||
+		!slices.Equal(definition.Roles, []agentprofile.Role{agentprofile.RoleOrganizer, agentprofile.RoleWorker, agentprofile.RoleHelper, agentprofile.RoleReviewer}) ||
 		!slices.Equal(definition.Capabilities, expectedCapabilities()) || !uniqueStrings(definition.Roles) ||
-		!uniqueStrings(definition.Capabilities) || len(definition.ProviderCLIVersions) != 3 || len(definition.Tools) != 6 {
+		!uniqueStrings(definition.Capabilities) || len(definition.ProviderCLIVersions) != 3 || len(definition.Tools) != 8 {
 		return Definition{}, errors.New("agent MCP contract metadata does not match")
 	}
 	for provider, version := range definition.ProviderCLIVersions {
@@ -327,7 +335,7 @@ func Catalog(role agentprofile.FrozenRole) ([]ToolDefinition, error) {
 	if err != nil {
 		return nil, err
 	}
-	if role.Role != agentprofile.RoleOrganizer && role.Role != agentprofile.RoleWorker && role.Role != agentprofile.RoleReviewer {
+	if role.Role != agentprofile.RoleOrganizer && role.Role != agentprofile.RoleWorker && role.Role != agentprofile.RoleHelper && role.Role != agentprofile.RoleReviewer {
 		return nil, errors.New("agent MCP role is invalid")
 	}
 	capabilities := make(map[domainconfig.MCPCapability]struct{}, len(role.Selection.MCPCapabilities))
@@ -339,7 +347,7 @@ func Catalog(role agentprofile.FrozenRole) ([]ToolDefinition, error) {
 	}
 	tools := make([]ToolDefinition, 0, len(capabilities))
 	for _, tool := range definition.Tools {
-		if _, admitted := capabilities[tool.Capability]; admitted {
+		if _, admitted := capabilities[tool.Capability]; admitted && slices.Contains(tool.Roles, role.Role) {
 			tools = append(tools, tool)
 		}
 	}
@@ -369,11 +377,15 @@ func ValidateSessionBinding(binding SessionBinding) error {
 	}
 	switch binding.Role {
 	case agentprofile.RoleOrganizer, agentprofile.RoleWorker:
-		if binding.CandidateID != "" || binding.CandidateSHA != "" {
+		if binding.HelperID != "" || binding.CandidateID != "" || binding.CandidateSHA != "" {
 			return errors.New("agent MCP session Candidate binding is invalid")
 		}
+	case agentprofile.RoleHelper:
+		if !validIdentity(binding.HelperID) || binding.CandidateID != "" || binding.CandidateSHA != "" {
+			return errors.New("agent MCP helper binding is invalid")
+		}
 	case agentprofile.RoleReviewer:
-		if !validIdentity(binding.CandidateID) || !gitOIDPattern.MatchString(binding.CandidateSHA) {
+		if binding.HelperID != "" || !validIdentity(binding.CandidateID) || !gitOIDPattern.MatchString(binding.CandidateSHA) {
 			return errors.New("agent MCP Reviewer Candidate binding is invalid")
 		}
 	default:

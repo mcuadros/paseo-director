@@ -106,7 +106,10 @@ is applied at the terminal observation; missing or ambiguous usage parks while
 preserving the existing effect and worktree. The complete thresholds and
 cross-role accounting are documented in [Runtime time and cost budgets](runtime-budgets.md).
 
-Helper creation, pause/cancel/emergency controls, Task Agent replacement,
+Controlled helper creation and handoff are implemented by the separate
+[controlled helper lifecycle](controlled-helpers.md). Helper turns use the
+same lease-fenced durable budget and evidence-only paused reconciliation as
+other model turns. Pause/cancel/emergency controls, Task Agent replacement,
 Reviewer behavior, and delivery remain owned by their later M3/M4 Tasks. The
-independent m3.10 execution oracle remains test-only; production does not import
-or duplicate it.
+independent m3.10 execution oracle remains test-only; production code does not
+import or duplicate it.

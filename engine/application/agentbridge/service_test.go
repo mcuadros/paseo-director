@@ -148,7 +148,7 @@ func profileSelection(role agentprofile.Role) domainconfig.AgentSelection {
 		selection.Provider = domainconfig.ProviderClaudeCode
 		selection.Model = "claude-haiku-4-5"
 		selection.PermissionMode = "workspace-write"
-		selection.MCPCapabilities = []domainconfig.MCPCapability{domainconfig.MCPProjectRead, domainconfig.MCPTaskRead, domainconfig.MCPTaskOutcomeSubmit}
+		selection.MCPCapabilities = []domainconfig.MCPCapability{domainconfig.MCPProjectRead, domainconfig.MCPTaskRead, domainconfig.MCPTaskOutcomeSubmit, domainconfig.MCPTaskHelperRequest}
 	case agentprofile.RoleReviewer:
 		selection.Provider = domainconfig.ProviderOpenCode
 		selection.Model = "opencode/nemotron-3-ultra-free"
@@ -168,12 +168,16 @@ func serviceProfiles() domainconfig.AgentProfiles {
 func serviceDiscovery(t *testing.T, profiles domainconfig.AgentProfiles) agentprofile.DiscoverySnapshot {
 	t.Helper()
 	provider := func(selection domainconfig.AgentSelection, cliVersion string) agentprofile.ProviderFact {
+		availableCapabilities := slices.Clone(selection.MCPCapabilities)
+		if selection.Provider == profiles.Worker.Provider {
+			availableCapabilities = append(availableCapabilities, domainconfig.MCPHelperContributionSubmit)
+		}
 		return agentprofile.ProviderFact{
 			Provider: selection.Provider, CLIVersion: cliVersion, State: agentprofile.ProviderReady,
 			DiagnosticCodes: []agentprofile.DiagnosticCode{}, Models: []agentprofile.ModelFact{{
 				Model: selection.Model, Variants: []agentprofile.VariantFact{{
 					Effort: selection.Effort, Mode: selection.Mode, PermissionMode: selection.PermissionMode,
-					ProviderOptions: slices.Clone(selection.ProviderOptions), MCPCapabilities: slices.Clone(selection.MCPCapabilities),
+					ProviderOptions: slices.Clone(selection.ProviderOptions), MCPCapabilities: availableCapabilities,
 					SessionStdioMCP: true, ExactMCPToolPolicy: true, RuntimeProbePassed: true,
 				}},
 			}},
@@ -230,7 +234,9 @@ func newServiceFixture(t *testing.T) *serviceFixture {
 			Execution: domainexecution.State{
 				SchemaVersion: domainexecution.SchemaVersion, Scope: scope, EffectiveProfiles: &frozen,
 				EffectiveProfilesSHA256: frozen.SHA256(), CriterionIDs: []string{"criterion-1"},
-				Agent: domainexecution.Effect{ExternalID: "worker-agent"},
+				WorktreePath: "/tmp/director-mcp-primary", HelperPolicy: domainexecution.HelperPolicy{MaximumPerTask: 3, MaximumConcurrentAgents: 8},
+				PrimarySession: domainexecution.PrimarySession{NativeAgentID: "worker-agent", PermissionMode: "workspace-write"},
+				Agent:          domainexecution.Effect{ExternalID: "worker-agent"}, AgentPrompt: domainexecution.Effect{Phase: domainexecution.EffectComplete},
 			},
 		},
 		candidate: domain.Candidate{ID: "candidate-1", RunID: scope.RunID, Sequence: 1, CommitSHA: strings.Repeat("d", 40)},
@@ -272,6 +278,13 @@ func (fixture *serviceFixture) binding(t *testing.T, role agentprofile.Role) dom
 		binding.CandidateID = fixture.store.candidate.ID
 		binding.CandidateSHA = fixture.store.candidate.CommitSHA
 	}
+	if role == agentprofile.RoleHelper {
+		if len(run.Execution.Helpers) == 0 {
+			t.Fatal("helper binding requested without a durable helper")
+		}
+		binding.HelperID = run.Execution.Helpers[0].ID
+		binding.NativeAgentID = run.Execution.Helpers[0].NativeAgentID
+	}
 	return binding
 }
 
@@ -288,7 +301,7 @@ func TestSessionsExposeOnlyRoleProfileCapabilities(t *testing.T) {
 	fixture := newServiceFixture(t)
 	wants := map[agentprofile.Role][]string{
 		agentprofile.RoleOrganizer: {"director_project_read", "director_planning_command_submit"},
-		agentprofile.RoleWorker:    {"director_project_read", "director_task_read", "director_task_outcome_submit"},
+		agentprofile.RoleWorker:    {"director_project_read", "director_task_read", "director_task_outcome_submit", "director_task_helper_request"},
 		agentprofile.RoleReviewer:  {"director_candidate_read", "director_review_verdict_submit"},
 	}
 	for role, want := range wants {
@@ -306,6 +319,69 @@ func TestSessionsExposeOnlyRoleProfileCapabilities(t *testing.T) {
 		if _, err := session.Call(context.Background(), "unknown-call", "raw_taskstore_query", json.RawMessage(`{}`)); failureCode(t, err) != CodeToolNotAllowed {
 			t.Fatalf("unknown tool error = %v", err)
 		}
+	}
+}
+
+func TestWorkerRequestsHelperAndOnlyBoundHelperSubmitsContribution(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.store.run.CurrentCandidateID = ""
+	workerBinding := fixture.binding(t, agentprofile.RoleWorker)
+	worker, err := fixture.service.OpenSession(context.Background(), workerBinding, 1_001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := worker.Call(context.Background(), "helper-request-1", "director_task_helper_request", json.RawMessage(`{"mode":"writer","purpose":"implement isolated change"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt commandOutput
+	if json.Unmarshal(result.Payload, &receipt) != nil || receipt.HelperID == "" {
+		t.Fatalf("helper receipt = %s", result.Payload)
+	}
+	fixture.store.mu.Lock()
+	if len(fixture.store.run.Execution.Helpers) != 1 || fixture.store.run.Execution.Helpers[0].ID != receipt.HelperID ||
+		fixture.store.run.Execution.Helpers[0].ParentAgentID != workerBinding.NativeAgentID ||
+		fixture.store.run.Execution.Helpers[0].WorktreePath == fixture.store.run.Execution.WorktreePath {
+		fixture.store.mu.Unlock()
+		t.Fatalf("durable helper request = %#v", fixture.store.run.Execution.Helpers)
+	}
+	fixture.store.run.Execution.Helpers[0].Phase = domainexecution.HelperActive
+	fixture.store.run.Execution.Helpers[0].NativeAgentID = "native-helper-1"
+	fixture.store.run.Execution.Helpers[0].Admission = &domainexecution.HelperAdmission{
+		ID: "admission-1", HelperID: receipt.HelperID, ParentAgentID: workerBinding.NativeAgentID,
+		ExecutionWorkspaceID: "native-workspace", Mode: domainexecution.HelperWriter,
+		ProfileSHA256: fixture.frozen.SHA256(), SessionSHA256: strings.Repeat("e", 64), LabelDigest: strings.Repeat("f", 64),
+		RegisteredAt: "2026-09-10T00:00:00Z", StartedAt: "2026-09-10T00:00:00Z", IssuedAtMillis: 1_000, ConsumedAtMillis: 1_001,
+		InvocationRequestID: "invoke-helper-1",
+	}
+	fixture.store.mu.Unlock()
+	helperBinding := fixture.binding(t, agentprofile.RoleHelper)
+	helper, err := fixture.service.OpenSession(context.Background(), helperBinding, 1_001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{}
+	for _, tool := range helper.Descriptor().Tools {
+		names = append(names, tool.Name)
+	}
+	if !slices.Equal(names, []string{"director_task_read", "director_helper_contribution_submit"}) {
+		t.Fatalf("helper tools = %v", names)
+	}
+	commit := strings.Repeat("d", 40)
+	if _, err := helper.Call(context.Background(), "contribution-1", "director_helper_contribution_submit", json.RawMessage(`{"commitSha":"`+commit+`","baseSha":"`+fixture.store.run.BaseSHA+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	fixture.store.mu.Lock()
+	stored := fixture.store.run.Execution.Helpers[0]
+	fixture.store.mu.Unlock()
+	if stored.Phase != domainexecution.HelperContributionReady || stored.Contribution == nil || stored.Contribution.CommitSHA != commit {
+		t.Fatalf("helper contribution = %#v", stored)
+	}
+
+	forged := helperBinding
+	forged.HelperID = "helper-other"
+	if _, err := fixture.service.OpenSession(context.Background(), forged, 1_001); failureCode(t, err) != CodeScopeMismatch {
+		t.Fatalf("forged helper scope = %v", err)
 	}
 }
 
@@ -461,7 +537,7 @@ func TestProfileConfigAndProviderDriftNeverWidensARecoveredSession(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(session.Descriptor().Tools) != 3 {
+	if len(session.Descriptor().Tools) != 4 {
 		t.Fatal("active Organizer drift changed the immutable Run catalog")
 	}
 	// A fresh discovery fact may expose more capabilities, but only the frozen

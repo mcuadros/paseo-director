@@ -21,6 +21,7 @@ var (
 	commandTokenPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$`)
 	secretValuePattern  = regexp.MustCompile(`(?i)(?:-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|(?:password|secret|token|credential)\s*[:=]\s*\S+)`)
 	privatePathPattern  = regexp.MustCompile(`(?:^|[[:space:]])/(?:home|root|tmp|etc|var|run|proc|sys)(?:/|[[:space:]]|$)`)
+	helperCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
 // InputCode is a closed caller-input rejection. It contains no rejected text.
@@ -231,6 +232,36 @@ type budgetClaim struct {
 	Unit            string      `json:"unit"`
 }
 
+type helperRequest struct {
+	Mode    string `json:"mode"`
+	Purpose string `json:"purpose"`
+}
+
+func validateHelperRequest(raw []byte) error {
+	var request helperRequest
+	if err := strictDecode(raw, &request); err != nil ||
+		!slices.Contains([]string{"writer", "read_only"}, request.Mode) ||
+		!boundedText(request.Purpose, 2048, false) {
+		return &InputError{Code: InputInvalid}
+	}
+	return nil
+}
+
+type helperContribution struct {
+	CommitSHA string `json:"commitSha"`
+	BaseSHA   string `json:"baseSha"`
+}
+
+func validateHelperContribution(raw []byte, baseSHA string) error {
+	var contribution helperContribution
+	if err := strictDecode(raw, &contribution); err != nil ||
+		!helperCommitPattern.MatchString(contribution.CommitSHA) ||
+		contribution.BaseSHA != baseSHA {
+		return &InputError{Code: InputInvalid}
+	}
+	return nil
+}
+
 func exactCriterionSet(values []string, expected []string) bool {
 	if len(values) != len(expected) {
 		return false
@@ -387,6 +418,10 @@ func ValidateToolInput(toolName string, raw json.RawMessage, criteria []string, 
 		err = validatePlanningCommand(canonical)
 	case "director_task_outcome_submit":
 		err = validateTaskOutcome(canonical, criteria, baseSHA)
+	case "director_task_helper_request":
+		err = validateHelperRequest(canonical)
+	case "director_helper_contribution_submit":
+		err = validateHelperContribution(canonical, baseSHA)
 	case "director_review_verdict_submit":
 		err = validateReview(canonical)
 	default:

@@ -24,7 +24,10 @@ func bridgeSelection(role agentprofile.Role) domainconfig.AgentSelection {
 		selection.MCPCapabilities = []domainconfig.MCPCapability{domainconfig.MCPProjectRead, domainconfig.MCPPlanningCommandSubmit}
 	case agentprofile.RoleWorker:
 		selection.PermissionMode = "workspace-write"
-		selection.MCPCapabilities = []domainconfig.MCPCapability{domainconfig.MCPProjectRead, domainconfig.MCPTaskRead, domainconfig.MCPTaskOutcomeSubmit}
+		selection.MCPCapabilities = []domainconfig.MCPCapability{domainconfig.MCPProjectRead, domainconfig.MCPTaskRead, domainconfig.MCPTaskOutcomeSubmit, domainconfig.MCPTaskHelperRequest}
+	case agentprofile.RoleHelper:
+		selection.PermissionMode = "workspace-write"
+		selection.MCPCapabilities = []domainconfig.MCPCapability{domainconfig.MCPTaskRead, domainconfig.MCPHelperContributionSubmit}
 	case agentprofile.RoleReviewer:
 		selection.MCPCapabilities = []domainconfig.MCPCapability{domainconfig.MCPCandidateRead, domainconfig.MCPReviewVerdictSubmit}
 	}
@@ -69,7 +72,8 @@ func TestContractCatalogsAreClosedByEffectiveRole(t *testing.T) {
 	}
 	wants := map[agentprofile.Role][]string{
 		agentprofile.RoleOrganizer: {"director_project_read", "director_planning_command_submit"},
-		agentprofile.RoleWorker:    {"director_project_read", "director_task_read", "director_task_outcome_submit"},
+		agentprofile.RoleWorker:    {"director_project_read", "director_task_read", "director_task_outcome_submit", "director_task_helper_request"},
+		agentprofile.RoleHelper:    {"director_task_read", "director_helper_contribution_submit"},
 		agentprofile.RoleReviewer:  {"director_candidate_read", "director_review_verdict_submit"},
 	}
 	for role, want := range wants {
@@ -91,7 +95,7 @@ func TestContractCatalogsAreClosedByEffectiveRole(t *testing.T) {
 			t.Fatalf("%s catalog = %v, want %v", role, names, want)
 		}
 	}
-	if len(definition.Tools) != 6 || len(definition.Capabilities) != 6 {
+	if len(definition.Tools) != 8 || len(definition.Capabilities) != 8 {
 		t.Fatalf("contract is not closed: %#v", definition)
 	}
 }
@@ -99,7 +103,7 @@ func TestContractCatalogsAreClosedByEffectiveRole(t *testing.T) {
 func TestContractMutationsFailClosed(t *testing.T) {
 	original := Schema()
 	mutations := [][]byte{
-		[]byte(strings.Replace(string(original), `"roles": ["organizer", "worker", "reviewer"]`, `"roles": ["organizer", "reviewer", "worker"]`, 1)),
+		[]byte(strings.Replace(string(original), `"roles": ["organizer", "worker", "helper", "reviewer"]`, `"roles": ["organizer", "helper", "reviewer", "worker"]`, 1)),
 		[]byte(strings.Replace(string(original), `"capability": "planning.command.submit"`, `"capability": "project.read"`, 1)),
 		[]byte(strings.Replace(string(original), `"roles": ["reviewer"]`, `"roles": ["worker"]`, 1)),
 		[]byte(strings.Replace(string(original), `"additionalProperties": false`, `"additionalProperties": true`, 1)),

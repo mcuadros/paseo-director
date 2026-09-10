@@ -147,6 +147,7 @@ func validateExecutionGraph(run domain.Run) error {
 		state.RepositoryBinding.WorktreePath != state.WorktreePath ||
 		state.RepositoryBinding.Branch != state.Branch || state.RepositoryBinding.BaseSHA != run.BaseSHA ||
 		!domainexecution.ValidPrimarySession(state.PrimarySession) ||
+		!domainexecution.ValidHelpers(state) ||
 		!domainexecution.PrimarySessionMatchesProfiles(state.PrimarySession, *state.EffectiveProfiles) ||
 		state.PrimarySession.Scope != state.Scope ||
 		state.PrimarySession.EffectiveProfilesSHA256 != state.EffectiveProfilesSHA256 ||
@@ -602,6 +603,8 @@ func startupSnapshot(request StartupCommand, observed observedStartupRun) domain
 		WorktreeID:         run.Execution.Worktree.ExternalID,
 		WorkspaceID:        run.Execution.HostView.ExternalID,
 		AgentID:            run.Execution.Agent.ExternalID,
+		HelperCount:        uint64(len(run.Execution.Helpers)),
+		HelperChainHash:    domainexecution.HelperGraphHash(run.Execution.Helpers),
 		CleanupIntents:     cleanupIntentFacts(run.Execution),
 		FrontierEffectKind: observed.frontierKind,
 		HostCursor:         observed.hostCursor,

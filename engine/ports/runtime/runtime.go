@@ -41,6 +41,52 @@ type CandidateRequest struct {
 	Claim        execution.CompletedClaim `json:"claim"`
 }
 
+// HelperRequest binds a helper-only runtime operation to its immutable Run,
+// parent, repository, checkout mode, and ADR-0014 facts. Implementations do
+// not decide admission or retry.
+type HelperRequest struct {
+	Scope               execution.Scope                `json:"scope"`
+	Helper              execution.Helper               `json:"helper"`
+	Effect              execution.Effect               `json:"effect"`
+	LeaseBinding        execution.LeaseBinding         `json:"leaseBinding"`
+	Repository          execution.RepositoryBinding    `json:"repository"`
+	BindingHash         string                         `json:"bindingHash"`
+	PrimaryWorktreePath string                         `json:"primaryWorktreePath"`
+	LifecycleSurfaces   execution.LifecycleSurfaces    `json:"lifecycleSurfaces"`
+	LifecycleApproval   *execution.LifecycleApproval   `json:"lifecycleApproval,omitempty"`
+	LifecycleDigest     string                         `json:"lifecycleDigest"`
+	Isolation           execution.IsolationObservation `json:"isolation"`
+	OperationalPolicy   execution.OperationalPolicy    `json:"operationalPolicy"`
+}
+
+// HelperPort is the runtime-only companion for controlled helpers. The
+// parent Task Agent performs native helper creation; this port prepares and
+// observes isolated checkouts/boundaries and imports a verified commit object.
+type HelperPort interface {
+	ObserveHelperCapacity(context.Context, execution.Scope, execution.HelperPolicy) (execution.HelperCapacityObservation, error)
+	ReserveHelperCapacity(context.Context, HelperCapacityReservation) (HelperCapacityReservationResult, error)
+	ReleaseHelperCapacity(context.Context, string, execution.Scope) error
+	ObserveHelperBoundary(context.Context, HelperRequest) (execution.HelperBoundaryObservation, error)
+	ObserveHelperEffect(context.Context, HelperRequest) (execution.EffectObservation, error)
+	DispatchHelperEffect(context.Context, HelperRequest) error
+	ObserveHelperContribution(context.Context, HelperRequest) (execution.HelperContributionObservation, error)
+}
+
+// HelperCapacityReservation is a store-only compare request. The engine has
+// already decided availability; the adapter only atomically compares the
+// exact observation and records the idempotent reservation.
+type HelperCapacityReservation struct {
+	ID          string                              `json:"id"`
+	Scope       execution.Scope                     `json:"scope"`
+	Policy      execution.HelperPolicy              `json:"policy"`
+	Observation execution.HelperCapacityObservation `json:"observation"`
+}
+
+type HelperCapacityReservationResult struct {
+	Applied bool `json:"applied"`
+	Replay  bool `json:"replay"`
+}
+
 // Port contains only effect-specific observations and dispatches.
 type Port interface {
 	ObserveEffect(context.Context, Request) (execution.EffectObservation, error)

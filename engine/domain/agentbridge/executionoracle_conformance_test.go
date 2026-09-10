@@ -23,28 +23,32 @@ func TestExecutionOracleConformsToIntegratedSessionMCPContract(t *testing.T) {
 		t.Fatalf("contract version = %q", definition.ContractVersion)
 	}
 	if !slices.Equal(definition.Roles, []agentprofile.Role{
-		agentprofile.RoleOrganizer, agentprofile.RoleWorker, agentprofile.RoleReviewer,
+		agentprofile.RoleOrganizer, agentprofile.RoleWorker, agentprofile.RoleHelper, agentprofile.RoleReviewer,
 	}) {
 		t.Fatalf("production session roles = %v", definition.Roles)
 	}
 
 	wantRows := []string{
 		"director_candidate_read|candidate.read|reviewer|false",
+		"director_helper_contribution_submit|helper.contribution.submit|helper|true",
 		"director_planning_command_submit|planning.command.submit|organizer|true",
 		"director_project_read|project.read|organizer,worker|false",
 		"director_review_verdict_submit|review.verdict.submit|reviewer|true",
+		"director_task_helper_request|task.helper.request|worker|true",
 		"director_task_outcome_submit|task.outcome.submit|worker|true",
-		"director_task_read|task.read|worker|false",
+		"director_task_read|task.read|worker,helper|false",
 	}
 	rows := make([]string, 0, len(definition.Tools))
 	mapped := map[oracle.Role]oracle.ToolSet{}
 	capabilityTools := map[domainconfig.MCPCapability]oracle.Tool{
-		domainconfig.MCPProjectRead:           oracle.ToolInspectProject,
-		domainconfig.MCPPlanningCommandSubmit: oracle.ToolSubmitPlanningCommand,
-		domainconfig.MCPTaskRead:              oracle.ToolInspectRun,
-		domainconfig.MCPTaskOutcomeSubmit:     oracle.ToolSubmitOutcome,
-		domainconfig.MCPCandidateRead:         oracle.ToolInspectCandidate,
-		domainconfig.MCPReviewVerdictSubmit:   oracle.ToolSubmitVerdict,
+		domainconfig.MCPProjectRead:              oracle.ToolInspectProject,
+		domainconfig.MCPPlanningCommandSubmit:    oracle.ToolSubmitPlanningCommand,
+		domainconfig.MCPTaskRead:                 oracle.ToolInspectRun,
+		domainconfig.MCPTaskOutcomeSubmit:        oracle.ToolSubmitOutcome,
+		domainconfig.MCPTaskHelperRequest:        oracle.ToolRequestHelper,
+		domainconfig.MCPHelperContributionSubmit: oracle.ToolSubmitContribution,
+		domainconfig.MCPCandidateRead:            oracle.ToolInspectCandidate,
+		domainconfig.MCPReviewVerdictSubmit:      oracle.ToolSubmitVerdict,
 	}
 	for _, tool := range definition.Tools {
 		roleNames := make([]string, 0, len(tool.Roles))
@@ -75,15 +79,11 @@ func TestExecutionOracleConformsToIntegratedSessionMCPContract(t *testing.T) {
 		t.Fatalf("Reviewer MCP mapping = %08b, oracle = %08b", mapped[oracle.RoleReviewer], oracle.AllowedTools(oracle.RoleReviewer))
 	}
 	workerOracle := oracle.AllowedTools(oracle.RoleWorker)
-	workerShared := mapped[oracle.RoleWorker] & workerOracle
-	if workerShared != oracle.ToolSet(oracle.ToolInspectRun|oracle.ToolSubmitOutcome) ||
-		mapped[oracle.RoleWorker]&^workerOracle != oracle.ToolSet(oracle.ToolInspectProject) ||
-		workerOracle&^mapped[oracle.RoleWorker] != oracle.ToolSet(oracle.ToolRequestHelper) {
-		t.Fatalf("Worker MCP boundary drifted: production=%08b oracle=%08b shared=%08b", mapped[oracle.RoleWorker], workerOracle, workerShared)
+	if mapped[oracle.RoleWorker]&workerOracle != workerOracle || mapped[oracle.RoleWorker]&^workerOracle != oracle.ToolSet(oracle.ToolInspectProject) {
+		t.Fatalf("Worker MCP boundary drifted: production=%08b oracle=%08b", mapped[oracle.RoleWorker], workerOracle)
 	}
-	if _, exists := mapped[oracle.RoleHelper]; exists ||
-		oracle.AllowedTools(oracle.RoleHelper) != oracle.ToolSet(oracle.ToolInspectRun|oracle.ToolSubmitContribution) {
-		t.Fatal("helper admission/contribution must remain oracle-only and outside the Director-launched session MCP roles")
+	if mapped[oracle.RoleHelper] != oracle.AllowedTools(oracle.RoleHelper) {
+		t.Fatalf("Helper MCP mapping = %08b, oracle = %08b", mapped[oracle.RoleHelper], oracle.AllowedTools(oracle.RoleHelper))
 	}
 }
 
@@ -93,6 +93,8 @@ func conformanceRole(role agentprofile.Role) (oracle.Role, bool) {
 		return oracle.RoleOrganizer, true
 	case agentprofile.RoleWorker:
 		return oracle.RoleWorker, true
+	case agentprofile.RoleHelper:
+		return oracle.RoleHelper, true
 	case agentprofile.RoleReviewer:
 		return oracle.RoleReviewer, true
 	default:

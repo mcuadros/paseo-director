@@ -108,6 +108,15 @@ const (
 	NeedOutputLimit                   NeedCode = "output_limit_exceeded"
 	NeedTemporaryLimit                NeedCode = "temporary_storage_limit_exceeded"
 	NeedWorkerVisibilityMissing       NeedCode = "worker_visibility_registration_missing"
+	NeedHelperQuota                   NeedCode = "helper_task_quota_exhausted"
+	NeedHelperCapacity                NeedCode = "helper_global_capacity_exhausted"
+	NeedHelperCapacityFactMissing     NeedCode = "helper_capacity_fact_missing"
+	NeedHelperBoundaryInvalid         NeedCode = "helper_boundary_invalid"
+	NeedHelperCreationUnknown         NeedCode = "helper_creation_unknown"
+	NeedHelperIdentityInvalid         NeedCode = "helper_identity_invalid"
+	NeedHelperContributionInvalid     NeedCode = "helper_contribution_invalid"
+	NeedHelperHandoffUnknown          NeedCode = "helper_handoff_unknown"
+	NeedHelperCleanupUnproven         NeedCode = "helper_cleanup_unproven"
 )
 
 // Admission never grants cleanup authority. Cleanup requires a separate pure

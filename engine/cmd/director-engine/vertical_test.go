@@ -306,7 +306,7 @@ func verticalProfiles(t *testing.T) agentprofile.FrozenSet {
 	worker := domainconfig.AgentSelection{
 		Provider: domainconfig.ProviderCodex, Model: "gpt-5.4-mini", Effort: "high", Mode: "default",
 		PermissionMode: "workspace-write", ProviderOptions: []domainconfig.ProviderOption{},
-		MCPCapabilities: []domainconfig.MCPCapability{domainconfig.MCPTaskRead, domainconfig.MCPTaskOutcomeSubmit},
+		MCPCapabilities: []domainconfig.MCPCapability{domainconfig.MCPTaskRead, domainconfig.MCPTaskOutcomeSubmit, domainconfig.MCPTaskHelperRequest},
 	}
 	profiles := domainconfig.AgentProfiles{
 		Organizer: domainconfig.AgentProfile{AgentSelection: domainconfig.AgentSelection{
@@ -329,7 +329,7 @@ func verticalProfiles(t *testing.T) agentprofile.FrozenSet {
 			DiagnosticCodes: []agentprofile.DiagnosticCode{}, Models: []agentprofile.ModelFact{{
 				Model: "gpt-5.4-mini", Variants: []agentprofile.VariantFact{
 					{Effort: "high", Mode: "default", PermissionMode: "read-only", ProviderOptions: []domainconfig.ProviderOption{}, MCPCapabilities: readOnly.MCPCapabilities, SessionStdioMCP: true, ExactMCPToolPolicy: true, RuntimeProbePassed: true},
-					{Effort: "high", Mode: "default", PermissionMode: "workspace-write", ProviderOptions: []domainconfig.ProviderOption{}, MCPCapabilities: worker.MCPCapabilities, SessionStdioMCP: true, ExactMCPToolPolicy: true, RuntimeProbePassed: true},
+					{Effort: "high", Mode: "default", PermissionMode: "workspace-write", ProviderOptions: []domainconfig.ProviderOption{}, MCPCapabilities: append(append([]domainconfig.MCPCapability{}, worker.MCPCapabilities...), domainconfig.MCPHelperContributionSubmit), SessionStdioMCP: true, ExactMCPToolPolicy: true, RuntimeProbePassed: true},
 				},
 			}},
 		}},
@@ -368,6 +368,7 @@ func startCommand(t *testing.T, task domain.Task, scope execution.Scope, source,
 			profiles.ConfigurationSHA256(), 2*60*60*1_000, 200_000, 32, 0, 4,
 		),
 		TurnBudgetDemand: runtimebudget.Demand{WallTimeMilliseconds: 60_000, Tokens: 1_000, Turns: 1},
+		HelperPolicy:     execution.HelperPolicy{MaximumPerTask: 3, MaximumConcurrentAgents: 8},
 		EligibilityFacts: facts,
 	}
 }

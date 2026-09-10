@@ -62,7 +62,7 @@ This is a complete minimal document:
       "providerOptions": [
         {"name": "networkAccess", "value": "disabled"}
       ],
-      "mcpCapabilities": ["project.read", "task.read", "task.outcome.submit"],
+      "mcpCapabilities": ["project.read", "task.read", "task.outcome.submit", "task.helper.request"],
       "fallbackChain": []
     },
     "reviewer": {

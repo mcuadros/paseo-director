@@ -26,9 +26,9 @@ stdio MCP, exact tool policy, and runtime probe evidence.
 
 The canonical schema hashes for this contract revision are:
 
-- provider discovery: `5b504ccc87ab1600953edb007e67d7e8f1acec21e140f08ea4478470479163b7`;
-- frozen effective profiles: `c2883458d6c1f69dfd729d4eb7b2aab71a50a5b46f7aaaca9cad76d9a8dffd0c`;
-- Organizer configuration version 1: `74f76edc3a0cc01fbebe4f4ecacea0e7b6287d2a492847fc96ece0ba76a58fd9`.
+- provider discovery: `b24f996491a706c9a1da957dc802bc971f0cdbbd3f0b3d8214546832b03eba6e`;
+- frozen effective profiles: `c961897556e407ca8b817522f671b61265574f8a6eabb2ca09d5039528f4b384`;
+- Organizer configuration version 1: `e3f1b86b158aa42104d9e9ea4fb645fbe6ec9cdbe8576e3cf16481508a972a0c`.
 
 Tests pin these canonical values. Any intentional schema change must update the
 version or its pinned hash and the corresponding contract documentation.
@@ -36,10 +36,10 @@ version or its pinned hash and the corresponding contract documentation.
 The M3.1 frozen-contract audit remains byte-identical except for the in-scope
 Run state contract. `engine/domain/execution/state.go` moves from
 `157589c5921dcae1bdee163457722ecdcc2c0e0063aa9fc8ff8303fc8f0a93fb` to
-`ed3051c4bda72f2807e9ecdfc13c3a851ae73127c1878c32c0cdd74f286f54de`
-because it now persists the immutable effective-profile bytes and their
-SHA-256. The restart and mutation tests verify those fields structurally; all
-other audited M3 contract digests are unchanged.
+`a4696dcd16ef7e51ea4351a85f2a7753232db55f5e1a6f3d254f0790e630566e`
+because it now persists the immutable effective-profile bytes, helper policy,
+durable controlled-helper graph, and integrated runtime-budget ledger. The
+restart and mutation tests verify those fields structurally.
 
 For each role the engine evaluates the primary and then the configured
 fallbacks in array order. It selects the first currently supported and

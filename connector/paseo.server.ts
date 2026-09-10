@@ -185,6 +185,16 @@ function exactLabels(
   return JSON.stringify(sortedRecord(actual)) === JSON.stringify(sortedRecord(expected));
 }
 
+function exactHelperLabels(
+  actual: Readonly<Record<string, string>>,
+  expected: Readonly<Record<string, string>>,
+): boolean {
+  const directorLabels = Object.fromEntries(
+    Object.entries(actual).filter(([key]) => key !== "paseo.parent-agent-id"),
+  );
+  return exactLabels(directorLabels, expected);
+}
+
 function pageCursor(page: unknown): string | undefined {
   if (page === null || typeof page !== "object") return undefined;
   const value = page as { hasMore?: unknown; nextCursor?: unknown };
@@ -419,6 +429,61 @@ export class PaseoHostConnector implements DirectorHost {
     return this.#observation(command, "ambiguous", agent.id, correlation);
   }
 
+  async #helper(command: HostCommand): Promise<HostObservation> {
+    const value = command.arguments;
+    const correlation = value.labels ? labelDigest(value.labels) : "";
+    if (!value.labels || !value.parentAgentId || !value.workspaceId || !value.title) {
+      throw new PaseoHostEffectError("HOST_HELPER_OBSERVE_INVALID");
+    }
+    const matches = await this.#agents(command);
+    if (matches.length === 0) return this.#observation(command, "absent", "", correlation);
+    if (matches.length !== 1) return this.#observation(command, "ambiguous", "", correlation);
+    const agent = matches[0]!;
+    const exact =
+      agent.id === (value.agentId || agent.id) &&
+      agent.workspaceId === value.workspaceId &&
+      agent.cwd === value.worktreePath &&
+      agent.title === value.title &&
+      agent.labels["paseo.parent-agent-id"] === value.parentAgentId &&
+      exactHelperLabels(agent.labels, value.labels);
+    if (!exact) return this.#observation(command, "different", agent.id, correlation);
+    if (!value.clientMessageId || value.initialPrompt !==
+      "Director helper bootstrap only. Do not inspect files, call tools, or perform Task work. Finish immediately.") {
+      throw new PaseoHostEffectError("HOST_HELPER_BOOTSTRAP_INVALID");
+    }
+    const bootstrapPresent = await this.#promptPresent(
+      agent.id,
+      value.clientMessageId,
+      `${command.requestId}-helper-timeline`,
+    );
+    if (!bootstrapPresent) return this.#observation(command, "different", agent.id, correlation);
+    if (value.effectKind === "helper_agent.archive" && !(agent.status === "closed" && agent.archivedAt)) {
+      return this.#observation(command, "owned_present", agent.id, correlation, false);
+    }
+    const usage = value.effectKind === "helper_agent.observe" ? providerUsage(agent) : undefined;
+    if (agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") {
+      return this.#observation(command, "permission", agent.id, correlation, true, usage);
+    }
+    if (agent.status === "error" || agent.attentionReason === "error") {
+      return this.#observation(command, "errored", agent.id, correlation, true, usage);
+    }
+    if (agent.status === "closed") {
+      return this.#observation(
+        command,
+        agent.archivedAt ? "desired" : "ambiguous",
+        agent.id,
+        correlation,
+        Boolean(agent.archivedAt),
+        usage,
+      );
+    }
+    if (agent.status === "idle") return this.#observation(command, "desired", agent.id, correlation, true, usage);
+    if (agent.status === "running" || agent.status === "initializing" || agent.activeTurn) {
+      return this.#observation(command, "owned_present", agent.id, correlation, false, usage);
+    }
+    return this.#observation(command, "ambiguous", agent.id, correlation);
+  }
+
   #createInput(command: HostCommand): PaseoAgentConfig {
     const profile = command.arguments.profile;
     const session = command.arguments.session;
@@ -546,6 +611,8 @@ export class PaseoHostConnector implements DirectorHost {
       }
       case "agent.observe":
         return this.#agent(command);
+      case "helperAgent.observe":
+        return this.#helper(command);
       case "send_agent_prompt": {
         const value = command.arguments;
         if (
@@ -567,7 +634,9 @@ export class PaseoHostConnector implements DirectorHost {
         return this.#observation(command, "owned_present", value.agentId, "", false);
       }
       case "agent.archive": {
-        const observed = await this.#agent(command);
+        const observed = command.arguments.effectKind === "helper_agent.archive"
+          ? await this.#helper(command)
+          : await this.#agent(command);
         if (observed.result.status !== "owned_present") return observed;
         await this.#roots().agents.ref(command.arguments.agentId!).archive();
         return this.#observation(command, "desired", command.arguments.agentId!);

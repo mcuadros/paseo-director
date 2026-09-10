@@ -70,6 +70,7 @@ func ValidStartupReconciliation(observation StartupReconciliation) bool {
 		observation.CommandCount > 0 && observation.CommandChainHash != "" &&
 		observation.LastCommandID != "" && observation.OperationalObservationID != "" &&
 		(observation.EffectObservationCount == 0) == (observation.EffectObservationChainHash == "") &&
+		(observation.HelperCount == 0) == (observation.HelperChainHash == "") &&
 		(observation.CandidateID == "") == (observation.CandidateSHA == "") &&
 		(observation.FrontierObservationID == "") == (observation.FrontierObservationHash == "") &&
 		(observation.CandidateObservationID == "") == (observation.CandidateObservationHash == "") &&

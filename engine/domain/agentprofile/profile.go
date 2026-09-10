@@ -56,6 +56,7 @@ const (
 	RoleOrganizer Role = "organizer"
 	RoleWorker    Role = "worker"
 	RoleReviewer  Role = "reviewer"
+	RoleHelper    Role = "helper"
 )
 
 // ProviderState is a normalized availability fact. Unsupported tuples remain
@@ -270,6 +271,7 @@ func validCapability(capability domainconfig.MCPCapability) bool {
 	switch capability {
 	case domainconfig.MCPProjectRead, domainconfig.MCPPlanningCommandSubmit,
 		domainconfig.MCPTaskRead, domainconfig.MCPTaskOutcomeSubmit,
+		domainconfig.MCPTaskHelperRequest, domainconfig.MCPHelperContributionSubmit,
 		domainconfig.MCPCandidateRead, domainconfig.MCPReviewVerdictSubmit:
 		return true
 	default:
@@ -282,7 +284,10 @@ func capabilityAllowed(role Role, capability domainconfig.MCPCapability) bool {
 	case RoleOrganizer:
 		return capability == domainconfig.MCPProjectRead || capability == domainconfig.MCPPlanningCommandSubmit
 	case RoleWorker:
-		return capability == domainconfig.MCPProjectRead || capability == domainconfig.MCPTaskRead || capability == domainconfig.MCPTaskOutcomeSubmit
+		return capability == domainconfig.MCPProjectRead || capability == domainconfig.MCPTaskRead || capability == domainconfig.MCPTaskOutcomeSubmit ||
+			capability == domainconfig.MCPTaskHelperRequest
+	case RoleHelper:
+		return capability == domainconfig.MCPTaskRead || capability == domainconfig.MCPHelperContributionSubmit
 	case RoleReviewer:
 		return capability == domainconfig.MCPCandidateRead || capability == domainconfig.MCPReviewVerdictSubmit
 	default:
