@@ -69,6 +69,9 @@ func render(schema []byte) ([]byte, error) {
 		{"phase", labels.Phase},
 		{"candidate", labels.Candidate},
 		{"base", labels.Base},
+		{"effect", labels.Effect},
+		{"profile", labels.Profile},
+		{"session", labels.Session},
 		{"registeredAt", labels.RegisteredAt},
 		{"startedAt", labels.StartedAt},
 	} {
@@ -117,6 +120,39 @@ export type HostEffectKind =
   | "task_agent.archive"
   | "host_view.archive";
 
+export interface HostProviderOption {
+  name: string;
+  value: string;
+}
+
+export interface HostAgentProfile {
+  provider: string;
+  model: string;
+  effort: string;
+  mode: string;
+  permissionMode: string;
+  providerOptions: readonly Readonly<HostProviderOption>[];
+  sha256: string;
+}
+
+export interface HostMCPServer {
+  name: string;
+  command: string;
+  args: readonly string[];
+  env: Readonly<Record<string, string>>;
+}
+
+export interface HostMCPSession {
+  contractVersion: string;
+  contractHash: string;
+  sessionSha256: string;
+  role: string;
+  provider: string;
+  model: string;
+  tools: readonly string[];
+  server: Readonly<HostMCPServer>;
+}
+
 export interface HostCommandArguments {
   scope: Readonly<HostScope>;
   effectKind: HostEffectKind;
@@ -134,6 +170,12 @@ export interface HostCommandArguments {
   preparationReady?: boolean;
   preparationBarrierHash?: string;
   notifyOnFinish?: boolean;
+  clientMessageId?: string;
+  boundaryId?: string;
+  operationalObservationId?: string;
+  profile?: Readonly<HostAgentProfile>;
+  session?: Readonly<HostMCPSession>;
+  sessionBindingSha256?: string;
   labels?: Readonly<Record<string, string>>;
 }
 
@@ -161,6 +203,7 @@ export interface HostObservationResult {
   status: HostObservationStatus;
   externalId?: string;
   bindingHash: string;
+  correlationHash?: string;
   priorDispatcherAbsent: boolean;
   maximumAgeMillis: number;
   factHash: string;

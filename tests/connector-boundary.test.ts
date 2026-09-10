@@ -631,7 +631,7 @@ test("the connector descriptor and engine environment never propagate its creden
           bindingHash: "1".repeat(64),
         },
       }),
-      /HOST_CAPABILITY_NOT_IMPLEMENTED/,
+      /HOST_PUBLIC_SDK_UNAVAILABLE/,
     );
     await connector.close();
     assert.equal(closed, true);

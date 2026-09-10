@@ -15,6 +15,8 @@ import (
 type Request struct {
 	Scope             execution.Scope                `json:"scope"`
 	Effect            execution.Effect               `json:"effect"`
+	LeaseBinding      execution.LeaseBinding         `json:"leaseBinding"`
+	Repository        execution.RepositoryBinding    `json:"repository"`
 	SourcePath        string                         `json:"sourcePath"`
 	WorktreePath      string                         `json:"worktreePath"`
 	Branch            string                         `json:"branch"`

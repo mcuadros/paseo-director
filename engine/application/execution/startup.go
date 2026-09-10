@@ -104,11 +104,12 @@ func validDurableEffect(run domain.Run, effect domainexecution.Effect, kind doma
 	}
 	switch effect.Phase {
 	case domainexecution.EffectIntentRecorded, domainexecution.EffectDispatching:
-		if effect.ExternalID != "" {
+		if effect.ExternalID != "" || effect.ObservedFactHash != "" || effect.ObservedCorrelation != "" {
 			return fmt.Errorf("%s incomplete intent has an external identity", kind)
 		}
 	case domainexecution.EffectComplete:
-		if effect.ExternalID == "" || !identifierPattern.MatchString(effect.ExternalID) || len(effect.ExternalID) > 128 {
+		if effect.ExternalID == "" || !identifierPattern.MatchString(effect.ExternalID) || len(effect.ExternalID) > 128 ||
+			!domainexecution.ValidPrimaryDigest(effect.ObservedFactHash) {
 			return fmt.Errorf("%s completed intent lacks an external identity", kind)
 		}
 	default:
@@ -138,9 +139,17 @@ func validateExecutionGraph(run domain.Run) error {
 		state.StartCommandID == "" ||
 		state.EffectiveProfiles == nil || !state.EffectiveProfiles.Valid() ||
 		state.EffectiveProfilesSHA256 != state.EffectiveProfiles.SHA256() ||
-		state.RepositoryBindingHash != repositoryBindingHash(
-			state.Scope, state.SourcePath, state.WorktreePath, state.Branch, run.BaseSHA,
-		) {
+		!domainexecution.ValidLeaseBinding(state.LeaseBinding) ||
+		state.RepositoryBindingHash == "" ||
+		state.RepositoryBindingHash != domainexecution.RepositoryBindingSHA256(state.RepositoryBinding) ||
+		state.RepositoryBinding.SourcePath != state.SourcePath ||
+		state.RepositoryBinding.WorktreePath != state.WorktreePath ||
+		state.RepositoryBinding.Branch != state.Branch || state.RepositoryBinding.BaseSHA != run.BaseSHA ||
+		!domainexecution.ValidPrimarySession(state.PrimarySession) ||
+		!domainexecution.PrimarySessionMatchesProfiles(state.PrimarySession, *state.EffectiveProfiles) ||
+		state.PrimarySession.Scope != state.Scope ||
+		state.PrimarySession.EffectiveProfilesSHA256 != state.EffectiveProfilesSHA256 ||
+		state.PrimarySession.AgentIntentID != expectedEffect(run.ID, domainexecution.EffectAgentCreate) {
 		return errors.New("Run execution scope or repository binding is invalid")
 	}
 	if state.LastStartupReconciliation != nil &&
@@ -205,6 +214,12 @@ func validateExecutionGraph(run domain.Run) error {
 	if state.WorkerVisibility != nil && state.WorkerVisibility.AgentID != "" &&
 		(state.Agent.Phase != domainexecution.EffectComplete || state.WorkerVisibility.AgentID != state.Agent.ExternalID) {
 		return errors.New("persisted worker identity is not bound to completed bootstrap creation")
+	}
+	if state.WorkerVisibility != nil && state.WorkerVisibility.AgentID != "" &&
+		(state.WorkerVisibility.ObservedDigest != state.WorkerVisibility.Digest ||
+			state.Agent.ObservedCorrelation != state.WorkerVisibility.Digest ||
+			state.PrimarySession.NativeAgentID != state.Agent.ExternalID || state.PrimarySession.BindingSHA256 == "") {
+		return errors.New("persisted worker identity lacks exact host and session evidence")
 	}
 	if state.AgentPrompt.ID != "" && (state.Agent.Phase != domainexecution.EffectComplete ||
 		state.WorkerVisibility == nil || state.WorkerVisibility.AgentID != state.Agent.ExternalID) {
@@ -279,11 +294,11 @@ func loadRunEvents(ctx context.Context, store storeport.TaskStore, runID string)
 
 func commandForEvent(run domain.Run, event domain.Event, candidate *domain.Candidate) (string, string, error) {
 	switch event.Type {
-	case "run.fake_execution.created":
+	case "run.primary_execution.created":
 		if event.AggregateVersion != 0 {
 			return "", "", errors.New("Run create event version is invalid")
 		}
-		return run.Execution.StartCommandID, "run.fake_execution.create", nil
+		return run.Execution.StartCommandID, "run.primary_execution.create", nil
 	case "candidate.admitted":
 		if candidate == nil {
 			return "", "", errors.New("Candidate event lacks an immutable Candidate")
@@ -758,6 +773,18 @@ func (controller *Controller) ReconcileStartup(ctx context.Context, command Star
 			}
 		}
 	}
+	for _, durable := range durableRuns {
+		if !currentLease(durable.project, durable.run.Execution.LeaseBinding, command.NowMillis) {
+			return StartupResult{}, fmt.Errorf("startup scan %s: %w", durable.run.ID, ErrProjectLeaseUnavailable)
+		}
+		workspace, err := controller.store.Workspace(ctx, durable.run.Execution.Scope.WorkspaceID)
+		if err != nil {
+			return StartupResult{}, err
+		}
+		if !exactRepository(durable.run, workspace) {
+			return StartupResult{}, fmt.Errorf("startup scan %s: %w", durable.run.ID, ErrRepositoryBindingChanged)
+		}
+	}
 	if err := duplicateExecutionIdentity(durableRuns); err != nil {
 		return StartupResult{}, err
 	}
@@ -809,7 +836,7 @@ func (controller *Controller) ReconcileStartup(ctx context.Context, command Star
 			result.Runs = append(result.Runs, entry)
 			continue
 		}
-		step, stepErr := controller.Step(ctx, run.ID, command.NowMillis)
+		step, stepErr := controller.step(ctx, run.ID, command.NowMillis, true)
 		entry = startupRunResult(step.Run)
 		entry.Progressed = step.Progressed
 		if stepErr != nil {

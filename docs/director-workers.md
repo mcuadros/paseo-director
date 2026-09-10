@@ -16,7 +16,8 @@ does not start.
 
 The registration carries the root workspace, the Execution Workspace, the
 Project/Workspace/Task/Run scope, the role, the phase, the base commit, the
-optional Candidate commit, and the registration and start instants. Paseo
+optional Candidate commit, agent-create effect ID, immutable effective-profile
+and scoped-session digests, and the registration and start instants. Paseo
 assigns the native agent ID. Creation carries only the fixed zero-work
 bootstrap. After that bootstrap finishes, the engine persists the native agent
 ID, workspace ID, and frozen labels. Only then may a separate

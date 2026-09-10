@@ -37,7 +37,17 @@ Engine.
 Director for Paseo is an independent community plugin. It is not affiliated
 with, endorsed by, maintained by, or sponsored by Paseo.
 
-The walking skeleton includes one explicitly fake execution path. It moves one
+The engine now includes the production primary Task Agent launch lifecycle:
+one exact lease/repository/base/branch/worktree binding, one registered Paseo
+Execution Workspace view over the Director-owned worktree, one frozen Worker
+profile and scoped MCP session, and one parentless Task Agent per Run. Native
+identity and the full Director Workers correlation are persisted after the
+zero-work bootstrap and before the separately notified real prompt. The thin
+Paseo 0.7.2 connector implements these public workspace/agent effects and
+reconciles exact native facts without owning retry or workflow policy. See
+[Primary Task Agent lifecycle](docs/primary-lifecycle.md).
+
+The walking skeleton also retains one explicitly fake execution path. It moves one
 queued Task through engine-owned Eligibility, Launch, Retry, Escalation,
 Routing, and fake-terminal Closure reductions; a Director-owned disposable Git
 worktree; a fake registered host view and top-level Task Agent; an externally
@@ -47,8 +57,8 @@ every persisted walking-skeleton Run, validates its immutable Command/Event and
 Candidate graph, recovers exact execution IDs and cleanup intents, refreshes
 the external frontier through a replaceable policy-free connector, and resumes
 one reducer-authorized transition without duplicating an unknown effect.
-Production scheduling, live-provider execution, and validation/review/delivery
-remain later milestone work. See
+The fake adapter remains test-only; helper behavior, runtime budgets, controls,
+replacement, and validation/review/delivery remain later milestone work. See
 [Fake execution vertical path](docs/fake-execution.md).
 
 Alongside that fake path, the walking skeleton establishes the process,

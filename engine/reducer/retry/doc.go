@@ -45,7 +45,7 @@ func uniqueCreate(kind execution.EffectKind) bool {
 	switch kind {
 	case execution.EffectWorktreeCreate, execution.EffectHostViewCreate,
 		execution.EffectBoundaryMaterialize, execution.EffectSetupRun,
-		execution.EffectAgentCreate, execution.EffectAgentPrompt:
+		execution.EffectAgentCreate:
 		return true
 	default:
 		return false
@@ -71,6 +71,9 @@ func Reduce(facts Facts) Decision {
 	}
 	if facts.Effect.Kind == execution.EffectWorktreeRemove {
 		return escalation("destructive_result_ambiguous")
+	}
+	if facts.Effect.Kind == execution.EffectAgentPrompt {
+		return escalation("nonrepeatable_prompt_result_ambiguous")
 	}
 	if !facts.PriorDispatcherAbsent {
 		return escalation("prior_dispatcher_not_absent")

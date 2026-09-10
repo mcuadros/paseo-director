@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -137,7 +138,7 @@ func openVerticalStore(t *testing.T, fixture *verticalDolt) *dolt.DoltTaskStore 
 	return store
 }
 
-func createVerticalRecords(t *testing.T, store *dolt.DoltTaskStore, suffix string) (domain.Project, domain.Task) {
+func createVerticalRecords(t *testing.T, store *dolt.DoltTaskStore, suffix, source string) (domain.Project, domain.Task) {
 	t.Helper()
 	ctx := context.Background()
 	project := domain.Project{ID: "project-" + suffix, Name: "Vertical fixture", State: "active"}
@@ -151,14 +152,31 @@ func createVerticalRecords(t *testing.T, store *dolt.DoltTaskStore, suffix strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	workspacePath := "/srv/workspaces/" + project.ID
+	workspacePath, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceStatus, err := os.Stat(workspacePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commonPath, err := filepath.EvalSymlinks(filepath.Join(workspacePath, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commonStatus, err := os.Stat(commonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceIdentity := sourceStatus.Sys().(*syscall.Stat_t)
+	commonIdentity := commonStatus.Sys().(*syscall.Stat_t)
 	workspace := domain.Workspace{
 		ID: domain.WorkspaceID(project.ID, "workspace-"+suffix), ProjectID: project.ID,
 		Key: "workspace-" + suffix, Name: "Vertical Workspace",
 		Repository: domain.RepositoryIdentity{
 			ID: remote.ID, Key: remote.Key, CanonicalRemote: remote.Canonical,
-			SourcePath: workspacePath, SourceDevice: 1, SourceInode: 2,
-			GitCommonDirectory: workspacePath + "/.git", GitCommonDevice: 1, GitCommonInode: 3,
+			SourcePath: workspacePath, SourceDevice: uint64(sourceIdentity.Dev), SourceInode: sourceIdentity.Ino,
+			GitCommonDirectory: commonPath, GitCommonDevice: uint64(commonIdentity.Dev), GitCommonInode: commonIdentity.Ino,
 		},
 		DefaultBaseBranch: "main", Policy: domain.WorkspacePolicy{LaunchPolicy: "inherit", DeliveryMode: "inherit"},
 	}
@@ -176,10 +194,33 @@ func createVerticalRecords(t *testing.T, store *dolt.DoltTaskStore, suffix strin
 	if result, err := store.CreateProject(ctx, command("create-project-"+suffix, "project.create", project.ID), project, []domain.Workspace{workspace}, event("project-created-"+suffix, project.ID, "project.created")); err != nil || result.Outcome != domain.CommandApplied {
 		t.Fatalf("create Project: %#v, %v", result, err)
 	}
+	lease := domain.ProjectLeaseMutation{
+		Kind: domain.ProjectLeaseAcquire, ProjectID: project.ID,
+		HolderInstance: "engine-fixture", HolderProcessIdentity: "pid-100:start-1",
+		DurationMillis: domain.MaximumProjectLeaseDurationMillis,
+	}
+	if result, err := store.ApplyProjectLease(ctx, domain.CommandRequest{
+		IdempotencyKey: "lease-project-" + suffix, Type: "project.lease.acquire",
+		AggregateID: project.ID, ExpectedVersion: 0, Payload: eventPayloadForTest(lease),
+	}, lease); err != nil || result.Outcome != domain.CommandApplied {
+		t.Fatalf("lease Project: %#v, %v", result, err)
+	}
+	project, err = store.Project(ctx, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result, err := store.CreateTask(ctx, command("create-task-"+suffix, "task.create", task.ID), task, event("task-created-"+suffix, task.ID, "task.created")); err != nil || result.Outcome != domain.CommandApplied {
 		t.Fatalf("create Task: %#v, %v", result, err)
 	}
 	return project, task
+}
+
+func eventPayloadForTest(value any) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
 }
 
 func initializeRepository(t *testing.T, suffix string) (string, string) {
@@ -200,6 +241,7 @@ func initializeRepository(t *testing.T, suffix string) (string, string) {
 	run("init", "--initial-branch=main")
 	run("config", "user.name", "Director fixture")
 	run("config", "user.email", "fixture@example.invalid")
+	run("remote", "add", "origin", "https://github.com/example/project-"+suffix+".git")
 	if err := os.WriteFile(filepath.Join(repository, "README.md"), []byte("fixture\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +255,7 @@ func operationalObservation(id string) execution.OperationalObservation {
 		return execution.Measurement{Present: true, Value: value}
 	}
 	return execution.OperationalObservation{
-		ID: id, ObservedAtMillis: 1_000,
+		ID: id, ObservedAtMillis: time.Now().UnixMilli(),
 		FreeDiskBasisPoints: measurement(5_000), WorktreeBytes: measurement(0),
 		Processes: measurement(1), MemoryBytes: measurement(1),
 		ElapsedMilliseconds: measurement(1), OutputBytes: measurement(0),
@@ -223,6 +265,7 @@ func operationalObservation(id string) execution.OperationalObservation {
 
 func eligibilityFacts(scope execution.Scope, surfaces execution.LifecycleSurfaces) eligibility.Facts {
 	observedTrue := eligibility.BooleanFact{Observed: true, Value: true}
+	operational := operationalObservation("launch-" + scope.RunID)
 	return eligibility.Facts{
 		SchemaVersion: eligibility.SchemaVersion, Scope: scope,
 		ProjectLeaseCurrent: observedTrue, ProjectActive: observedTrue,
@@ -244,8 +287,8 @@ func eligibilityFacts(scope execution.Scope, surfaces execution.LifecycleSurface
 			MaximumElapsedMilliseconds: 60_000, MaximumOutputBytes: 4 << 20,
 			MaximumTemporaryBytes: 16 << 20, MaximumObservationAgeMillis: 30_000,
 		},
-		OperationalObservation: operationalObservation("launch-" + scope.RunID),
-		TaskStoreNowMillis:     1_001,
+		OperationalObservation: operational,
+		TaskStoreNowMillis:     operational.ObservedAtMillis,
 	}
 }
 
@@ -312,12 +355,18 @@ func startCommand(t *testing.T, task domain.Task, scope execution.Scope, source,
 		SourcePath: source, WorktreePath: worktree,
 		Branch: "task/" + scope.TaskID, BaseSHA: base,
 		TaskTitle: task.Title, InitialPrompt: "Produce the declared fixture Candidate and return one completed claim.",
-		CriterionIDs:      []string{"criterion-1"},
-		RootWorkspaceID:   "wks_root_" + scope.ProjectID,
+		CriterionIDs:    []string{"criterion-1"},
+		RootWorkspaceID: "wks_root_" + scope.ProjectID,
+		MCPServer: execution.MCPServerLaunch{
+			Name: "director-session-mcp", Command: "/usr/bin/director-agent-runtime",
+			Args: []string{"serve", "--run", scope.RunID}, Env: map[string]string{},
+		},
 		EffectiveProfiles: verticalProfiles(t),
 		EligibilityFacts:  facts,
 	}
 }
+
+func testNowMillis() int64 { return time.Now().UnixMilli() }
 
 func runSteps(t *testing.T, store *dolt.DoltTaskStore, environment *fake.Environment, runID string, stop func(domain.Run) bool) domain.Run {
 	t.Helper()
@@ -331,19 +380,20 @@ func runSteps(t *testing.T, store *dolt.DoltTaskStore, environment *fake.Environ
 			return run
 		}
 		controller := executionapp.NewController(store, environment, environment, environment)
+		nowMillis := testNowMillis()
 		for _, effect := range []execution.Effect{run.Execution.Agent, run.Execution.AgentPrompt} {
 			if effect.Observation != nil && effect.Observation.Status == execution.ObservationOwnedPresent {
-				event, eventErr := environment.TerminalEvent(execution.CompletionEventFinished, effect.ID, 1_001)
+				event, eventErr := environment.TerminalEvent(execution.CompletionEventFinished, effect.ID, nowMillis)
 				if eventErr != nil {
 					t.Fatal(eventErr)
 				}
-				if eventErr := controller.RecordCompletionEvent(ctx, runID, event, 1_001); eventErr != nil {
+				if eventErr := controller.RecordCompletionEvent(ctx, runID, event, nowMillis); eventErr != nil {
 					t.Fatal(eventErr)
 				}
 				continue
 			}
 		}
-		_, err = controller.Step(ctx, runID, 1_001)
+		_, err = controller.Step(ctx, runID, nowMillis)
 		if err != nil && !errors.Is(err, fake.ErrResponseLost) {
 			t.Fatalf("step %d: %v", step, err)
 		}
@@ -355,10 +405,10 @@ func runSteps(t *testing.T, store *dolt.DoltTaskStore, environment *fake.Environ
 func TestFakeExecutionVerticalPathRecoversEveryLostResponse(t *testing.T) {
 	fixture := startVerticalDolt(t)
 	store := openVerticalStore(t, fixture)
-	project, task := createVerticalRecords(t, store, "complete")
 	source, base := initializeRepository(t, "complete")
+	project, task := createVerticalRecords(t, store, "complete", source)
 	worktree := filepath.Join(filepath.Dir(source), "owned-worktree")
-	scope := execution.Scope{ProjectID: project.ID, WorkspaceID: "workspace-complete", TaskID: task.ID, RunID: "run-complete"}
+	scope := execution.Scope{ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0], TaskID: task.ID, RunID: "run-complete"}
 	surfaces := execution.LifecycleSurfaces{Setup: []string{"fixture setup"}}
 	facts := eligibilityFacts(scope, surfaces)
 	facts.LifecycleApproval = &execution.LifecycleApproval{
@@ -415,22 +465,23 @@ func TestFakeExecutionVerticalPathRecoversEveryLostResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	completion, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.AgentPrompt.ID, 1_001)
+	nowMillis := testNowMillis()
+	completion, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.AgentPrompt.ID, nowMillis)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := controller.RecordCompletionEvent(context.Background(), scope.RunID, completion, 1_001); err != nil {
+	if err := controller.RecordCompletionEvent(context.Background(), scope.RunID, completion, nowMillis); err != nil {
 		t.Fatalf("record completion event: %v", err)
 	}
 	if err := executionapp.NewController(store, environment, environment, environment).RecordCompletionEvent(
-		context.Background(), scope.RunID, completion, 1_001,
+		context.Background(), scope.RunID, completion, nowMillis,
 	); err != nil {
 		t.Fatalf("idempotent completion-event replay: %v", err)
 	}
 	conflict := completion
 	conflict.Kind = execution.CompletionEventError
 	conflict.FactHash = execution.CompletionEventHash(conflict)
-	if err := controller.RecordCompletionEvent(context.Background(), scope.RunID, conflict, 1_001); err == nil {
+	if err := controller.RecordCompletionEvent(context.Background(), scope.RunID, conflict, nowMillis); err == nil {
 		t.Fatal("duplicate callback identity with changed facts was accepted")
 	}
 	if environment.QueueWakeCount() != 2 {
@@ -509,6 +560,128 @@ func TestFakeExecutionVerticalPathRecoversEveryLostResponse(t *testing.T) {
 	}
 }
 
+func TestPrimaryAgentDispatchIsCASSerializedAcrossConcurrentReconcilers(t *testing.T) {
+	fixture := startVerticalDolt(t)
+	store := openVerticalStore(t, fixture)
+	source, base := initializeRepository(t, "primary-concurrent")
+	project, task := createVerticalRecords(t, store, "primary-concurrent", source)
+	worktree := filepath.Join(filepath.Dir(source), "primary-concurrent-worktree")
+	scope := execution.Scope{ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0], TaskID: task.ID, RunID: "run-primary-concurrent"}
+	environment := fake.NewEnvironment(fake.Options{
+		SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID,
+		BaseSHA: base, Operational: operationalObservation("primary-concurrent"),
+	})
+	t.Cleanup(environment.RemoveFixture)
+	controller := executionapp.NewController(store, environment, environment, environment)
+	if _, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
+		t.Fatal(err)
+	}
+	runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
+		return run.Execution.Agent.ID != "" && run.Execution.Agent.Observation != nil &&
+			run.Execution.Agent.Observation.Status == execution.ObservationAbsent &&
+			run.Execution.OperationalObservation != nil && !run.Execution.OperationalObservationConsumed &&
+			run.Execution.OperationalObservationRunVersion == run.Version
+	})
+
+	const contenders = 16
+	start := make(chan struct{})
+	errorsChannel := make(chan error, contenders)
+	var wait sync.WaitGroup
+	for index := 0; index < contenders; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			_, err := executionapp.NewController(store, environment, environment, environment).Step(context.Background(), scope.RunID, testNowMillis())
+			errorsChannel <- err
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errorsChannel)
+	for err := range errorsChannel {
+		if err != nil && !strings.Contains(err.Error(), "version conflict") &&
+			!strings.Contains(err.Error(), "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD") {
+			t.Fatalf("concurrent step returned unexpected error: %v", err)
+		}
+	}
+	if count := environment.MutationCount(execution.EffectAgentCreate); count != 1 {
+		t.Fatalf("concurrent reconcilers created %d primary agents", count)
+	}
+	owned := environment.AgentRequest()
+	if owned.ParentAgentID != nil || owned.Title != task.Title || owned.InitialPrompt != host.ZeroWorkBootstrapPrompt {
+		t.Fatalf("concurrent primary create = %#v", owned)
+	}
+}
+
+func TestPrimaryLifecycleRefusesStaleLeaseAndWrongRepositoryBeforeMutation(t *testing.T) {
+	fixture := startVerticalDolt(t)
+	store := openVerticalStore(t, fixture)
+	source, base := initializeRepository(t, "primary-authority")
+	project, task := createVerticalRecords(t, store, "primary-authority", source)
+	worktree := filepath.Join(filepath.Dir(source), "primary-authority-worktree")
+	scope := execution.Scope{ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0], TaskID: task.ID, RunID: "run-primary-authority"}
+	environment := fake.NewEnvironment(fake.Options{
+		SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID,
+		BaseSHA: base, Operational: operationalObservation("primary-authority"),
+	})
+	t.Cleanup(environment.RemoveFixture)
+	controller := executionapp.NewController(store, environment, environment, environment)
+	wrongSource := startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))
+	wrongSource.SourcePath = filepath.Join(source, "other")
+	if _, err := controller.Start(context.Background(), wrongSource); err == nil {
+		t.Fatal("wrong source repository entered a Run")
+	}
+	if environment.TotalMutationCount() != 0 || environment.HostCallCount() != 0 {
+		t.Fatal("wrong source repository reached a side effect")
+	}
+	if _, err := controller.Start(context.Background(), startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Step(context.Background(), scope.RunID, project.Lease.ExpiresAtMillis); !errors.Is(err, executionapp.ErrProjectLeaseUnavailable) {
+		t.Fatalf("expired lease step error = %v", err)
+	}
+	if environment.TotalMutationCount() != 0 || environment.HostCallCount() != 0 {
+		t.Fatal("stale lease reached a side effect")
+	}
+}
+
+func TestPrimaryLifecycleParksWrongWorktreePathBranchAndBaseBeforeDispatch(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*executionapp.StartCommand)
+	}{
+		{"worktree path", func(command *executionapp.StartCommand) { command.WorktreePath += "-wrong" }},
+		{"branch", func(command *executionapp.StartCommand) { command.Branch += "-wrong" }},
+		{"base", func(command *executionapp.StartCommand) { command.BaseSHA = strings.Repeat("f", 40) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := startVerticalDolt(t)
+			store := openVerticalStore(t, fixture)
+			suffix := "primary-wrong-" + strings.ReplaceAll(test.name, " ", "-")
+			source, base := initializeRepository(t, suffix)
+			project, task := createVerticalRecords(t, store, suffix, source)
+			worktree := filepath.Join(filepath.Dir(source), suffix+"-worktree")
+			scope := execution.Scope{ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0], TaskID: task.ID, RunID: "run-" + suffix}
+			environment := fake.NewEnvironment(fake.Options{
+				SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID,
+				BaseSHA: base, Operational: operationalObservation(suffix),
+			})
+			t.Cleanup(environment.RemoveFixture)
+			command := startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))
+			test.mutate(&command)
+			controller := executionapp.NewController(store, environment, environment, environment)
+			if _, err := controller.Start(context.Background(), command); err != nil {
+				t.Fatal(err)
+			}
+			parked := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool { return run.Execution.NeedsYou != nil })
+			if parked.Execution.NeedsYou.CleanupAuthorized || environment.TotalMutationCount() != 0 || environment.HostCallCount() != 0 {
+				t.Fatalf("wrong target reached a side effect: needs=%#v mutations=%d host=%d", parked.Execution.NeedsYou, environment.TotalMutationCount(), environment.HostCallCount())
+			}
+		})
+	}
+}
+
 func TestTerminalErrorAndPermissionCallbacksSynchronouslyEnqueueThenPark(t *testing.T) {
 	for _, terminal := range []struct {
 		name string
@@ -521,10 +694,10 @@ func TestTerminalErrorAndPermissionCallbacksSynchronouslyEnqueueThenPark(t *test
 		t.Run(terminal.name, func(t *testing.T) {
 			fixture := startVerticalDolt(t)
 			store := openVerticalStore(t, fixture)
-			project, task := createVerticalRecords(t, store, "terminal-"+terminal.name)
 			source, base := initializeRepository(t, "terminal-"+terminal.name)
+			project, task := createVerticalRecords(t, store, "terminal-"+terminal.name, source)
 			worktree := filepath.Join(filepath.Dir(source), "terminal-"+terminal.name+"-worktree")
-			scope := execution.Scope{ProjectID: project.ID, WorkspaceID: "workspace-terminal-" + terminal.name, TaskID: task.ID, RunID: "run-terminal-" + terminal.name}
+			scope := execution.Scope{ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0], TaskID: task.ID, RunID: "run-terminal-" + terminal.name}
 			environment := fake.NewEnvironment(fake.Options{
 				SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID,
 				BaseSHA: base, Operational: operationalObservation("terminal-" + terminal.name),
@@ -537,11 +710,12 @@ func TestTerminalErrorAndPermissionCallbacksSynchronouslyEnqueueThenPark(t *test
 			run := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
 				return run.Execution.AgentPrompt.Observation != nil && run.Execution.AgentPrompt.Observation.Status == execution.ObservationOwnedPresent
 			})
-			event, err := environment.TerminalEvent(terminal.kind, run.Execution.AgentPrompt.ID, 1_001)
+			nowMillis := testNowMillis()
+			event, err := environment.TerminalEvent(terminal.kind, run.Execution.AgentPrompt.ID, nowMillis)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := controller.RecordCompletionEvent(context.Background(), run.ID, event, 1_001); err != nil {
+			if err := controller.RecordCompletionEvent(context.Background(), run.ID, event, nowMillis); err != nil {
 				t.Fatal(err)
 			}
 			if environment.QueueWakeCount() != 2 {
@@ -558,10 +732,10 @@ func TestTerminalErrorAndPermissionCallbacksSynchronouslyEnqueueThenPark(t *test
 func TestFiveMinuteMultiSourceWatchdogRecoversOnlyALostTerminalEvent(t *testing.T) {
 	fixture := startVerticalDolt(t)
 	store := openVerticalStore(t, fixture)
-	project, task := createVerticalRecords(t, store, "lost-terminal")
 	source, base := initializeRepository(t, "lost-terminal")
+	project, task := createVerticalRecords(t, store, "lost-terminal", source)
 	worktree := filepath.Join(filepath.Dir(source), "lost-terminal-worktree")
-	scope := execution.Scope{ProjectID: project.ID, WorkspaceID: "workspace-lost-terminal", TaskID: task.ID, RunID: "run-lost-terminal"}
+	scope := execution.Scope{ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0], TaskID: task.ID, RunID: "run-lost-terminal"}
 	environment := fake.NewEnvironment(fake.Options{
 		SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID,
 		BaseSHA: base, Operational: operationalObservation("lost-terminal"),
@@ -574,8 +748,9 @@ func TestFiveMinuteMultiSourceWatchdogRecoversOnlyALostTerminalEvent(t *testing.
 	run := runSteps(t, store, environment, scope.RunID, func(run domain.Run) bool {
 		return run.Execution.AgentPrompt.Observation != nil && run.Execution.AgentPrompt.Observation.Status == execution.ObservationOwnedPresent
 	})
+	lastProgress := testNowMillis()
 	facts := execution.StallRecoveryFacts{
-		ObservedAtMillis: 301_001, LastProgressAtMillis: 1_001,
+		ObservedAtMillis: lastProgress + execution.LostCompletionEventRecoveryMillis, LastProgressAtMillis: lastProgress,
 		AgentStateUnchanged: true, NoToolActivity: true, NoWorktreeChange: true,
 		NoUsageMovement: true, PendingTerminalEffectID: run.Execution.AgentPrompt.ID,
 	}
@@ -584,7 +759,7 @@ func TestFiveMinuteMultiSourceWatchdogRecoversOnlyALostTerminalEvent(t *testing.
 	if err := controller.RecoverLostCompletionEvent(context.Background(), run.ID, early); err == nil {
 		t.Fatal("early single-source wake was admitted")
 	}
-	if _, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.AgentPrompt.ID, 1_001); err != nil {
+	if _, err := environment.TerminalEvent(execution.CompletionEventFinished, run.Execution.AgentPrompt.ID, testNowMillis()); err != nil {
 		t.Fatal(err)
 	}
 	if err := controller.RecoverLostCompletionEvent(context.Background(), run.ID, facts); err != nil {
@@ -603,10 +778,10 @@ func TestLifecycleAndPeriodicFactsParkWithoutSDKOrCleanupAuthority(t *testing.T)
 	store := openVerticalStore(t, fixture)
 
 	t.Run("unapproved lifecycle", func(t *testing.T) {
-		project, task := createVerticalRecords(t, store, "lifecycle")
 		source, base := initializeRepository(t, "lifecycle")
+		project, task := createVerticalRecords(t, store, "lifecycle", source)
 		worktree := filepath.Join(filepath.Dir(source), "unapproved-worktree")
-		scope := execution.Scope{ProjectID: project.ID, WorkspaceID: "workspace-lifecycle", TaskID: task.ID, RunID: "run-lifecycle"}
+		scope := execution.Scope{ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0], TaskID: task.ID, RunID: "run-lifecycle"}
 		surfaces := execution.LifecycleSurfaces{Setup: []string{"must never execute"}}
 		environment := fake.NewEnvironment(fake.Options{SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID, BaseSHA: base, Operational: operationalObservation("periodic-lifecycle")})
 		t.Cleanup(environment.RemoveFixture)
@@ -642,10 +817,10 @@ func TestLifecycleAndPeriodicFactsParkWithoutSDKOrCleanupAuthority(t *testing.T)
 	for index, fixture := range launchCases {
 		t.Run(fixture.name, func(t *testing.T) {
 			suffix := fmt.Sprintf("launch-%d", index)
-			project, task := createVerticalRecords(t, store, suffix)
 			source, base := initializeRepository(t, suffix)
+			project, task := createVerticalRecords(t, store, suffix, source)
 			worktree := filepath.Join(filepath.Dir(source), suffix+"-worktree")
-			scope := execution.Scope{ProjectID: project.ID, WorkspaceID: "workspace-" + suffix, TaskID: task.ID, RunID: "run-" + suffix}
+			scope := execution.Scope{ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0], TaskID: task.ID, RunID: "run-" + suffix}
 			facts := eligibilityFacts(scope, execution.LifecycleSurfaces{})
 			fixture.mutate(&facts)
 			environment := fake.NewEnvironment(fake.Options{SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID, BaseSHA: base, Operational: operationalObservation("periodic-unused")})
@@ -680,10 +855,10 @@ func TestLifecycleAndPeriodicFactsParkWithoutSDKOrCleanupAuthority(t *testing.T)
 	for index, fixture := range periodicCases {
 		t.Run(fixture.name, func(t *testing.T) {
 			suffix := fmt.Sprintf("periodic-%d", index)
-			project, task := createVerticalRecords(t, store, suffix)
 			source, base := initializeRepository(t, suffix)
+			project, task := createVerticalRecords(t, store, suffix, source)
 			worktree := filepath.Join(filepath.Dir(source), suffix+"-worktree")
-			scope := execution.Scope{ProjectID: project.ID, WorkspaceID: "workspace-" + suffix, TaskID: task.ID, RunID: "run-" + suffix}
+			scope := execution.Scope{ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0], TaskID: task.ID, RunID: "run-" + suffix}
 			facts := eligibilityFacts(scope, execution.LifecycleSurfaces{})
 			environment := fake.NewEnvironment(fake.Options{SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID, BaseSHA: base, Operational: operationalObservation("periodic-valid")})
 			t.Cleanup(environment.RemoveFixture)
