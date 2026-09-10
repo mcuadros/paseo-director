@@ -21,6 +21,7 @@ import (
 	"github.com/mcuadros/director-engine/adapters/dolt"
 	"github.com/mcuadros/director-engine/application/board"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
+	planningport "github.com/mcuadros/director-engine/ports/planning"
 )
 
 const maximumBoardServerConfigBytes = 64 * 1024
@@ -181,8 +182,11 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "director-engine: Board readiness output failed")
 		return 1
 	}
+	handler := http.NewServeMux()
+	handler.Handle(boardQueryPath, newBoardHandler(board.NewReader(store)))
+	handler.Handle(planningport.QueryPath, newPlanningHandler(board.NewPlanningReader(store)))
 	server := &http.Server{
-		Handler:           newBoardHandler(board.NewReader(store)),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

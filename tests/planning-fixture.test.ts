@@ -14,6 +14,7 @@ function query(overrides: Record<string, unknown> = {}) {
     states: [],
     priorities: [],
     labels: [],
+    attention: [],
     search: null,
     sort: "scheduler_order" as const,
     cursor: null,
@@ -31,14 +32,46 @@ test("the deterministic fixture has the bounded planning-scale data set", async 
 
   const first = await fixture.query(query());
   assert.equal(first.page.tasks.length, 50);
-  assert.equal(first.page.totalTasks, "10500");
-  assert.equal(first.page.nextCursor, "50");
+  assert.equal(first.page.totalTasks, "500");
+  assert.match(first.page.nextCursor ?? "", /^[A-Za-z0-9_-]+$/);
   const second = await fixture.query(query({ cursor: first.page.nextCursor }));
   assert.equal(second.page.tasks.length, 50);
-  assert.equal(second.page.tasks[0]?.id, "task-50");
+  assert.equal(
+    new Set([...first.page.tasks, ...second.page.tasks].map(({ id }) => id)).size,
+    100,
+  );
+
+  const history = await fixture.query(query({ states: ["done"] }));
+  assert.equal(history.page.totalTasks, "10000");
+  assert.equal(history.page.tasks.length, 50);
 });
 
-test("project, workspace, epic, state, priority, label, search, sort, and cursor stay adapter-driven", async () => {
+test("page cursors are bound to the exact snapshot and normalized filter", async () => {
+  const fixture = new DeterministicPlanningFixture();
+  const first = await fixture.query(query({ pageSize: 7 }));
+  assert.ok(first.page.nextCursor);
+  await assert.rejects(
+    fixture.query(query({ cursor: first.page.nextCursor, pageSize: 8 })),
+    /another snapshot or filter/,
+  );
+
+  const detail = await fixture.taskDetail({ taskId: "task-0", afterCursor: null });
+  const action = detail.detail.summary.allowedActions.find(
+    (candidate) => candidate.kind === "configuration.preview",
+  );
+  assert.ok(action);
+  await fixture.mutate(bindPlanningMutation(action, {
+    type: "configuration.preview",
+    target: detail.detail.configurationTarget,
+    overrides: [],
+  }));
+  await assert.rejects(
+    fixture.query(query({ cursor: first.page.nextCursor, pageSize: 7 })),
+    /another snapshot or filter/,
+  );
+});
+
+test("project, workspace, epic, state, priority, label, attention, search, sort, and cursor stay adapter-driven", async () => {
   const fixture = new DeterministicPlanningFixture();
   const result = await fixture.query(query({
     projectId: "project-director",
@@ -67,6 +100,13 @@ test("project, workspace, epic, state, priority, label, search, sort, and cursor
     [...result.page.tasks.map(({ key }) => key)].sort(),
   );
   assert.deepEqual(result.page.appliedQuery, fixture.requests.at(-1));
+
+  const attention = await fixture.query(query({
+    states: ["needs_you"],
+    attention: ["policy_override_required"],
+  }));
+  assert.equal(attention.page.totalTasks, "1");
+  assert.equal(attention.page.tasks[0]?.id, "task-0");
 });
 
 test("configuration preview/apply and dependency override preserve action bindings", async () => {

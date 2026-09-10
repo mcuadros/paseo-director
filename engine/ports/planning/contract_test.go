@@ -15,7 +15,12 @@ func TestEmbeddedPlanningContract(t *testing.T) {
 	if definition.ContractVersion != "director-planning/v1" || definition.SchemaVersion != 1 {
 		t.Fatalf("planning identity = %#v", definition)
 	}
-	if len(definition.DerivedStates) != 7 || len(definition.AllowedActions) != 12 || len(definition.ConfigurationKeys) != 7 {
+	if definition.QueryPath != QueryPath || definition.MaximumRequestBytes != MaximumRequestBytes ||
+		definition.MaximumResponseBytes != MaximumResponseBytes || definition.MaximumPageSize != MaximumPageSize {
+		t.Fatalf("planning transport bounds = %#v", definition)
+	}
+	if len(definition.DerivedStates) != 7 || len(definition.AttentionCodes) != 12 ||
+		len(definition.AllowedActions) != 12 || len(definition.ConfigurationKeys) != 7 {
 		t.Fatalf("planning closed vocabularies = %#v", definition)
 	}
 	hash, err := SchemaSHA256()
@@ -24,6 +29,32 @@ func TestEmbeddedPlanningContract(t *testing.T) {
 	}
 	if len(hash) != 64 {
 		t.Fatalf("planning schema hash length = %d", len(hash))
+	}
+}
+
+func TestPlanningQueryValidationMatchesTheClosedGeneratedBoundary(t *testing.T) {
+	valid := QueryInput{
+		WorkspaceIDs: []string{}, EpicIDs: []string{}, States: []string{}, Priorities: []string{},
+		Labels: []string{}, Attention: []string{}, Sort: "scheduler_order", PageSize: MaximumPageSize,
+	}
+	if err := ValidateQuery(valid); err != nil {
+		t.Fatalf("valid planning query: %v", err)
+	}
+	for name, mutate := range map[string]func(*QueryInput){
+		"missing collection": func(input *QueryInput) { input.Labels = nil },
+		"page too large":     func(input *QueryInput) { input.PageSize++ },
+		"unknown state":      func(input *QueryInput) { input.States = []string{"invented"} },
+		"duplicate filter":   func(input *QueryInput) { input.Labels = []string{"one", "one"} },
+		"unknown sort":       func(input *QueryInput) { input.Sort = "client_order" },
+		"invalid cursor":     func(input *QueryInput) { value := "bad.cursor"; input.Cursor = &value },
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := valid
+			mutate(&input)
+			if err := ValidateQuery(input); err == nil {
+				t.Fatal("invalid planning query was accepted")
+			}
+		})
 	}
 }
 

@@ -27,6 +27,8 @@ func TestRenderIsDeterministicAndCarriesClosedPlanningSurface(t *testing.T) {
 	for _, expected := range [][]byte{
 		[]byte(`PLANNING_CONTRACT_VERSION = "director-planning/v1"`),
 		[]byte(`PLANNING_CONTRACT_SHA256`),
+		[]byte(`PLANNING_QUERY_PATH = "/v1/planning/query"`),
+		[]byte(`planningPageCursorSchema`),
 		[]byte(`planningSnapshotSchema`),
 		[]byte(`taskDetailSnapshotSchema`),
 		[]byte(`planningMutationInputSchema`),

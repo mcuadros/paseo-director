@@ -1798,6 +1798,51 @@ func (store *DoltTaskStore) Tasks(ctx context.Context, projectID string) ([]doma
 	return planning.Tasks, nil
 }
 
+// PlanningTaskUpdatedAt returns server-assigned Task aggregate update times as
+// Unix milliseconds in one typed Project read. The timestamps are query facts,
+// never caller-controlled Task fields.
+func (store *DoltTaskStore) PlanningTaskUpdatedAt(ctx context.Context, projectID string) (map[string]int64, error) {
+	if err := validateLookupID(projectID); err != nil {
+		return nil, err
+	}
+	connection, err := store.readConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer connection.Close()
+	if _, err := projectByID(ctx, connection, projectID); err != nil {
+		return nil, err
+	}
+	rows, err := connection.QueryContext(ctx,
+		`SELECT id, CAST(UNIX_TIMESTAMP(updated_at) * 1000 AS SIGNED)
+		FROM aggregates WHERE kind = ? AND parent_id = ? ORDER BY id`,
+		aggregateTask, projectID,
+	)
+	if err != nil {
+		return nil, queryFailure()
+	}
+	defer rows.Close()
+	updates := make(map[string]int64)
+	for rows.Next() {
+		var taskID string
+		var updatedAt int64
+		if err := rows.Scan(&taskID, &updatedAt); err != nil {
+			return nil, scanFailure()
+		}
+		if !safeIdentifier(taskID, 128) || updatedAt < 0 {
+			return nil, backendFailure(storeport.HealthStoredRecordInvalid)
+		}
+		if _, duplicate := updates[taskID]; duplicate {
+			return nil, backendFailure(storeport.HealthStoredRecordInvalid)
+		}
+		updates[taskID] = updatedAt
+	}
+	if err := finishRows(rows); err != nil {
+		return nil, err
+	}
+	return updates, nil
+}
+
 // DependencyOverride returns one immutable audited override fact after
 // validating the owning Project graph.
 func (store *DoltTaskStore) DependencyOverride(ctx context.Context, id string) (domain.DependencyOverride, error) {
@@ -1920,6 +1965,57 @@ func (store *DoltTaskStore) Runs(ctx context.Context, taskID string) ([]domain.R
 	return runs, nil
 }
 
+// PlanningRuns loads every Run for one Project in one bounded typed read. It
+// is an optional planning-query optimization and exposes no SQL or projection
+// decision to callers.
+func (store *DoltTaskStore) PlanningRuns(ctx context.Context, projectID string) ([]domain.Run, error) {
+	if err := validateLookupID(projectID); err != nil {
+		return nil, err
+	}
+	connection, err := store.readConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer connection.Close()
+	if _, err := projectByID(ctx, connection, projectID); err != nil {
+		return nil, err
+	}
+	rows, err := connection.QueryContext(ctx,
+		`SELECT run.id, run.parent_id, run.version, run.data
+		FROM aggregates AS run
+		JOIN aggregates AS task ON task.id = run.parent_id AND task.kind = ?
+		WHERE run.kind = ? AND task.parent_id = ?
+		ORDER BY run.parent_id, CAST(JSON_UNQUOTE(JSON_EXTRACT(run.data, '$.number')) AS UNSIGNED), run.id`,
+		aggregateTask, aggregateRun, projectID,
+	)
+	if err != nil {
+		return nil, queryFailure()
+	}
+	defer rows.Close()
+	runs := make([]domain.Run, 0)
+	for rows.Next() {
+		var run domain.Run
+		var rawData []byte
+		if err := rows.Scan(&run.ID, &run.TaskID, &run.Version, &rawData); err != nil {
+			return nil, scanFailure()
+		}
+		var data runData
+		if err := decodeRecord(rawData, &data); err != nil {
+			return nil, err
+		}
+		run.Number, run.BaseSHA, run.CurrentCandidateID = data.Number, data.BaseSHA, data.CurrentCandidateID
+		run.Execution = data.Execution
+		if err := validateReloaded(validateRun(run)); err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	if err := finishRows(rows); err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
 // Candidate returns one immutable Candidate.
 func (store *DoltTaskStore) Candidate(ctx context.Context, id string) (domain.Candidate, error) {
 	if err := validateLookupID(id); err != nil {
@@ -1964,6 +2060,52 @@ func (store *DoltTaskStore) Candidates(ctx context.Context, runID string) ([]dom
 	}
 	defer rows.Close()
 	var candidates []domain.Candidate
+	for rows.Next() {
+		var candidate domain.Candidate
+		if err := rows.Scan(&candidate.ID, &candidate.RunID, &candidate.Sequence, &candidate.CommitSHA); err != nil {
+			return nil, scanFailure()
+		}
+		if err := validateReloaded(validateCandidate(candidate)); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := finishRows(rows); err != nil {
+		return nil, err
+	}
+	return candidates, nil
+}
+
+// PlanningCandidates loads only the Candidates currently referenced by one
+// Project's Runs in one typed read. Historical Candidate rows stay outside the
+// bounded Board/List read; the application still validates every exact binding.
+func (store *DoltTaskStore) PlanningCandidates(ctx context.Context, projectID string) ([]domain.Candidate, error) {
+	if err := validateLookupID(projectID); err != nil {
+		return nil, err
+	}
+	connection, err := store.readConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer connection.Close()
+	if _, err := projectByID(ctx, connection, projectID); err != nil {
+		return nil, err
+	}
+	rows, err := connection.QueryContext(ctx,
+		`SELECT candidate.id, candidate.run_id, candidate.sequence, candidate.commit_sha
+		FROM aggregates AS run
+		JOIN candidates AS candidate ON candidate.run_id = run.id
+			AND candidate.id = JSON_UNQUOTE(JSON_EXTRACT(run.data, '$.currentCandidateId'))
+		JOIN aggregates AS task ON task.id = run.parent_id AND task.kind = ?
+		WHERE run.kind = ? AND task.parent_id = ?
+		ORDER BY candidate.run_id, candidate.sequence, candidate.id`,
+		aggregateTask, aggregateRun, projectID,
+	)
+	if err != nil {
+		return nil, queryFailure()
+	}
+	defer rows.Close()
+	candidates := make([]domain.Candidate, 0)
 	for rows.Next() {
 		var candidate domain.Candidate
 		if err := rows.Scan(&candidate.ID, &candidate.RunID, &candidate.Sequence, &candidate.CommitSHA); err != nil {

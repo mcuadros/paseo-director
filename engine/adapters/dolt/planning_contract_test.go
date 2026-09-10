@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/mcuadros/director-engine/domain"
+	"github.com/mcuadros/director-engine/domain/execution"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
 
@@ -255,5 +257,65 @@ func TestDoltPlanningGraphSerializesConcurrentCycleCreation(t *testing.T) {
 	planning := planningSnapshot(t, store, project, workspaces)
 	if report := domain.EvaluatePlanning(planning); !report.Valid || report.HasCode(domain.PlanningDependencyCycle) {
 		t.Fatalf("persisted graph contains a cycle: %#v", report)
+	}
+}
+
+func TestDoltPlanningBulkFactsStayProjectBoundAndTyped(t *testing.T) {
+	fixture := startDoltFixture(t)
+	store := openContractStore(t, fixture, "planning-bulk-store", true)
+	t.Cleanup(func() { _ = store.Close() })
+	project, workspaces := createPlanningProject(t, store)
+	ctx := context.Background()
+	task := domain.Task{
+		ID: "task-bulk", ProjectID: project.ID, Key: "BULK-1", Title: "Bulk planning query",
+		Objective: "Load Run and Candidate facts once", AcceptanceCriteria: "Facts remain typed",
+		WorkspaceIDs: []string{workspaces[0].ID}, Priority: domain.PriorityNormal,
+	}
+	result, err := store.CreateTask(
+		ctx, command("task-bulk-create", "task.create", task.ID, 0, `{}`), task,
+		event("task-bulk-created", "", 1, task.ID, 0, "task.created"),
+	)
+	requireApplied(t, result, err)
+	run := domain.Run{
+		ID: "run-bulk", TaskID: task.ID, Number: 1,
+		BaseSHA: "0123456789abcdef0123456789abcdef01234567",
+		Execution: execution.State{
+			SchemaVersion: "director.execution/v1",
+			Scope: execution.Scope{
+				ProjectID: project.ID, WorkspaceID: workspaces[0].ID, TaskID: task.ID, RunID: "run-bulk",
+			},
+			EligibilityDecisionID: "eligibility-bulk", LifecycleDigest: strings.Repeat("1", 64),
+			Worktree: execution.Effect{
+				ID: "worktree-bulk", Kind: execution.EffectWorktreeCreate,
+				Phase: execution.EffectIntentRecorded, AttemptLimit: 2,
+			},
+		},
+	}
+	result, err = store.CreateRun(
+		ctx, command("run-bulk-create", "run.create", run.ID, 0, `{"number":1}`), run,
+		event("run-bulk-created", run.ID, 1, run.ID, 0, "run.created"),
+	)
+	requireApplied(t, result, err)
+	candidate := domain.Candidate{
+		ID: "candidate-bulk", RunID: run.ID, Sequence: 1,
+		CommitSHA: "abcdef0123456789abcdef0123456789abcdef01",
+	}
+	result, err = store.AppendCandidate(
+		ctx, command("candidate-bulk-append", "candidate.append", run.ID, 0, `{"candidateId":"candidate-bulk"}`), candidate,
+		event("candidate-bulk-appended", run.ID, 2, run.ID, 1, "candidate.appended"),
+	)
+	requireApplied(t, result, err)
+
+	runs, err := store.PlanningRuns(ctx, project.ID)
+	if err != nil || len(runs) != 1 || runs[0].ID != run.ID || runs[0].TaskID != task.ID {
+		t.Fatalf("bulk planning Runs = %#v, %v", runs, err)
+	}
+	candidates, err := store.PlanningCandidates(ctx, project.ID)
+	if err != nil || len(candidates) != 1 || candidates[0] != candidate {
+		t.Fatalf("bulk planning Candidates = %#v, %v", candidates, err)
+	}
+	updates, err := store.PlanningTaskUpdatedAt(ctx, project.ID)
+	if err != nil || len(updates) != 1 || updates[task.ID] <= 0 {
+		t.Fatalf("bulk planning Task updates = %#v, %v", updates, err)
 	}
 }

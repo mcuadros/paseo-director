@@ -218,9 +218,10 @@ func (source *TaskStoreFactSource) TaskProjectionInputs(ctx context.Context) ([]
 			}
 			inputs = append(inputs, projection.TaskProjectionInput{
 				TaskID: task.ID, ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0], EpicID: epicID,
-				Title: task.Title, Priority: domain.EffectivePriority(task.Priority), Labels: append([]string(nil), task.Labels...),
-				QueuedAtUnixMillis: task.QueuedAtUnixMillis,
-				Facts:              taskStateFacts(task, dependency.Blocked, run, candidate),
+				Key: task.Key, Title: task.Title, Priority: domain.EffectivePriority(task.Priority),
+				Labels: append([]string(nil), task.Labels...), QueuedAtUnixMillis: task.QueuedAtUnixMillis,
+				UpdatedAtUnixMillis: task.QueuedAtUnixMillis,
+				Facts:               taskStateFacts(task, dependency.Blocked, run, candidate),
 			})
 		}
 	}

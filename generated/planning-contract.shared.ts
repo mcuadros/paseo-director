@@ -8,12 +8,15 @@ import { z } from "zod";
 
 export const PLANNING_SCHEMA_VERSION = 1 as const;
 export const PLANNING_CONTRACT_VERSION = "director-planning/v1" as const;
-export const PLANNING_CONTRACT_SHA256 = "335809f35d9399e6c6b00a5390cf1112fa5b6a36b939bcdd129ffc6ed7f119df" as const;
+export const PLANNING_CONTRACT_SHA256 = "729791418f1ac075e4adb07b956f27007eab0ee83644cbcf1070fa33c9d51fd8" as const;
 export const PLANNING_QUERY_NAMES = [
   "planning.query",
   "planning.task-detail",
 ] as const;
 export const PLANNING_MUTATION_NAME = "planning.mutate" as const;
+export const PLANNING_QUERY_PATH = "/v1/planning/query" as const;
+export const PLANNING_MAXIMUM_REQUEST_BYTES = 65536 as const;
+export const PLANNING_MAXIMUM_RESPONSE_BYTES = 4194304 as const;
 export const PLANNING_MAXIMUM_PAGE_SIZE = 100 as const;
 export const PLANNING_MAXIMUM_PROJECTS = 100 as const;
 export const PLANNING_MAXIMUM_WORKSPACES = 100 as const;
@@ -38,6 +41,20 @@ export const PLANNING_STABLE_SORTS = [
   "updated_desc",
   "priority_fifo",
   "key_asc",
+] as const;
+export const PLANNING_ATTENTION_CODES = [
+  "permission_required",
+  "correction_budget_exhausted",
+  "replacement_budget_exhausted",
+  "git_state_irreconcilable",
+  "configuration_required",
+  "credential_required",
+  "policy_override_required",
+  "soft_budget_acknowledgment_required",
+  "hard_budget_exhausted",
+  "recovery_ambiguous",
+  "review_decision_required",
+  "feedback_decision_required",
 ] as const;
 export const PLANNING_ALLOWED_ACTIONS = [
   "project.create",
@@ -69,10 +86,16 @@ export const uint64DecimalSchema = z
   .string()
   .regex(/^(?:0|[1-9][0-9]{0,19})$/)
   .refine((value) => value.length < 20 || value <= "18446744073709551615");
+export const planningPageCursorSchema = z
+  .string()
+  .min(1)
+  .max(5500)
+  .regex(/^[A-Za-z0-9_-]+$/);
 
 export const derivedStateSchema = z.enum(PLANNING_DERIVED_STATES);
 export const prioritySchema = z.enum(PLANNING_PRIORITIES);
 export const stableSortSchema = z.enum(PLANNING_STABLE_SORTS);
+export const attentionCodeSchema = z.enum(PLANNING_ATTENTION_CODES);
 export const allowedActionKindSchema = z.enum(PLANNING_ALLOWED_ACTIONS);
 export const configurationKeySchema = z.enum(PLANNING_CONFIGURATION_KEYS);
 
@@ -181,9 +204,10 @@ export const planningQueryInputSchema = z.strictObject({
   states: z.array(derivedStateSchema).max(PLANNING_DERIVED_STATES.length).readonly(),
   priorities: z.array(prioritySchema).max(PLANNING_PRIORITIES.length).readonly(),
   labels: z.array(opaquePlanningIdSchema).max(64).readonly(),
+  attention: z.array(attentionCodeSchema).max(PLANNING_ATTENTION_CODES.length).readonly(),
   search: z.string().min(1).max(256).nullable(),
   sort: stableSortSchema,
-  cursor: uint64DecimalSchema.nullable(),
+  cursor: planningPageCursorSchema.nullable(),
   pageSize: z.number().int().min(1).max(PLANNING_MAXIMUM_PAGE_SIZE),
 });
 
@@ -201,7 +225,7 @@ export const planningPageSchema = z.strictObject({
   capacity: capacityFactsSchema,
   surfaceActions: z.array(allowedActionSchema).max(16).readonly(),
   totalTasks: uint64DecimalSchema,
-  nextCursor: uint64DecimalSchema.nullable(),
+  nextCursor: planningPageCursorSchema.nullable(),
 });
 
 export const planningSnapshotSchema = z.strictObject({
@@ -429,6 +453,7 @@ export const planningMutationResultSchema = z.strictObject({
 export type DerivedState = z.output<typeof derivedStateSchema>;
 export type Priority = z.output<typeof prioritySchema>;
 export type StableSort = z.output<typeof stableSortSchema>;
+export type AttentionCode = z.output<typeof attentionCodeSchema>;
 export type AllowedActionKind = z.output<typeof allowedActionKindSchema>;
 export type AllowedAction = z.output<typeof allowedActionSchema>;
 export type Explanation = z.output<typeof explanationSchema>;

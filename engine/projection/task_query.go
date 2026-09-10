@@ -38,29 +38,45 @@ const (
 // TaskProjectionInput combines immutable display/filter metadata with the
 // normalized fact set. It contains no caller-selected state or card position.
 type TaskProjectionInput struct {
-	TaskID             string          `json:"taskId"`
-	ProjectID          string          `json:"projectId"`
-	WorkspaceID        string          `json:"workspaceId"`
-	EpicID             string          `json:"epicId,omitempty"`
-	Title              string          `json:"title"`
-	Priority           domain.Priority `json:"priority"`
-	Labels             []string        `json:"labels,omitempty"`
-	QueuedAtUnixMillis int64           `json:"queuedAtUnixMillis"`
-	Facts              TaskStateFacts  `json:"facts"`
+	TaskID              string          `json:"taskId"`
+	ProjectID           string          `json:"projectId"`
+	WorkspaceID         string          `json:"workspaceId"`
+	EpicID              string          `json:"epicId,omitempty"`
+	Key                 string          `json:"key"`
+	Title               string          `json:"title"`
+	Priority            domain.Priority `json:"priority"`
+	Labels              []string        `json:"labels,omitempty"`
+	QueuedAtUnixMillis  int64           `json:"queuedAtUnixMillis"`
+	UpdatedAtUnixMillis int64           `json:"updatedAtUnixMillis"`
+	Facts               TaskStateFacts  `json:"facts"`
 }
 
 // TaskProjectionRow is one derived Board/List query result.
 type TaskProjectionRow struct {
-	TaskID             string          `json:"taskId"`
-	ProjectID          string          `json:"projectId"`
-	WorkspaceID        string          `json:"workspaceId"`
-	EpicID             string          `json:"epicId,omitempty"`
-	Title              string          `json:"title"`
-	Priority           domain.Priority `json:"priority"`
-	Labels             []string        `json:"labels,omitempty"`
-	QueuedAtUnixMillis int64           `json:"queuedAtUnixMillis"`
-	Projection         TaskProjection  `json:"projection"`
+	TaskID              string          `json:"taskId"`
+	ProjectID           string          `json:"projectId"`
+	WorkspaceID         string          `json:"workspaceId"`
+	EpicID              string          `json:"epicId,omitempty"`
+	Key                 string          `json:"key"`
+	Title               string          `json:"title"`
+	Priority            domain.Priority `json:"priority"`
+	Labels              []string        `json:"labels,omitempty"`
+	QueuedAtUnixMillis  int64           `json:"queuedAtUnixMillis"`
+	UpdatedAtUnixMillis int64           `json:"updatedAtUnixMillis"`
+	Projection          TaskProjection  `json:"projection"`
 }
+
+// TaskSort is the closed engine-owned Board/List order vocabulary. It is part
+// of the cursor binding; callers can choose a declared presentation order but
+// cannot supply card positions or comparison keys.
+type TaskSort string
+
+const (
+	TaskSortSchedulerOrder TaskSort = "scheduler_order"
+	TaskSortUpdatedDesc    TaskSort = "updated_desc"
+	TaskSortPriorityFIFO   TaskSort = "priority_fifo"
+	TaskSortKeyAsc         TaskSort = "key_asc"
+)
 
 // TaskQuery is a bounded filter over one snapshot. Empty filter slices are
 // wildcards. Labels are conjunctive; Attention codes are disjunctive.
@@ -74,6 +90,8 @@ type TaskQuery struct {
 	Labels       []string          `json:"labels,omitempty"`
 	States       []BoardState      `json:"states,omitempty"`
 	Attention    []AttentionCode   `json:"attention,omitempty"`
+	Search       string            `json:"search,omitempty"`
+	Sort         TaskSort          `json:"sort,omitempty"`
 	Limit        int               `json:"limit"`
 	After        string            `json:"after,omitempty"`
 }
@@ -84,18 +102,21 @@ type TaskQuery struct {
 type TaskPage struct {
 	SnapshotCursor string              `json:"snapshotCursor"`
 	Tasks          []TaskProjectionRow `json:"tasks"`
+	TotalTasks     uint64              `json:"totalTasks"`
 	NextCursor     string              `json:"nextCursor,omitempty"`
 }
 
 type taskQueryCursor struct {
-	Version            int             `json:"v"`
-	SnapshotCursor     string          `json:"snapshot"`
-	FilterHash         string          `json:"filter"`
-	Done               bool            `json:"done"`
-	State              BoardState      `json:"state,omitempty"`
-	Priority           domain.Priority `json:"priority"`
-	QueuedAtUnixMillis int64           `json:"queuedAt"`
-	TaskID             string          `json:"taskId"`
+	Version             int             `json:"v"`
+	SnapshotCursor      string          `json:"snapshot"`
+	FilterHash          string          `json:"filter"`
+	Done                bool            `json:"done"`
+	State               BoardState      `json:"state,omitempty"`
+	Priority            domain.Priority `json:"priority"`
+	QueuedAtUnixMillis  int64           `json:"queuedAt"`
+	UpdatedAtUnixMillis int64           `json:"updatedAt"`
+	Key                 string          `json:"key"`
+	TaskID              string          `json:"taskId"`
 }
 
 type normalizedTaskQuery struct {
@@ -108,6 +129,9 @@ type normalizedTaskQuery struct {
 	Labels       []string          `json:"labels,omitempty"`
 	States       []BoardState      `json:"states,omitempty"`
 	Attention    []AttentionCode   `json:"attention,omitempty"`
+	Search       string            `json:"search,omitempty"`
+	Sort         TaskSort          `json:"sort"`
+	PageSize     int               `json:"pageSize"`
 }
 
 func normalizeUniqueText(values []string) ([]string, bool) {
@@ -130,13 +154,26 @@ func validTaskQueryText(value string, maximum int) bool {
 }
 
 func normalizeTaskQuery(query TaskQuery) (normalizedTaskQuery, error) {
-	result := normalizedTaskQuery{Membership: query.Membership}
+	result := normalizedTaskQuery{Membership: query.Membership, Sort: query.Sort, PageSize: query.Limit}
 	if result.Membership == "" {
 		result.Membership = TaskMembershipBoard
 	}
 	if result.Membership != TaskMembershipBoard && result.Membership != TaskMembershipDone &&
 		result.Membership != TaskMembershipAll {
 		return normalizedTaskQuery{}, ErrTaskQueryInvalid
+	}
+	if result.Sort == "" {
+		result.Sort = TaskSortSchedulerOrder
+	}
+	if result.Sort != TaskSortSchedulerOrder && result.Sort != TaskSortUpdatedDesc &&
+		result.Sort != TaskSortPriorityFIFO && result.Sort != TaskSortKeyAsc {
+		return normalizedTaskQuery{}, ErrTaskQueryInvalid
+	}
+	if query.Search != "" {
+		if !validTaskQueryText(query.Search, 256) {
+			return normalizedTaskQuery{}, ErrTaskQueryInvalid
+		}
+		result.Search = strings.ToLower(query.Search)
 	}
 	var ok bool
 	if result.ProjectIDs, ok = normalizeUniqueText(query.ProjectIDs); !ok {
@@ -234,7 +271,33 @@ func priorityIndex(priority domain.Priority) int {
 	}
 }
 
-func compareTaskRows(left, right TaskProjectionRow) int {
+func compareTaskRows(left, right TaskProjectionRow, order TaskSort) int {
+	switch order {
+	case TaskSortUpdatedDesc:
+		if left.UpdatedAtUnixMillis > right.UpdatedAtUnixMillis {
+			return -1
+		}
+		if left.UpdatedAtUnixMillis < right.UpdatedAtUnixMillis {
+			return 1
+		}
+		return compareText(left.TaskID, right.TaskID)
+	case TaskSortPriorityFIFO:
+		if comparison := priorityIndex(left.Priority) - priorityIndex(right.Priority); comparison != 0 {
+			return comparison
+		}
+		if left.QueuedAtUnixMillis < right.QueuedAtUnixMillis {
+			return -1
+		}
+		if left.QueuedAtUnixMillis > right.QueuedAtUnixMillis {
+			return 1
+		}
+		return compareText(left.TaskID, right.TaskID)
+	case TaskSortKeyAsc:
+		if comparison := compareText(left.Key, right.Key); comparison != 0 {
+			return comparison
+		}
+		return compareText(left.TaskID, right.TaskID)
+	}
 	leftDone, rightDone := left.Projection.DoneMember, right.Projection.DoneMember
 	if leftDone != rightDone {
 		if leftDone {
@@ -270,12 +333,12 @@ func compareText(left, right string) int {
 	}
 }
 
-func compareRowCursor(row TaskProjectionRow, cursor taskQueryCursor) int {
+func compareRowCursor(row TaskProjectionRow, cursor taskQueryCursor, order TaskSort) int {
 	return compareTaskRows(row, TaskProjectionRow{
-		TaskID: cursor.TaskID, Priority: cursor.Priority,
-		QueuedAtUnixMillis: cursor.QueuedAtUnixMillis,
-		Projection:         TaskProjection{State: cursor.State, DoneMember: cursor.Done},
-	})
+		TaskID: cursor.TaskID, Key: cursor.Key, Priority: cursor.Priority,
+		QueuedAtUnixMillis: cursor.QueuedAtUnixMillis, UpdatedAtUnixMillis: cursor.UpdatedAtUnixMillis,
+		Projection: TaskProjection{State: cursor.State, DoneMember: cursor.Done},
+	}, order)
 }
 
 func encodeTaskCursor(snapshot uint64, filterHash string, row TaskProjectionRow) string {
@@ -283,6 +346,7 @@ func encodeTaskCursor(snapshot uint64, filterHash string, row TaskProjectionRow)
 		Version: 1, SnapshotCursor: strconv.FormatUint(snapshot, 10), FilterHash: filterHash,
 		Done: row.Projection.DoneMember, State: row.Projection.State,
 		Priority: domain.EffectivePriority(row.Priority), QueuedAtUnixMillis: row.QueuedAtUnixMillis,
+		UpdatedAtUnixMillis: row.UpdatedAtUnixMillis, Key: row.Key,
 		TaskID: row.TaskID,
 	}
 	encoded, err := json.Marshal(cursor)
@@ -310,11 +374,13 @@ func decodeTaskCursor(value string) (taskQueryCursor, error) {
 	canonical, err := json.Marshal(cursor)
 	if err != nil || !bytes.Equal(canonical, decoded) || cursor.Version != 1 || cursor.SnapshotCursor == "" ||
 		!validCursorHash(cursor.FilterHash) || !validTaskQueryText(cursor.TaskID, 128) ||
+		!validTaskQueryText(cursor.Key, 128) ||
 		(!cursor.Done && stateIndex(cursor.State) < 0) ||
 		(cursor.Done && cursor.State != "") ||
 		(cursor.Priority != domain.PriorityUrgent && cursor.Priority != domain.PriorityHigh &&
 			cursor.Priority != domain.PriorityNormal && cursor.Priority != domain.PriorityLow) ||
-		cursor.QueuedAtUnixMillis < 0 || snapshotErr != nil || strconv.FormatUint(snapshot, 10) != cursor.SnapshotCursor {
+		cursor.QueuedAtUnixMillis < 0 || cursor.UpdatedAtUnixMillis < 0 || snapshotErr != nil ||
+		strconv.FormatUint(snapshot, 10) != cursor.SnapshotCursor {
 		return taskQueryCursor{}, ErrTaskQueryCursorInvalid
 	}
 	return cursor, nil
@@ -377,6 +443,12 @@ func matchesTaskQuery(row TaskProjectionRow, query normalizedTaskQuery) bool {
 			return false
 		}
 	}
+	if query.Search != "" {
+		haystack := strings.ToLower(row.Key + "\x00" + row.Title + "\x00" + row.TaskID)
+		if !strings.Contains(haystack, query.Search) {
+			return false
+		}
+	}
 	if len(query.Attention) > 0 {
 		matched := false
 		for _, code := range query.Attention {
@@ -408,13 +480,37 @@ func QueryTaskProjections(inputs []TaskProjectionInput, snapshot uint64, query T
 		return TaskPage{}, err
 	}
 	filterHash := taskQueryHash(normalized)
-	rows := make([]TaskProjectionRow, 0, len(inputs))
+	var after *taskQueryCursor
+	if query.After != "" {
+		cursor, err := decodeTaskCursor(query.After)
+		if err != nil {
+			return TaskPage{}, err
+		}
+		if cursor.SnapshotCursor != strconv.FormatUint(snapshot, 10) || cursor.FilterHash != filterHash {
+			return TaskPage{}, ErrTaskQueryCursorSnapshot
+		}
+		after = &cursor
+	}
+	// Keep only the next page plus one sentinel row. Query cost is linear in
+	// the immutable snapshot while retained sortable rows and the response are
+	// bounded by Limit rather than historical Task count.
+	rows := make([]TaskProjectionRow, 0, min(query.Limit+1, len(inputs)))
 	identities := make(map[string]struct{}, len(inputs))
+	var total uint64
 	for _, input := range inputs {
+		key := input.Key
+		if key == "" {
+			key = input.TaskID
+		}
+		updatedAt := input.UpdatedAtUnixMillis
+		if updatedAt == 0 {
+			updatedAt = input.QueuedAtUnixMillis
+		}
 		if !validTaskQueryText(input.TaskID, 128) || !validTaskQueryText(input.ProjectID, 128) ||
 			!validTaskQueryText(input.WorkspaceID, 128) || !validTaskQueryText(input.Title, 512) ||
+			!validTaskQueryText(key, 128) ||
 			(input.EpicID != "" && !validTaskQueryText(input.EpicID, 128)) ||
-			input.QueuedAtUnixMillis < 0 || priorityIndex(input.Priority) > 3 {
+			input.QueuedAtUnixMillis < 0 || updatedAt < 0 || priorityIndex(input.Priority) > 3 {
 			return TaskPage{}, ErrTaskQueryInvalid
 		}
 		if _, duplicate := identities[input.TaskID]; duplicate {
@@ -431,32 +527,34 @@ func QueryTaskProjections(inputs []TaskProjectionInput, snapshot uint64, query T
 		}
 		row := TaskProjectionRow{
 			TaskID: input.TaskID, ProjectID: input.ProjectID, WorkspaceID: input.WorkspaceID,
-			EpicID: input.EpicID, Title: input.Title, Priority: domain.EffectivePriority(input.Priority),
-			Labels: labels, QueuedAtUnixMillis: input.QueuedAtUnixMillis,
+			EpicID: input.EpicID, Key: key, Title: input.Title, Priority: domain.EffectivePriority(input.Priority),
+			Labels: labels, QueuedAtUnixMillis: input.QueuedAtUnixMillis, UpdatedAtUnixMillis: updatedAt,
 			Projection: DeriveTaskProjection(facts),
 		}
 		if matchesTaskQuery(row, normalized) {
-			rows = append(rows, row)
+			total++
+			if after != nil && compareRowCursor(row, *after, normalized.Sort) <= 0 {
+				continue
+			}
+			position := sort.Search(len(rows), func(index int) bool {
+				return compareTaskRows(rows[index], row, normalized.Sort) >= 0
+			})
+			if len(rows) < query.Limit+1 {
+				rows = append(rows, TaskProjectionRow{})
+				copy(rows[position+1:], rows[position:])
+				rows[position] = row
+			} else if position < len(rows) {
+				copy(rows[position+1:], rows[position:len(rows)-1])
+				rows[position] = row
+			}
 		}
 	}
-	sort.Slice(rows, func(left, right int) bool { return compareTaskRows(rows[left], rows[right]) < 0 })
-	start := 0
-	if query.After != "" {
-		cursor, err := decodeTaskCursor(query.After)
-		if err != nil {
-			return TaskPage{}, err
-		}
-		if cursor.SnapshotCursor != strconv.FormatUint(snapshot, 10) || cursor.FilterHash != filterHash {
-			return TaskPage{}, ErrTaskQueryCursorSnapshot
-		}
-		start = sort.Search(len(rows), func(index int) bool { return compareRowCursor(rows[index], cursor) > 0 })
-	}
-	end := min(start+query.Limit, len(rows))
-	page := TaskPage{SnapshotCursor: strconv.FormatUint(snapshot, 10)}
-	for _, row := range rows[start:end] {
+	end := min(query.Limit, len(rows))
+	page := TaskPage{SnapshotCursor: strconv.FormatUint(snapshot, 10), TotalTasks: total}
+	for _, row := range rows[:end] {
 		page.Tasks = append(page.Tasks, cloneTaskProjectionRow(row))
 	}
-	if end < len(rows) && len(page.Tasks) > 0 {
+	if len(rows) > query.Limit && len(page.Tasks) > 0 {
 		page.NextCursor = encodeTaskCursor(snapshot, filterHash, page.Tasks[len(page.Tasks)-1])
 	}
 	return page, nil

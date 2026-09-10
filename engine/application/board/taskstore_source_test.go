@@ -13,14 +13,17 @@ import (
 )
 
 type planningFactStore struct {
-	projects   []domain.Project
-	workspaces map[string][]domain.Workspace
-	epics      map[string][]domain.Epic
-	tasks      map[string][]domain.Task
-	overrides  map[string][]domain.DependencyOverride
-	runs       map[string][]domain.Run
-	candidates map[string]domain.Candidate
-	cursor     uint64
+	projects            []domain.Project
+	workspaces          map[string][]domain.Workspace
+	epics               map[string][]domain.Epic
+	tasks               map[string][]domain.Task
+	overrides           map[string][]domain.DependencyOverride
+	runs                map[string][]domain.Run
+	candidates          map[string]domain.Candidate
+	cursor              uint64
+	bulkRunReads        int
+	bulkCandidateReads  int
+	bulkTaskUpdateReads int
 }
 
 func (store *planningFactStore) Projects(context.Context) ([]domain.Project, error) {
@@ -56,6 +59,33 @@ func (store *planningFactStore) Candidate(_ context.Context, id string) (domain.
 		return domain.Candidate{}, errors.New("Candidate missing")
 	}
 	return candidate, nil
+}
+
+func (store *planningFactStore) PlanningRuns(_ context.Context, _ string) ([]domain.Run, error) {
+	store.bulkRunReads++
+	var runs []domain.Run
+	for _, values := range store.runs {
+		runs = append(runs, values...)
+	}
+	return runs, nil
+}
+
+func (store *planningFactStore) PlanningCandidates(_ context.Context, _ string) ([]domain.Candidate, error) {
+	store.bulkCandidateReads++
+	candidates := make([]domain.Candidate, 0, len(store.candidates))
+	for _, candidate := range store.candidates {
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
+}
+
+func (store *planningFactStore) PlanningTaskUpdatedAt(_ context.Context, projectID string) (map[string]int64, error) {
+	store.bulkTaskUpdateReads++
+	updates := make(map[string]int64)
+	for _, task := range store.tasks[projectID] {
+		updates[task.ID] = task.QueuedAtUnixMillis + 1_000
+	}
+	return updates, nil
 }
 
 func (store *planningFactStore) LatestEventSequence(context.Context) (uint64, error) {

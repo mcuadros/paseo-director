@@ -20,24 +20,29 @@ var embeddedSchema []byte
 
 // Definition is the generator-facing metadata in the engine-owned contract.
 type Definition struct {
-	SchemaVersion     int                        `json:"schemaVersion"`
-	ContractVersion   string                     `json:"contractVersion"`
-	QueryNames        []string                   `json:"queryNames"`
-	MutationName      string                     `json:"mutationName"`
-	MaximumPageSize   int                        `json:"maximumPageSize"`
-	MaximumProjects   int                        `json:"maximumProjects"`
-	MaximumWorkspaces int                        `json:"maximumWorkspaces"`
-	MaximumEpics      int                        `json:"maximumEpics"`
-	DerivedStates     []string                   `json:"derivedStates"`
-	Priorities        []string                   `json:"priorities"`
-	StableSorts       []string                   `json:"stableSorts"`
-	AllowedActions    []string                   `json:"allowedActions"`
-	ConfigurationKeys []string                   `json:"configurationKeys"`
-	Definitions       map[string]json.RawMessage `json:"$defs"`
+	SchemaVersion        int                        `json:"schemaVersion"`
+	ContractVersion      string                     `json:"contractVersion"`
+	QueryNames           []string                   `json:"queryNames"`
+	MutationName         string                     `json:"mutationName"`
+	QueryPath            string                     `json:"queryPath"`
+	MaximumRequestBytes  int                        `json:"maximumRequestBytes"`
+	MaximumResponseBytes int                        `json:"maximumResponseBytes"`
+	MaximumPageSize      int                        `json:"maximumPageSize"`
+	MaximumProjects      int                        `json:"maximumProjects"`
+	MaximumWorkspaces    int                        `json:"maximumWorkspaces"`
+	MaximumEpics         int                        `json:"maximumEpics"`
+	DerivedStates        []string                   `json:"derivedStates"`
+	Priorities           []string                   `json:"priorities"`
+	StableSorts          []string                   `json:"stableSorts"`
+	AttentionCodes       []string                   `json:"attentionCodes"`
+	AllowedActions       []string                   `json:"allowedActions"`
+	ConfigurationKeys    []string                   `json:"configurationKeys"`
+	Definitions          map[string]json.RawMessage `json:"$defs"`
 }
 
 var requiredDefinitions = []string{
 	"allowedAction",
+	"attentionCode",
 	"capacityFacts",
 	"configurationEntry",
 	"configurationApplyAction",
@@ -47,6 +52,7 @@ var requiredDefinitions = []string{
 	"planningMutationInput",
 	"planningMutationResult",
 	"planningPage",
+	"pageCursor",
 	"planningQueryInput",
 	"planningSnapshot",
 	"projectSummary",
@@ -158,13 +164,17 @@ func ParseDefinition(schema []byte) (Definition, error) {
 	if !slices.Equal(definition.QueryNames, []string{"planning.query", "planning.task-detail"}) || definition.MutationName != "planning.mutate" {
 		return Definition{}, errors.New("planning operation names do not match")
 	}
-	if definition.MaximumPageSize != 100 || definition.MaximumProjects != 100 || definition.MaximumWorkspaces != 100 || definition.MaximumEpics != 500 {
+	if definition.QueryPath != QueryPath || definition.MaximumRequestBytes != MaximumRequestBytes ||
+		definition.MaximumResponseBytes != MaximumResponseBytes ||
+		definition.MaximumPageSize != MaximumPageSize || definition.MaximumProjects != MaximumProjects ||
+		definition.MaximumWorkspaces != MaximumWorkspaces || definition.MaximumEpics != MaximumEpics {
 		return Definition{}, errors.New("planning bounds do not match")
 	}
 	for name, values := range map[string][]string{
 		"derived states":     definition.DerivedStates,
 		"priorities":         definition.Priorities,
 		"stable sorts":       definition.StableSorts,
+		"attention codes":    definition.AttentionCodes,
 		"allowed actions":    definition.AllowedActions,
 		"configuration keys": definition.ConfigurationKeys,
 	} {
@@ -181,6 +191,7 @@ func ParseDefinition(schema []byte) (Definition, error) {
 		"derivedState":      definition.DerivedStates,
 		"priority":          definition.Priorities,
 		"stableSort":        definition.StableSorts,
+		"attentionCode":     definition.AttentionCodes,
 		"allowedActionKind": definition.AllowedActions,
 	} {
 		actual, err := definitionEnum(definition.Definitions, definitionName)
@@ -204,6 +215,7 @@ func EmbeddedDefinition() (Definition, error) {
 	definition.DerivedStates = slices.Clone(definition.DerivedStates)
 	definition.Priorities = slices.Clone(definition.Priorities)
 	definition.StableSorts = slices.Clone(definition.StableSorts)
+	definition.AttentionCodes = slices.Clone(definition.AttentionCodes)
 	definition.AllowedActions = slices.Clone(definition.AllowedActions)
 	definition.ConfigurationKeys = slices.Clone(definition.ConfigurationKeys)
 	definition.Definitions = nil

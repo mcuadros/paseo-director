@@ -32,6 +32,10 @@ import {
   createBoardTransport,
   type BoardTransport,
 } from "./engine-board.server.ts";
+import {
+  createPlanningTransport,
+  type PlanningTransport,
+} from "./engine-planning.server.ts";
 import { engineBoundaryPaths } from "./engine-distribution.server.ts";
 import {
   selectEngine,
@@ -43,21 +47,25 @@ export type ConnectorClient = Pick<PaseoClient, "close">;
 export type ConnectorDependencies = {
   createClient?: (configuration: PaseoClientConfig) => ConnectorClient;
   boardTransport?: BoardTransport;
+  planningTransport?: PlanningTransport;
 };
 
 export class PaseoHostConnector implements DirectorHost {
   readonly #client: ConnectorClient;
   readonly #selection: EngineSelection;
   readonly #boardTransport: BoardTransport;
+  readonly #planningTransport: PlanningTransport;
 
   constructor(
     client: ConnectorClient,
     selection: EngineSelection,
     boardTransport: BoardTransport,
+    planningTransport: PlanningTransport,
   ) {
     this.#client = client;
     this.#selection = selection;
     this.#boardTransport = boardTransport;
+    this.#planningTransport = planningTransport;
     assertHostDescriptor(EXPECTED_HOST_DESCRIPTOR);
   }
 
@@ -87,10 +95,8 @@ export class PaseoHostConnector implements DirectorHost {
     return this.#boardTransport.load();
   }
 
-  async queryPlanning(_input: PlanningQueryInput): Promise<PlanningSnapshot> {
-    throw new Error(
-      "PLANNING_SURFACE_NOT_WIRED: runtime planning queries are owned by later M2 Tasks",
-    );
+  async queryPlanning(input: PlanningQueryInput): Promise<PlanningSnapshot> {
+    return this.#planningTransport.query(input);
   }
 
   async queryPlanningTask(
@@ -134,6 +140,11 @@ export function startConnectorShell(options: {
     createBoardTransport({
       baseUrl: options.environment.DIRECTOR_ENGINE_URL,
     });
+  const planningTransport =
+    options.dependencies?.planningTransport ??
+    createPlanningTransport({
+      baseUrl: options.environment.DIRECTOR_ENGINE_URL,
+    });
   const createClient = options.dependencies?.createClient ?? createPaseoClient;
   const client = createClient({
     url,
@@ -141,7 +152,12 @@ export function startConnectorShell(options: {
     clientId: `director-connector-${process.pid}`,
     reconnect: { enabled: false },
   });
-  return new PaseoHostConnector(client, selection, boardTransport);
+  return new PaseoHostConnector(
+    client,
+    selection,
+    boardTransport,
+    planningTransport,
+  );
 }
 
 export function startConnectorShellFromEnvironment(): PaseoHostConnector {

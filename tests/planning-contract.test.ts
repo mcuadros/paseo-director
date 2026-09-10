@@ -8,6 +8,7 @@ import {
   bindPlanningMutation,
   configurationPreviewSchema,
   PLANNING_ALLOWED_ACTIONS,
+  PLANNING_ATTENTION_CODES,
   PLANNING_CONFIGURATION_KEYS,
   PLANNING_CONTRACT_SHA256,
   PLANNING_CONTRACT_VERSION,
@@ -35,6 +36,7 @@ const query = {
   states: [],
   priorities: [],
   labels: [],
+  attention: [],
   search: null,
   sort: "scheduler_order",
   cursor: null,
@@ -62,6 +64,7 @@ test("planning identity and vocabularies are closed and versioned", () => {
     "key_asc",
   ]);
   assert.equal(PLANNING_ALLOWED_ACTIONS.length, 12);
+  assert.equal(PLANNING_ATTENTION_CODES.length, 12);
   assert.equal(PLANNING_CONFIGURATION_KEYS.length, 7);
 });
 
@@ -78,7 +81,8 @@ test("generated query, detail, and mutation RPC schemas reject drift", async () 
   for (const drift of [
     { ...query, extra: true },
     { ...query, cursor: 2 },
-    { ...query, cursor: "18446744073709551616" },
+    { ...query, cursor: "bad.cursor" },
+    { ...query, cursor: "x".repeat(5501) },
     { ...query, pageSize: 101 },
     { ...query, states: ["client-invented"] },
   ]) {
@@ -216,7 +220,8 @@ test("the stable v0.7 plugin registers strict planning RPCs without runtime fixt
     assert.ok(entry.includes(registration), registration);
   }
   const connector = readFileSync("connector/paseo.server.ts", "utf8");
-  assert.match(connector, /PLANNING_SURFACE_NOT_WIRED/);
+  assert.match(connector, /return this\.#planningTransport\.query\(input\)/);
+  assert.match(connector, /runtime task-detail queries are owned by later M2 Tasks/);
   assert.doesNotMatch(connector, /tests\/fixtures|DeterministicPlanningFixture/);
   const client = readFileSync("ui/planning-surface.client.tsx", "utf8");
   for (const moduleName of [
