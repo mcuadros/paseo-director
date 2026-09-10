@@ -68,6 +68,7 @@ export class PaseoHostEffectError extends Error {
 }
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;
+const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const IDENTITY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$/u;
 const MAXIMUM_OBSERVATION_AGE_MILLIS = 30_000;
 const MUTATING_CAPABILITIES = new Set([
@@ -519,6 +520,7 @@ export class PaseoHostConnector implements DirectorHost {
     if (!exact) return this.#observation(command, "different", agent.id, correlation);
     if (
       command.arguments.effectKind === "task_agent.archive" ||
+      command.arguments.effectKind === "reviewer_agent.archive" ||
       command.arguments.effectKind === "control_agent.archive"
     ) {
       if (agent.status === "closed" && agent.archivedAt) {
@@ -665,6 +667,15 @@ export class PaseoHostConnector implements DirectorHost {
 
   #assertCreate(command: HostCommand): void {
     const value = command.arguments;
+    const reviewer = command.capability === "reviewerAgent.createWithBootstrap";
+    const expectedCapability = reviewer
+      ? "reviewerAgent.createWithBootstrap"
+      : "taskAgent.createWithBootstrap";
+    const expectedEffectKind = reviewer
+      ? "reviewer_agent.create_with_bootstrap"
+      : "task_agent.create_with_bootstrap";
+    const expectedRole = reviewer ? "reviewer" : "worker";
+    const expectedReviewerTools = ["director_candidate_read", "director_review_verdict_submit"];
     const labelKeys = value.labels ? Object.keys(value.labels) : [];
     const expectedLabelKeys = new Set<string>(Object.values(WORKER_LABEL));
     const requiredLabels = Object.entries(WORKER_LABEL)
@@ -672,8 +683,8 @@ export class PaseoHostConnector implements DirectorHost {
       .map(([, label]) => label);
     const environmentKeys = value.session ? Object.keys(value.session.server.env) : [];
     if (
-      command.capability !== "taskAgent.createWithBootstrap" ||
-      value.effectKind !== "task_agent.create_with_bootstrap" ||
+      command.capability !== expectedCapability ||
+      value.effectKind !== expectedEffectKind ||
       value.parentAgentId !== undefined ||
       value.initialPrompt !==
         "Director bootstrap only. Do not inspect files, call tools, or perform Task or Review work. Finish this turn immediately." ||
@@ -694,9 +705,14 @@ export class PaseoHostConnector implements DirectorHost {
       value.labels[WORKER_LABEL.executionWorkspace] !== value.workspaceId ||
       requiredLabels.some((label) => !IDENTITY_PATTERN.test(value.labels?.[label] ?? "")) ||
       labelKeys.some((key) => !expectedLabelKeys.has(key)) ||
-      value.session?.role !== "worker" ||
+      (reviewer && !GIT_SHA_PATTERN.test(value.labels?.[WORKER_LABEL.candidate] ?? "")) ||
+      value.labels[WORKER_LABEL.role] !== (reviewer ? "reviewer" : "task-agent") ||
+      value.labels[WORKER_LABEL.phase] !== (reviewer ? "reviewing" : "building") ||
+      value.session?.role !== expectedRole ||
       value.session?.provider !== value.profile?.provider ||
       value.session?.model !== value.profile?.model ||
+      (reviewer && JSON.stringify(value.session?.tools) !== JSON.stringify(expectedReviewerTools)) ||
+      (reviewer && value.profile?.permissionMode !== "read-only") ||
       !isAbsolute(value.session?.server.command ?? "") ||
       value.session?.server.args.some((argument) =>
         /^(?:--?)(?:token|secret|password|credential|authorization|github|paseo|socket)(?:=|$)|(?:gh[pousr]_|sk-)[A-Za-z0-9_-]{16,}/iu.test(
@@ -705,7 +721,7 @@ export class PaseoHostConnector implements DirectorHost {
       ) ||
       environmentKeys.length !== 0
     ) {
-      throw new PaseoHostEffectError("HOST_PRIMARY_CREATE_INVALID");
+      throw new PaseoHostEffectError(reviewer ? "HOST_REVIEWER_CREATE_INVALID" : "HOST_PRIMARY_CREATE_INVALID");
     }
   }
 
@@ -738,7 +754,8 @@ export class PaseoHostConnector implements DirectorHost {
         });
         return this.#observation(command, "desired", workspace.id);
       }
-      case "taskAgent.createWithBootstrap": {
+      case "taskAgent.createWithBootstrap":
+      case "reviewerAgent.createWithBootstrap": {
         this.#assertCreate(command);
         const observed = await this.#agent(command);
         if (observed.result.status !== "absent") return observed;

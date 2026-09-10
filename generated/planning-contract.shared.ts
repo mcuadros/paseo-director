@@ -8,7 +8,7 @@ import { z } from "zod";
 
 export const PLANNING_SCHEMA_VERSION = 1 as const;
 export const PLANNING_CONTRACT_VERSION = "director-planning/v1" as const;
-export const PLANNING_CONTRACT_SHA256 = "cc340549f8b40d36b84850aaf3eb6c5737e81318a139de61314b3629eb5495d3" as const;
+export const PLANNING_CONTRACT_SHA256 = "ce1761fc74f697be7d9e3d65a21e54ced758a3263c9f3079d80a152027a921a3" as const;
 export const PLANNING_QUERY_NAMES = [
   "planning.query",
   "planning.task-detail",
@@ -89,6 +89,7 @@ export const PLANNING_CONFIGURATION_KEYS = [
   "maxSubagentsPerTask",
   "autoFixCiFailures",
   "autoFixReviewFeedback",
+  "requireDifferentReviewerModel",
 ] as const;
 
 export const opaquePlanningIdSchema = z.string().min(1).max(128);

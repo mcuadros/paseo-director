@@ -4,7 +4,7 @@
 // This generated boundary contains transport types only and owns no policy.
 
 export const HOST_CONTRACT_VERSION = "director-host/v1" as const;
-export const HOST_CONTRACT_SHA256 = "d2600c64cf1f2fe92d550f44f1f4217218df4382069933fd1c6a534a1057cf33" as const;
+export const HOST_CONTRACT_SHA256 = "e550b83612c34acbb1a3086066451daca70e230276d189b8bd4074746597264e" as const;
 export const HOST_CREDENTIAL_SCOPE = "full-daemon-operator" as const;
 export const HOST_CAPABILITIES = [
   "executionWorkspace.createManaged",
@@ -95,6 +95,7 @@ export interface HostScope {
 export type HostEffectKind =
   | "host_view.create"
   | "task_agent.create_with_bootstrap"
+  | "reviewer_agent.create_with_bootstrap"
   | "agent.send_prompt"
   | "primary_recovery.observe"
   | "helper_agent.observe"
@@ -102,6 +103,7 @@ export type HostEffectKind =
   | "control_agent.observe_safe_boundary"
   | "control_agent.archive"
   | "task_agent.archive"
+  | "reviewer_agent.archive"
   | "host_view.archive";
 
 export interface HostProviderOption {

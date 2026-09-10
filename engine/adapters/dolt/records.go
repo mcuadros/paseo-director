@@ -19,6 +19,7 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	"github.com/mcuadros/director-engine/domain/execution"
+	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
 
@@ -446,6 +447,49 @@ func validateRun(run domain.Run) error {
 			}
 		} else if run.CurrentCandidateID != "" {
 			return fmt.Errorf("%w: current Candidate lacks authority", storeport.ErrInvalidRecord)
+		}
+		if state.Review != nil {
+			review := *state.Review
+			if !reviewdomain.ValidState(review) {
+				return fmt.Errorf("%w: invalid independent Review state", storeport.ErrInvalidRecord)
+			}
+			if review.Invalidated {
+				if state.CandidateAuthority != nil && state.CandidateAuthority.Downstream.Review != nil {
+					return fmt.Errorf("%w: invalidated Review retained downstream authority", storeport.ErrInvalidRecord)
+				}
+			} else if state.CandidateAuthority == nil || review.Binding.CandidateID != state.CandidateAuthority.CandidateID ||
+				review.Binding.CandidateSHA != state.CandidateAuthority.CandidateSHA || review.Binding.BaseSHA != state.CandidateAuthority.BaseSHA ||
+				review.Binding.ManifestSHA256 != state.CandidateAuthority.BindingSHA256 ||
+				review.Binding.CandidateGeneration != state.CandidateAuthority.Generation {
+				return fmt.Errorf("%w: current Review does not match Candidate authority", storeport.ErrInvalidRecord)
+			} else if review.Evidence == nil {
+				if state.CandidateAuthority.Downstream.Review != nil {
+					return fmt.Errorf("%w: Review authority lacks verdict evidence", storeport.ErrInvalidRecord)
+				}
+			} else {
+				evidence := state.CandidateAuthority.Downstream.Review
+				if evidence == nil || evidence.ID != review.Evidence.ID || evidence.CandidateID != state.CandidateAuthority.CandidateID ||
+					evidence.CandidateSHA != state.CandidateAuthority.CandidateSHA || evidence.BaseSHA != state.CandidateAuthority.BaseSHA ||
+					evidence.Generation != state.CandidateAuthority.Generation || evidence.BindingSHA256 != state.CandidateAuthority.BindingSHA256 {
+					return fmt.Errorf("%w: Review verdict evidence is not authoritative", storeport.ErrInvalidRecord)
+				}
+			}
+		}
+		if len(state.ReviewHistory) > 64 {
+			return fmt.Errorf("%w: too many historical Review states", storeport.ErrInvalidRecord)
+		}
+		seenReviews := make(map[string]struct{}, len(state.ReviewHistory)+1)
+		if state.Review != nil {
+			seenReviews[state.Review.ReviewKey] = struct{}{}
+		}
+		for _, review := range state.ReviewHistory {
+			if !reviewdomain.ValidState(review) || !review.Invalidated {
+				return fmt.Errorf("%w: invalid historical Review state", storeport.ErrInvalidRecord)
+			}
+			if _, duplicate := seenReviews[review.ReviewKey]; duplicate {
+				return fmt.Errorf("%w: duplicate Review key", storeport.ErrInvalidRecord)
+			}
+			seenReviews[review.ReviewKey] = struct{}{}
 		}
 	}
 	return nil
@@ -1414,6 +1458,14 @@ func (store *DoltTaskStore) AppendCandidate(
 		generation := uint64(0)
 		if current.Execution.CandidateAuthority != nil {
 			generation = current.Execution.CandidateAuthority.Generation
+		}
+		if current.Execution.Review != nil {
+			historical := *current.Execution.Review
+			if !historical.Invalidated {
+				historical = reviewdomain.Invalidate(historical, "candidate_changed")
+			}
+			current.Execution.ReviewHistory = append(current.Execution.ReviewHistory, historical)
+			current.Execution.Review = nil
 		}
 		authority := candidatedomain.NewAuthority(generation, candidate.ID, candidate.Claim.Branch, candidate.Claim.TaskVersion, candidate.Manifest)
 		current.Execution.CandidateAuthority = &authority

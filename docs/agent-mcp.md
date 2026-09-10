@@ -4,7 +4,7 @@ The standalone Director Engine owns contract `director.agent-mcp/v1`. Its
 canonical schema is
 `engine/domain/agentbridge/schemas/director-agent-mcp.v1.json`; the current
 canonical SHA-256 is
-`9cf116e305b6620d85725dd680c8bc0c52119f03a70dbc22c16c42ab5ff8faaf`.
+`b157d836e22470c155327425669c913a2923222527d37e2627b899c3bb929bf6`.
 The generated TypeScript transport constants are checked for byte-for-byte
 drift in CI.
 
@@ -33,7 +33,8 @@ Run. Unknown tools and fields fail closed.
 The Organizer mutation is a bounded update proposal for the Task already fixed
 to the session. The Worker mutation accepts exactly the seven frozen
 `AgentOutcomeClaim` shapes. The Reviewer mutation accepts one exact-Candidate
-verdict with all eight mandatory review dimensions. These are durable inputs,
+verdict with the complete frozen acceptance-criterion set, all eight mandatory
+review dimensions, bounded cited P0-P3 findings, and residual-risk codes. These are durable inputs,
 not lifecycle evidence or transition authority.
 
 ## Session and command binding

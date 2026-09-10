@@ -22,7 +22,7 @@ func TestEmbeddedPlanningContract(t *testing.T) {
 		t.Fatalf("planning transport bounds = %#v", definition)
 	}
 	if len(definition.DerivedStates) != 7 || len(definition.AttentionCodes) != 12 ||
-		len(definition.AllowedActions) != 17 || len(definition.ConfigurationKeys) != 7 {
+		len(definition.AllowedActions) != 17 || len(definition.ConfigurationKeys) != 8 {
 		t.Fatalf("planning closed vocabularies = %#v", definition)
 	}
 	hash, err := SchemaSHA256()

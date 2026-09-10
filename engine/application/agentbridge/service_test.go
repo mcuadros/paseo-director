@@ -515,7 +515,7 @@ func TestReviewerCandidateScopeAndVerdictAreExact(t *testing.T) {
 	if err != nil || !bytes.Contains(result.Payload, []byte(binding.CandidateSHA)) || bytes.Contains(result.Payload, []byte("worktree")) {
 		t.Fatalf("Candidate read = %s, %v", result.Payload, err)
 	}
-	verdict := json.RawMessage(`{"verdict":"approve_candidate","coverage":["acceptance","correctness","security","maintainability","readability","design","quality","rigor"],"findings":[],"residualRiskCodes":[]}`)
+	verdict := json.RawMessage(`{"verdict":"approve_candidate","acceptanceCriteria":["criterion-1"],"coverage":["acceptance","correctness","security","maintainability","readability","design","quality","rigor"],"findings":[],"residualRiskCodes":[]}`)
 	if _, err := session.Call(context.Background(), "verdict-call", "director_review_verdict_submit", verdict); err != nil {
 		t.Fatal(err)
 	}

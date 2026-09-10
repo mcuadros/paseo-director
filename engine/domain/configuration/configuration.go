@@ -184,32 +184,34 @@ type RunBudget struct {
 // Defaults is the Project-level configuration inherited by Workspaces and
 // Tasks. The application configuration package resolves the effective values.
 type Defaults struct {
-	LaunchPolicy          LaunchPolicy `json:"launchPolicy"`
-	DeliveryMode          DeliveryMode `json:"deliveryMode"`
-	Limits                Limits       `json:"limits"`
-	RunBudget             RunBudget    `json:"runBudget"`
-	AutoFixCIFailures     bool         `json:"autoFixCiFailures"`
-	AutoFixReviewFeedback bool         `json:"autoFixReviewFeedback"`
+	LaunchPolicy                  LaunchPolicy `json:"launchPolicy"`
+	DeliveryMode                  DeliveryMode `json:"deliveryMode"`
+	Limits                        Limits       `json:"limits"`
+	RunBudget                     RunBudget    `json:"runBudget"`
+	AutoFixCIFailures             bool         `json:"autoFixCiFailures"`
+	AutoFixReviewFeedback         bool         `json:"autoFixReviewFeedback"`
+	RequireDifferentReviewerModel bool         `json:"requireDifferentReviewerModel,omitempty"`
 }
 
 // WorkspaceOverride records explicit Inherit/concrete selections. Pointer
 // fields distinguish an inherited value from an explicit zero or false value.
 // Effective reduction remains in the engine application boundary.
 type WorkspaceOverride struct {
-	WorkspaceID                string       `json:"workspaceId"`
-	LaunchPolicy               LaunchPolicy `json:"launchPolicy"`
-	DeliveryMode               DeliveryMode `json:"deliveryMode"`
-	MaxActiveTasks             *int         `json:"maxActiveTasks,omitempty"`
-	MaxActiveTasksPerWorkspace *int         `json:"maxActiveTasksPerWorkspace,omitempty"`
-	MaxConcurrentAgents        *int         `json:"maxConcurrentAgents,omitempty"`
-	MaxSubagentsPerTask        *int         `json:"maxSubagentsPerTask,omitempty"`
-	ElapsedSeconds             *int64       `json:"elapsedSeconds,omitempty"`
-	Tokens                     *int64       `json:"tokens,omitempty"`
-	Turns                      *int64       `json:"turns,omitempty"`
-	CICycles                   *int64       `json:"ciCycles,omitempty"`
-	CostMicrousd               *int64       `json:"costMicrousd,omitempty"`
-	AutoFixCIFailures          *bool        `json:"autoFixCiFailures,omitempty"`
-	AutoFixReviewFeedback      *bool        `json:"autoFixReviewFeedback,omitempty"`
+	WorkspaceID                   string       `json:"workspaceId"`
+	LaunchPolicy                  LaunchPolicy `json:"launchPolicy"`
+	DeliveryMode                  DeliveryMode `json:"deliveryMode"`
+	MaxActiveTasks                *int         `json:"maxActiveTasks,omitempty"`
+	MaxActiveTasksPerWorkspace    *int         `json:"maxActiveTasksPerWorkspace,omitempty"`
+	MaxConcurrentAgents           *int         `json:"maxConcurrentAgents,omitempty"`
+	MaxSubagentsPerTask           *int         `json:"maxSubagentsPerTask,omitempty"`
+	ElapsedSeconds                *int64       `json:"elapsedSeconds,omitempty"`
+	Tokens                        *int64       `json:"tokens,omitempty"`
+	Turns                         *int64       `json:"turns,omitempty"`
+	CICycles                      *int64       `json:"ciCycles,omitempty"`
+	CostMicrousd                  *int64       `json:"costMicrousd,omitempty"`
+	AutoFixCIFailures             *bool        `json:"autoFixCiFailures,omitempty"`
+	AutoFixReviewFeedback         *bool        `json:"autoFixReviewFeedback,omitempty"`
+	RequireDifferentReviewerModel *bool        `json:"requireDifferentReviewerModel,omitempty"`
 }
 
 // FileReference identifies one explicitly included Organizer file. Directory
@@ -347,6 +349,7 @@ func cloneWorkspaceOverrides(values []WorkspaceOverride) []WorkspaceOverride {
 		cloned[index].CICycles = clonePointer(cloned[index].CICycles)
 		cloned[index].AutoFixCIFailures = clonePointer(cloned[index].AutoFixCIFailures)
 		cloned[index].AutoFixReviewFeedback = clonePointer(cloned[index].AutoFixReviewFeedback)
+		cloned[index].RequireDifferentReviewerModel = clonePointer(cloned[index].RequireDifferentReviewerModel)
 	}
 	return cloned
 }
@@ -692,7 +695,7 @@ func workspaceOverrideEmpty(override WorkspaceOverride) bool {
 		override.MaxConcurrentAgents == nil && override.MaxSubagentsPerTask == nil &&
 		override.ElapsedSeconds == nil && override.Tokens == nil && override.Turns == nil &&
 		override.CICycles == nil && override.CostMicrousd == nil && override.AutoFixCIFailures == nil &&
-		override.AutoFixReviewFeedback == nil
+		override.AutoFixReviewFeedback == nil && override.RequireDifferentReviewerModel == nil
 }
 
 func effectiveWorkspaceLimits(project Limits, override WorkspaceOverride) Limits {
@@ -895,9 +898,10 @@ func Parse(input []byte) (Document, error) {
 	}
 	var presence struct {
 		Defaults struct {
-			AutoFixCIFailures     *bool `json:"autoFixCiFailures"`
-			AutoFixReviewFeedback *bool `json:"autoFixReviewFeedback"`
-			Limits                struct {
+			AutoFixCIFailures             *bool `json:"autoFixCiFailures"`
+			AutoFixReviewFeedback         *bool `json:"autoFixReviewFeedback"`
+			RequireDifferentReviewerModel *bool `json:"requireDifferentReviewerModel"`
+			Limits                        struct {
 				MaxSubagentsPerTask *int `json:"maxSubagentsPerTask"`
 			} `json:"limits"`
 		} `json:"defaults"`
@@ -911,7 +915,7 @@ func Parse(input []byte) (Document, error) {
 	}
 	optionalOverrideFields := []string{
 		"maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask",
-		"elapsedSeconds", "tokens", "turns", "ciCycles", "autoFixCiFailures", "autoFixReviewFeedback",
+		"elapsedSeconds", "tokens", "turns", "ciCycles", "autoFixCiFailures", "autoFixReviewFeedback", "requireDifferentReviewerModel",
 	}
 	for _, override := range presence.WorkspaceOverrides {
 		for _, field := range optionalOverrideFields {

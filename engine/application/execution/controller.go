@@ -23,6 +23,7 @@ import (
 	"github.com/mcuadros/director-engine/domain/agentprofile"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
+	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	gitport "github.com/mcuadros/director-engine/ports/git"
 	"github.com/mcuadros/director-engine/ports/host"
@@ -87,6 +88,7 @@ type StartCommand struct {
 	RootWorkspaceID   string
 	MCPServer         domainexecution.MCPServerLaunch
 	EffectiveProfiles agentprofile.FrozenSet
+	ReviewPolicy      reviewdomain.ProfilePolicy
 	BudgetPolicy      runtimebudget.Policy
 	TurnBudgetDemand  runtimebudget.Demand
 	HelperPolicy      domainexecution.HelperPolicy
@@ -395,6 +397,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			existing.Execution.EligibilityDecisionID != decision.DecisionID ||
 			existing.Execution.EligibilityFactsHash != decision.FactsHash ||
 			existing.Execution.EffectiveProfilesSHA256 != command.EffectiveProfiles.SHA256() ||
+			existing.Execution.ReviewPolicy != command.ReviewPolicy ||
 			existing.Execution.RepositoryBinding != repositoryBinding(workspace, command.WorktreePath, command.Branch, command.BaseSHA) ||
 			existing.Execution.BaseRef != "refs/heads/"+workspace.DefaultBaseBranch ||
 			existing.Execution.AcceptanceSHA256 != candidatedomain.AcceptanceSHA256(
@@ -457,6 +460,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		LifecycleDigest: decision.LifecycleDigest, IsolationDigest: decision.IsolationDigest,
 		EffectiveProfiles:       &profiles,
 		EffectiveProfilesSHA256: command.EffectiveProfiles.SHA256(),
+		ReviewPolicy:            command.ReviewPolicy,
 		LifecycleApproval:       command.EligibilityFacts.LifecycleApproval,
 		Isolation:               command.EligibilityFacts.Isolation,
 		OperationalPolicy:       command.EligibilityFacts.OperationalPolicy,

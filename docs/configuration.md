@@ -93,7 +93,8 @@ This is a complete minimal document:
       "costMicrousd": 5000000
     },
     "autoFixCiFailures": true,
-    "autoFixReviewFeedback": true
+    "autoFixReviewFeedback": true,
+    "requireDifferentReviewerModel": false
   },
   "workspaceOverrides": [],
   "skills": [
@@ -142,10 +143,13 @@ and control characters. Directory scanning never turns an unreferenced file
 into executable or prompt input.
 
 The Project defaults also require `autoFixCiFailures` and
-`autoFixReviewFeedback`; both default to `true` in the product plan but are
-explicit in the version 1 document. A Workspace override may independently
+`autoFixReviewFeedback`; both default to `true` in the product plan and are
+explicit in the version 1 document. The optional
+`requireDifferentReviewerModel` defaults to `false`: an equal provider/model
+tuple produces a visible warning, while `true` refuses that tuple after frozen
+profile preflight without selecting a fallback. A Workspace override may independently
 replace launch and delivery mode, each capacity limit, each finite Run budget,
-and either auto-fix flag. Omitted scalar fields and the literal `inherit` mode
+either auto-fix flag, and the different-Reviewer requirement. Omitted scalar fields and the literal `inherit` mode
 retain the Project value. Task overrides live with the Task rather than in
 Organizer Git and use the same field-by-field representation. The engine
 resolves every field in the fixed order `Project → Workspace → Task` and

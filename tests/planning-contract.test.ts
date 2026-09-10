@@ -65,7 +65,8 @@ test("planning identity and vocabularies are closed and versioned", () => {
   ]);
   assert.equal(PLANNING_ALLOWED_ACTIONS.length, 17);
   assert.equal(PLANNING_ATTENTION_CODES.length, 12);
-  assert.equal(PLANNING_CONFIGURATION_KEYS.length, 7);
+  assert.equal(PLANNING_CONFIGURATION_KEYS.length, 8);
+  assert.ok(PLANNING_CONFIGURATION_KEYS.includes("requireDifferentReviewerModel"));
 });
 
 test("generated query, detail, and mutation RPC schemas reject drift", async () => {

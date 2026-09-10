@@ -4,6 +4,7 @@ package host
 
 import (
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -101,6 +102,27 @@ func primaryArguments(registration WorkerRegistration) Arguments {
 			ContractVersion: agentbridge.ContractVersion, ContractHash: contractHash,
 			SessionSHA256: registration.SessionSHA256, Role: "worker", Provider: "codex",
 			Model: "gpt-5.4-mini", Tools: []string{"director_task_outcome_submit", "director_task_read"},
+			Server: MCPServer{Name: "director-session-mcp", Command: "/usr/bin/director-agent-runtime", Args: []string{}, Env: map[string]string{}},
+		},
+	}
+}
+
+func reviewerArguments(registration WorkerRegistration) Arguments {
+	contractHash, _ := agentbridge.SchemaSHA256()
+	return Arguments{
+		WorktreePath: "/tmp/reviewer", WorkspaceID: registration.ExecutionWorkspaceID,
+		ClientMessageID: "message-reviewer-bootstrap", BoundaryID: "boundary-reviewer",
+		OperationalObservationID: "operational-reviewer", PreparationReady: true,
+		PreparationBarrierHash: strings.Repeat("c", 64), LifecycleDigest: strings.Repeat("d", 64),
+		IsolationDigest: strings.Repeat("e", 64),
+		Profile: &AgentProfile{
+			Provider: "claude-code", Model: "sonnet", Effort: "high", Mode: "default",
+			PermissionMode: "read-only", ProviderOptions: []ProviderOption{}, SHA256: registration.ProfileSHA256,
+		},
+		Session: &MCPSession{
+			ContractVersion: agentbridge.ContractVersion, ContractHash: contractHash,
+			SessionSHA256: registration.SessionSHA256, Role: "reviewer", Provider: "claude-code", Model: "sonnet",
+			Tools:  []string{"director_candidate_read", "director_review_verdict_submit"},
 			Server: MCPServer{Name: "director-session-mcp", Command: "/usr/bin/director-agent-runtime", Args: []string{}, Env: map[string]string{}},
 		},
 	}
@@ -251,23 +273,55 @@ func TestAdmitAgentPromptRequiresPersistedIdentityAndNotification(t *testing.T) 
 
 func TestReviewerUsesTheSameBootstrapThenPromptContract(t *testing.T) {
 	registration := workerRegistration(WorkerRoleReviewer)
+	registration.Phase = WorkerPhaseReviewing
 	registration.EffectID = "reviewer-create"
 	labels, err := WorkerLabels(registration)
 	if err != nil {
 		t.Fatal(err)
 	}
-	create := Command{Capability: CapabilityReviewerAgentCreate, Arguments: Arguments{
-		Scope: registration.Scope, EffectKind: execution.EffectAgentCreate,
-		EffectID: "reviewer-create", InitialPrompt: ZeroWorkBootstrapPrompt, Labels: labels,
-	}}
+	createArguments := reviewerArguments(registration)
+	createArguments.Scope = registration.Scope
+	createArguments.EffectKind = execution.EffectReviewerAgentCreate
+	createArguments.EffectID = "reviewer-create"
+	createArguments.InitialPrompt = ZeroWorkBootstrapPrompt
+	createArguments.Labels = labels
+	create := Command{Capability: CapabilityReviewerAgentCreate, Arguments: createArguments}
 	if err := AdmitAgentCreate(create, registration); err != nil {
 		t.Fatal(err)
 	}
-	prompt := Command{Capability: CapabilityAgentPrompt, Arguments: Arguments{
-		Scope: registration.Scope, EffectKind: execution.EffectAgentPrompt,
-		EffectID: "reviewer-prompt", WorkspaceID: registration.ExecutionWorkspaceID,
-		AgentID: "reviewer-1", InitialPrompt: "review the exact Candidate", NotifyOnFinish: true,
-	}}
+	parent := "task-agent"
+	for name, mutate := range map[string]func(*Command){
+		"parented": func(command *Command) { command.Arguments.ParentAgentID = &parent },
+		"worker permission": func(command *Command) {
+			command.Arguments.Profile.PermissionMode = "workspace-write"
+		},
+		"extra MCP": func(command *Command) {
+			command.Arguments.Session.Tools = append(command.Arguments.Session.Tools, "director_task_read")
+		},
+		"Task effect": func(command *Command) { command.Arguments.EffectKind = execution.EffectAgentCreate },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := create
+			profile := *create.Arguments.Profile
+			session := *create.Arguments.Session
+			session.Tools = slices.Clone(session.Tools)
+			changed.Arguments.Profile = &profile
+			changed.Arguments.Session = &session
+			mutate(&changed)
+			if err := AdmitAgentCreate(changed, registration); err == nil {
+				t.Fatal("Reviewer authority escape admitted")
+			}
+		})
+	}
+	promptArguments := reviewerArguments(registration)
+	promptArguments.Scope = registration.Scope
+	promptArguments.EffectKind = execution.EffectAgentPrompt
+	promptArguments.EffectID = "reviewer-prompt"
+	promptArguments.AgentID = "reviewer-1"
+	promptArguments.InitialPrompt = "review the exact Candidate"
+	promptArguments.NotifyOnFinish = true
+	promptArguments.SessionBindingSHA256 = strings.Repeat("f", 64)
+	prompt := Command{Capability: CapabilityAgentPrompt, Arguments: promptArguments}
 	if err := AdmitAgentPrompt(prompt, registration, "reviewer-1"); err != nil {
 		t.Fatal(err)
 	}

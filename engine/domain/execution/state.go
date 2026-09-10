@@ -7,6 +7,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain/agentprofile"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
 )
 
@@ -31,6 +32,7 @@ const (
 	EffectBoundaryMaterialize    EffectKind = "rootless_oci.materialize"
 	EffectSetupRun               EffectKind = "lifecycle_setup.run"
 	EffectAgentCreate            EffectKind = "task_agent.create_with_bootstrap"
+	EffectReviewerAgentCreate    EffectKind = "reviewer_agent.create_with_bootstrap"
 	EffectAgentPrompt            EffectKind = "agent.send_prompt"
 	EffectPrimaryRecoveryObserve EffectKind = "primary_recovery.observe"
 	EffectHelperCheckoutCreate   EffectKind = "helper_checkout.create"
@@ -43,6 +45,7 @@ const (
 	EffectControlAgentArchive    EffectKind = "control_agent.archive"
 	EffectRecoverySnapshot       EffectKind = "recovery.snapshot"
 	EffectAgentArchive           EffectKind = "task_agent.archive"
+	EffectReviewerAgentArchive   EffectKind = "reviewer_agent.archive"
 	EffectHostViewArchive        EffectKind = "host_view.archive"
 	EffectWorktreeRemove         EffectKind = "worktree.remove"
 )
@@ -243,6 +246,7 @@ type State struct {
 	IsolationDigest                  string                       `json:"isolationDigest,omitempty"`
 	EffectiveProfiles                *agentprofile.FrozenSet      `json:"effectiveProfiles,omitempty"`
 	EffectiveProfilesSHA256          string                       `json:"effectiveProfilesSha256,omitempty"`
+	ReviewPolicy                     reviewdomain.ProfilePolicy   `json:"reviewPolicy"`
 	Isolation                        IsolationObservation         `json:"isolation,omitempty"`
 	OperationalPolicy                OperationalPolicy            `json:"operationalPolicy,omitempty"`
 	LifecycleSurfaces                LifecycleSurfaces            `json:"lifecycleSurfaces,omitempty"`
@@ -280,6 +284,8 @@ type State struct {
 	DecisionContextSHA256            string                       `json:"decisionContextSha256,omitempty"`
 	FindingContextSHA256             string                       `json:"findingContextSha256,omitempty"`
 	CandidateAuthority               *candidatedomain.Authority   `json:"candidateAuthority,omitempty"`
+	Review                           *reviewdomain.State          `json:"review,omitempty"`
+	ReviewHistory                    []reviewdomain.State         `json:"reviewHistory,omitempty"`
 	OperationalObservation           *OperationalObservation      `json:"operationalObservation,omitempty"`
 	OperationalObservationRunVersion uint64                       `json:"operationalObservationRunVersion,omitempty"`
 	OperationalObservationConsumed   bool                         `json:"operationalObservationConsumed,omitempty"`

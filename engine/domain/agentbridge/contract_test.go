@@ -231,16 +231,16 @@ func TestEveryClosedWorkerOutcomeAndReviewerVerdictValidates(t *testing.T) {
 		}
 	}
 	verdicts := []json.RawMessage{
-		json.RawMessage(`{"verdict":"approve_candidate","coverage":["acceptance","correctness","security","maintainability","readability","design","quality","rigor"],"findings":[],"residualRiskCodes":[]}`),
-		json.RawMessage(`{"verdict":"changes_requested","coverage":["acceptance","correctness","security","maintainability","readability","design","quality","rigor"],"findings":[{"code":"correctness_bug","severity":"P1","dimension":"correctness","summary":"A bounded defect summary","references":["engine/file.go:10"]}],"residualRiskCodes":[]}`),
-		json.RawMessage(`{"verdict":"needs_human_decision","coverage":["acceptance","correctness","security","maintainability","readability","design","quality","rigor"],"findings":[{"code":"owner_choice","severity":"P2","dimension":"design","summary":"A bounded owner decision is required","references":[]}],"residualRiskCodes":["owner_decision_pending"]}`),
+		json.RawMessage(`{"verdict":"approve_candidate","acceptanceCriteria":["criterion-1"],"coverage":["acceptance","correctness","security","maintainability","readability","design","quality","rigor"],"findings":[],"residualRiskCodes":[]}`),
+		json.RawMessage(`{"verdict":"changes_requested","acceptanceCriteria":["criterion-1"],"coverage":["acceptance","correctness","security","maintainability","readability","design","quality","rigor"],"findings":[{"code":"CORRECTNESS_BUG","severity":"P1","dimension":"correctness","summary":"A bounded defect summary","references":["engine/file.go:10"]}],"residualRiskCodes":[]}`),
+		json.RawMessage(`{"verdict":"needs_human_decision","acceptanceCriteria":["criterion-1"],"coverage":["acceptance","correctness","security","maintainability","readability","design","quality","rigor"],"findings":[{"code":"OWNER_CHOICE","severity":"P2","dimension":"design","summary":"A bounded owner decision is required","references":["docs/PLAN.md:1"]}],"residualRiskCodes":["OWNER_DECISION_PENDING"]}`),
 	}
 	for index, verdict := range verdicts {
 		if _, err := ValidateToolInput("director_review_verdict_submit", verdict, criteria, base); err != nil {
 			t.Errorf("verdict %d: %v", index, err)
 		}
 	}
-	invalidApproval := json.RawMessage(`{"verdict":"approve_candidate","coverage":["acceptance","correctness","security","maintainability","readability","design","quality","rigor"],"findings":[{"code":"blocking","severity":"P1","dimension":"security","summary":"Blocking finding","references":[]}],"residualRiskCodes":[]}`)
+	invalidApproval := json.RawMessage(`{"verdict":"approve_candidate","acceptanceCriteria":["criterion-1"],"coverage":["acceptance","correctness","security","maintainability","readability","design","quality","rigor"],"findings":[{"code":"BLOCKING","severity":"P1","dimension":"security","summary":"Blocking finding","references":["source.go:1"]}],"residualRiskCodes":[]}`)
 	if _, err := ValidateToolInput("director_review_verdict_submit", invalidApproval, criteria, base); err == nil {
 		t.Fatal("approval with a blocking finding was accepted")
 	}
