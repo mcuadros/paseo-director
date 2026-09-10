@@ -69,6 +69,7 @@
         "host_view.create",
         "task_agent.create_with_bootstrap",
         "agent.send_prompt",
+        "primary_recovery.observe",
         "helper_agent.observe",
         "helper_agent.archive",
         "control_agent.observe_safe_boundary",
@@ -126,7 +127,7 @@
         "ambiguous",
         "unavailable"
       ],
-      "optional": ["externalId", "correlationHash", "usage"]
+      "optional": ["externalId", "correlationHash", "usage", "nativeAgent", "inventory"]
     }
   }
 }

@@ -125,6 +125,22 @@ test("the root aggregate reads workers by label, not by execution workspace", as
   assert.equal(directorWorkersRpc.output.safeParse(snapshot).success, true);
 });
 
+test("a verified replacement remains visible in the recovery phase", () => {
+  const projected = projectDirectorWorker(
+    agent({
+      id: "agent-replacement-1",
+      labels: registryLabels({
+        [WORKER_LABEL.phase]: "recovering",
+        [WORKER_LABEL.effect]: "replacement-effect-1",
+      }),
+    }),
+    ROOT_WORKSPACE,
+  );
+  assert.equal(projected?.agentId, "agent-replacement-1");
+  assert.equal(projected?.phase, "recovering");
+  assert.equal(projected?.role, "task-agent");
+});
+
 test("the aggregate refuses a registration it cannot trust", () => {
   const cases: readonly [string, RegisteredAgent, string][] = [
     [

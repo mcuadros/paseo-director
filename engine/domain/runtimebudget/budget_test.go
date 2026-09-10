@@ -14,6 +14,32 @@ func testPolicy(cost uint64) Policy {
 	return NewPolicy("revision-1", 10_000, 1_000, 32, cost, 4)
 }
 
+func TestRebindOutstandingReservationsPreservesConsumptionAndFencesTakeover(t *testing.T) {
+	policy := NewPolicy("revision", 10_000, 10_000, 10, 0, 4)
+	ledger, err := NewLedger(policy, 1_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger, decision, err := Reserve(ledger, ReserveRequest{
+		ID: "reservation-takeover", EffectID: "effect-takeover", Activity: ActivityWorkerTurn,
+		LeaseEpoch: 4, PolicyRevision: policy.Revision,
+		Demand: Demand{WallTimeMilliseconds: 100, Tokens: 100, Turns: 1},
+	}, 1_001)
+	if err != nil || decision.Disposition != DispositionAllow {
+		t.Fatalf("reserve = %#v, %v", decision, err)
+	}
+	rebound, err := RebindOutstandingReservations(ledger, 4, 5)
+	if err != nil || !ValidLedgerForLease(rebound, 5) || rebound.Reservations[0].LeaseEpoch != 5 {
+		t.Fatalf("rebind = %#v, %v", rebound, err)
+	}
+	if _, err := RebindOutstandingReservations(ledger, 3, 5); err == nil {
+		t.Fatal("wrong prior epoch was accepted")
+	}
+	if _, err := RebindOutstandingReservations(rebound, 5, 5); err == nil {
+		t.Fatal("non-monotonic takeover epoch was accepted")
+	}
+}
+
 func testLedger(t *testing.T, cost uint64) Ledger {
 	t.Helper()
 	ledger, err := NewLedger(testPolicy(cost), 1_000)

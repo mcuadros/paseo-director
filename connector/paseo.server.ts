@@ -23,6 +23,9 @@ import {
   type HostDescriptor,
   type HostObservation,
   type HostObservationStatus,
+  type HostNativeAgentRecoveryFact,
+  type HostPrimaryRecoveryInventory,
+  type HostProviderFailureSignal,
   type HostProviderUsage,
 } from "../generated/host-contract.shared.ts";
 import type { AgentMCPSessionLaunch } from "../generated/agent-mcp-contract.shared.ts";
@@ -122,6 +125,8 @@ function resultDigest(result: Omit<HostObservation["result"], "factHash">): stri
     priorDispatcherAbsent: result.priorDispatcherAbsent,
     maximumAgeMillis: result.maximumAgeMillis,
     ...(result.usage ? { usage: result.usage } : {}),
+    ...(result.nativeAgent ? { nativeAgent: result.nativeAgent } : {}),
+    ...(result.inventory ? { inventory: result.inventory } : {}),
     factHash: "",
   };
   return sha256(JSON.stringify(wire));
@@ -245,6 +250,8 @@ export class PaseoHostConnector implements DirectorHost {
     correlationHash = "",
     priorDispatcherAbsent = true,
     usage?: HostProviderUsage,
+    nativeAgent?: HostNativeAgentRecoveryFact,
+    inventory?: HostPrimaryRecoveryInventory,
   ): HostObservation {
     const after = command.afterCursor ?? 0;
     this.#cursor = Math.max(this.#cursor + 1, after + 1);
@@ -257,6 +264,8 @@ export class PaseoHostConnector implements DirectorHost {
       priorDispatcherAbsent,
       maximumAgeMillis: MAXIMUM_OBSERVATION_AGE_MILLIS,
       ...(usage ? { usage } : {}),
+      ...(nativeAgent ? { nativeAgent } : {}),
+      ...(inventory ? { inventory } : {}),
     } as const;
     return {
       requestId: command.requestId,
@@ -377,6 +386,115 @@ export class PaseoHostConnector implements DirectorHost {
       item.type === "user_message" &&
       (item.messageId === messageId || item.clientMessageId === messageId),
     );
+  }
+
+  #failureSignals(agent: PaseoAgent): readonly HostProviderFailureSignal[] {
+    const value = (agent.lastError ?? "").slice(0, 4_096).toLowerCase();
+    if (agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") {
+      return ["unclassified"];
+    }
+    if (!value && agent.status !== "error" && agent.attentionReason !== "error") {
+      return ["none"];
+    }
+    const signals = new Set<HostProviderFailureSignal>();
+    if (/\b(?:401|unauthori[sz]ed|authentication required|login required|invalid api key|expired credential)\b/u.test(value)) {
+      signals.add("authentication_rejection");
+    }
+    if (/\b(?:configuration|invalid option|unsupported model|model not found|provider not configured)\b/u.test(value)) {
+      signals.add("configuration_rejection");
+    }
+    if (/\b(?:policy|permission denied|not allowed|approval required|sandbox|tool policy|tool denied)\b/u.test(value)) {
+      signals.add("policy_rejection");
+    }
+    if (/\b(?:timeout|temporarily unavailable|rate limit|429|502|503|connection reset)\b/u.test(value)) {
+      signals.add("transient_service");
+    }
+    if (/\b(?:session (?:terminated|closed|corrupt)|provider (?:exited|crashed)|process exited)\b/u.test(value)) {
+      signals.add("provider_terminal");
+    }
+    if (signals.size === 0) signals.add("unclassified");
+    return [...signals].sort();
+  }
+
+  #normalizedStatus(agent: PaseoAgent): HostNativeAgentRecoveryFact["status"] {
+    if (agent.status === "idle" || agent.status === "running" || agent.status === "initializing" ||
+      agent.status === "closed" || agent.status === "error") {
+      return agent.status;
+    }
+    return "error";
+  }
+
+  async #recoveryInventory(command: HostCommand): Promise<HostObservation> {
+    const value = command.arguments;
+    if (!value.workspaceId || !value.agentId || !value.worktreePath || !value.title || !value.labels ||
+      !value.profile || !value.session || !value.clientMessageId) {
+      throw new PaseoHostEffectError("HOST_PRIMARY_RECOVERY_CONTEXT_REQUIRED");
+    }
+    const workspaceById = new Map<string, PaseoWorkspace>();
+    for (const workspace of await this.#workspaces()) {
+      if (workspace.workspaceDirectory === value.worktreePath || workspace.projectRootPath === value.worktreePath ||
+        workspace.id === value.workspaceId) {
+        workspaceById.set(workspace.id, workspace);
+      }
+    }
+    const refreshedWorkspace = await this.#roots().workspaces.ref(value.workspaceId)
+      .refresh({ requestId: `${command.requestId}-recovery-workspace` });
+    if (refreshedWorkspace) workspaceById.set(refreshedWorkspace.id, refreshedWorkspace);
+    const workspaces = [...workspaceById.values()].map((workspace) => ({
+      workspaceId: workspace.id,
+      active: !workspace.archivingAt,
+      archived: Boolean(workspace.archivingAt),
+      worktreeExact: workspace.workspaceDirectory === value.worktreePath,
+      titleExact: workspace.title === `${value.title} execution workspace`,
+      kindExact: workspace.workspaceKind === "worktree" && workspace.gitRuntime?.isPaseoOwnedWorktree === false,
+    })).sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
+
+    const agents: HostNativeAgentRecoveryFact[] = [];
+    for (const agent of await this.#agents(command)) {
+      const effectId = agent.labels[WORKER_LABEL.effect] || "unbound";
+      const roleLabel = agent.labels[WORKER_LABEL.role];
+      const role = roleLabel === "reviewer" ? "reviewer" : roleLabel === "helper" ? "helper" : "task_agent";
+      let bootstrapPresent = false;
+      let promptPresent = false;
+      if (agent.id === value.agentId && effectId !== "unbound" && role !== "helper") {
+        bootstrapPresent = await this.#promptPresent(
+          agent.id,
+          `message-${sha256(`${effectId}`).slice(0, 32)}`,
+          `${command.requestId}-recovery-bootstrap-${agent.id}`,
+        );
+      }
+      if (agent.id === value.agentId) {
+        promptPresent = await this.#promptPresent(
+          agent.id,
+          value.clientMessageId,
+          `${command.requestId}-recovery-prompt-${agent.id}`,
+        );
+      }
+      agents.push({
+        agentId: agent.id,
+        workspaceId: agent.workspaceId ?? "unbound",
+        role,
+        effectId,
+        status: this.#normalizedStatus(agent),
+        activeTurnPresent: Boolean(agent.activeTurn),
+        archivedAtPresent: Boolean(agent.archivedAt),
+        parentPresent: Boolean(agent.labels["paseo.parent-agent-id"]),
+        titleExact: agent.title === value.title,
+        worktreeExact: agent.cwd === value.worktreePath,
+        labelsRunExact: Object.entries(value.labels).every(([key, expected]) => agent.labels[key] === expected),
+        profileExact: agent.labels[WORKER_LABEL.profile] === value.profile.sha256 &&
+          (agent.provider === paseoProvider(value.profile.provider) || agent.provider.startsWith(`${paseoProvider(value.profile.provider)}/`)) &&
+          (agent.model === null || agent.model === value.profile.model),
+        sessionExact: agent.labels[WORKER_LABEL.session] === value.session.sessionSha256,
+        bootstrapPresent,
+        promptPresent,
+        persistenceReferencePresent: agent.persistence !== null,
+        failureSignals: this.#failureSignals(agent),
+      });
+    }
+    agents.sort((left, right) => left.agentId.localeCompare(right.agentId));
+    const inventory: HostPrimaryRecoveryInventory = { complete: true, workspaces, agents };
+    return this.#observation(command, "desired", value.agentId, "", true, undefined, undefined, inventory);
   }
 
   async #agent(command: HostCommand): Promise<HostObservation> {
@@ -625,6 +743,13 @@ export class PaseoHostConnector implements DirectorHost {
         const observed = await this.#agent(command);
         if (observed.result.status !== "absent") return observed;
         const value = command.arguments;
+        const workspaceFact = await this.#roots().workspaces.ref(value.workspaceId!)
+          .refresh({ requestId: `${command.requestId}-create-workspace` });
+        if (!workspaceFact || workspaceFact.archivingAt || workspaceFact.title !== `${value.title} execution workspace` ||
+          workspaceFact.workspaceDirectory !== value.worktreePath ||
+          workspaceFact.workspaceKind !== "worktree" || workspaceFact.gitRuntime?.isPaseoOwnedWorktree !== false) {
+          throw new PaseoHostEffectError("HOST_PRIMARY_WORKSPACE_NOT_ACTIVE");
+        }
         const workspace = this.#roots().workspaces.ref(value.workspaceId!);
         const agent = await workspace.agents.create({
           config: this.#createInput(command),
@@ -638,6 +763,9 @@ export class PaseoHostConnector implements DirectorHost {
         return this.#observation(command, "owned_present", agent.id, labelDigest(value.labels!), false);
       }
       case "agent.observe":
+        if (command.arguments.effectKind === "primary_recovery.observe") {
+          return this.#recoveryInventory(command);
+        }
         return command.arguments.effectKind.startsWith("control_agent.") && command.arguments.parentAgentId
           ? this.#helper(command)
           : this.#agent(command);

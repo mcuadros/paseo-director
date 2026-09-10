@@ -248,3 +248,63 @@ func TestValidateObservationRequiresExactBoundedProviderUsage(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateObservationRequiresClosedRecoveryInventory(t *testing.T) {
+	command := Command{
+		RequestID: "request-recovery", IdempotencyKey: "effect-recovery", ExpectedVersion: 1,
+		Capability: CapabilityAgentObserve,
+		Arguments: Arguments{
+			Scope:      execution.Scope{ProjectID: "project-1", WorkspaceID: "workspace-1", TaskID: "task-1", RunID: "run-1"},
+			EffectKind: execution.EffectPrimaryRecoveryObserve, EffectID: "effect-recovery",
+			BindingHash: strings.Repeat("1", 64),
+		},
+	}
+	inventory := execution.PrimaryRecoveryInventory{
+		Complete: true,
+		Workspaces: []execution.NativeWorkspaceRecoveryFact{{
+			WorkspaceID: "workspace-native", Active: true, WorktreeExact: true, TitleExact: true, KindExact: true,
+		}},
+		Agents: []execution.NativeAgentRecoveryFact{{
+			AgentID: "agent-1", WorkspaceID: "workspace-native", Role: execution.ControlledTaskAgent,
+			EffectID: "agent-effect", Status: "error", TitleExact: true, WorktreeExact: true,
+			LabelsRunExact: true, ProfileExact: true, SessionExact: true, BootstrapPresent: true,
+			PromptPresent: true, PersistenceReferencePresent: true,
+			FailureSignals: []execution.ProviderFailureSignal{execution.ProviderFailurePolicy},
+		}},
+	}
+	valid := Observation{
+		RequestID: command.RequestID, Cursor: 1, ObservedAt: "1970-01-01T00:00:01Z",
+		Result: ObservationResult{
+			EffectID: command.Arguments.EffectID, Status: execution.ObservationDesired,
+			BindingHash: command.Arguments.BindingHash, PriorDispatcherAbsent: true,
+			MaximumAgeMillis: 30_000, Inventory: &inventory,
+		},
+	}
+	valid.Result.FactHash = ObservationResultHash(valid.Result)
+	if err := ValidateObservation(command, valid); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*execution.PrimaryRecoveryInventory){
+		"incomplete": func(value *execution.PrimaryRecoveryInventory) { value.Complete = false },
+		"unknown failure": func(value *execution.PrimaryRecoveryInventory) {
+			value.Agents[0].FailureSignals[0] = "raw-provider-output"
+		},
+		"duplicate agent": func(value *execution.PrimaryRecoveryInventory) {
+			value.Agents = append(value.Agents, value.Agents[0])
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := valid
+			cloned := inventory
+			cloned.Workspaces = append([]execution.NativeWorkspaceRecoveryFact(nil), inventory.Workspaces...)
+			cloned.Agents = append([]execution.NativeAgentRecoveryFact(nil), inventory.Agents...)
+			cloned.Agents[0].FailureSignals = append([]execution.ProviderFailureSignal(nil), inventory.Agents[0].FailureSignals...)
+			mutate(&cloned)
+			changed.Result.Inventory = &cloned
+			changed.Result.FactHash = ObservationResultHash(changed.Result)
+			if err := ValidateObservation(command, changed); err == nil {
+				t.Fatal("invalid recovery inventory was accepted")
+			}
+		})
+	}
+}

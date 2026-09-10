@@ -111,7 +111,8 @@ Controlled helper creation and handoff are implemented by the separate
 same lease-fenced durable budget and evidence-only paused reconciliation as
 other model turns. Pause, reconcile-first Resume, Task-scoped Cancel, and
 confirmed Project-wide Emergency stop are documented in
-[Execution controls](execution-controls.md). Task Agent replacement, Reviewer
-behavior, and delivery remain owned by their later M3/M4 Tasks. The independent
-m3.10 execution oracle remains test-only; production code does not import or
-duplicate it.
+[Execution controls](execution-controls.md). One poisoned-session-safe Task
+Agent replacement plus orphan/duplicate containment is implemented by
+[primary replacement and orphan recovery](primary-recovery.md). Reviewer
+behavior and delivery remain owned by M4. The independent m3.10 execution
+oracle remains test-only; production code does not import or duplicate it.

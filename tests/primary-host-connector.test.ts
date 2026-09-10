@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import type { PaseoAgent, PaseoWorkspace } from "@getpaseo/client";
@@ -211,6 +212,10 @@ function command(capability: HostCommand["capability"], argumentsValue: HostComm
   };
 }
 
+function directorMessageId(effectId: string): string {
+  return `message-${createHash("sha256").update(effectId).digest("hex").slice(0, 32)}`;
+}
+
 test("public connector creates one host view and one parentless primary then sends one notified prompt", async () => {
   const world = fakePaseo();
   const host = connector(world.client);
@@ -322,6 +327,99 @@ test("public connector creates one host view and one parentless primary then sen
     agentId: agent.id,
   }, ambiguousCost.cursor));
   assert.equal(duplicate.result.status, "ambiguous");
+});
+
+test("primary recovery inventory is complete, bounded, and redacts provider failure text", async () => {
+  const world = fakePaseo();
+  const host = connector(world.client);
+  const base = primaryArguments();
+  const workspace = await host.invoke(command("executionWorkspace.createManaged", {
+    ...base, effectKind: "host_view.create", effectId: "effect-recovery-workspace", workspaceId: undefined,
+  }));
+  const workspaceId = workspace.result.externalId!;
+  const labels = { ...base.labels!, [WORKER_LABEL.executionWorkspace]: workspaceId };
+  const createArguments = { ...base, workspaceId, labels };
+  const created = await host.invoke(command("taskAgent.createWithBootstrap", createArguments));
+  const agent = world.agents[0]!;
+  agent.timelineEntries.push({
+    item: {
+      type: "user_message", text: "fixed bootstrap marker",
+      messageId: directorMessageId(createArguments.effectId),
+    },
+  });
+  agent.timelineEntries.push({
+    item: { type: "user_message", text: "fixed real work marker", messageId: "message-recovery-real" },
+  });
+  agent.status = "error";
+  agent.activeTurn = null;
+  agent.attentionReason = "error";
+  agent.lastError = "request denied by policy";
+  agent.persistence = { provider: "codex", sessionId: "opaque-session", nativeHandle: "opaque-session", metadata: {} };
+
+  const recoveryArguments: HostCommandArguments = {
+    ...createArguments,
+    effectKind: "primary_recovery.observe",
+    effectId: "effect-primary-recovery-observe",
+    agentId: agent.id,
+    clientMessageId: "message-recovery-real",
+    labels: {
+      [WORKER_LABEL.project]: createArguments.scope.projectId,
+      [WORKER_LABEL.workspace]: createArguments.scope.workspaceId,
+      [WORKER_LABEL.task]: createArguments.scope.taskId,
+      [WORKER_LABEL.run]: createArguments.scope.runId,
+    },
+  };
+  const observation = await host.invoke(command("agent.observe", recoveryArguments, created.cursor));
+  assert.equal(observation.result.status, "desired");
+  assert.equal(observation.result.inventory?.complete, true);
+  assert.equal(observation.result.inventory?.workspaces.length, 1);
+  assert.deepEqual(observation.result.inventory?.agents[0], {
+    agentId: agent.id,
+    workspaceId,
+    role: "task_agent",
+    effectId: createArguments.effectId,
+    status: "error",
+    activeTurnPresent: false,
+    archivedAtPresent: false,
+    parentPresent: false,
+    titleExact: true,
+    worktreeExact: true,
+    labelsRunExact: true,
+    profileExact: true,
+    sessionExact: true,
+    bootstrapPresent: true,
+    promptPresent: true,
+    persistenceReferencePresent: true,
+    failureSignals: ["policy_rejection"],
+  });
+  assert.equal(JSON.stringify(observation).includes(agent.lastError), false);
+  assert.equal(world.calls.agentArchives, 0);
+
+  const matrix = [
+    ["authentication required", "authentication_rejection"],
+    ["unsupported model configuration", "configuration_rejection"],
+    ["provider crashed", "provider_terminal"],
+    ["temporarily unavailable 503", "transient_service"],
+    ["opaque terminal failure", "unclassified"],
+  ] as const;
+  let cursor = observation.cursor;
+  for (const [message, signal] of matrix) {
+    agent.lastError = message;
+    const next = await host.invoke(command("agent.observe", {
+      ...recoveryArguments,
+      effectId: `effect-primary-recovery-${signal}`,
+    }, cursor));
+    cursor = next.cursor;
+    assert.deepEqual(next.result.inventory?.agents[0]?.failureSignals, [signal]);
+    assert.equal(JSON.stringify(next).includes(message), false);
+  }
+
+  world.agents.push({ ...agent, id: "agent-orphan", timelineEntries: [...agent.timelineEntries] });
+  const orphan = await host.invoke(command("agent.observe", {
+    ...recoveryArguments, effectId: "effect-primary-recovery-orphan",
+  }, cursor));
+  assert.equal(orphan.result.inventory?.agents.length, 2);
+  assert.equal(world.calls.agentArchives, 0, "read-only recovery inventory must not contain resources");
 });
 
 test("control observations wait at an active boundary and archive exactly once", async () => {

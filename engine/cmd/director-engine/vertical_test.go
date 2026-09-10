@@ -695,14 +695,14 @@ func TestPrimaryLifecycleParksWrongWorktreePathBranchAndBaseBeforeDispatch(t *te
 	}
 }
 
-func TestTerminalErrorAndPermissionCallbacksSynchronouslyEnqueueThenPark(t *testing.T) {
+func TestTerminalErrorAndPermissionCallbacksSynchronouslyEnqueueThenRecoverOrPark(t *testing.T) {
 	for _, terminal := range []struct {
 		name string
 		kind execution.CompletionEventKind
 		code execution.NeedCode
 	}{
-		{"error", execution.CompletionEventError, "agent_terminal_error"},
-		{"permission", execution.CompletionEventPermission, "agent_terminal_permission"},
+		{"error", execution.CompletionEventError, execution.NeedRecoveryFailureRequiresHuman},
+		{"permission", execution.CompletionEventPermission, execution.NeedRecoveryFailureRequiresHuman},
 	} {
 		t.Run(terminal.name, func(t *testing.T) {
 			fixture := startVerticalDolt(t)

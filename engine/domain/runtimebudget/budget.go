@@ -1125,3 +1125,27 @@ func ValidLedgerForLease(ledger Ledger, leaseEpoch uint64) bool {
 	}
 	return true
 }
+
+// RebindOutstandingReservations changes only the fencing epoch of unreleased
+// work after a Project takeover has independently proved the prior engine and
+// every dispatcher absent. Consumption, evidence, warnings, and count budgets
+// remain unchanged.
+func RebindOutstandingReservations(input Ledger, fromEpoch, toEpoch uint64) (Ledger, error) {
+	ledger := clone(input)
+	if !ValidLedger(ledger) || fromEpoch == 0 || toEpoch <= fromEpoch {
+		return input, ErrInvalid
+	}
+	for index := range ledger.Reservations {
+		if ledger.Reservations[index].Released {
+			continue
+		}
+		if ledger.Reservations[index].LeaseEpoch != fromEpoch {
+			return input, ErrInvalid
+		}
+		ledger.Reservations[index].LeaseEpoch = toEpoch
+	}
+	if !ValidLedgerForLease(ledger, toEpoch) {
+		return input, ErrInvalid
+	}
+	return ledger, nil
+}

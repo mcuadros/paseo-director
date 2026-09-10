@@ -92,14 +92,17 @@ func expectedEffect(runID string, kind domainexecution.EffectKind) string {
 	return stableID("effect", runID, string(kind))
 }
 
-func validDurableEffect(run domain.Run, effect domainexecution.Effect, kind domainexecution.EffectKind, attempts uint32, required bool) error {
+func validDurableEffect(run domain.Run, effect domainexecution.Effect, kind domainexecution.EffectKind, attempts uint32, required bool, expectedID string) error {
 	if effect.ID == "" {
 		if required {
 			return fmt.Errorf("%s intent is missing", kind)
 		}
 		return nil
 	}
-	if effect.ID != expectedEffect(run.ID, kind) || effect.Kind != kind ||
+	if expectedID == "" {
+		expectedID = expectedEffect(run.ID, kind)
+	}
+	if effect.ID != expectedID || effect.Kind != kind ||
 		effect.AttemptLimit != attempts || effect.Attempt > effect.AttemptLimit {
 		return fmt.Errorf("%s intent identity is invalid", kind)
 	}
@@ -180,13 +183,23 @@ func validateExecutionGraph(run domain.Run) error {
 		!domainexecution.PrimarySessionMatchesProfiles(state.PrimarySession, *state.EffectiveProfiles) ||
 		state.PrimarySession.Scope != state.Scope ||
 		state.PrimarySession.EffectiveProfilesSHA256 != state.EffectiveProfilesSHA256 ||
-		state.PrimarySession.AgentIntentID != expectedEffect(run.ID, domainexecution.EffectAgentCreate) {
+		state.PrimarySession.AgentIntentID != func() string {
+			if state.PrimaryRecovery.Authority != nil && state.PrimaryRecovery.Phase == domainexecution.PrimaryRecoveryComplete {
+				return state.PrimaryRecovery.Authority.ReplacementEffectID
+			}
+			return expectedEffect(run.ID, domainexecution.EffectAgentCreate)
+		}() {
 		return errors.New("Run execution scope or repository binding is invalid")
 	}
 	if !runtimebudget.ValidLedger(state.Budget) ||
 		!runtimebudget.ValidTurnDemand(state.Budget.Policy, state.TurnBudgetDemand) ||
 		state.Budget.Policy.Revision != state.EffectiveProfiles.ConfigurationSHA256() {
 		return errors.New("Run runtime budget is invalid")
+	}
+	legacyRecovery := state.RecoveryPolicy.SchemaVersion == "" && state.PrimaryRecovery.SchemaVersion == ""
+	if (!legacyRecovery && !domainexecution.ValidPrimaryRecoveryPolicy(state.RecoveryPolicy)) ||
+		!domainexecution.ValidPrimaryRecovery(state.PrimaryRecovery, state) {
+		return errors.New("Run primary recovery state is invalid")
 	}
 	if !domainexecution.ValidControlPolicy(state.ControlPolicy) || !domainexecution.ValidRunControl(state.Control, state) {
 		return errors.New("Run execution control is invalid")
@@ -209,22 +222,38 @@ func validateExecutionGraph(run domain.Run) error {
 		seenMCPCommands[receipt.CommandKey] = struct{}{}
 	}
 	for _, fixture := range []struct {
-		effect   domainexecution.Effect
-		kind     domainexecution.EffectKind
-		attempts uint32
-		required bool
+		effect     domainexecution.Effect
+		kind       domainexecution.EffectKind
+		attempts   uint32
+		required   bool
+		expectedID string
 	}{
-		{state.Worktree, domainexecution.EffectWorktreeCreate, 2, true},
-		{state.HostView, domainexecution.EffectHostViewCreate, 2, true},
-		{state.Boundary, domainexecution.EffectBoundaryMaterialize, 2, true},
-		{state.Setup, domainexecution.EffectSetupRun, 2, setupRequired(state.LifecycleSurfaces)},
-		{state.Agent, domainexecution.EffectAgentCreate, 2, false},
-		{state.AgentPrompt, domainexecution.EffectAgentPrompt, 2, false},
-		{state.AgentArchive, domainexecution.EffectAgentArchive, 2, false},
-		{state.HostViewArchive, domainexecution.EffectHostViewArchive, 2, false},
-		{state.WorktreeRemove, domainexecution.EffectWorktreeRemove, 1, false},
+		{state.Worktree, domainexecution.EffectWorktreeCreate, 2, true, ""},
+		{state.HostView, domainexecution.EffectHostViewCreate, 2, true, ""},
+		{state.Boundary, domainexecution.EffectBoundaryMaterialize, 2, true, ""},
+		{state.Setup, domainexecution.EffectSetupRun, 2, setupRequired(state.LifecycleSurfaces), ""},
+		{state.Agent, domainexecution.EffectAgentCreate, 2, false, func() string {
+			if state.PrimaryRecovery.Authority != nil && state.PrimaryRecovery.Phase == domainexecution.PrimaryRecoveryComplete {
+				return state.PrimaryRecovery.Authority.ReplacementEffectID
+			}
+			return ""
+		}()},
+		{state.AgentPrompt, domainexecution.EffectAgentPrompt, func() uint32 {
+			if state.PrimaryRecovery.Authority != nil && state.PrimaryRecovery.Phase == domainexecution.PrimaryRecoveryComplete {
+				return 1
+			}
+			return 2
+		}(), false, func() string {
+			if state.PrimaryRecovery.Authority != nil && state.PrimaryRecovery.Phase == domainexecution.PrimaryRecoveryComplete {
+				return state.PrimaryRecovery.ReplacementPrompt.ID
+			}
+			return ""
+		}()},
+		{state.AgentArchive, domainexecution.EffectAgentArchive, 2, false, ""},
+		{state.HostViewArchive, domainexecution.EffectHostViewArchive, 2, false, ""},
+		{state.WorktreeRemove, domainexecution.EffectWorktreeRemove, 1, false, ""},
 	} {
-		if err := validDurableEffect(run, fixture.effect, fixture.kind, fixture.attempts, fixture.required); err != nil {
+		if err := validDurableEffect(run, fixture.effect, fixture.kind, fixture.attempts, fixture.required, fixture.expectedID); err != nil {
 			return err
 		}
 	}
@@ -456,6 +485,12 @@ func cleanupIntentFacts(state domainexecution.State) []domainexecution.CleanupIn
 			EffectID: effect.ID, Kind: effect.Kind, Phase: effect.Phase, Attempt: effect.Attempt,
 		})
 	}
+	if state.PrimaryRecovery.Archive.ID != "" {
+		effect := state.PrimaryRecovery.Archive
+		result = append(result, domainexecution.CleanupIntentFact{
+			EffectID: effect.ID, Kind: effect.Kind, Phase: effect.Phase, Attempt: effect.Attempt,
+		})
+	}
 	return result
 }
 
@@ -649,20 +684,26 @@ func candidateRequest(run domain.Run) runtimeport.CandidateRequest {
 func startupSnapshot(request StartupCommand, observed observedStartupRun) domainexecution.StartupReconciliation {
 	run := observed.durable.run
 	snapshot := domainexecution.StartupReconciliation{
-		SchemaVersion:      domainexecution.StartupReconciliationSchemaVersion,
-		ID:                 stableID("startup-reconciliation", run.ID, request.RequestID),
-		ObservedRunVersion: run.Version,
-		ObservedAtMillis:   request.NowMillis,
-		CommandCount:       uint64(len(observed.durable.commands)),
-		CommandChainHash:   hashText(strings.Join(observed.durable.commands, "\x1f")),
-		WorktreeID:         run.Execution.Worktree.ExternalID,
-		WorkspaceID:        run.Execution.HostView.ExternalID,
-		AgentID:            run.Execution.Agent.ExternalID,
-		HelperCount:        uint64(len(run.Execution.Helpers)),
-		HelperChainHash:    domainexecution.HelperGraphHash(run.Execution.Helpers),
-		CleanupIntents:     cleanupIntentFacts(run.Execution),
-		FrontierEffectKind: observed.frontierKind,
-		HostCursor:         observed.hostCursor,
+		SchemaVersion:             domainexecution.StartupReconciliationSchemaVersion,
+		ID:                        stableID("startup-reconciliation", run.ID, request.RequestID),
+		ObservedRunVersion:        run.Version,
+		ObservedAtMillis:          request.NowMillis,
+		CommandCount:              uint64(len(observed.durable.commands)),
+		CommandChainHash:          hashText(strings.Join(observed.durable.commands, "\x1f")),
+		WorktreeID:                run.Execution.Worktree.ExternalID,
+		WorkspaceID:               run.Execution.HostView.ExternalID,
+		AgentID:                   run.Execution.Agent.ExternalID,
+		HelperCount:               uint64(len(run.Execution.Helpers)),
+		HelperChainHash:           domainexecution.HelperGraphHash(run.Execution.Helpers),
+		CleanupIntents:            cleanupIntentFacts(run.Execution),
+		FrontierEffectKind:        observed.frontierKind,
+		HostCursor:                observed.hostCursor,
+		PrimaryRecoveryPhase:      run.Execution.PrimaryRecovery.Phase,
+		OriginalPrimaryAgentID:    run.Execution.PrimaryRecovery.OriginalAgent.ExternalID,
+		ReplacementPrimaryAgentID: run.Execution.PrimaryRecovery.ReplacementAgent.ExternalID,
+	}
+	if run.Execution.PrimaryRecovery.Authority != nil {
+		snapshot.ReplacementAuthorityID = run.Execution.PrimaryRecovery.Authority.ID
 	}
 	if observed.operational != nil {
 		snapshot.OperationalObservationID = observed.operational.ID
@@ -786,6 +827,21 @@ func duplicateExecutionIdentity(runs []durableStartupRun) error {
 			}
 			seen[key] = durable.run.ID
 		}
+		if state.PrimaryRecovery.SchemaVersion != "" {
+			for kind, identity := range map[string]string{
+				"original-agent":    state.PrimaryRecovery.OriginalAgent.ExternalID,
+				"replacement-agent": state.PrimaryRecovery.ReplacementAgent.ExternalID,
+			} {
+				if identity == "" {
+					continue
+				}
+				key := "agent\x1f" + identity
+				if owner, duplicate := seen[key]; duplicate && owner != durable.run.ID {
+					return fmt.Errorf("duplicate %s execution identity across Runs", kind)
+				}
+				seen[key] = durable.run.ID
+			}
+		}
 	}
 	return nil
 }
@@ -838,7 +894,8 @@ func (controller *Controller) ReconcileStartup(ctx context.Context, command Star
 		}
 	}
 	for _, durable := range durableRuns {
-		if !currentLease(durable.project, durable.run.Execution.LeaseBinding, command.NowMillis) {
+		if !currentLease(durable.project, durable.run.Execution.LeaseBinding, command.NowMillis) &&
+			!safeRecoveryTakeover(durable.project, durable.run) {
 			return StartupResult{}, fmt.Errorf("startup scan %s: %w", durable.run.ID, ErrProjectLeaseUnavailable)
 		}
 		workspace, err := controller.store.Workspace(ctx, durable.run.Execution.Scope.WorkspaceID)
@@ -877,6 +934,23 @@ func (controller *Controller) ReconcileStartup(ctx context.Context, command Star
 		run, err = controller.persistStartupRun(ctx, command, observed)
 		if err != nil {
 			return StartupResult{}, err
+		}
+		if !currentLease(observed.durable.project, run.Execution.LeaseBinding, command.NowMillis) &&
+			safeRecoveryTakeover(observed.durable.project, run) && run.Execution.PrimaryRecovery.SchemaVersion == "" {
+			recovery, recoveryErr := controller.RequestPrimaryRecovery(ctx, PrimaryRecoveryCommand{
+				SchemaVersion: PrimaryRecoveryCommandSchemaVersion,
+				RequestID:     stableID("startup-primary-recovery", command.RequestID, run.ID),
+				RunID:         run.ID, ExpectedRunVersion: run.Version, Trigger: domainexecution.RecoveryLeaseTakeover,
+				RepeatedFailureCount: 1, NowMillis: command.NowMillis,
+			})
+			if recoveryErr != nil {
+				return StartupResult{}, recoveryErr
+			}
+			run = recovery.Run
+			entry = startupRunResult(run)
+			entry.Progressed = recovery.Progressed
+			result.Runs = append(result.Runs, entry)
+			continue
 		}
 		if run.Execution.Control.SchemaVersion != "" &&
 			run.Execution.Control.Intent.Kind == domainexecution.ControlCancelTask &&

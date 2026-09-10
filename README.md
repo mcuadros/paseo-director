@@ -47,6 +47,13 @@ Paseo 0.7.2 connector implements these public workspace/agent effects and
 reconciles exact native facts without owning retry or workflow policy. See
 [Primary Task Agent lifecycle](docs/primary-lifecycle.md).
 
+Primary replacement now reconciles durable and exact native facts after
+provider, connector, daemon, callback, lease, or coordinator interruption. It
+adopts a correct persistent session, refuses to re-prompt a poisoned one,
+consumes at most one lease-fenced replacement authority, preserves unrelated
+Reviewer/helper/orphan resources, and routes every ambiguity or second failure
+to Needs you. See [Primary replacement and orphan recovery](docs/primary-recovery.md).
+
 The walking skeleton also retains one explicitly fake execution path. It moves one
 queued Task through engine-owned Eligibility, Launch, Retry, Escalation,
 Routing, and fake-terminal Closure reductions; a Director-owned disposable Git
@@ -57,8 +64,8 @@ every persisted walking-skeleton Run, validates its immutable Command/Event and
 Candidate graph, recovers exact execution IDs and cleanup intents, refreshes
 the external frontier through a replaceable policy-free connector, and resumes
 one reducer-authorized transition without duplicating an unknown effect.
-The fake adapter remains test-only; helper behavior, runtime budgets, controls,
-replacement, and validation/review/delivery remain later milestone work. See
+The fake adapter remains test-only; validation/review/delivery remain later
+milestone work. See
 [Fake execution vertical path](docs/fake-execution.md).
 
 Alongside that fake path, the walking skeleton establishes the process,
