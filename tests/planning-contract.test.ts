@@ -63,7 +63,7 @@ test("planning identity and vocabularies are closed and versioned", () => {
     "priority_fifo",
     "key_asc",
   ]);
-  assert.equal(PLANNING_ALLOWED_ACTIONS.length, 12);
+  assert.equal(PLANNING_ALLOWED_ACTIONS.length, 17);
   assert.equal(PLANNING_ATTENTION_CODES.length, 12);
   assert.equal(PLANNING_CONFIGURATION_KEYS.length, 7);
 });

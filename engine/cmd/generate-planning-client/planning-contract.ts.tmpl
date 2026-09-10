@@ -16,6 +16,12 @@ export const PLANNING_QUERY_NAMES = [
 ] as const;
 export const PLANNING_MUTATION_NAME = {{quote .MutationName}} as const;
 export const PLANNING_QUERY_PATH = {{quote .QueryPath}} as const;
+export const PLANNING_MUTATION_PATH = {{quote .MutationPath}} as const;
+export const PLANNING_MUTATION_ACTOR_HEADERS = {
+  kind: {{quote .MutationActorHeaders.Kind}},
+  id: {{quote .MutationActorHeaders.ID}},
+  session: {{quote .MutationActorHeaders.Session}},
+} as const;
 export const PLANNING_MAXIMUM_REQUEST_BYTES = {{.MaximumRequestBytes}} as const;
 export const PLANNING_MAXIMUM_RESPONSE_BYTES = {{.MaximumResponseBytes}} as const;
 export const PLANNING_MAXIMUM_PAGE_SIZE = {{.MaximumPageSize}} as const;
@@ -104,7 +110,8 @@ export const projectSummarySchema = z.strictObject({
   state: z.enum(["active", "paused", "degraded", "archived"]),
   workspaceCount: uint64DecimalSchema,
   taskCounts: taskCountsSchema,
-  allowedActions: z.array(allowedActionSchema).max(16).readonly(),
+  control: explanationSchema.nullable(),
+  allowedActions: z.array(allowedActionSchema).max(20).readonly(),
 });
 
 export const workspaceSummarySchema = z.strictObject({
@@ -115,7 +122,7 @@ export const workspaceSummarySchema = z.strictObject({
   health: z.enum(["healthy", "degraded", "unavailable"]),
   defaultBaseBranch: boundedPlanningTextSchema,
   taskCounts: taskCountsSchema,
-  allowedActions: z.array(allowedActionSchema).max(16).readonly(),
+  allowedActions: z.array(allowedActionSchema).max(20).readonly(),
 });
 
 export const epicSummarySchema = z.strictObject({
@@ -131,7 +138,7 @@ export const epicSummarySchema = z.strictObject({
     total: uint64DecimalSchema,
   }),
   blockers: z.array(explanationSchema).max(64).readonly(),
-  allowedActions: z.array(allowedActionSchema).max(16).readonly(),
+  allowedActions: z.array(allowedActionSchema).max(20).readonly(),
 });
 
 export const taskQueueFactsSchema = z.strictObject({
@@ -185,7 +192,7 @@ export const taskSummarySchema = z.strictObject({
   updatedAt: z.iso.datetime(),
   blockers: z.array(explanationSchema).max(64).readonly(),
   needsYou: z.array(explanationSchema).max(64).readonly(),
-  allowedActions: z.array(allowedActionSchema).max(16).readonly(),
+  allowedActions: z.array(allowedActionSchema).max(20).readonly(),
   schedulingFacts: taskQueueFactsSchema,
   runtimeBudget: runtimeBudgetSummarySchema.nullable(),
 });
@@ -415,6 +422,28 @@ export const planningMutationIntentSchema = z.discriminatedUnion("type", [
     taskId: opaquePlanningIdSchema,
   }),
   z.strictObject({ type: z.literal("dependency.override"), ...dependencyFields }),
+  z.strictObject({
+    type: z.literal("project.pause"),
+    projectId: opaquePlanningIdSchema,
+  }),
+  z.strictObject({
+    type: z.literal("project.resume"),
+    projectId: opaquePlanningIdSchema,
+  }),
+  z.strictObject({
+    type: z.literal("project.emergency-stop.prepare"),
+    projectId: opaquePlanningIdSchema,
+  }),
+  z.strictObject({
+    type: z.literal("project.emergency-stop.confirm"),
+    projectId: opaquePlanningIdSchema,
+  }),
+  z.strictObject({
+    type: z.literal("task.cancel"),
+    projectId: opaquePlanningIdSchema,
+    taskId: opaquePlanningIdSchema,
+    runId: opaquePlanningIdSchema,
+  }),
 ]);
 
 export const planningMutationInputSchema = z.strictObject({
@@ -429,13 +458,19 @@ export const planningMutationInputSchema = z.strictObject({
   intent: planningMutationIntentSchema,
 }).superRefine((value, context) => {
   if (
-    (value.intent.type === "configuration.apply" ||
-      value.intent.type === "dependency.override") &&
+    (value.intent.type === "configuration.apply" || value.intent.type === "dependency.override") &&
     (value.humanApprovalRef === null || value.acknowledgementRevision === null)
   ) {
     context.addIssue({
       code: "custom",
       message: "this intent requires human approval and acknowledgement bindings",
+      path: ["humanApprovalRef"],
+    });
+  }
+  if (value.intent.type === "project.emergency-stop.confirm" && value.humanApprovalRef === null) {
+    context.addIssue({
+      code: "custom",
+      message: "emergency stop requires a fresh server confirmation reference",
       path: ["humanApprovalRef"],
     });
   }
@@ -451,6 +486,7 @@ export const planningMutationResultSchema = z.strictObject({
   message: boundedPlanningTextSchema,
   updatedVersion: uint64DecimalSchema.nullable(),
   preview: configurationPreviewSchema.nullable(),
+  confirmationRef: opaquePlanningIdSchema.nullable(),
 });
 
 export type DerivedState = z.output<typeof derivedStateSchema>;
@@ -493,6 +529,11 @@ function actionTargetsIntent(
       return action.targetId === null;
     case "project.update":
       return action.targetId === intent.projectId;
+    case "project.pause":
+    case "project.resume":
+    case "project.emergency-stop.prepare":
+    case "project.emergency-stop.confirm":
+      return action.targetId === intent.projectId;
     case "epic.create":
       return action.targetId === intent.projectId;
     case "epic.update":
@@ -502,6 +543,8 @@ function actionTargetsIntent(
     case "task.update":
     case "task.launch-now":
       return action.targetId === intent.taskId;
+    case "task.cancel":
+      return action.targetId === intent.runId;
     case "dependency.add":
     case "dependency.remove":
     case "dependency.override":

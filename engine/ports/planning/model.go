@@ -145,6 +145,7 @@ type ProjectSummary struct {
 	State          string          `json:"state"`
 	WorkspaceCount string          `json:"workspaceCount"`
 	TaskCounts     TaskCounts      `json:"taskCounts"`
+	Control        *Explanation    `json:"control"`
 	AllowedActions []AllowedAction `json:"allowedActions"`
 }
 

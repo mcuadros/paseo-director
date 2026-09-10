@@ -13,21 +13,24 @@ import (
 
 // Request binds one effect to its exact source, worktree, branch, and Run.
 type Request struct {
-	Scope             execution.Scope                `json:"scope"`
-	Effect            execution.Effect               `json:"effect"`
-	LeaseBinding      execution.LeaseBinding         `json:"leaseBinding"`
-	Repository        execution.RepositoryBinding    `json:"repository"`
-	SourcePath        string                         `json:"sourcePath"`
-	WorktreePath      string                         `json:"worktreePath"`
-	Branch            string                         `json:"branch"`
-	BaseSHA           string                         `json:"baseSha"`
-	WorktreeID        string                         `json:"worktreeId,omitempty"`
-	BindingHash       string                         `json:"bindingHash"`
-	LifecycleSurfaces execution.LifecycleSurfaces    `json:"lifecycleSurfaces"`
-	LifecycleApproval *execution.LifecycleApproval   `json:"lifecycleApproval,omitempty"`
-	LifecycleDigest   string                         `json:"lifecycleDigest"`
-	Isolation         execution.IsolationObservation `json:"isolation"`
-	IsolationDigest   string                         `json:"isolationDigest,omitempty"`
+	Scope                     execution.Scope                `json:"scope"`
+	Effect                    execution.Effect               `json:"effect"`
+	LeaseBinding              execution.LeaseBinding         `json:"leaseBinding"`
+	Repository                execution.RepositoryBinding    `json:"repository"`
+	SourcePath                string                         `json:"sourcePath"`
+	WorktreePath              string                         `json:"worktreePath"`
+	Branch                    string                         `json:"branch"`
+	BaseSHA                   string                         `json:"baseSha"`
+	WorktreeID                string                         `json:"worktreeId,omitempty"`
+	BindingHash               string                         `json:"bindingHash"`
+	LifecycleSurfaces         execution.LifecycleSurfaces    `json:"lifecycleSurfaces"`
+	LifecycleApproval         *execution.LifecycleApproval   `json:"lifecycleApproval,omitempty"`
+	LifecycleDigest           string                         `json:"lifecycleDigest"`
+	Isolation                 execution.IsolationObservation `json:"isolation"`
+	IsolationDigest           string                         `json:"isolationDigest,omitempty"`
+	RecoveryWorktreePaths     []string                       `json:"recoveryWorktreePaths,omitempty"`
+	ControlRecoveryArtifactID string                         `json:"controlRecoveryArtifactId,omitempty"`
+	ControlCleanupAuthorized  bool                           `json:"controlCleanupAuthorized"`
 }
 
 // CandidateRequest asks for external Git facts bound to one immutable claim.
@@ -45,18 +48,20 @@ type CandidateRequest struct {
 // parent, repository, checkout mode, and ADR-0014 facts. Implementations do
 // not decide admission or retry.
 type HelperRequest struct {
-	Scope               execution.Scope                `json:"scope"`
-	Helper              execution.Helper               `json:"helper"`
-	Effect              execution.Effect               `json:"effect"`
-	LeaseBinding        execution.LeaseBinding         `json:"leaseBinding"`
-	Repository          execution.RepositoryBinding    `json:"repository"`
-	BindingHash         string                         `json:"bindingHash"`
-	PrimaryWorktreePath string                         `json:"primaryWorktreePath"`
-	LifecycleSurfaces   execution.LifecycleSurfaces    `json:"lifecycleSurfaces"`
-	LifecycleApproval   *execution.LifecycleApproval   `json:"lifecycleApproval,omitempty"`
-	LifecycleDigest     string                         `json:"lifecycleDigest"`
-	Isolation           execution.IsolationObservation `json:"isolation"`
-	OperationalPolicy   execution.OperationalPolicy    `json:"operationalPolicy"`
+	Scope                     execution.Scope                `json:"scope"`
+	Helper                    execution.Helper               `json:"helper"`
+	Effect                    execution.Effect               `json:"effect"`
+	LeaseBinding              execution.LeaseBinding         `json:"leaseBinding"`
+	Repository                execution.RepositoryBinding    `json:"repository"`
+	BindingHash               string                         `json:"bindingHash"`
+	PrimaryWorktreePath       string                         `json:"primaryWorktreePath"`
+	LifecycleSurfaces         execution.LifecycleSurfaces    `json:"lifecycleSurfaces"`
+	LifecycleApproval         *execution.LifecycleApproval   `json:"lifecycleApproval,omitempty"`
+	LifecycleDigest           string                         `json:"lifecycleDigest"`
+	Isolation                 execution.IsolationObservation `json:"isolation"`
+	OperationalPolicy         execution.OperationalPolicy    `json:"operationalPolicy"`
+	ControlRecoveryArtifactID string                         `json:"controlRecoveryArtifactId,omitempty"`
+	ControlCleanupAuthorized  bool                           `json:"controlCleanupAuthorized"`
 }
 
 // HelperPort is the runtime-only companion for controlled helpers. The

@@ -8,6 +8,12 @@
     "planning.task-detail"
   ],
   "mutationName": "planning.mutate",
+  "mutationPath": "/v1/planning/mutate",
+  "mutationActorHeaders": {
+    "kind": "x-director-actor-kind",
+    "id": "x-director-actor-id",
+    "session": "x-director-actor-session"
+  },
   "queryPath": "/v1/planning/query",
   "maximumRequestBytes": 65536,
   "maximumResponseBytes": 4194304,
@@ -62,7 +68,12 @@
     "configuration.preview",
     "configuration.apply",
     "task.launch-now",
-    "dependency.override"
+    "dependency.override",
+    "project.pause",
+    "project.resume",
+    "project.emergency-stop.prepare",
+    "project.emergency-stop.confirm",
+    "task.cancel"
   ],
   "configurationKeys": [
     "launchPolicy",
@@ -150,7 +161,12 @@
         "configuration.preview",
         "configuration.apply",
         "task.launch-now",
-        "dependency.override"
+        "dependency.override",
+        "project.pause",
+        "project.resume",
+        "project.emergency-stop.prepare",
+        "project.emergency-stop.confirm",
+        "task.cancel"
       ]
     },
     "explanation": {
@@ -261,6 +277,7 @@
         "state",
         "workspaceCount",
         "taskCounts",
+        "control",
         "allowedActions"
       ],
       "properties": {
@@ -270,9 +287,12 @@
         "state": { "enum": ["active", "paused", "degraded", "archived"] },
         "workspaceCount": { "$ref": "#/$defs/uint64Decimal" },
         "taskCounts": { "$ref": "#/$defs/taskCounts" },
+        "control": {
+          "anyOf": [{ "$ref": "#/$defs/explanation" }, { "type": "null" }]
+        },
         "allowedActions": {
           "type": "array",
-          "maxItems": 16,
+          "maxItems": 20,
           "items": { "$ref": "#/$defs/allowedAction" }
         }
       }
@@ -300,7 +320,7 @@
         "taskCounts": { "$ref": "#/$defs/taskCounts" },
         "allowedActions": {
           "type": "array",
-          "maxItems": 16,
+          "maxItems": 20,
           "items": { "$ref": "#/$defs/allowedAction" }
         }
       }
@@ -353,7 +373,7 @@
         },
         "allowedActions": {
           "type": "array",
-          "maxItems": 16,
+          "maxItems": 20,
           "items": { "$ref": "#/$defs/allowedAction" }
         }
       }
@@ -485,7 +505,7 @@
         },
         "allowedActions": {
           "type": "array",
-          "maxItems": 16,
+          "maxItems": 20,
           "items": { "$ref": "#/$defs/allowedAction" }
         },
         "schedulingFacts": { "$ref": "#/$defs/schedulerFacts" },
@@ -921,7 +941,12 @@
             { "$ref": "#/$defs/configurationPreviewIntent" },
             { "$ref": "#/$defs/configurationApplyIntent" },
             { "$ref": "#/$defs/taskLaunchNowIntent" },
-            { "$ref": "#/$defs/dependencyOverrideIntent" }
+            { "$ref": "#/$defs/dependencyOverrideIntent" },
+            { "$ref": "#/$defs/projectPauseIntent" },
+            { "$ref": "#/$defs/projectResumeIntent" },
+            { "$ref": "#/$defs/emergencyPrepareIntent" },
+            { "$ref": "#/$defs/emergencyConfirmIntent" },
+            { "$ref": "#/$defs/taskCancelIntent" }
           ]
         }
       }
@@ -1066,10 +1091,57 @@
         "dependencyId": { "$ref": "#/$defs/opaqueId" }
       }
     },
+    "projectPauseIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "projectId"],
+      "properties": {
+        "type": { "const": "project.pause" },
+        "projectId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "projectResumeIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "projectId"],
+      "properties": {
+        "type": { "const": "project.resume" },
+        "projectId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "emergencyPrepareIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "projectId"],
+      "properties": {
+        "type": { "const": "project.emergency-stop.prepare" },
+        "projectId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "emergencyConfirmIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "projectId"],
+      "properties": {
+        "type": { "const": "project.emergency-stop.confirm" },
+        "projectId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "taskCancelIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "projectId", "taskId", "runId"],
+      "properties": {
+        "type": { "const": "task.cancel" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "taskId": { "$ref": "#/$defs/opaqueId" },
+        "runId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
     "planningMutationResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "contractVersion", "contractHash", "cursor", "requestId", "status", "message", "updatedVersion", "preview"],
+      "required": ["schemaVersion", "contractVersion", "contractHash", "cursor", "requestId", "status", "message", "updatedVersion", "preview", "confirmationRef"],
       "properties": {
         "schemaVersion": { "const": 1 },
         "contractVersion": { "const": "director-planning/v1" },
@@ -1079,7 +1151,8 @@
         "status": { "enum": ["accepted", "rejected"] },
         "message": { "$ref": "#/$defs/boundedText" },
         "updatedVersion": { "anyOf": [{ "$ref": "#/$defs/uint64Decimal" }, { "type": "null" }] },
-        "preview": { "anyOf": [{ "$ref": "#/$defs/configurationPreview" }, { "type": "null" }] }
+        "preview": { "anyOf": [{ "$ref": "#/$defs/configurationPreview" }, { "type": "null" }] },
+        "confirmationRef": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] }
       }
     }
   }

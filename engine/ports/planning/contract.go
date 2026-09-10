@@ -24,6 +24,8 @@ type Definition struct {
 	ContractVersion      string                     `json:"contractVersion"`
 	QueryNames           []string                   `json:"queryNames"`
 	MutationName         string                     `json:"mutationName"`
+	MutationPath         string                     `json:"mutationPath"`
+	MutationActorHeaders MutationActorHeaders       `json:"mutationActorHeaders"`
 	QueryPath            string                     `json:"queryPath"`
 	MaximumRequestBytes  int                        `json:"maximumRequestBytes"`
 	MaximumResponseBytes int                        `json:"maximumResponseBytes"`
@@ -38,6 +40,12 @@ type Definition struct {
 	AllowedActions       []string                   `json:"allowedActions"`
 	ConfigurationKeys    []string                   `json:"configurationKeys"`
 	Definitions          map[string]json.RawMessage `json:"$defs"`
+}
+
+type MutationActorHeaders struct {
+	Kind    string `json:"kind"`
+	ID      string `json:"id"`
+	Session string `json:"session"`
 }
 
 var requiredDefinitions = []string{
@@ -166,6 +174,14 @@ func ParseDefinition(schema []byte) (Definition, error) {
 	}
 	if !slices.Equal(definition.QueryNames, []string{"planning.query", "planning.task-detail"}) || definition.MutationName != "planning.mutate" {
 		return Definition{}, errors.New("planning operation names do not match")
+	}
+	if definition.MutationPath != MutationPath {
+		return Definition{}, errors.New("planning mutation path does not match")
+	}
+	if definition.MutationActorHeaders != (MutationActorHeaders{
+		Kind: "x-director-actor-kind", ID: "x-director-actor-id", Session: "x-director-actor-session",
+	}) {
+		return Definition{}, errors.New("planning mutation actor headers do not match")
 	}
 	if definition.QueryPath != QueryPath || definition.MaximumRequestBytes != MaximumRequestBytes ||
 		definition.MaximumResponseBytes != MaximumResponseBytes ||

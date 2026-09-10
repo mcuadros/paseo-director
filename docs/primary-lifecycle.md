@@ -109,7 +109,9 @@ cross-role accounting are documented in [Runtime time and cost budgets](runtime-
 Controlled helper creation and handoff are implemented by the separate
 [controlled helper lifecycle](controlled-helpers.md). Helper turns use the
 same lease-fenced durable budget and evidence-only paused reconciliation as
-other model turns. Pause/cancel/emergency controls, Task Agent replacement,
-Reviewer behavior, and delivery remain owned by their later M3/M4 Tasks. The
-independent m3.10 execution oracle remains test-only; production code does not
-import or duplicate it.
+other model turns. Pause, reconcile-first Resume, Task-scoped Cancel, and
+confirmed Project-wide Emergency stop are documented in
+[Execution controls](execution-controls.md). Task Agent replacement, Reviewer
+behavior, and delivery remain owned by their later M3/M4 Tasks. The independent
+m3.10 execution oracle remains test-only; production code does not import or
+duplicate it.

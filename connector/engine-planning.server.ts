@@ -8,23 +8,36 @@ import {
   PLANNING_CONTRACT_VERSION,
   PLANNING_MAXIMUM_REQUEST_BYTES,
   PLANNING_MAXIMUM_RESPONSE_BYTES,
+  PLANNING_MUTATION_ACTOR_HEADERS,
+  PLANNING_MUTATION_PATH,
   PLANNING_QUERY_PATH,
+  planningMutationInputSchema,
+  planningMutationResultSchema,
   planningQueryInputSchema,
   planningSnapshotSchema,
   type PlanningQueryInput,
   type PlanningSnapshot,
+  type PlanningMutationInput,
+  type PlanningMutationResult,
 } from "../generated/planning-contract.shared.ts";
 
 const requestTimeoutMilliseconds = 10_000;
 
 export type PlanningTransport = {
   query(input: PlanningQueryInput): Promise<PlanningSnapshot>;
+  mutate(input: PlanningMutationInput): Promise<PlanningMutationResult>;
 };
 
 export type PlanningFetch = (
   input: string | URL,
   init?: RequestInit,
 ) => Promise<Response>;
+
+export type PlanningMutationActor = {
+  readonly kind: "human";
+  readonly id: string;
+  readonly sessionId: string;
+};
 
 export class PlanningTransportError extends Error {
   readonly code: string;
@@ -116,10 +129,12 @@ async function boundedResponseValue(response: Response): Promise<unknown> {
 export function createPlanningTransport(options: {
   baseUrl: string | undefined;
   fetch?: PlanningFetch;
+  mutationActor?: PlanningMutationActor;
 }): PlanningTransport {
   const baseUrl = loopbackBaseUrl(options.baseUrl);
   const fetchPlanning = options.fetch ?? globalThis.fetch;
   const url = new URL(PLANNING_QUERY_PATH, baseUrl);
+  const mutationUrl = new URL(PLANNING_MUTATION_PATH, baseUrl);
   return {
     async query(rawInput: PlanningQueryInput): Promise<PlanningSnapshot> {
       const input = planningQueryInputSchema.parse(rawInput);
@@ -203,6 +218,75 @@ export function createPlanningTransport(options: {
         throw new PlanningTransportError(
           "ENGINE_PLANNING_PAYLOAD",
           "Director Engine planning response is invalid",
+        );
+      }
+    },
+    async mutate(rawInput: PlanningMutationInput): Promise<PlanningMutationResult> {
+      const actor = options.mutationActor;
+      const identityPattern = /^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/u;
+      if (!actor || actor.kind !== "human" || !identityPattern.test(actor.id) || !identityPattern.test(actor.sessionId)) {
+        throw new PlanningTransportError(
+          "ENGINE_PLANNING_ACTOR",
+          "Director Engine planning mutation requires a server-authenticated human session",
+        );
+      }
+      const input = planningMutationInputSchema.parse(rawInput);
+      const body = JSON.stringify(input);
+      if (new TextEncoder().encode(body).byteLength > PLANNING_MAXIMUM_REQUEST_BYTES) {
+        throw new PlanningTransportError(
+          "ENGINE_PLANNING_INPUT",
+          "Director Engine planning mutation exceeds the contract bound",
+        );
+      }
+      let response: Response;
+      try {
+        response = await fetchPlanning(mutationUrl, {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            "content-type": "application/json",
+            "x-director-contract-version": PLANNING_CONTRACT_VERSION,
+            "x-director-contract-hash": PLANNING_CONTRACT_SHA256,
+            [PLANNING_MUTATION_ACTOR_HEADERS.kind]: actor.kind,
+            [PLANNING_MUTATION_ACTOR_HEADERS.id]: actor.id,
+            [PLANNING_MUTATION_ACTOR_HEADERS.session]: actor.sessionId,
+          },
+          body,
+          signal: AbortSignal.timeout(requestTimeoutMilliseconds),
+        });
+      } catch {
+        throw new PlanningTransportError(
+          "ENGINE_PLANNING_UNAVAILABLE",
+          "Director Engine planning mutation is unavailable",
+        );
+      }
+      if (response.url !== mutationUrl.href) {
+        throw new PlanningTransportError(
+          "ENGINE_PLANNING_ORIGIN",
+          "Director Engine planning mutation origin does not match",
+        );
+      }
+      if (!response.ok) {
+        throw new PlanningTransportError(
+          "ENGINE_PLANNING_RESPONSE",
+          "Director Engine rejected the planning mutation",
+        );
+      }
+      if (
+        response.headers.get("x-director-contract-version") !== PLANNING_CONTRACT_VERSION ||
+        response.headers.get("x-director-contract-hash") !== PLANNING_CONTRACT_SHA256
+      ) {
+        throw new PlanningTransportError(
+          "ENGINE_PLANNING_CONTRACT",
+          "Director Engine planning contract does not match",
+        );
+      }
+      try {
+        return planningMutationResultSchema.parse(await boundedResponseValue(response));
+      } catch {
+        throw new PlanningTransportError(
+          "ENGINE_PLANNING_PAYLOAD",
+          "Director Engine planning mutation response is invalid",
         );
       }
     },

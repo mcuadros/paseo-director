@@ -4,6 +4,8 @@ package planning
 
 import (
 	"bytes"
+	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -20,7 +22,7 @@ func TestEmbeddedPlanningContract(t *testing.T) {
 		t.Fatalf("planning transport bounds = %#v", definition)
 	}
 	if len(definition.DerivedStates) != 7 || len(definition.AttentionCodes) != 12 ||
-		len(definition.AllowedActions) != 12 || len(definition.ConfigurationKeys) != 7 {
+		len(definition.AllowedActions) != 17 || len(definition.ConfigurationKeys) != 7 {
 		t.Fatalf("planning closed vocabularies = %#v", definition)
 	}
 	hash, err := SchemaSHA256()
@@ -29,6 +31,52 @@ func TestEmbeddedPlanningContract(t *testing.T) {
 	}
 	if len(hash) != 64 {
 		t.Fatalf("planning schema hash length = %d", len(hash))
+	}
+}
+
+func TestExecutionControlMutationsExposeNoActorOrConfirmationBoolean(t *testing.T) {
+	hash, err := SchemaSHA256()
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := MutationInput{
+		SchemaVersion: 1, ContractVersion: "director-planning/v1", ContractHash: hash,
+		RequestID: "request-control-0001", IdempotencyKey: "request-control-0001",
+		ExpectedVersion: "7", Intent: MutationIntent{Type: "project.pause", ProjectID: "project"},
+	}
+	if err := ValidateControlMutation(valid); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []any{MutationInput{}, MutationIntent{}} {
+		typeOf := reflect.TypeOf(value)
+		for _, forbidden := range []string{"Actor", "ActorID", "ActorKind", "Authenticated", "HumanConfirmed"} {
+			if _, present := typeOf.FieldByName(forbidden); present {
+				t.Fatalf("%s exposes caller-authored %s", typeOf.Name(), forbidden)
+			}
+		}
+	}
+	encoded, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"actor", "actorId", "actorKind", "authenticated", "humanConfirmed"} {
+		if _, present := fields[forbidden]; present {
+			t.Fatalf("mutation wire exposes %s", forbidden)
+		}
+	}
+	confirmation := "confirmation-current"
+	valid.Intent.Type = "project.emergency-stop.confirm"
+	valid.HumanApprovalRef = &confirmation
+	if err := ValidateControlMutation(valid); err != nil {
+		t.Fatal(err)
+	}
+	valid.HumanApprovalRef = nil
+	if err := ValidateControlMutation(valid); err == nil {
+		t.Fatal("emergency confirmation without server reference was accepted")
 	}
 }
 

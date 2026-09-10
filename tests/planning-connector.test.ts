@@ -7,7 +7,11 @@ import {
   PLANNING_CONTRACT_SHA256,
   PLANNING_CONTRACT_VERSION,
   PLANNING_MAXIMUM_RESPONSE_BYTES,
+  PLANNING_MUTATION_ACTOR_HEADERS,
+  PLANNING_MUTATION_PATH,
   PLANNING_QUERY_PATH,
+  bindPlanningMutation,
+  type PlanningMutationInput,
   type PlanningQueryInput,
 } from "../generated/planning-contract.shared.ts";
 import {
@@ -42,6 +46,7 @@ test("the connector posts and validates one engine-owned planning query", async 
   let calls = 0;
   const transport = createPlanningTransport({
     baseUrl: "http://127.0.0.1:7041",
+    mutationActor: { kind: "human", id: "server-owner", sessionId: "server-session" },
     fetch: async (input, init) => {
       calls += 1;
       assert.equal(String(input), `http://127.0.0.1:7041${PLANNING_QUERY_PATH}`);
@@ -74,6 +79,61 @@ test("the connector posts and validates one engine-owned planning query", async 
   assert.equal(calls, 1);
 });
 
+test("the connector forwards a control mutation without actor or policy fields", async () => {
+  const fixture = new DeterministicPlanningFixture();
+  const mutation = bindPlanningMutation(
+    {
+      kind: "project.emergency-stop.prepare",
+      label: "Emergency stop…",
+      targetId: "project-scale",
+      requestId: "control-mutation-request",
+      idempotencyKey: "control-mutation-request",
+      expectedVersion: "9",
+      humanApprovalRef: null,
+      acknowledgementRevision: null,
+      emphasis: "danger",
+    },
+    { type: "project.emergency-stop.prepare", projectId: "project-scale" },
+  );
+  const expected = await fixture.mutate(mutation);
+  const transport = createPlanningTransport({
+    baseUrl: "http://127.0.0.1:7041",
+    mutationActor: { kind: "human", id: "server-owner", sessionId: "server-session" },
+    fetch: async (input, init) => {
+      assert.equal(String(input), `http://127.0.0.1:7041${PLANNING_MUTATION_PATH}`);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      assert.equal(body.actorId, undefined);
+      assert.equal(body.humanConfirmed, undefined);
+      assert.deepEqual(body, mutation);
+      assert.equal(
+        (init?.headers as Record<string, string>)[PLANNING_MUTATION_ACTOR_HEADERS.kind],
+        "human",
+      );
+      assert.equal(
+        (init?.headers as Record<string, string>)[PLANNING_MUTATION_ACTOR_HEADERS.id],
+        "server-owner",
+      );
+      assert.equal(
+        (init?.headers as Record<string, string>)[PLANNING_MUTATION_ACTOR_HEADERS.session],
+        "server-session",
+      );
+      return responseAt(
+        `http://127.0.0.1:7041${PLANNING_MUTATION_PATH}`,
+        JSON.stringify(expected),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-director-contract-version": PLANNING_CONTRACT_VERSION,
+            "x-director-contract-hash": PLANNING_CONTRACT_SHA256,
+          },
+        },
+      );
+    },
+  });
+  assert.deepEqual(await transport.mutate(mutation as PlanningMutationInput), expected);
+});
+
 test("the planning transport fails closed on origin, contract, cursor, input, and payload drift", async () => {
   for (const baseUrl of [
     "https://127.0.0.1:7041",
@@ -94,6 +154,18 @@ test("the planning transport fails closed on origin, contract, cursor, input, an
   });
   await assert.rejects(
     invalidInput.query({ ...query, pageSize: 101 } as PlanningQueryInput),
+  );
+  const unauthenticatedMutation = bindPlanningMutation(
+    {
+      kind: "project.pause", label: "Pause Project", targetId: "project-scale",
+      requestId: "missing-actor-mutation", idempotencyKey: "missing-actor-mutation",
+      expectedVersion: "9", humanApprovalRef: null, acknowledgementRevision: null, emphasis: "secondary",
+    },
+    { type: "project.pause", projectId: "project-scale" },
+  );
+  await assert.rejects(
+    invalidInput.mutate(unauthenticatedMutation),
+    (error: unknown) => error instanceof PlanningTransportError && error.code === "ENGINE_PLANNING_ACTOR",
   );
   const oversizedEpicIds = Array.from({ length: 500 }, (_, index) =>
     `epic-${String(index).padStart(4, "0")}-${"x".repeat(118)}`

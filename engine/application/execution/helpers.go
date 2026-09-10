@@ -68,7 +68,9 @@ func helperRuntimeRequest(run domain.Run, helper domainexecution.Helper, effect 
 		BindingHash: run.Execution.RepositoryBindingHash, PrimaryWorktreePath: run.Execution.WorktreePath,
 		LifecycleSurfaces: run.Execution.LifecycleSurfaces, LifecycleApproval: run.Execution.LifecycleApproval,
 		LifecycleDigest: run.Execution.LifecycleDigest, Isolation: run.Execution.Isolation,
-		OperationalPolicy: run.Execution.OperationalPolicy,
+		OperationalPolicy:         run.Execution.OperationalPolicy,
+		ControlRecoveryArtifactID: run.Execution.Control.Recovery.ArtifactID,
+		ControlCleanupAuthorized:  run.Execution.Control.Recovery.CleanupAuthorized,
 	}
 }
 
@@ -124,6 +126,14 @@ func (controller *Controller) RequestHelper(ctx context.Context, command Request
 	}
 	if err := controller.currentExecutionAuthority(ctx, run, nowMillis); err != nil {
 		return HelperStepResult{Run: run}, err
+	}
+	project, err := controller.store.Project(ctx, run.Execution.Scope.ProjectID)
+	if err != nil {
+		return HelperStepResult{Run: run}, err
+	}
+	if project.State != "active" || project.Control.ResumeRequired ||
+		(run.Execution.Control.SchemaVersion != "" && run.Execution.Control.Phase != domainexecution.ControlComplete) {
+		return HelperStepResult{Run: run}, errors.New("helper request is blocked by execution control")
 	}
 	helperID := stableID("helper", run.ID, command.RequestID)
 	if index := domainexecution.HelperIndex(run.Execution.Helpers, helperID); index >= 0 {

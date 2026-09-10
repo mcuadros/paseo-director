@@ -393,17 +393,38 @@ export class PaseoHostConnector implements DirectorHost {
       agent.workspaceId === argumentsValue.workspaceId &&
       agent.cwd === argumentsValue.worktreePath &&
       agent.title === argumentsValue.title &&
-      agent.labels["paseo.parent-agent-id"] === undefined &&
+      agent.labels["paseo.parent-agent-id"] === argumentsValue.parentAgentId &&
       (!expectedLabels || exactLabels(agent.labels, expectedLabels)) &&
       (!profile ||
         ((agent.provider === paseoProvider(profile.provider) || agent.provider.startsWith(`${paseoProvider(profile.provider)}/`)) &&
           (agent.model === null || agent.model === profile.model)));
     if (!exact) return this.#observation(command, "different", agent.id, correlation);
-    if (command.arguments.effectKind === "task_agent.archive") {
+    if (
+      command.arguments.effectKind === "task_agent.archive" ||
+      command.arguments.effectKind === "control_agent.archive"
+    ) {
       if (agent.status === "closed" && agent.archivedAt) {
         return this.#observation(command, "desired", agent.id, correlation);
       }
       return this.#observation(command, "owned_present", agent.id, correlation);
+    }
+    if (command.arguments.effectKind === "control_agent.observe_safe_boundary") {
+      if (agent.status === "closed" && agent.archivedAt) {
+        return this.#observation(command, "desired", agent.id, correlation);
+      }
+      if (agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") {
+        return this.#observation(command, "permission", agent.id, correlation, true, providerUsage(agent));
+      }
+      if (agent.status === "error" || agent.attentionReason === "error") {
+        return this.#observation(command, "errored", agent.id, correlation, true, providerUsage(agent));
+      }
+      if (agent.status === "running" || agent.status === "initializing" || agent.activeTurn) {
+        return this.#observation(command, "owned_present", agent.id, correlation, false, providerUsage(agent));
+      }
+      if (agent.status === "idle") {
+        return this.#observation(command, "desired", agent.id, correlation, true, providerUsage(agent));
+      }
+      return this.#observation(command, "ambiguous", agent.id, correlation);
     }
     if (!argumentsValue.clientMessageId) {
       return this.#observation(command, "different", agent.id, correlation);
@@ -457,10 +478,17 @@ export class PaseoHostConnector implements DirectorHost {
       `${command.requestId}-helper-timeline`,
     );
     if (!bootstrapPresent) return this.#observation(command, "different", agent.id, correlation);
-    if (value.effectKind === "helper_agent.archive" && !(agent.status === "closed" && agent.archivedAt)) {
+    if (
+      (value.effectKind === "helper_agent.archive" || value.effectKind === "control_agent.archive") &&
+      !(agent.status === "closed" && agent.archivedAt)
+    ) {
       return this.#observation(command, "owned_present", agent.id, correlation, false);
     }
-    const usage = value.effectKind === "helper_agent.observe" ? providerUsage(agent) : undefined;
+    const usage = value.effectKind === "helper_agent.observe" ||
+      value.effectKind === "control_agent.observe_safe_boundary" ||
+      value.effectKind === "control_agent.archive"
+      ? providerUsage(agent)
+      : undefined;
     if (agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") {
       return this.#observation(command, "permission", agent.id, correlation, true, usage);
     }
@@ -610,7 +638,9 @@ export class PaseoHostConnector implements DirectorHost {
         return this.#observation(command, "owned_present", agent.id, labelDigest(value.labels!), false);
       }
       case "agent.observe":
-        return this.#agent(command);
+        return command.arguments.effectKind.startsWith("control_agent.") && command.arguments.parentAgentId
+          ? this.#helper(command)
+          : this.#agent(command);
       case "helperAgent.observe":
         return this.#helper(command);
       case "send_agent_prompt": {
@@ -634,7 +664,8 @@ export class PaseoHostConnector implements DirectorHost {
         return this.#observation(command, "owned_present", value.agentId, "", false);
       }
       case "agent.archive": {
-        const observed = command.arguments.effectKind === "helper_agent.archive"
+        const observed = command.arguments.effectKind === "helper_agent.archive" ||
+          (command.arguments.effectKind === "control_agent.archive" && command.arguments.parentAgentId)
           ? await this.#helper(command)
           : await this.#agent(command);
         if (observed.result.status !== "owned_present") return observed;
@@ -706,11 +737,9 @@ export class PaseoHostConnector implements DirectorHost {
   }
 
   async mutatePlanning(
-    _input: PlanningMutationInput,
+	input: PlanningMutationInput,
   ): Promise<PlanningMutationResult> {
-    throw new Error(
-      "PLANNING_SURFACE_NOT_WIRED: runtime planning mutations are owned by later M2 Tasks",
-    );
+	return this.#planningTransport.mutate(input);
   }
 
   async close(): Promise<void> {
@@ -742,6 +771,11 @@ export function startConnectorShell(options: {
     options.dependencies?.planningTransport ??
     createPlanningTransport({
       baseUrl: options.environment.DIRECTOR_ENGINE_URL,
+      mutationActor: {
+        kind: "human",
+        id: "local-project-owner",
+        sessionId: `paseo-connector-${process.pid}`,
+      },
     });
   const createClient = options.dependencies?.createClient ?? createPaseoClient;
   const client = createClient({

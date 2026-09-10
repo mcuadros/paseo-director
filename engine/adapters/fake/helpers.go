@@ -227,7 +227,10 @@ func (environment *Environment) DispatchHelperEffect(_ context.Context, request 
 		}
 		world.importedCommit = request.Helper.Contribution.CommitSHA
 	case execution.EffectHelperCheckoutRemove:
-		if !world.agentArchived || request.Helper.Handoff == nil || world.importedCommit != request.Helper.Handoff.CommitSHA || primaryCheckoutFact(environment.options.WorktreePath) != world.primaryFactHash {
+		ordinaryHandoff := request.Helper.Handoff != nil && world.importedCommit == request.Helper.Handoff.CommitSHA
+		controlRecovery := request.ControlCleanupAuthorized && request.ControlRecoveryArtifactID != "" &&
+			request.ControlRecoveryArtifactID == environment.world.recoveryID && environment.world.recoveryReady
+		if !world.agentArchived || (!ordinaryHandoff && !controlRecovery) || primaryCheckoutFact(environment.options.WorktreePath) != world.primaryFactHash {
 			return errors.New("fake helper cleanup lacks termination or handoff proof")
 		}
 		if err := os.RemoveAll(request.Helper.WorktreePath); err != nil {

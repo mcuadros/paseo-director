@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -219,5 +220,56 @@ func TestPlanningReaderIntegratesScaleFiltersSortAndSnapshotPages(t *testing.T) 
 	store.cursor++
 	if _, err := reader.Query(context.Background(), secondInput); !errors.Is(err, projection.ErrTaskQueryCursorSnapshot) {
 		t.Fatalf("changed-snapshot cursor error = %v", err)
+	}
+}
+
+func TestControlBoardExplanationsAndActionsAreExact(t *testing.T) {
+	intent := execution.ControlIntent{
+		RequestID: "request-board-control", Kind: execution.ControlPauseProject, ProjectID: "project-board",
+		ActorKind: execution.ControlActorHuman, ActorID: "owner", ActorSessionID: "session",
+		Source: "server", Authenticated: true, RequestedAtMillis: 1,
+	}
+	intent.ID = execution.ControlIntentID(intent)
+	project := domain.Project{
+		ID: "project-board", Name: "Board control", State: "paused", Version: 9,
+		Control: execution.ProjectControl{
+			SchemaVersion: execution.ProjectControlSchemaVersion, Generation: 1, Intent: intent,
+			Phase: execution.ControlPaused, ResumeRequired: true,
+			ExplanationCode: "project_paused_at_safe_boundary",
+		},
+	}
+	summaries := projectSummaries(planningFacts{projects: []planningProjectFacts{{project: project}}})
+	if len(summaries) != 1 || summaries[0].Control == nil ||
+		summaries[0].Control.Message != "Project is paused at a safe boundary; active turns were allowed to finish" ||
+		len(summaries[0].AllowedActions) != 2 || summaries[0].AllowedActions[0].Kind != "project.resume" ||
+		summaries[0].AllowedActions[1].Kind != "project.emergency-stop.prepare" {
+		t.Fatalf("paused Project summary = %#v", summaries)
+	}
+	run := domain.Run{Execution: execution.State{Control: execution.RunControl{
+		SchemaVersion: execution.RunControlSchemaVersion, Phase: execution.ControlNeedsYou,
+		ExplanationCode: "control_recovery_ambiguous",
+	}}}
+	explanation := runControlExplanation(&run)
+	if explanation == nil || explanation.Message != "Control recovery is ambiguous; relaunch and destructive cleanup remain blocked" ||
+		explanation.WakeCondition == nil || *explanation.WakeCondition != "fresh_control_reconciliation_or_human_recovery" ||
+		!explanation.HumanActionRequired {
+		t.Fatalf("Needs-you control explanation = %#v", explanation)
+	}
+	cancelIntent := intent
+	cancelIntent.Kind = execution.ControlCancelTask
+	cancelIntent.TaskID, cancelIntent.RunID = "task-board", "run-board"
+	cancelIntent.ID = execution.ControlIntentID(cancelIntent)
+	run = domain.Run{ID: "run-board", TaskID: "task-board", Execution: execution.State{
+		Terminal: true,
+		Control: execution.RunControl{
+			SchemaVersion: execution.RunControlSchemaVersion, Intent: cancelIntent,
+			ProjectGeneration: 1, Phase: execution.ControlCancelled, RelaunchBlocked: true,
+			ExplanationCode: "task_cancelled_recovery_preserved",
+		},
+	}}
+	task := domain.Task{ID: "task-board", ProjectID: project.ID, Version: 3}
+	projected := projection.DeriveTaskProjection(taskStateFacts(project, task, false, &run, nil))
+	if projected.State != projection.StateQueued || !slices.Contains(projected.Blockers, projection.BlockerPolicyWait) {
+		t.Fatalf("cancelled Task relaunch projection = %#v", projected)
 	}
 }
