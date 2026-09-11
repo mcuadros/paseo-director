@@ -84,3 +84,9 @@ must remain unchanged; current human decisions and Candidate diff are always
 refreshed. The first acknowledgement-only response is rejected without
 Candidate admission. A second acknowledgement-only response escalates. Any
 changed SHA restarts Candidate-bound draft/CI/Review evidence.
+
+Direct delivery has a separate no-PR route after the same exact Review and CI
+quality gates. Its manual mode waits for an explicit bound human action; its
+automatic mode uses one exact remote-ref lease. See
+[Direct delivery](direct-delivery.md). A pull-request failure or unavailable
+GitHub fact never enters that route.

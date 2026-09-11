@@ -14,6 +14,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/candidate"
+	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	domaincorrection "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
@@ -348,7 +349,7 @@ func newFixture(t *testing.T, publishBeforeReview bool) *fixture {
 				Claim: &execution.CompletedClaim{ID: "claim-completed", SchemaVersion: "director.agent-outcome.completed/v1",
 					Outcome: "completed", AgentID: testTaskAgent, CandidateSHA: record.CommitSHA, BaseSHA: record.Manifest.BaseSHA,
 					CriteriaResults: map[string]string{"criterion-1": "claimed_satisfied"}, ResidualRiskCodes: []string{"P2_EXISTING_BOUND"}},
-				CandidateAuthority: &authority, PublicationPolicy: &policy}},
+				CandidateAuthority: &authority, DeliveryMode: domainconfig.DeliveryPullRequest, PublicationPolicy: &policy}},
 		candidates: map[string]domain.Candidate{record.ID: record}, commands: map[string]domain.CommandResult{}}
 	branches := newTestBranches(remote)
 	branches.Set("main", strings.Repeat("a", 40))
@@ -704,7 +705,9 @@ func TestRepositoryAndTransportFailuresFailClosedWithoutDeliveryFallback(t *test
 				t.Fatalf("Reconcile() = %#v, %v", result, err)
 			}
 			run, _ := fixture.store.Run(context.Background(), "run-1")
-			if run.Execution.Publication.Policy.DeliveryMode != "pull_request" {
+			if run.Execution.DeliveryMode != domainconfig.DeliveryPullRequest ||
+				run.Execution.Publication.Policy.DeliveryMode != "pull_request" ||
+				run.Execution.DirectDelivery != nil || len(run.Execution.DirectDeliveryHistory) != 0 {
 				t.Fatal("delivery mode changed")
 			}
 			if _, pushes := fixture.branches.Snapshot(run.Execution.Branch); pushes != 0 {

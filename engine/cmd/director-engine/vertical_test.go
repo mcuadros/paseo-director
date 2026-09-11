@@ -364,6 +364,7 @@ func startCommand(t *testing.T, task domain.Task, scope execution.Scope, source,
 			Args: []string{"serve", "--run", scope.RunID}, Env: map[string]string{},
 		},
 		EffectiveProfiles: profiles,
+		DeliveryMode:      domainconfig.DeliveryPullRequest,
 		BudgetPolicy: runtimebudget.NewPolicy(
 			profiles.ConfigurationSHA256(), 2*60*60*1_000, 200_000, 32, 0, 4,
 		),
