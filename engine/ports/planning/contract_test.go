@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -17,12 +18,15 @@ func TestEmbeddedPlanningContract(t *testing.T) {
 	if definition.ContractVersion != "director-planning/v1" || definition.SchemaVersion != 1 {
 		t.Fatalf("planning identity = %#v", definition)
 	}
-	if definition.QueryPath != QueryPath || definition.MaximumRequestBytes != MaximumRequestBytes ||
-		definition.MaximumResponseBytes != MaximumResponseBytes || definition.MaximumPageSize != MaximumPageSize {
+	if definition.QueryPath != QueryPath || definition.HomeQueryPath != HomeQueryPath ||
+		definition.OrganizerMutationPath != OrganizerMutationPath || definition.MaximumRequestBytes != MaximumRequestBytes ||
+		definition.MaximumResponseBytes != MaximumResponseBytes || definition.MaximumPageSize != MaximumPageSize ||
+		definition.MaximumHomePageSize != MaximumHomePageSize {
 		t.Fatalf("planning transport bounds = %#v", definition)
 	}
 	if len(definition.DerivedStates) != 7 || len(definition.AttentionCodes) != 12 ||
-		len(definition.AllowedActions) != 17 || len(definition.ConfigurationKeys) != 8 {
+		len(definition.AllowedActions) != 17 || len(definition.ConfigurationKeys) != 8 ||
+		len(definition.HomeHealthStates) != 7 || len(definition.HomeActionKinds) != 12 {
 		t.Fatalf("planning closed vocabularies = %#v", definition)
 	}
 	hash, err := SchemaSHA256()
@@ -31,6 +35,60 @@ func TestEmbeddedPlanningContract(t *testing.T) {
 	}
 	if len(hash) != 64 {
 		t.Fatalf("planning schema hash length = %d", len(hash))
+	}
+}
+
+func TestHomeAndOrganizerBootstrapValidationStayHostBoundAndClosed(t *testing.T) {
+	if err := ValidateHomeQuery(HomeQueryInput{HostID: "host-a", PageSize: MaximumHomePageSize}); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []HomeQueryInput{
+		{HostID: "", PageSize: 1},
+		{HostID: "host-a", PageSize: MaximumHomePageSize + 1},
+		{HostID: "host-a", PageSize: 1, Cursor: func() *string { value := "bad.cursor"; return &value }()},
+	} {
+		if ValidateHomeQuery(invalid) == nil {
+			t.Fatalf("invalid Home query accepted: %#v", invalid)
+		}
+	}
+	hash, _ := SchemaSHA256()
+	configuration, preview := `{}`, strings.Repeat("a", 64)
+	valid := OrganizerBootstrapInput{SchemaVersion: 1, ContractVersion: "director-planning/v1", ContractHash: hash,
+		HostID: "host-a", RequestID: "request-organizer-0001", Kind: "create.preview", ProjectID: "project-a",
+		ProjectName: "Project A", RepositoryPath: "/srv/director/project-a", ConfigurationJSON: &configuration}
+	if err := ValidateOrganizerBootstrap(valid); err != nil {
+		t.Fatal(err)
+	}
+	valid.Kind, valid.PreviewID = "create.apply", &preview
+	if err := ValidateOrganizerBootstrap(valid); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*OrganizerBootstrapInput){
+		"host absent":          func(input *OrganizerBootstrapInput) { input.HostID = "" },
+		"short request":        func(input *OrganizerBootstrapInput) { input.RequestID = "short" },
+		"Preview absent":       func(input *OrganizerBootstrapInput) { input.PreviewID = nil },
+		"Create config absent": func(input *OrganizerBootstrapInput) { input.ConfigurationJSON = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := valid
+			mutate(&input)
+			if ValidateOrganizerBootstrap(input) == nil {
+				t.Fatal("invalid Organizer input was accepted")
+			}
+		})
+	}
+	adopt := valid
+	adopt.Kind, adopt.ConfigurationJSON = "adopt.apply", nil
+	if err := ValidateOrganizerBootstrap(adopt); err != nil {
+		t.Fatalf("valid Adopt Apply: %v", err)
+	}
+	for _, value := range []any{OrganizerBootstrapInput{}, OrganizerBootstrapResult{}} {
+		typeOf := reflect.TypeOf(value)
+		for _, forbidden := range []string{"Actor", "ActorID", "ActorKind", "Authenticated", "Confirmed", "HumanConfirmed"} {
+			if _, present := typeOf.FieldByName(forbidden); present {
+				t.Fatalf("%s exposes caller-authored %s", typeOf.Name(), forbidden)
+			}
+		}
 	}
 }
 

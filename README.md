@@ -73,12 +73,11 @@ package, UI, host contract, credential, distribution, configuration/revision,
 previewed local Create/Adopt Organizer, direct-Dolt persistence, and CI
 boundaries on which later M1 Tasks can build.
 
-Alongside that engine-owned fake path, the Board/List slice adds only read-only
-presentation behavior. Director Engine reads persisted Tasks through its typed
-TaskStore port, derives their current walking-skeleton state, and serves one
-bounded snapshot. Director for Paseo transports that snapshot through a strict
-plugin RPC and renders it without owning TaskStore access or lifecycle truth.
-Later Tasks extend real execution behavior on these boundaries.
+Director Home now provides host-bound Create/Adopt Preview/Apply entry points,
+cross-Project health and active-work summaries, Needs-you aggregation,
+Organizer/Board access, and engine-declared operational actions. It keeps
+offline cached facts visibly stale and disabled and never selects another host.
+See [Director Home and Project health](docs/director-home.md).
 
 ## Development
 
@@ -115,7 +114,7 @@ daemon-process environment values before installation or reload:
   connector credential outside the checkout.
 - `DIRECTOR_ENGINE_URL`: an origin-only loopback HTTP URL with an explicit
   port, such as `http://127.0.0.1:7041`, for the separately supervised Director
-  Engine Board endpoint.
+  Engine Home and Board endpoint.
 - `DIRECTOR_ENGINE_MODE`: exactly `release` or `development`.
 - `DIRECTOR_ENGINE_SOURCE_ROOT`: an absolute engine source path, required only
   in development mode.
@@ -138,19 +137,25 @@ Release mode never compiles as a fallback.
 Development mode always compiles the selected Go source and never downloads or
 falls back to release mode. A missing or conflicting mode fails closed.
 
-## Minimal Board/List runtime
+## Director Home and Board/List runtime
 
 The separately supervised engine opens an existing, already bootstrapped
-direct-Dolt TaskStore and serves the read-only Board contract on an explicit
-loopback address:
+direct-Dolt TaskStore and serves the host-bound Home plus Board/List contracts
+on an explicit loopback address. The public host identity and label must match
+the exact Paseo host passed by the client surface; a mismatch is rejected and
+never selects another host.
 
 ```text
 director-engine serve-board \
   --listen 127.0.0.1:7041 \
-  --taskstore-config /absolute/private/director-engine.json
+  --taskstore-config /absolute/private/director-engine.json \
+  --host-id paseo-host-id \
+  --host-label "Paseo host label"
 ```
 
-The Board endpoint is unauthenticated. Its public contract version/hash are
+The Home and Board query endpoints are unauthenticated. Organizer Preview/Apply
+and operational mutations require the connector's server-authenticated human
+headers. Their public contract version/hash are
 compatibility checks, not credentials. Run it only on the accepted single-user
 Linux host and keep its port confined to loopback; never proxy or expose it to
 another host or user. Any local process able to reach the port can read Project
@@ -184,8 +189,10 @@ shape is:
 local test store. The server never bootstraps or repairs the selected database;
 missing identity, schema, or connection facts fail startup or the
 query closed with a bounded error. The endpoint accepts only the generated
-contract version and hash and returns no SQL, credentials, paths, objectives,
-or acceptance-criteria text.
+contract version and hash. Home summaries return no SQL, credentials,
+repository paths/remotes, objectives, acceptance-criteria text, or raw adapter
+output. The authenticated Organizer Preview returns only the exact path and
+file/operation metadata selected by that human for Preview/Apply.
 
 The Project Board panel loads the snapshot with TanStack Query, performs no
 automatic request retry, and refreshes the read-only query every two seconds.

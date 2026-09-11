@@ -102,6 +102,8 @@ func TestBoardServerFailsBeforeListeningWithInvalidConfiguration(t *testing.T) {
 	status := runBoardServer([]string{
 		"--listen", "127.0.0.1:7041",
 		"--taskstore-config", "/missing/private/director-engine.json",
+		"--host-id", "host-test",
+		"--host-label", "Test host",
 	}, &stdout, &stderr)
 	if status != 1 || stdout.Len() != 0 || stderr.String() != "director-engine: Board server configuration is invalid\n" {
 		t.Fatalf("status = %d, stdout bytes = %d, stderr = %q", status, stdout.Len(), stderr.String())

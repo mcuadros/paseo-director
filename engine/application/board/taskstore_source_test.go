@@ -191,3 +191,14 @@ func TestTaskStoreFactSourceNormalizesPlanningAndExecutionWithoutOwningState(t *
 		}
 	}
 }
+
+func TestTaskStoreFactSourceUsesOneBulkRunAndCandidateReadPerProject(t *testing.T) {
+	store := planningScaleStore()
+	inputs, err := NewTaskStoreFactSource(store).TaskProjectionInputs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 500 || store.bulkRunReads != 1 || store.bulkCandidateReads != 1 {
+		t.Fatalf("bulk Task projection reads: inputs=%d runs=%d candidates=%d", len(inputs), store.bulkRunReads, store.bulkCandidateReads)
+	}
+}

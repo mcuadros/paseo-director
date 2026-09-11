@@ -10,13 +10,16 @@ import (
 )
 
 const (
-	QueryPath            = "/v1/planning/query"
-	MaximumRequestBytes  = 64 * 1024
-	MaximumResponseBytes = 4 * 1024 * 1024
-	MaximumPageSize      = 100
-	MaximumProjects      = 100
-	MaximumWorkspaces    = 100
-	MaximumEpics         = 500
+	QueryPath             = "/v1/planning/query"
+	HomeQueryPath         = "/v1/planning/home"
+	OrganizerMutationPath = "/v1/planning/organizer-bootstrap"
+	MaximumRequestBytes   = 64 * 1024
+	MaximumResponseBytes  = 4 * 1024 * 1024
+	MaximumPageSize       = 100
+	MaximumProjects       = 100
+	MaximumWorkspaces     = 100
+	MaximumEpics          = 500
+	MaximumHomePageSize   = 50
 )
 
 var ErrQueryInvalid = errors.New("planning query is invalid")
@@ -283,4 +286,206 @@ type Snapshot struct {
 	ContractHash    string `json:"contractHash"`
 	Cursor          string `json:"cursor"`
 	Page            Page   `json:"page"`
+}
+
+type HomeQueryInput struct {
+	HostID   string  `json:"hostId"`
+	Cursor   *string `json:"cursor"`
+	PageSize int     `json:"pageSize"`
+}
+
+func ValidateHomeQuery(input HomeQueryInput) error {
+	if !validOpaque(input.HostID) || input.PageSize < 1 || input.PageSize > MaximumHomePageSize ||
+		(input.Cursor != nil && !validPageCursor(*input.Cursor)) {
+		return ErrQueryInvalid
+	}
+	return nil
+}
+
+type HomeHost struct {
+	ID               string `json:"id"`
+	Label            string `json:"label"`
+	InstanceID       string `json:"instanceId"`
+	State            string `json:"state"`
+	ObservedAt       string `json:"observedAt"`
+	MaximumAgeMillis string `json:"maximumAgeMillis"`
+}
+
+type HomeWorkspace struct {
+	ID               string  `json:"id"`
+	Key              string  `json:"key"`
+	Name             string  `json:"name"`
+	Health           string  `json:"health"`
+	PaseoWorkspaceID *string `json:"paseoWorkspaceId"`
+}
+
+type HomeOrganizer struct {
+	ID                  string  `json:"id"`
+	Mode                string  `json:"mode"`
+	Phase               string  `json:"phase"`
+	ConfigurationState  string  `json:"configurationState"`
+	OrganizerRevision   *string `json:"organizerRevision"`
+	ConfigurationSHA256 *string `json:"configurationSha256"`
+	PaseoWorkspaceID    *string `json:"paseoWorkspaceId"`
+}
+
+type HomeLease struct {
+	State     string  `json:"state"`
+	Epoch     string  `json:"epoch"`
+	ExpiresAt *string `json:"expiresAt"`
+}
+
+type HomeSync struct {
+	State        string  `json:"state"`
+	Git          string  `json:"git"`
+	DynamicState string  `json:"dynamicState"`
+	ObservedAt   *string `json:"observedAt"`
+}
+
+type HomeActiveWork struct {
+	Building   string `json:"building"`
+	Validating string `json:"validating"`
+	InReview   string `json:"inReview"`
+	Ready      string `json:"ready"`
+	Total      string `json:"total"`
+}
+
+type HomeAttentionReason struct {
+	Code  string `json:"code"`
+	Count string `json:"count"`
+}
+
+type HomeAction struct {
+	Kind              string         `json:"kind"`
+	Label             string         `json:"label"`
+	HostID            string         `json:"hostId"`
+	ProjectID         *string        `json:"projectId"`
+	Enabled           bool           `json:"enabled"`
+	UnavailableReason *Explanation   `json:"unavailableReason"`
+	PaseoWorkspaceID  *string        `json:"paseoWorkspaceId"`
+	Command           *AllowedAction `json:"command"`
+	Emphasis          string         `json:"emphasis"`
+}
+
+type HomeProject struct {
+	ID              string                `json:"id"`
+	Version         string                `json:"version"`
+	Name            string                `json:"name"`
+	State           string                `json:"state"`
+	Health          string                `json:"health"`
+	HealthReasons   []Explanation         `json:"healthReasons"`
+	Workspaces      []HomeWorkspace       `json:"workspaces"`
+	Organizer       HomeOrganizer         `json:"organizer"`
+	Lease           HomeLease             `json:"lease"`
+	Sync            HomeSync              `json:"sync"`
+	Tasks           TaskCounts            `json:"tasks"`
+	ActiveWork      HomeActiveWork        `json:"activeWork"`
+	NeedsYouReasons []HomeAttentionReason `json:"needsYouReasons"`
+	Actions         []HomeAction          `json:"actions"`
+}
+
+type HomeTotals struct {
+	Projects   string `json:"projects"`
+	Healthy    string `json:"healthy"`
+	Degraded   string `json:"degraded"`
+	Paused     string `json:"paused"`
+	NeedsYou   string `json:"needsYou"`
+	ActiveWork string `json:"activeWork"`
+}
+
+type HomePage struct {
+	Host           HomeHost      `json:"host"`
+	Projects       []HomeProject `json:"projects"`
+	Totals         HomeTotals    `json:"totals"`
+	SurfaceActions []HomeAction  `json:"surfaceActions"`
+	TotalProjects  string        `json:"totalProjects"`
+	NextCursor     *string       `json:"nextCursor"`
+}
+
+type HomeSnapshot struct {
+	SchemaVersion   int      `json:"schemaVersion"`
+	ContractVersion string   `json:"contractVersion"`
+	ContractHash    string   `json:"contractHash"`
+	Cursor          string   `json:"cursor"`
+	Page            HomePage `json:"page"`
+}
+
+type OrganizerBootstrapInput struct {
+	SchemaVersion     int     `json:"schemaVersion"`
+	ContractVersion   string  `json:"contractVersion"`
+	ContractHash      string  `json:"contractHash"`
+	HostID            string  `json:"hostId"`
+	RequestID         string  `json:"requestId"`
+	Kind              string  `json:"kind"`
+	ProjectID         string  `json:"projectId"`
+	ProjectName       string  `json:"projectName"`
+	RepositoryPath    string  `json:"repositoryPath"`
+	ConfigurationJSON *string `json:"configurationJson"`
+	PreviewID         *string `json:"previewId"`
+}
+
+func ValidateOrganizerBootstrap(input OrganizerBootstrapInput) error {
+	hash, err := SchemaSHA256()
+	if err != nil || input.SchemaVersion != 1 || input.ContractVersion != "director-planning/v1" || input.ContractHash != hash ||
+		!validOpaque(input.HostID) || len(input.RequestID) < 16 || !validOpaque(input.RequestID) || !validOpaque(input.ProjectID) ||
+		input.ProjectName == "" || len(input.ProjectName) > 512 || input.ProjectName != strings.TrimSpace(input.ProjectName) ||
+		len(input.RepositoryPath) < 2 || len(input.RepositoryPath) > 4096 || input.RepositoryPath != strings.TrimSpace(input.RepositoryPath) {
+		return ErrQueryInvalid
+	}
+	isCreate := input.Kind == "create.preview" || input.Kind == "create.apply"
+	isApply := input.Kind == "create.apply" || input.Kind == "adopt.apply"
+	if (!isCreate && input.Kind != "adopt.preview" && input.Kind != "adopt.apply") ||
+		isCreate != (input.ConfigurationJSON != nil) || (input.ConfigurationJSON != nil && (len(*input.ConfigurationJSON) < 2 || len(*input.ConfigurationJSON) > 60000)) ||
+		isApply != (input.PreviewID != nil) || (input.PreviewID != nil && !validSHA256(*input.PreviewID)) {
+		return ErrQueryInvalid
+	}
+	return nil
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	return strings.IndexFunc(value, func(character rune) bool {
+		return !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f'))
+	}) < 0
+}
+
+type OrganizerPreviewFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
+type OrganizerPreviewIssue struct {
+	Code    string `json:"code"`
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+type OrganizerBootstrapPreview struct {
+	ID                  string                  `json:"id"`
+	Kind                string                  `json:"kind"`
+	RequestID           string                  `json:"requestId"`
+	ProjectID           string                  `json:"projectId"`
+	ProjectName         string                  `json:"projectName"`
+	RepositoryPath      string                  `json:"repositoryPath"`
+	OrganizerRevision   *string                 `json:"organizerRevision"`
+	ConfigurationSHA256 *string                 `json:"configurationSha256"`
+	Files               []OrganizerPreviewFile  `json:"files"`
+	Operations          []string                `json:"operations"`
+	Valid               bool                    `json:"valid"`
+	Issues              []OrganizerPreviewIssue `json:"issues"`
+}
+
+type OrganizerBootstrapResult struct {
+	SchemaVersion   int                        `json:"schemaVersion"`
+	ContractVersion string                     `json:"contractVersion"`
+	ContractHash    string                     `json:"contractHash"`
+	HostID          string                     `json:"hostId"`
+	Cursor          string                     `json:"cursor"`
+	RequestID       string                     `json:"requestId"`
+	Status          string                     `json:"status"`
+	Message         string                     `json:"message"`
+	Preview         *OrganizerBootstrapPreview `json:"preview"`
+	ProjectVersion  *string                    `json:"projectVersion"`
 }

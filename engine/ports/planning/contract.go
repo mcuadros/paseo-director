@@ -20,26 +20,31 @@ var embeddedSchema []byte
 
 // Definition is the generator-facing metadata in the engine-owned contract.
 type Definition struct {
-	SchemaVersion        int                        `json:"schemaVersion"`
-	ContractVersion      string                     `json:"contractVersion"`
-	QueryNames           []string                   `json:"queryNames"`
-	MutationName         string                     `json:"mutationName"`
-	MutationPath         string                     `json:"mutationPath"`
-	MutationActorHeaders MutationActorHeaders       `json:"mutationActorHeaders"`
-	QueryPath            string                     `json:"queryPath"`
-	MaximumRequestBytes  int                        `json:"maximumRequestBytes"`
-	MaximumResponseBytes int                        `json:"maximumResponseBytes"`
-	MaximumPageSize      int                        `json:"maximumPageSize"`
-	MaximumProjects      int                        `json:"maximumProjects"`
-	MaximumWorkspaces    int                        `json:"maximumWorkspaces"`
-	MaximumEpics         int                        `json:"maximumEpics"`
-	DerivedStates        []string                   `json:"derivedStates"`
-	Priorities           []string                   `json:"priorities"`
-	StableSorts          []string                   `json:"stableSorts"`
-	AttentionCodes       []string                   `json:"attentionCodes"`
-	AllowedActions       []string                   `json:"allowedActions"`
-	ConfigurationKeys    []string                   `json:"configurationKeys"`
-	Definitions          map[string]json.RawMessage `json:"$defs"`
+	SchemaVersion         int                        `json:"schemaVersion"`
+	ContractVersion       string                     `json:"contractVersion"`
+	QueryNames            []string                   `json:"queryNames"`
+	MutationName          string                     `json:"mutationName"`
+	MutationPath          string                     `json:"mutationPath"`
+	OrganizerMutationPath string                     `json:"organizerMutationPath"`
+	MutationActorHeaders  MutationActorHeaders       `json:"mutationActorHeaders"`
+	QueryPath             string                     `json:"queryPath"`
+	HomeQueryPath         string                     `json:"homeQueryPath"`
+	MaximumRequestBytes   int                        `json:"maximumRequestBytes"`
+	MaximumResponseBytes  int                        `json:"maximumResponseBytes"`
+	MaximumPageSize       int                        `json:"maximumPageSize"`
+	MaximumProjects       int                        `json:"maximumProjects"`
+	MaximumWorkspaces     int                        `json:"maximumWorkspaces"`
+	MaximumEpics          int                        `json:"maximumEpics"`
+	MaximumHomePageSize   int                        `json:"maximumHomePageSize"`
+	HomeHealthStates      []string                   `json:"homeHealthStates"`
+	HomeActionKinds       []string                   `json:"homeActionKinds"`
+	DerivedStates         []string                   `json:"derivedStates"`
+	Priorities            []string                   `json:"priorities"`
+	StableSorts           []string                   `json:"stableSorts"`
+	AttentionCodes        []string                   `json:"attentionCodes"`
+	AllowedActions        []string                   `json:"allowedActions"`
+	ConfigurationKeys     []string                   `json:"configurationKeys"`
+	Definitions           map[string]json.RawMessage `json:"$defs"`
 }
 
 type MutationActorHeaders struct {
@@ -65,6 +70,16 @@ var requiredDefinitions = []string{
 	"pageCursor",
 	"planningQueryInput",
 	"planningSnapshot",
+	"homeAction",
+	"homeHost",
+	"homePage",
+	"homeProject",
+	"homeQueryInput",
+	"homeSnapshot",
+	"homeTotals",
+	"organizerBootstrapInput",
+	"organizerBootstrapPreview",
+	"organizerBootstrapResult",
 	"projectSummary",
 	"runtimeBudgetSummary",
 	"schedulerFacts",
@@ -172,21 +187,25 @@ func ParseDefinition(schema []byte) (Definition, error) {
 	if definition.ContractVersion != "director-planning/v1" {
 		return Definition{}, errors.New("planning contract version does not match")
 	}
-	if !slices.Equal(definition.QueryNames, []string{"planning.query", "planning.task-detail"}) || definition.MutationName != "planning.mutate" {
+	if !slices.Equal(definition.QueryNames, []string{"planning.query", "planning.task-detail", "planning.home"}) || definition.MutationName != "planning.mutate" {
 		return Definition{}, errors.New("planning operation names do not match")
 	}
 	if definition.MutationPath != MutationPath {
 		return Definition{}, errors.New("planning mutation path does not match")
+	}
+	if definition.OrganizerMutationPath != OrganizerMutationPath {
+		return Definition{}, errors.New("Organizer bootstrap mutation path does not match")
 	}
 	if definition.MutationActorHeaders != (MutationActorHeaders{
 		Kind: "x-director-actor-kind", ID: "x-director-actor-id", Session: "x-director-actor-session",
 	}) {
 		return Definition{}, errors.New("planning mutation actor headers do not match")
 	}
-	if definition.QueryPath != QueryPath || definition.MaximumRequestBytes != MaximumRequestBytes ||
+	if definition.QueryPath != QueryPath || definition.HomeQueryPath != HomeQueryPath || definition.MaximumRequestBytes != MaximumRequestBytes ||
 		definition.MaximumResponseBytes != MaximumResponseBytes ||
 		definition.MaximumPageSize != MaximumPageSize || definition.MaximumProjects != MaximumProjects ||
-		definition.MaximumWorkspaces != MaximumWorkspaces || definition.MaximumEpics != MaximumEpics {
+		definition.MaximumWorkspaces != MaximumWorkspaces || definition.MaximumEpics != MaximumEpics ||
+		definition.MaximumHomePageSize != MaximumHomePageSize {
 		return Definition{}, errors.New("planning bounds do not match")
 	}
 	for name, values := range map[string][]string{
@@ -195,6 +214,8 @@ func ParseDefinition(schema []byte) (Definition, error) {
 		"stable sorts":       definition.StableSorts,
 		"attention codes":    definition.AttentionCodes,
 		"allowed actions":    definition.AllowedActions,
+		"home health states": definition.HomeHealthStates,
+		"home action kinds":  definition.HomeActionKinds,
 		"configuration keys": definition.ConfigurationKeys,
 	} {
 		if err := validateUnique(name, values); err != nil {
@@ -212,6 +233,8 @@ func ParseDefinition(schema []byte) (Definition, error) {
 		"stableSort":        definition.StableSorts,
 		"attentionCode":     definition.AttentionCodes,
 		"allowedActionKind": definition.AllowedActions,
+		"homeHealthState":   definition.HomeHealthStates,
+		"homeActionKind":    definition.HomeActionKinds,
 	} {
 		actual, err := definitionEnum(definition.Definitions, definitionName)
 		if err != nil {
@@ -236,6 +259,8 @@ func EmbeddedDefinition() (Definition, error) {
 	definition.StableSorts = slices.Clone(definition.StableSorts)
 	definition.AttentionCodes = slices.Clone(definition.AttentionCodes)
 	definition.AllowedActions = slices.Clone(definition.AllowedActions)
+	definition.HomeHealthStates = slices.Clone(definition.HomeHealthStates)
+	definition.HomeActionKinds = slices.Clone(definition.HomeActionKinds)
 	definition.ConfigurationKeys = slices.Clone(definition.ConfigurationKeys)
 	definition.Definitions = nil
 	return definition, nil

@@ -5,22 +5,49 @@
   "contractVersion": "director-planning/v1",
   "queryNames": [
     "planning.query",
-    "planning.task-detail"
+    "planning.task-detail",
+    "planning.home"
   ],
   "mutationName": "planning.mutate",
   "mutationPath": "/v1/planning/mutate",
+  "organizerMutationPath": "/v1/planning/organizer-bootstrap",
   "mutationActorHeaders": {
     "kind": "x-director-actor-kind",
     "id": "x-director-actor-id",
     "session": "x-director-actor-session"
   },
   "queryPath": "/v1/planning/query",
+  "homeQueryPath": "/v1/planning/home",
   "maximumRequestBytes": 65536,
   "maximumResponseBytes": 4194304,
   "maximumPageSize": 100,
   "maximumProjects": 100,
   "maximumWorkspaces": 100,
   "maximumEpics": 500,
+  "maximumHomePageSize": 50,
+  "homeHealthStates": [
+    "healthy",
+    "degraded",
+    "paused",
+    "needs_you",
+    "disconnected",
+    "stale",
+    "unknown"
+  ],
+  "homeActionKinds": [
+    "create_project",
+    "adopt_organizer",
+    "open_board",
+    "open_organizer",
+    "open_needs_you",
+    "sync_now",
+    "reconcile_now",
+    "doctor",
+    "repair",
+    "pause",
+    "resume",
+    "emergency_stop"
+  ],
   "derivedStates": [
     "needs_you",
     "queued",
@@ -1158,6 +1185,254 @@
         "projectId": { "$ref": "#/$defs/opaqueId" },
         "taskId": { "$ref": "#/$defs/opaqueId" },
         "runId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "homeHealthState": {
+      "enum": ["healthy", "degraded", "paused", "needs_you", "disconnected", "stale", "unknown"]
+    },
+    "homeActionKind": {
+      "enum": ["create_project", "adopt_organizer", "open_board", "open_organizer", "open_needs_you", "sync_now", "reconcile_now", "doctor", "repair", "pause", "resume", "emergency_stop"]
+    },
+    "homeQueryInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostId", "cursor", "pageSize"],
+      "properties": {
+        "hostId": { "$ref": "#/$defs/opaqueId" },
+        "cursor": { "anyOf": [{ "$ref": "#/$defs/pageCursor" }, { "type": "null" }] },
+        "pageSize": { "type": "integer", "minimum": 1, "maximum": 50 }
+      }
+    },
+    "homeHost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "instanceId", "state", "observedAt", "maximumAgeMillis"],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueId" },
+        "label": { "$ref": "#/$defs/boundedText" },
+        "instanceId": { "$ref": "#/$defs/opaqueId" },
+        "state": { "enum": ["current", "degraded", "disconnected", "stale"] },
+        "observedAt": { "type": "string", "format": "date-time" },
+        "maximumAgeMillis": { "$ref": "#/$defs/uint64Decimal" }
+      }
+    },
+    "homeWorkspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "key", "name", "health", "paseoWorkspaceId"],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueId" },
+        "key": { "$ref": "#/$defs/opaqueId" },
+        "name": { "$ref": "#/$defs/boundedText" },
+        "health": { "$ref": "#/$defs/homeHealthState" },
+        "paseoWorkspaceId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] }
+      }
+    },
+    "homeOrganizer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "mode", "phase", "configurationState", "organizerRevision", "configurationSha256", "paseoWorkspaceId"],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueId" },
+        "mode": { "enum": ["create", "adopt"] },
+        "phase": { "enum": ["intent_recorded", "repository_prepared", "configuration_written", "readme_written", "references_written", "repository_initialized", "revision_committed", "active"] },
+        "configurationState": { "enum": ["current", "pending", "invalid", "unavailable"] },
+        "organizerRevision": { "anyOf": [{ "type": "string", "pattern": "^[0-9a-f]{40}$" }, { "type": "null" }] },
+        "configurationSha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "paseoWorkspaceId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] }
+      }
+    },
+    "homeLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "epoch", "expiresAt"],
+      "properties": {
+        "state": { "enum": ["current", "observe_only", "expired", "absent", "invalid"] },
+        "epoch": { "$ref": "#/$defs/uint64Decimal" },
+        "expiresAt": { "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] }
+      }
+    },
+    "homeSync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "git", "dynamicState", "observedAt"],
+      "properties": {
+        "state": { "enum": ["current", "partial", "failed", "not_configured", "unavailable", "stale"] },
+        "git": { "enum": ["current", "failed", "not_configured", "unavailable", "stale"] },
+        "dynamicState": { "enum": ["current", "failed", "not_configured", "unavailable", "stale"] },
+        "observedAt": { "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] }
+      }
+    },
+    "homeActiveWork": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["building", "validating", "inReview", "ready", "total"],
+      "properties": {
+        "building": { "$ref": "#/$defs/uint64Decimal" },
+        "validating": { "$ref": "#/$defs/uint64Decimal" },
+        "inReview": { "$ref": "#/$defs/uint64Decimal" },
+        "ready": { "$ref": "#/$defs/uint64Decimal" },
+        "total": { "$ref": "#/$defs/uint64Decimal" }
+      }
+    },
+    "homeAttentionReason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "count"],
+      "properties": {
+        "code": { "$ref": "#/$defs/opaqueId" },
+        "count": { "$ref": "#/$defs/uint64Decimal" }
+      }
+    },
+    "homeAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "label", "hostId", "projectId", "enabled", "unavailableReason", "paseoWorkspaceId", "command", "emphasis"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/homeActionKind" },
+        "label": { "$ref": "#/$defs/boundedText" },
+        "hostId": { "$ref": "#/$defs/opaqueId" },
+        "projectId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
+        "enabled": { "type": "boolean" },
+        "unavailableReason": { "anyOf": [{ "$ref": "#/$defs/explanation" }, { "type": "null" }] },
+        "paseoWorkspaceId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
+        "command": { "anyOf": [{ "$ref": "#/$defs/allowedAction" }, { "type": "null" }] },
+        "emphasis": { "enum": ["primary", "secondary", "danger"] }
+      }
+    },
+    "homeProject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "name", "state", "health", "healthReasons", "workspaces", "organizer", "lease", "sync", "tasks", "activeWork", "needsYouReasons", "actions"],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueId" },
+        "version": { "$ref": "#/$defs/uint64Decimal" },
+        "name": { "$ref": "#/$defs/boundedText" },
+        "state": { "enum": ["active", "paused", "degraded", "archived"] },
+        "health": { "$ref": "#/$defs/homeHealthState" },
+        "healthReasons": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/explanation" } },
+        "workspaces": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/homeWorkspace" } },
+        "organizer": { "$ref": "#/$defs/homeOrganizer" },
+        "lease": { "$ref": "#/$defs/homeLease" },
+        "sync": { "$ref": "#/$defs/homeSync" },
+        "tasks": { "$ref": "#/$defs/taskCounts" },
+        "activeWork": { "$ref": "#/$defs/homeActiveWork" },
+        "needsYouReasons": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/homeAttentionReason" } },
+        "actions": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/homeAction" } }
+      }
+    },
+    "homeTotals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projects", "healthy", "degraded", "paused", "needsYou", "activeWork"],
+      "properties": {
+        "projects": { "$ref": "#/$defs/uint64Decimal" },
+        "healthy": { "$ref": "#/$defs/uint64Decimal" },
+        "degraded": { "$ref": "#/$defs/uint64Decimal" },
+        "paused": { "$ref": "#/$defs/uint64Decimal" },
+        "needsYou": { "$ref": "#/$defs/uint64Decimal" },
+        "activeWork": { "$ref": "#/$defs/uint64Decimal" }
+      }
+    },
+    "homePage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "projects", "totals", "surfaceActions", "totalProjects", "nextCursor"],
+      "properties": {
+        "host": { "$ref": "#/$defs/homeHost" },
+        "projects": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/homeProject" } },
+        "totals": { "$ref": "#/$defs/homeTotals" },
+        "surfaceActions": { "type": "array", "maxItems": 4, "items": { "$ref": "#/$defs/homeAction" } },
+        "totalProjects": { "$ref": "#/$defs/uint64Decimal" },
+        "nextCursor": { "anyOf": [{ "$ref": "#/$defs/pageCursor" }, { "type": "null" }] }
+      }
+    },
+    "homeSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "contractVersion", "contractHash", "cursor", "page"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "contractVersion": { "const": "director-planning/v1" },
+        "contractHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "cursor": { "$ref": "#/$defs/uint64Decimal" },
+        "page": { "$ref": "#/$defs/homePage" }
+      }
+    },
+    "organizerBootstrapKind": {
+      "enum": ["create.preview", "create.apply", "adopt.preview", "adopt.apply"]
+    },
+    "organizerBootstrapInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "contractVersion", "contractHash", "hostId", "requestId", "kind", "projectId", "projectName", "repositoryPath", "configurationJson", "previewId"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "contractVersion": { "const": "director-planning/v1" },
+        "contractHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "hostId": { "$ref": "#/$defs/opaqueId" },
+        "requestId": { "$ref": "#/$defs/opaqueId" },
+        "kind": { "$ref": "#/$defs/organizerBootstrapKind" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "projectName": { "$ref": "#/$defs/boundedText" },
+        "repositoryPath": { "type": "string", "minLength": 2, "maxLength": 4096 },
+        "configurationJson": { "anyOf": [{ "type": "string", "minLength": 2, "maxLength": 60000 }, { "type": "null" }] },
+        "previewId": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] }
+      }
+    },
+    "organizerPreviewFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "organizerPreviewIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "field", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/opaqueId" },
+        "field": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "message": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "organizerBootstrapPreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "requestId", "projectId", "projectName", "repositoryPath", "organizerRevision", "configurationSha256", "files", "operations", "valid", "issues"],
+      "properties": {
+        "id": { "$ref": "#/$defs/sha256" },
+        "kind": { "enum": ["create", "adopt"] },
+        "requestId": { "$ref": "#/$defs/opaqueId" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "projectName": { "$ref": "#/$defs/boundedText" },
+        "repositoryPath": { "type": "string", "minLength": 2, "maxLength": 4096 },
+        "organizerRevision": { "anyOf": [{ "type": "string", "pattern": "^[0-9a-f]{40}$" }, { "type": "null" }] },
+        "configurationSha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "files": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/organizerPreviewFile" } },
+        "operations": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/boundedText" } },
+        "valid": { "type": "boolean" },
+        "issues": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/organizerPreviewIssue" } }
+      }
+    },
+    "organizerBootstrapResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "contractVersion", "contractHash", "hostId", "cursor", "requestId", "status", "message", "preview", "projectVersion"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "contractVersion": { "const": "director-planning/v1" },
+        "contractHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "hostId": { "$ref": "#/$defs/opaqueId" },
+        "cursor": { "$ref": "#/$defs/uint64Decimal" },
+        "requestId": { "$ref": "#/$defs/opaqueId" },
+        "status": { "enum": ["preview", "applied", "rejected"] },
+        "message": { "$ref": "#/$defs/boundedText" },
+        "preview": { "anyOf": [{ "$ref": "#/$defs/organizerBootstrapPreview" }, { "type": "null" }] },
+        "projectVersion": { "anyOf": [{ "$ref": "#/$defs/uint64Decimal" }, { "type": "null" }] }
       }
     },
     "planningMutationResult": {
