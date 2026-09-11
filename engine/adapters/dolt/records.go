@@ -25,6 +25,7 @@ import (
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
+	validationdomain "github.com/mcuadros/director-engine/domain/validation"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
 
@@ -519,6 +520,61 @@ func validateRun(run domain.Run) error {
 			}
 			seenReviews[review.ReviewKey] = struct{}{}
 		}
+		if state.Validation != nil {
+			validation := *state.Validation
+			if state.ValidationPolicy == nil || !validationdomain.ValidPolicy(*state.ValidationPolicy) ||
+				validation.Policy.SHA256 != state.ValidationPolicy.SHA256 || !validationdomain.ValidState(validation) {
+				return fmt.Errorf("%w: invalid Validation state", storeport.ErrInvalidRecord)
+			}
+			if validation.Invalidated {
+				if state.CandidateAuthority != nil && (state.CandidateAuthority.Downstream.Validation != nil || state.CandidateAuthority.Downstream.CI != nil) {
+					return fmt.Errorf("%w: invalidated Validation retained downstream authority", storeport.ErrInvalidRecord)
+				}
+			} else if state.CandidateAuthority == nil || validation.Binding.CandidateID != state.CandidateAuthority.CandidateID ||
+				validation.Binding.CandidateSHA != state.CandidateAuthority.CandidateSHA || validation.Binding.BaseSHA != state.CandidateAuthority.BaseSHA ||
+				validation.Binding.ManifestSHA256 != state.CandidateAuthority.BindingSHA256 ||
+				validation.Binding.CandidateGeneration != state.CandidateAuthority.Generation {
+				return fmt.Errorf("%w: current Validation does not match Candidate authority", storeport.ErrInvalidRecord)
+			} else if validation.Evidence == nil || validation.Evidence.Outcome != validationdomain.OutcomePassed {
+				if state.CandidateAuthority.Downstream.Validation != nil || state.CandidateAuthority.Downstream.CI != nil {
+					return fmt.Errorf("%w: non-passing Validation retained downstream authority", storeport.ErrInvalidRecord)
+				}
+			} else {
+				for _, evidence := range []*candidatedomain.EvidenceBinding{state.CandidateAuthority.Downstream.Validation, state.CandidateAuthority.Downstream.CI} {
+					if evidence == nil || evidence.ID != validation.Evidence.ID || evidence.CandidateID != state.CandidateAuthority.CandidateID ||
+						evidence.CandidateSHA != state.CandidateAuthority.CandidateSHA || evidence.BaseSHA != state.CandidateAuthority.BaseSHA ||
+						evidence.Generation != state.CandidateAuthority.Generation || evidence.BindingSHA256 != state.CandidateAuthority.BindingSHA256 {
+						return fmt.Errorf("%w: Validation evidence is not authoritative", storeport.ErrInvalidRecord)
+					}
+				}
+			}
+		}
+		if state.ValidationPolicy != nil && (state.DeliveryMode != domainconfig.DeliveryPullRequest ||
+			state.PublicationPolicy == nil || !publicationdomain.ValidPolicy(*state.PublicationPolicy) ||
+			!validationdomain.ValidPolicy(*state.ValidationPolicy)) {
+			return fmt.Errorf("%w: invalid pull-request Validation policy", storeport.ErrInvalidRecord)
+		}
+		if state.DeliveryMode != domainconfig.DeliveryPullRequest &&
+			(state.Validation != nil || len(state.ValidationHistory) != 0) {
+			return fmt.Errorf("%w: Validation conflicts with frozen delivery mode", storeport.ErrInvalidRecord)
+		}
+		if len(state.ValidationHistory) > validationdomain.MaximumHistory {
+			return fmt.Errorf("%w: too many historical Validation states", storeport.ErrInvalidRecord)
+		}
+		seenValidations := make(map[string]struct{}, len(state.ValidationHistory)+1)
+		if state.Validation != nil {
+			seenValidations[state.Validation.ValidationKey] = struct{}{}
+		}
+		for _, validation := range state.ValidationHistory {
+			if state.ValidationPolicy == nil || validation.Policy.SHA256 != state.ValidationPolicy.SHA256 ||
+				!validationdomain.ValidState(validation) || !validation.Invalidated {
+				return fmt.Errorf("%w: invalid historical Validation state", storeport.ErrInvalidRecord)
+			}
+			if _, duplicate := seenValidations[validation.ValidationKey]; duplicate {
+				return fmt.Errorf("%w: duplicate Validation key", storeport.ErrInvalidRecord)
+			}
+			seenValidations[validation.ValidationKey] = struct{}{}
+		}
 		if state.Correction != nil && !correctiondomain.ValidState(*state.Correction) {
 			return fmt.Errorf("%w: invalid correction state", storeport.ErrInvalidRecord)
 		}
@@ -537,8 +593,9 @@ func validateRun(run domain.Run) error {
 				return fmt.Errorf("%w: current feedback does not match Candidate authority", storeport.ErrInvalidRecord)
 			}
 			if feedbackdomain.BlocksDelivery(feedback) && (state.Publication != nil || state.DirectDelivery != nil ||
-				state.CandidateAuthority.Downstream.Publication != nil || state.CandidateAuthority.Downstream.Ready != nil ||
-				state.CandidateAuthority.Downstream.Integration != nil) {
+				state.CandidateAuthority.Downstream.Validation != nil || state.CandidateAuthority.Downstream.CI != nil ||
+				state.CandidateAuthority.Downstream.Review != nil || state.CandidateAuthority.Downstream.Publication != nil ||
+				state.CandidateAuthority.Downstream.Ready != nil || state.CandidateAuthority.Downstream.Integration != nil) {
 				return fmt.Errorf("%w: unresolved feedback retained delivery authority", storeport.ErrInvalidRecord)
 			}
 		}
@@ -1558,7 +1615,8 @@ func (store *DoltTaskStore) UpdateRun(
 			return mutationResult{}, fmt.Errorf("%w: Run number is immutable", storeport.ErrInvalidRecord)
 		}
 		if current.Execution.DeliveryMode != run.Execution.DeliveryMode ||
-			!reflect.DeepEqual(current.Execution.PublicationPolicy, run.Execution.PublicationPolicy) {
+			!reflect.DeepEqual(current.Execution.PublicationPolicy, run.Execution.PublicationPolicy) ||
+			!reflect.DeepEqual(current.Execution.ValidationPolicy, run.Execution.ValidationPolicy) {
 			return mutationResult{}, fmt.Errorf("%w: frozen Run delivery policy is immutable", storeport.ErrInvalidRecord)
 		}
 		if run.CurrentCandidateID != "" {
@@ -1628,6 +1686,11 @@ func (store *DoltTaskStore) AppendCandidate(
 		if err != nil {
 			return mutationResult{}, err
 		}
+		// A base change is a correction transition only after an authoritative
+		// Candidate already exists. The first admitted Candidate establishes its
+		// own exact base and must not be mistaken for a rebase of a skeleton Run.
+		rebased := current.Execution.CandidateAuthority != nil &&
+			candidate.Claim.BaseSHA != current.Execution.CandidateAuthority.BaseSHA
 		generation := uint64(0)
 		if current.Execution.CandidateAuthority != nil {
 			prior := *current.Execution.CandidateAuthority
@@ -1636,8 +1699,12 @@ func (store *DoltTaskStore) AppendCandidate(
 				return mutationResult{}, storeport.ErrReferentialIntegrity
 			}
 			generation = prior.Generation
+			historicalAuthority := prior
+			if rebased && current.Execution.Validation != nil && current.Execution.Validation.BaseInvalidation != nil {
+				historicalAuthority = current.Execution.Validation.BaseInvalidation.PriorAuthority
+			}
 			historical := candidatedomain.HistoricalAuthority{
-				Authority: prior, InvalidationCode: candidatedomain.CodeCandidateChanged,
+				Authority: historicalAuthority, InvalidationCode: candidatedomain.CodeCandidateChanged,
 				InvalidatedByCandidateID: candidate.ID, InvalidatedByCandidateSHA: candidate.CommitSHA,
 				InvalidatedAtMillis: candidate.AdmittedAtMillis,
 			}
@@ -1647,8 +1714,38 @@ func (store *DoltTaskStore) AppendCandidate(
 			current.Execution.CandidateAuthorityHistory = append(current.Execution.CandidateAuthorityHistory, historical)
 		}
 		if current.Execution.Publication != nil && publicationdomain.DispatchInFlight(*current.Execution.Publication) ||
-			current.Execution.DirectDelivery != nil && directdomain.DispatchInFlight(*current.Execution.DirectDelivery) {
+			current.Execution.DirectDelivery != nil && directdomain.DispatchInFlight(*current.Execution.DirectDelivery) ||
+			current.Execution.Feedback != nil && feedbackdomain.DispatchInFlight(*current.Execution.Feedback) {
 			return mutationResult{}, storeport.ErrReferentialIntegrity
+		}
+		if rebased {
+			validation := current.Execution.Validation
+			if validation == nil || !validationdomain.ValidState(*validation) || !validation.Invalidated || validation.BaseInvalidation == nil ||
+				validation.BaseInvalidation.NewBaseSHA != candidate.Claim.BaseSHA || current.Execution.CandidateAuthority == nil ||
+				!candidatedomain.DownstreamEmpty(current.Execution.CandidateAuthority.Downstream) || current.Execution.Correction == nil ||
+				current.Execution.Correction.PendingCandidateObservation == nil ||
+				current.Execution.Correction.PendingCandidateObservation.FactSHA256 != candidate.Manifest.ObservationSHA256 {
+				return mutationResult{}, storeport.ErrReferentialIntegrity
+			}
+			current.BaseSHA = candidate.Claim.BaseSHA
+			current.Execution.RepositoryBinding.BaseSHA = candidate.Claim.BaseSHA
+			current.Execution.RepositoryBindingHash = candidate.Manifest.RepositoryBindingSHA256
+			claim := candidate.Claim
+			observation := *current.Execution.Correction.PendingCandidateObservation
+			current.Execution.CandidateClaim = &claim
+			current.Execution.CandidateObservation = &observation
+			current.Execution.CandidateObservationRunVersion = claim.ExpectedRunVersion
+		}
+		if current.Execution.Validation != nil {
+			if len(current.Execution.ValidationHistory) >= validationdomain.MaximumHistory {
+				return mutationResult{}, storeport.ErrReferentialIntegrity
+			}
+			historical := validationdomain.CloneState(*current.Execution.Validation)
+			if !historical.Invalidated {
+				historical = validationdomain.Invalidate(historical, validationdomain.CodeCandidateChanged)
+			}
+			current.Execution.ValidationHistory = append(current.Execution.ValidationHistory, historical)
+			current.Execution.Validation = nil
 		}
 		if current.Execution.Review != nil {
 			historical := *current.Execution.Review

@@ -56,6 +56,22 @@ func TestReconcileRedactsAndRoutesOnlyExactAuthenticatedHumanFeedback(t *testing
 	}
 }
 
+func TestCorrectionDispatchWindowClosesOnlyAfterExactBatchIsObserved(t *testing.T) {
+	input := item(SourcePaseoDirect, "message-dispatch", "revision-1", 1_000)
+	state, _, ok := Reconcile(nil, testBinding(), []Snapshot{snapshot("snapshot-dispatch", SourcePaseoDirect, false, 1_001, input)}, 1_001)
+	if !ok || !DispatchInFlight(state) {
+		t.Fatalf("correction-ready state did not expose dispatch window: %#v", state)
+	}
+	routed, ok := MarkCorrectionRouted(state, strings.Repeat("f", 64))
+	if !ok || DispatchInFlight(routed) {
+		t.Fatalf("observed correction dispatch remained in flight: %#v", routed)
+	}
+	invalid := Invalidate(state, "candidate_changed")
+	if !ValidState(invalid) || DispatchInFlight(invalid) {
+		t.Fatalf("invalidated history retained dispatch authority: %#v", invalid)
+	}
+}
+
 func TestEditsDuplicatesOutOfOrderAndConflictsPreserveImmutableRevisions(t *testing.T) {
 	first := item(SourcePaseoDirect, "message-1", "revision-1", 1_000)
 	state, _, ok := Reconcile(nil, testBinding(), []Snapshot{snapshot("snapshot-1", SourcePaseoDirect, false, 1_001, first)}, 1_001)

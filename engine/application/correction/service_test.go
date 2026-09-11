@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/mcuadros/director-engine/domain/execution"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	gitport "github.com/mcuadros/director-engine/ports/git"
 	"github.com/mcuadros/director-engine/ports/host"
 	correctionreducer "github.com/mcuadros/director-engine/reducer/correction"
@@ -130,12 +132,38 @@ func (store *memoryStore) AppendCandidate(_ context.Context, command domain.Comm
 	if store.run.Execution.Publication != nil && publicationdomain.DispatchInFlight(*store.run.Execution.Publication) {
 		return domain.CommandResult{}, errors.New("publication dispatch must reconcile before Candidate replacement")
 	}
+	rebased := record.Claim.BaseSHA != store.run.BaseSHA
 	if store.run.Execution.CandidateAuthority != nil {
 		prior := *store.run.Execution.CandidateAuthority
+		if rebased && store.run.Execution.Validation != nil && store.run.Execution.Validation.BaseInvalidation != nil {
+			prior = store.run.Execution.Validation.BaseInvalidation.PriorAuthority
+		}
 		store.run.Execution.CandidateAuthorityHistory = append(store.run.Execution.CandidateAuthorityHistory, candidate.HistoricalAuthority{
 			Authority: prior, InvalidationCode: candidate.CodeCandidateChanged, InvalidatedByCandidateID: record.ID,
 			InvalidatedByCandidateSHA: record.CommitSHA, InvalidatedAtMillis: record.AdmittedAtMillis,
 		})
+	}
+	if rebased {
+		validation := store.run.Execution.Validation
+		if validation == nil || !validation.Invalidated || validation.BaseInvalidation == nil ||
+			validation.BaseInvalidation.NewBaseSHA != record.Claim.BaseSHA || !candidate.DownstreamEmpty(store.run.Execution.CandidateAuthority.Downstream) {
+			return domain.CommandResult{}, errors.New("invalid rebased Candidate")
+		}
+		store.run.BaseSHA = record.Claim.BaseSHA
+		store.run.Execution.RepositoryBinding.BaseSHA = record.Claim.BaseSHA
+		store.run.Execution.RepositoryBindingHash = record.Manifest.RepositoryBindingSHA256
+		claim := record.Claim
+		observation := *store.run.Execution.Correction.PendingCandidateObservation
+		store.run.Execution.CandidateClaim, store.run.Execution.CandidateObservation = &claim, &observation
+		store.run.Execution.CandidateObservationRunVersion = claim.ExpectedRunVersion
+	}
+	if store.run.Execution.Validation != nil {
+		historical := domainvalidation.CloneState(*store.run.Execution.Validation)
+		if !historical.Invalidated {
+			historical = domainvalidation.Invalidate(historical, domainvalidation.CodeCandidateChanged)
+		}
+		store.run.Execution.ValidationHistory = append(store.run.Execution.ValidationHistory, historical)
+		store.run.Execution.Validation = nil
 	}
 	generation := uint64(len(store.run.Execution.CandidateAuthorityHistory))
 	authority := candidate.NewAuthority(generation, record.ID, record.Claim.Branch, record.Claim.TaskVersion, record.Manifest)
@@ -341,7 +369,12 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseSHA, headSHA, repositoryHash := strings.Repeat("0", 40), strings.Repeat("1", 40), strings.Repeat("e", 64)
+	baseSHA, headSHA := strings.Repeat("0", 40), strings.Repeat("1", 40)
+	repository := execution.RepositoryBinding{RepositoryID: "repository-1", RepositoryKey: "github.com/example/product",
+		CanonicalRemote: "https://github.com/example/product", SourcePath: "/source", SourceDevice: 1, SourceInode: 2,
+		GitCommonDirectory: "/source/.git", GitCommonDevice: 1, GitCommonInode: 3, WorktreePath: "/worktree",
+		Branch: "task/dir-m4.4-correction-cycles", BaseSHA: baseSHA}
+	repositoryHash := execution.RepositoryBindingSHA256(repository)
 	record := sealInitialCandidate(t, task, scope.RunID, baseSHA, headSHA, repositoryHash, profiles)
 	authority := candidate.NewAuthority(0, record.ID, record.Claim.Branch, task.Version, record.Manifest)
 	bound := func(id string) *candidate.EvidenceBinding {
@@ -355,7 +388,7 @@ func newFixture(t *testing.T) *fixture {
 		Execution: execution.State{SchemaVersion: execution.SchemaVersion, Scope: scope, SourcePath: "/source", WorktreePath: "/worktree",
 			Branch: record.Claim.Branch, BaseRef: record.Claim.BaseRef, TaskTitle: task.Title, RootWorkspaceID: "root-workspace",
 			CriterionIDs: criteria, LeaseBinding: execution.LeaseBinding{HolderInstance: "engine-1", HolderProcessIdentity: "process-1", Epoch: 1},
-			RepositoryBindingHash: repositoryHash, Worktree: execution.Effect{ID: "worktree-effect", Kind: execution.EffectWorktreeCreate, Phase: execution.EffectComplete, ExternalID: "worktree-1"},
+			RepositoryBinding: repository, RepositoryBindingHash: repositoryHash, Worktree: execution.Effect{ID: "worktree-effect", Kind: execution.EffectWorktreeCreate, Phase: execution.EffectComplete, ExternalID: "worktree-1"},
 			HostView: execution.Effect{ID: "workspace-effect", Kind: execution.EffectHostViewCreate, Phase: execution.EffectComplete, ExternalID: "execution-workspace"},
 			Boundary: execution.Effect{ID: "boundary-effect", Kind: execution.EffectBoundaryMaterialize, Phase: execution.EffectComplete, ExternalID: "boundary-1"},
 			Agent:    execution.Effect{ID: "effect-task-agent", Kind: execution.EffectAgentCreate, Phase: execution.EffectComplete, ExternalID: primaryUUID},
@@ -499,6 +532,56 @@ func TestCompleteBatchChangedCandidateInvalidatesAllAuthorityAndRequiresFreshGat
 		!state.Gates[0].FreshReviewRequired || !state.Gates[0].PriorAuthorityInvalidated ||
 		state.Gates[0].CandidateSHA != strings.Repeat("2", 40) || state.Gates[0].CIKey == "" || state.Gates[0].ReviewBindingKey == "" {
 		t.Fatalf("historical authority or gates = %#v / %#v", history, state.Gates[0])
+	}
+}
+
+func TestBaseInvalidationUsesLiveBaseForFreshCorrectionCandidateAndGates(t *testing.T) {
+	fixture := newFixture(t)
+	run := fixture.store.run
+	prior := *run.Execution.CandidateAuthority
+	newBase := strings.Repeat("a", 40)
+	policy, ok := domainvalidation.NewPolicy(99, "maintained-linux-ci", []domainvalidation.RequiredCheck{{ID: "linux-ci",
+		Kind: domainvalidation.CheckRunKind, Name: "Linux CI", AppID: 15368, AppSlug: "github-actions"}}, 60_000)
+	if !ok {
+		t.Fatal("validation policy")
+	}
+	binding := domainvalidation.SealBinding(domainvalidation.Binding{TaskID: run.TaskID, RunID: run.ID, CandidateID: prior.CandidateID,
+		CandidateSHA: prior.CandidateSHA, BaseSHA: prior.BaseSHA, TreeSHA: fixture.store.candidates[0].Manifest.TreeSHA,
+		ManifestSHA256: prior.BindingSHA256, CandidateGeneration: prior.Generation, CISlotID: "ci-old", BaseRef: run.Execution.BaseRef,
+		RepositoryBindingSHA256: run.Execution.RepositoryBindingHash, CanonicalRemote: run.Execution.RepositoryBinding.CanonicalRemote,
+		GitHubRepositoryID: 123, GitHubRepositoryNodeID: "R_node", RepositoryOwner: "example", RepositoryName: "product",
+		ViewerLogin: "example", PolicySHA256: policy.SHA256})
+	validation, ok := domainvalidation.NewState(binding, policy, 1)
+	if !ok {
+		t.Fatal("validation state")
+	}
+	validation = domainvalidation.Invalidate(validation, domainvalidation.CodeBaseChanged)
+	validation.BaseBeforeSHA256, validation.BaseAfterSHA256 = strings.Repeat("b", 64), strings.Repeat("c", 64)
+	validation.BaseInvalidation = &domainvalidation.BaseInvalidation{OldBaseSHA: prior.BaseSHA, NewBaseSHA: newBase,
+		NewBasePresent:   true,
+		BeforeFactSHA256: validation.BaseBeforeSHA256, AfterFactSHA256: validation.BaseAfterSHA256,
+		PriorAuthority: prior, ObservedAtMillis: 1_001}
+	if !domainvalidation.ValidState(validation) {
+		t.Fatal("base invalidation state")
+	}
+	authority := prior
+	authority.Downstream = candidate.Downstream{}
+	fixture.store.run.Execution.CandidateAuthority, fixture.store.run.Execution.ValidationPolicy,
+		fixture.store.run.Execution.Validation = &authority, &policy, &validation
+	corrected := strings.Repeat("2", 40)
+	result := completeCorrection(t, fixture, corrected, true)
+	if result.BaseSHA != newBase || result.Execution.RepositoryBinding.BaseSHA != newBase ||
+		result.Execution.CandidateAuthority.BaseSHA != newBase || result.Execution.CandidateAuthority.CandidateSHA != corrected ||
+		result.Execution.Validation != nil || len(result.Execution.ValidationHistory) != 1 ||
+		len(result.Execution.CandidateAuthorityHistory) != 1 || !reflect.DeepEqual(result.Execution.CandidateAuthorityHistory[0].Authority.Downstream, prior.Downstream) ||
+		result.Execution.ValidationHistory[0].BaseInvalidation == nil || len(result.Execution.Correction.Gates) != 1 ||
+		result.Execution.Correction.Gates[0].CandidateSHA != corrected || !result.Execution.Correction.Gates[0].FreshCIRequired ||
+		!result.Execution.Correction.Gates[0].FreshReviewRequired {
+		t.Fatalf("rebased correction = %#v", result)
+	}
+	latest := fixture.store.candidates[len(fixture.store.candidates)-1]
+	if latest.Manifest.BaseSHA != newBase || latest.Claim.BaseSHA != newBase || latest.CommitSHA != corrected {
+		t.Fatalf("rebased Candidate = %#v", latest)
 	}
 }
 

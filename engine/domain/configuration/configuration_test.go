@@ -201,6 +201,44 @@ func TestPublishBeforeReviewIsOptionalAndExplicit(t *testing.T) {
 	}
 }
 
+func TestGitHubCIConfigurationFreezesWorkflowProviderIdentityAndFourCycleLimit(t *testing.T) {
+	configured := bytes.Replace(validConfigurationJSON(), []byte(`"autoFixReviewFeedback": true`), []byte(`"autoFixReviewFeedback": true,
+    "githubCi": {
+      "workflowId": 99,
+      "workflowName": "maintained-linux-ci",
+      "cycleRuntimeSeconds": 1800,
+      "requiredChecks": [
+        {"id":"linux-ci","kind":"check_run","name":"Linux CI","appId":15368,"appSlug":"github-actions"},
+        {"id":"legacy-lint","kind":"commit_status","name":"legacy/lint","creatorId":7,"creatorLogin":"ci-owner"}
+      ]
+    }`), 1)
+	document, err := Parse(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := document.Configuration()
+	if value.Defaults.GitHubCI == nil || value.Defaults.GitHubCI.WorkflowID != 99 || len(value.Defaults.GitHubCI.RequiredChecks) != 2 {
+		t.Fatalf("configuration = %#v", value.Defaults.GitHubCI)
+	}
+	value.Defaults.GitHubCI.RequiredChecks[0].Name = "mutated"
+	if document.Configuration().Defaults.GitHubCI.RequiredChecks[0].Name != "Linux CI" {
+		t.Fatal("GitHub CI configuration was not deeply frozen")
+	}
+	botCreator := bytes.Replace(configured, []byte(`"creatorLogin":"ci-owner"`), []byte(`"creatorLogin":"github-actions[bot]"`), 1)
+	if _, err := Parse(botCreator); err != nil {
+		t.Fatalf("GitHub App status creator was rejected: %v", err)
+	}
+	for _, mutation := range [][]byte{
+		bytes.Replace(configured, []byte(`"ciCycles": 4`), []byte(`"ciCycles": 5`), 1),
+		bytes.Replace(configured, []byte(`"name":"Linux CI"`), []byte(`"name":"token=github_pat_abcdefghijklmnop"`), 1),
+		bytes.Replace(configured, []byte(`"appId":15368`), []byte(`"creatorId":15368`), 1),
+	} {
+		if _, err := Parse(mutation); err == nil {
+			t.Fatal("unsafe GitHub CI configuration was accepted")
+		}
+	}
+}
+
 func containsIssue(issues []Issue, code string) bool {
 	return slices.ContainsFunc(issues, func(current Issue) bool { return current.Code == code })
 }
@@ -276,7 +314,7 @@ func TestParseValidConfigurationIsCanonicalAndDefensive(t *testing.T) {
 
 func TestSchemaIsPublishedClosedAndVersioned(t *testing.T) {
 	hash, err := SchemaSHA256()
-	if err != nil || hash != "ccedd52bc3739e4f6830db163c959ec685f5b33b6a649d204748dad6d0a546d9" {
+	if err != nil || hash != "c8fce2640c419a6f2473a4466ca4e1fd905ff14304975b0ddd685df0d5d980c8" {
 		t.Fatalf("configuration schema hash = %q: %v", hash, err)
 	}
 	var schema struct {

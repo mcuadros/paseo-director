@@ -12,6 +12,7 @@ import (
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 )
 
 var (
@@ -79,6 +80,7 @@ type EffectiveConfiguration struct {
 	AutoFixReviewFeedback         bool                      `json:"autoFixReviewFeedback"`
 	RequireDifferentReviewerModel bool                      `json:"requireDifferentReviewerModel"`
 	PublishBeforeReview           bool                      `json:"publishBeforeReview"`
+	GitHubCI                      *domainconfig.GitHubCI    `json:"githubCi,omitempty"`
 	Sources                       EffectiveSources          `json:"sources"`
 }
 
@@ -97,6 +99,31 @@ func (configuration EffectiveConfiguration) PublicationPolicy() publicationdomai
 	return publicationdomain.NewPolicy(string(configuration.DeliveryMode), configuration.PublishBeforeReview, nil)
 }
 
+// ValidationPolicy maps only an explicitly approved Organizer check
+// configuration. An absent configuration disables GitHub CI; no adapter or
+// caller may invent default check names or provider identities.
+func (configuration EffectiveConfiguration) ValidationPolicy() (domainvalidation.Policy, bool) {
+	if configuration.DeliveryMode != domainconfig.DeliveryPullRequest || configuration.GitHubCI == nil {
+		return domainvalidation.Policy{}, false
+	}
+	checks := make([]domainvalidation.RequiredCheck, len(configuration.GitHubCI.RequiredChecks))
+	for index, check := range configuration.GitHubCI.RequiredChecks {
+		checks[index] = domainvalidation.RequiredCheck{ID: check.ID, Kind: domainvalidation.CheckKind(check.Kind), Name: check.Name,
+			AppID: check.AppID, AppSlug: check.AppSlug, CreatorID: check.CreatorID, CreatorLogin: check.CreatorLogin}
+	}
+	return domainvalidation.NewPolicy(configuration.GitHubCI.WorkflowID, configuration.GitHubCI.WorkflowName, checks,
+		uint64(configuration.GitHubCI.CycleRuntimeSeconds)*1_000)
+}
+
+func cloneGitHubCI(value *domainconfig.GitHubCI) *domainconfig.GitHubCI {
+	if value == nil {
+		return nil
+	}
+	result := *value
+	result.RequiredChecks = append([]domainconfig.GitHubRequiredCheck(nil), value.RequiredChecks...)
+	return &result
+}
+
 func projectEffective(configuration domainconfig.Configuration) EffectiveConfiguration {
 	return EffectiveConfiguration{
 		LaunchPolicy:                  configuration.Defaults.LaunchPolicy,
@@ -107,6 +134,7 @@ func projectEffective(configuration domainconfig.Configuration) EffectiveConfigu
 		AutoFixReviewFeedback:         configuration.Defaults.AutoFixReviewFeedback,
 		RequireDifferentReviewerModel: configuration.Defaults.RequireDifferentReviewerModel,
 		PublishBeforeReview:           configuration.Defaults.PublishBeforeReview,
+		GitHubCI:                      cloneGitHubCI(configuration.Defaults.GitHubCI),
 		Sources: EffectiveSources{
 			LaunchPolicy: ScopeProject, DeliveryMode: ScopeProject,
 			MaxActiveTasks: ScopeProject, MaxActiveTasksPerWorkspace: ScopeProject,
@@ -325,7 +353,8 @@ func effectiveWithin(boundary, proposed EffectiveConfiguration) bool {
 		(!proposed.AutoFixCIFailures || boundary.AutoFixCIFailures) &&
 		(!proposed.AutoFixReviewFeedback || boundary.AutoFixReviewFeedback) &&
 		(!boundary.RequireDifferentReviewerModel || proposed.RequireDifferentReviewerModel) &&
-		(!proposed.PublishBeforeReview || boundary.PublishBeforeReview)
+		(!proposed.PublishBeforeReview || boundary.PublishBeforeReview) &&
+		reflect.DeepEqual(proposed.GitHubCI, boundary.GitHubCI)
 }
 
 func envelopeIssue(path, message string) domainconfig.Issue {

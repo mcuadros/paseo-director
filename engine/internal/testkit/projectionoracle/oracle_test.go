@@ -603,6 +603,11 @@ func TestEveryDeclaredBlockerCodeIsReachable(t *testing.T) {
 		facts.Validation.Outcome = outcome
 		observe(facts)
 	}
+	for _, reason := range []string{"VALIDATION_BASE_CHANGED", "VALIDATION_UNAVAILABLE", "VALIDATION_WORKFLOW_AMBIGUOUS"} {
+		facts := candidateFacts("validation-reason")
+		facts.Validation.Reason = reason
+		observe(facts)
+	}
 	for _, outcome := range []ReviewOutcome{ReviewPending, ReviewChangesRequested, ReviewNeedsHuman} {
 		facts := candidateFacts("review-outcome")
 		facts.Review.Outcome = outcome

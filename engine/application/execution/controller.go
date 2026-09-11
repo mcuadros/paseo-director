@@ -27,6 +27,7 @@ import (
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
+	validationdomain "github.com/mcuadros/director-engine/domain/validation"
 	gitport "github.com/mcuadros/director-engine/ports/git"
 	"github.com/mcuadros/director-engine/ports/host"
 	reconciliationport "github.com/mcuadros/director-engine/ports/reconciliation"
@@ -93,6 +94,7 @@ type StartCommand struct {
 	ReviewPolicy      reviewdomain.ProfilePolicy
 	PublicationPolicy publicationdomain.Policy
 	DeliveryMode      domainconfig.DeliveryMode
+	ValidationPolicy  validationdomain.Policy
 	BudgetPolicy      runtimebudget.Policy
 	TurnBudgetDemand  runtimebudget.Demand
 	HelperPolicy      domainexecution.HelperPolicy
@@ -122,6 +124,22 @@ func publicationPoliciesEqual(left, right *publicationdomain.Policy) bool {
 		return left == nil && right == nil
 	}
 	return left.SHA256 == right.SHA256 && publicationdomain.ValidPolicy(*left) && publicationdomain.ValidPolicy(*right)
+}
+
+func effectiveValidationPolicy(policy validationdomain.Policy) *validationdomain.Policy {
+	if policy.SchemaVersion == "" {
+		return nil
+	}
+	copy := policy
+	copy.RequiredChecks = slices.Clone(policy.RequiredChecks)
+	return &copy
+}
+
+func validationPoliciesEqual(left, right *validationdomain.Policy) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.SHA256 == right.SHA256 && validationdomain.ValidPolicy(*left) && validationdomain.ValidPolicy(*right)
 }
 
 // StartResult reports the pure eligibility result and the Run identity, if an
@@ -329,7 +347,11 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 		domainexecution.ValidPrimaryRecoveryPolicy(recoveryPolicy) &&
 		(command.DeliveryMode == domainconfig.DeliveryPullRequest || command.DeliveryMode == domainconfig.DeliveryDirect) &&
 		(command.PublicationPolicy.SchemaVersion == "" || publicationdomain.ValidPolicy(command.PublicationPolicy)) &&
-		(command.DeliveryMode != domainconfig.DeliveryDirect || command.PublicationPolicy.SchemaVersion == "")
+		(command.DeliveryMode != domainconfig.DeliveryDirect || command.PublicationPolicy.SchemaVersion == "") &&
+		(command.DeliveryMode != domainconfig.DeliveryDirect || command.ValidationPolicy.SchemaVersion == "") &&
+		(command.ValidationPolicy.SchemaVersion == "" || validationdomain.ValidPolicy(command.ValidationPolicy) &&
+			command.DeliveryMode == domainconfig.DeliveryPullRequest && command.PublicationPolicy.DeliveryMode == "pull_request" &&
+			command.BudgetPolicy.CICycleLimit <= validationdomain.MaximumCICycles)
 }
 
 func eventPayload(value any) json.RawMessage {
@@ -423,6 +445,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			existing.Execution.ReviewPolicy != command.ReviewPolicy ||
 			!publicationPoliciesEqual(existing.Execution.PublicationPolicy, effectivePublicationPolicy(command.PublicationPolicy)) ||
 			existing.Execution.DeliveryMode != command.DeliveryMode ||
+			!validationPoliciesEqual(existing.Execution.ValidationPolicy, effectiveValidationPolicy(command.ValidationPolicy)) ||
 			existing.Execution.RepositoryBinding != repositoryBinding(workspace, command.WorktreePath, command.Branch, command.BaseSHA) ||
 			existing.Execution.BaseRef != "refs/heads/"+workspace.DefaultBaseBranch ||
 			existing.Execution.AcceptanceSHA256 != candidatedomain.AcceptanceSHA256(
@@ -474,9 +497,14 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		return StartResult{}, errors.New("primary execution budget is invalid")
 	}
 	publicationPolicy := effectivePublicationPolicy(command.PublicationPolicy)
+	validationPolicy := effectiveValidationPolicy(command.ValidationPolicy)
 	publicationPolicySHA256 := ""
 	if publicationPolicy != nil {
 		publicationPolicySHA256 = publicationPolicy.SHA256
+	}
+	validationPolicySHA256 := ""
+	if validationPolicy != nil {
+		validationPolicySHA256 = validationPolicy.SHA256
 	}
 	state := domainexecution.State{
 		SchemaVersion: domainexecution.SchemaVersion, Scope: command.Scope,
@@ -493,6 +521,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		ReviewPolicy:            command.ReviewPolicy,
 		PublicationPolicy:       publicationPolicy,
 		DeliveryMode:            command.DeliveryMode,
+		ValidationPolicy:        validationPolicy,
 		LifecycleApproval:       command.EligibilityFacts.LifecycleApproval,
 		Isolation:               command.EligibilityFacts.Isolation,
 		OperationalPolicy:       command.EligibilityFacts.OperationalPolicy,
@@ -539,6 +568,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			hashText(string(eventPayload(state.RecoveryPolicy))),
 			publicationPolicySHA256,
 			string(state.DeliveryMode),
+			validationPolicySHA256,
 			strings.Join(state.CriterionIDs, "\x1e"),
 		}, "\x1f")),
 	)
@@ -559,11 +589,12 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			ControlPolicySHA256     string `json:"controlPolicySha256"`
 			RecoveryPolicySHA256    string `json:"recoveryPolicySha256"`
 			PublicationPolicySHA256 string `json:"publicationPolicySha256,omitempty"`
+			ValidationPolicySHA256  string `json:"validationPolicySha256,omitempty"`
 			LeaseEpoch              uint64 `json:"leaseEpoch"`
 		}{decision.DecisionID, decision.LifecycleDigest, decision.IsolationDigest, state.EffectiveProfilesSHA256,
 			state.RepositoryBindingHash, state.PrimarySession.ReservationSHA256,
 			hashText(string(eventPayload(state.Budget.Policy))), hashText(string(eventPayload(state.ControlPolicy))),
-			hashText(string(eventPayload(state.RecoveryPolicy))), publicationPolicySHA256,
+			hashText(string(eventPayload(state.RecoveryPolicy))), publicationPolicySHA256, validationPolicySHA256,
 			state.LeaseBinding.Epoch}),
 	}, run, domain.Event{
 		ID: stableID("event", commandID), RunID: run.ID, Sequence: 1,
@@ -577,10 +608,11 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			ControlPolicySHA256     string `json:"controlPolicySha256"`
 			RecoveryPolicySHA256    string `json:"recoveryPolicySha256"`
 			PublicationPolicySHA256 string `json:"publicationPolicySha256,omitempty"`
+			ValidationPolicySHA256  string `json:"validationPolicySha256,omitempty"`
 			LeaseEpoch              uint64 `json:"leaseEpoch"`
 		}{decision.DecisionID, state.EffectiveProfilesSHA256, state.RepositoryBindingHash,
 			state.PrimarySession.ReservationSHA256, hashText(string(eventPayload(state.Budget.Policy))),
-			hashText(string(eventPayload(state.ControlPolicy))), hashText(string(eventPayload(state.RecoveryPolicy))), publicationPolicySHA256,
+			hashText(string(eventPayload(state.ControlPolicy))), hashText(string(eventPayload(state.RecoveryPolicy))), publicationPolicySHA256, validationPolicySHA256,
 			state.LeaseBinding.Epoch}),
 	})
 	if err != nil {

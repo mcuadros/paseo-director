@@ -24,6 +24,12 @@ An unchanged SHA never creates a Candidate and never starts CI or Review. The fi
 
 The resulting gate plan has deterministic complete-CI and Review-binding keys and requires both gates fresh for the new Candidate. The runtime budget ledger independently refuses another complete Validation cycle for the same Candidate.
 
+When the live relevant base moves, its exact observed SHA is an engine-owned
+correction input. The unchanged Candidate cannot be revalidated against that
+base. Candidate observation uses the new base and repository-binding hash, and
+the atomic append updates the Run base only after ancestry and clean-worktree
+proof pass; see [GitHub checks and base invalidation](github-checks.md).
+
 ## Loop stops and visibility
 
 The automatic lineage limit is exactly three attempts. Time, token, turn, optional cost, CI, provider-usage, and correction-count limits can stop it earlier. A repeated root-class fingerprint without productive acceptance-coverage or finding-resolution progress is churn and stops. A new blocking class after the cap also stops. P2 or other explicit human decisions, provider unavailability, frozen-context drift, primary identity drift, and ambiguous nonrepeatable progress route to `Needs you`.

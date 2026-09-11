@@ -21,6 +21,7 @@ import (
 	domaincorrection "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	correctionport "github.com/mcuadros/director-engine/ports/correction"
 	gitport "github.com/mcuadros/director-engine/ports/git"
 	"github.com/mcuadros/director-engine/ports/host"
@@ -429,7 +430,17 @@ func primaryContext(run domain.Run) (*host.AgentProfile, *host.MCPSession) {
 	return profile, mcp
 }
 
-func promptText(task domain.Task, state domaincorrection.State, attempt domaincorrection.Attempt) (string, string, error) {
+func revalidationBase(run domain.Run) string {
+	state := run.Execution.Validation
+	if state != nil && run.Execution.ValidationPolicy != nil && domainvalidation.ValidPolicy(*run.Execution.ValidationPolicy) &&
+		domainvalidation.ValidState(*state) && state.Policy.SHA256 == run.Execution.ValidationPolicy.SHA256 &&
+		state.Invalidated && state.BaseInvalidation != nil {
+		return state.BaseInvalidation.NewBaseSHA
+	}
+	return ""
+}
+
+func promptText(task domain.Task, state domaincorrection.State, attempt domaincorrection.Attempt, revalidationBaseSHA string) (string, string, error) {
 	batch, ok := domaincorrection.CurrentBatch(state)
 	if !ok {
 		return "", "", ErrInvalidCommand
@@ -445,11 +456,13 @@ func promptText(task domain.Task, state domaincorrection.State, attempt domainco
 		Batch                 domaincorrection.Batch                                                    `json:"batch"`
 		Reuse                 struct{ PlanSHA256, SkillSetSHA256 string }                               `json:"reuse"`
 		Refresh               struct{ DecisionsSHA256, DiffSHA256 string }                              `json:"refresh"`
+		RevalidationBaseSHA   string                                                                    `json:"revalidationBaseSha,omitempty"`
 		Authority             struct{ SameTaskAgentOnly, NewCommitRequired, LifecycleEffectsNone bool } `json:"authority"`
 	}{
 		SchemaVersion: "director.correction-prompt/v1", TaskID: state.TaskID, RunID: state.RunID,
 		OriginalTaskAgentUUID: state.OriginalTaskAgentUUID, Attempt: attempt, Objective: task.Objective,
 		AcceptanceCriteria: task.AcceptanceCriteria, Batch: batch,
+		RevalidationBaseSHA: revalidationBaseSHA,
 	}
 	prompt.Attempt.Output = nil
 	prompt.Reuse.PlanSHA256, prompt.Reuse.SkillSetSHA256 = state.FrozenPlanDigest, state.FrozenSkillSetDigest
@@ -562,7 +575,7 @@ func (service *Service) ReconcilePrompt(ctx context.Context, command TransitionC
 		return service.park(ctx, run, correctionreducer.CodeOriginalAgentChanged, "m3_8_explicit_primary_recovery_or_human_decision")
 	}
 	attempt := state.Attempts[len(state.Attempts)-1]
-	text, promptSHA, promptErr := promptText(task, state, attempt)
+	text, promptSHA, promptErr := promptText(task, state, attempt, revalidationBase(run))
 	if promptErr != nil {
 		return Result{Run: run}, promptErr
 	}
@@ -714,11 +727,22 @@ func (service *Service) ObserveCandidate(ctx context.Context, command Transition
 		return Result{Run: run}, ErrInvalidCommand
 	}
 	batch, _ := domaincorrection.CurrentBatch(state)
+	desiredBase := run.BaseSHA
+	repository := run.Execution.RepositoryBinding
+	repositorySHA256 := run.Execution.RepositoryBindingHash
+	if updatedBase := revalidationBase(run); updatedBase != "" {
+		desiredBase = updatedBase
+		repository.BaseSHA = updatedBase
+		repositorySHA256 = execution.RepositoryBindingSHA256(repository)
+		if repositorySHA256 == "" {
+			return Result{Run: run}, ErrInvalidCommand
+		}
+	}
 	claim := candidate.Claim{
 		SchemaVersion: candidate.ClaimSchemaVersion, ID: stableID("correction-claim", attempt.Key, attempt.Output.CandidateSHA),
 		ProjectID: run.Execution.Scope.ProjectID, WorkspaceID: run.Execution.Scope.WorkspaceID, TaskID: task.ID, RunID: run.ID,
 		ActorID: state.OriginalTaskAgentUUID, WorktreeID: run.Execution.Worktree.ExternalID, Branch: run.Execution.Branch,
-		BaseRef: run.Execution.BaseRef, CandidateSHA: attempt.Output.CandidateSHA, BaseSHA: run.BaseSHA,
+		BaseRef: run.Execution.BaseRef, CandidateSHA: attempt.Output.CandidateSHA, BaseSHA: desiredBase,
 		LeaseEpoch: command.LeaseEpoch, ExpectedRunVersion: run.Version + 1, TaskVersion: task.Version,
 		AcceptanceSHA256:    candidate.AcceptanceSHA256(task.ID, task.Version, task.Objective, task.AcceptanceCriteria, state.CriterionIDs),
 		ConfigurationSHA256: run.Execution.PrimarySession.ConfigurationSHA256, ProfileSHA256: run.Execution.EffectiveProfilesSHA256,
@@ -729,13 +753,13 @@ func (service *Service) ObserveCandidate(ctx context.Context, command Transition
 		return Result{Run: run}, ErrInvalidCommand
 	}
 	observation, err := service.git.ObserveCandidate(ctx, gitport.CandidateRequest{
-		Claim: claim, Repository: run.Execution.RepositoryBinding,
-		RepositoryBindingSHA256: run.Execution.RepositoryBindingHash, TaskStoreNowMillis: command.NowMillis,
+		Claim: claim, Repository: repository,
+		RepositoryBindingSHA256: repositorySHA256, TaskStoreNowMillis: command.NowMillis,
 	})
 	if err != nil {
 		return Result{Run: run}, err
 	}
-	admission := candidate.Evaluate(claim, observation, run.Execution.RepositoryBindingHash, command.NowMillis)
+	admission := candidate.Evaluate(claim, observation, repositorySHA256, command.NowMillis)
 	if admission.Kind != candidate.DecisionAdmit || admission.Manifest == nil {
 		return service.park(ctx, run, "correction_candidate_observation_rejected", "fresh_exact_candidate_or_human_decision")
 	}
@@ -810,7 +834,16 @@ func (service *Service) AdmitCandidate(ctx context.Context, command TransitionCo
 	}
 	run = checked
 	claim, observation := *state.PendingCandidateClaim, *state.PendingCandidateObservation
-	decision := candidate.Evaluate(claim, observation, run.Execution.RepositoryBindingHash, command.NowMillis)
+	repositorySHA256 := run.Execution.RepositoryBindingHash
+	if claim.BaseSHA != run.BaseSHA {
+		repository := run.Execution.RepositoryBinding
+		repository.BaseSHA = claim.BaseSHA
+		repositorySHA256 = execution.RepositoryBindingSHA256(repository)
+		if repositorySHA256 == "" || observation.RepositoryBindingSHA256 != repositorySHA256 {
+			return Result{Run: run}, ErrCorrectionAmbiguous
+		}
+	}
+	decision := candidate.Evaluate(claim, observation, repositorySHA256, command.NowMillis)
 	if decision.Kind != candidate.DecisionAdmit || decision.Manifest == nil || claim.TaskVersion != task.Version || claim.ActorID != state.OriginalTaskAgentUUID {
 		return Result{Run: run}, ErrCorrectionAmbiguous
 	}

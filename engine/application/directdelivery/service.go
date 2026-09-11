@@ -250,6 +250,7 @@ func currentBinding(value current, policy directdomain.Policy) (directdomain.Bin
 	if !currentCandidate(value) || !reviewApproved(value) || !ciPassed(value) || !correctionSettled(value) ||
 		value.run.Execution.DeliveryMode != domainconfig.DeliveryDirect || !directdomain.ValidPolicy(policy) ||
 		value.run.Execution.PublicationPolicy != nil || value.run.Execution.Publication != nil || len(value.run.Execution.PublicationHistory) != 0 ||
+		value.run.Execution.ValidationPolicy != nil || value.run.Execution.Validation != nil || len(value.run.Execution.ValidationHistory) != 0 ||
 		value.run.Execution.Review == nil || value.run.Execution.Review.Evidence == nil ||
 		value.run.Execution.Review.CIObservation == nil || policy.ConfigurationSHA256 != value.candidate.Manifest.ConfigurationSHA256 ||
 		value.candidate.Claim.BaseRef != value.run.Execution.BaseRef || !directdomain.TargetAuthorized(policy, value.candidate.Claim.BaseRef) {

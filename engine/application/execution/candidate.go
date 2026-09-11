@@ -11,6 +11,7 @@ import (
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
+	validationdomain "github.com/mcuadros/director-engine/domain/validation"
 	gitport "github.com/mcuadros/director-engine/ports/git"
 )
 
@@ -115,6 +116,14 @@ func (controller *Controller) ReconcileCandidateAuthority(
 	}
 	next := run
 	next.Execution.CandidateAuthority = &updated
+	if next.Execution.Validation != nil {
+		validationCode := validationdomain.CodeCandidateChanged
+		if code == candidatedomain.CodeBaseMoved {
+			validationCode = validationdomain.CodeBaseChanged
+		}
+		invalidated := validationdomain.Invalidate(*next.Execution.Validation, validationCode)
+		next.Execution.Validation = &invalidated
+	}
 	if next.Execution.Review != nil {
 		invalidated := reviewdomain.Invalidate(*next.Execution.Review, string(code))
 		next.Execution.Review = &invalidated

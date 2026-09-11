@@ -22,6 +22,9 @@ import (
 	"github.com/mcuadros/director-engine/domain/execution"
 	domainfeedback "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
+	domainreview "github.com/mcuadros/director-engine/domain/review"
+	"github.com/mcuadros/director-engine/domain/runtimebudget"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	correctionport "github.com/mcuadros/director-engine/ports/correction"
 	gitport "github.com/mcuadros/director-engine/ports/git"
 	githubport "github.com/mcuadros/director-engine/ports/github"
@@ -452,7 +455,12 @@ func historicalFeedback(run *domain.Run, binding domainfeedback.Binding) (*domai
 	return nil, 0, true
 }
 
-func invalidateDelivery(run *domain.Run) bool {
+func invalidateDelivery(run *domain.Run, nowMillis int64) bool {
+	if run.Execution.Validation != nil && !run.Execution.Validation.Invalidated &&
+		len(run.Execution.ValidationHistory) >= domainvalidation.MaximumHistory ||
+		run.Execution.Review != nil && len(run.Execution.ReviewHistory) >= 64 {
+		return false
+	}
 	if run.Execution.Publication != nil {
 		if publicationdomain.DispatchInFlight(*run.Execution.Publication) || len(run.Execution.PublicationHistory) >= publicationdomain.MaximumHistoricalStates {
 			return false
@@ -478,11 +486,51 @@ func invalidateDelivery(run *domain.Run) bool {
 		run.Execution.DirectDeliveryHistory = append(slices.Clone(run.Execution.DirectDeliveryHistory), historical)
 		run.Execution.DirectDelivery = nil
 	}
+	if run.Execution.Validation != nil && !run.Execution.Validation.Invalidated {
+		historical := domainvalidation.CloneState(*run.Execution.Validation)
+		for _, reservation := range run.Execution.Budget.Reservations {
+			if reservation.ID != historical.BudgetReservationID || reservation.EffectID != historical.EffectID || reservation.Released {
+				continue
+			}
+			observation := runtimebudget.ActivityObservation{ID: stableID("activity", historical.EffectID, historical.ValidationKey),
+				ReservationID: historical.BudgetReservationID, EffectID: historical.EffectID,
+				Activity: runtimebudget.ActivityValidationCycle, LeaseEpoch: run.Execution.LeaseBinding.Epoch,
+				PolicyRevision: run.Execution.Budget.Policy.Revision, ObservedAtMillis: nowMillis,
+				CandidateSHA: historical.Binding.CandidateSHA, Failed: true}
+			observation.FactHash = runtimebudget.ActivityObservationHash(observation)
+			ledger, _, err := runtimebudget.ApplyActivityObservation(run.Execution.Budget, observation)
+			if err != nil {
+				return false
+			}
+			run.Execution.Budget = ledger
+			break
+		}
+		historical = domainvalidation.Invalidate(historical, domainvalidation.CodeHumanFeedback)
+		if !domainvalidation.ValidState(historical) || !historical.Invalidated {
+			return false
+		}
+		run.Execution.ValidationHistory = append(slices.Clone(run.Execution.ValidationHistory), historical)
+		run.Execution.Validation = nil
+	}
+	if run.Execution.Review != nil {
+		historical := *run.Execution.Review
+		if !historical.Invalidated {
+			historical = domainreview.Invalidate(historical, "human_feedback")
+		}
+		if !domainreview.ValidState(historical) || !historical.Invalidated {
+			return false
+		}
+		run.Execution.ReviewHistory = append(slices.Clone(run.Execution.ReviewHistory), historical)
+		run.Execution.Review = nil
+	}
 	if run.Execution.CandidateAuthority == nil || run.Execution.CandidateAuthority.Invalidated {
 		return false
 	}
 	authority := *run.Execution.CandidateAuthority
-	authority.Downstream.Publication, authority.Downstream.Ready, authority.Downstream.Integration = nil, nil, nil
+	// Human feedback reopens the complete Candidate gate set. The immutable
+	// Validation, Review, and delivery states remain available as audit facts,
+	// but none of their bindings retains current authority.
+	authority.Downstream = candidate.Downstream{}
 	run.Execution.CandidateAuthority = &authority
 	return true
 }
@@ -509,7 +557,7 @@ func (service *Service) ingest(ctx context.Context, current loaded, routing Rout
 	}
 	authority := *next.Execution.CandidateAuthority
 	if domainfeedback.BlocksDelivery(state) {
-		if !invalidateDelivery(&next) {
+		if !invalidateDelivery(&next, routing.NowMillis) {
 			return Result{Run: current.run}, ErrFeedbackAmbiguous
 		}
 		authority = *next.Execution.CandidateAuthority
@@ -584,7 +632,11 @@ func otherCorrectionSources(run domain.Run) ([]domaincorrection.SourceSnapshot, 
 			}
 		}
 	}
-	if review := run.Execution.Review; review != nil && !review.Invalidated && review.Evidence != nil {
+	review := run.Execution.Review
+	if review == nil && len(run.Execution.ReviewHistory) > 0 {
+		review = &run.Execution.ReviewHistory[len(run.Execution.ReviewHistory)-1]
+	}
+	if review != nil && review.Evidence != nil {
 		if review.Evidence.Verdict == "changes_requested" || review.CIObservation != nil && review.CIObservation.Status != "passed" {
 			return nil, nil, false
 		}

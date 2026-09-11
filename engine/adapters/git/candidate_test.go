@@ -140,6 +140,38 @@ func TestAdapterAdmitsExactDirectParentFromRegisteredLinkedWorktree(t *testing.T
 	}
 }
 
+func TestRelevantBaseChangeRejectsUnchangedCandidateAndAdmitsRebasedCommit(t *testing.T) {
+	fixture := newRepositoryFixture(t, "sha1")
+	if err := os.WriteFile(filepath.Join(fixture.source, "BASE.md"), []byte("advanced base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixtureGit(t, fixture.source, "add", "BASE.md")
+	fixtureGit(t, fixture.source, "commit", "-m", "fixture: advance base")
+	newBase := fixtureGit(t, fixture.source, "rev-parse", "HEAD")
+	stale := fixture.request
+	stale.Claim.BaseSHA = newBase
+	stale.Repository.BaseSHA = newBase
+	stale.RepositoryBindingSHA256 = execution.RepositoryBindingSHA256(stale.Repository)
+	observation := observe(t, New(), stale)
+	decision := candidatedomain.Evaluate(stale.Claim, observation, stale.RepositoryBindingSHA256, 10_000)
+	if decision.Kind != candidatedomain.DecisionPark || decision.Code != candidatedomain.CodeGraphRejected || observation.DescendsFromBase {
+		t.Fatalf("unchanged Candidate on moved base = %#v %#v", observation, decision)
+	}
+	fixtureGit(t, fixture.worktree, "rebase", "main")
+	rebasedSHA := fixtureGit(t, fixture.worktree, "rev-parse", "HEAD")
+	if rebasedSHA == fixture.candidate {
+		t.Fatal("rebase did not create a fresh Candidate")
+	}
+	rebased := stale
+	rebased.Claim.CandidateSHA = rebasedSHA
+	rebasedObservation := observe(t, New(), rebased)
+	rebasedDecision := candidatedomain.Evaluate(rebased.Claim, rebasedObservation, rebased.RepositoryBindingSHA256, 10_000)
+	if rebasedDecision.Kind != candidatedomain.DecisionAdmit || rebasedDecision.Manifest == nil ||
+		!rebasedObservation.DescendsFromBase || !rebasedObservation.DirectParent || rebasedObservation.BaseRefHeadSHA != newBase {
+		t.Fatalf("rebased Candidate = %#v %#v", rebasedObservation, rebasedDecision)
+	}
+}
+
 func TestAdapterRejectsEveryDirtyOrAmbiguousWorktreeClass(t *testing.T) {
 	tests := []struct {
 		name   string

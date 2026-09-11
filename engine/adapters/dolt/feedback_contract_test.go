@@ -4,6 +4,7 @@ package dolt_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
+	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
 
 func TestFeedbackAuditReplayAndCandidateInvalidationSurviveDoltReopen(t *testing.T) {
@@ -85,8 +87,25 @@ func TestFeedbackAuditReplayAndCandidateInvalidationSurviveDoltReopen(t *testing
 		t.Fatalf("reopened feedback = %#v, %v", stored.Execution.Feedback, err)
 	}
 	second := storedCandidate("candidate-second", run.ID, 2, strings.Repeat("2", 40))
-	result, err = reopened.AppendCandidate(ctx, command("feedback-second", "candidate.correction.admit", run.ID, 2, `{}`), second,
-		event("feedback-second-event", run.ID, 4, run.ID, 3, "candidate.correction.admitted"))
+	result, err = reopened.AppendCandidate(ctx, command("feedback-second-before-route", "candidate.correction.admit", run.ID, 2, `{}`), second,
+		event("feedback-second-before-route-event", run.ID, 4, run.ID, 3, "candidate.correction.admitted"))
+	if !errors.Is(err, storeport.ErrReferentialIntegrity) {
+		t.Fatalf("candidate replaced feedback dispatch window: %#v, %v", result, err)
+	}
+	stored.Execution.Feedback, ok = func() (*feedbackdomain.State, bool) {
+		routed, routedOK := feedbackdomain.MarkCorrectionRouted(*stored.Execution.Feedback, strings.Repeat("f", 64))
+		return &routed, routedOK
+	}()
+	if !ok {
+		t.Fatal("feedback route observation rejected")
+	}
+	stored.Version++
+	result, err = reopened.UpdateRun(ctx, command("feedback-routed", "feedback.correction_routed", run.ID, 2, `{}`), stored,
+		event("feedback-routed-event", run.ID, 4, run.ID, 3, "feedback.correction_routed"))
+	requireApplied(t, result, err)
+	state = *stored.Execution.Feedback
+	result, err = reopened.AppendCandidate(ctx, command("feedback-second", "candidate.correction.admit", run.ID, 3, `{}`), second,
+		event("feedback-second-event", run.ID, 5, run.ID, 4, "candidate.correction.admitted"))
 	requireApplied(t, result, err)
 	if err := reopened.Close(); err != nil {
 		t.Fatal(err)
