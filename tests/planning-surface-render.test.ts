@@ -125,6 +125,46 @@ function loadPlanningModule(): PlanningSurfaceModule {
         return PlanningContract;
       case "../rpc/planning.shared.ts":
         return PlanningRpc;
+      case "./task-detail-view.client.ts":
+      case "./task-detail-view.client": {
+        const subSource = readFileSync("ui/task-detail-view.client.tsx", "utf8");
+        const subCompiled = ts.transpileModule(subSource, {
+          fileName: "ui/task-detail-view.client.tsx",
+          compilerOptions: {
+            target: ts.ScriptTarget.ES2022,
+            module: ts.ModuleKind.CommonJS,
+            jsx: ts.JsxEmit.ReactJSX,
+            esModuleInterop: true,
+          },
+        }).outputText;
+        const subModule = { exports: {} as Record<string, unknown> };
+        Function("require", "module", "exports", subCompiled)(
+          require,
+          subModule,
+          subModule.exports,
+        );
+        return subModule.exports;
+      }
+      case "./shell-layout.client.ts":
+      case "./shell-layout.client": {
+        const subSource = readFileSync("ui/shell-layout.client.ts", "utf8");
+        const subCompiled = ts.transpileModule(subSource, {
+          fileName: "ui/shell-layout.client.ts",
+          compilerOptions: {
+            target: ts.ScriptTarget.ES2022,
+            module: ts.ModuleKind.CommonJS,
+            jsx: ts.JsxEmit.ReactJSX,
+            esModuleInterop: true,
+          },
+        }).outputText;
+        const subModule = { exports: {} as Record<string, unknown> };
+        Function("require", "module", "exports", subCompiled)(
+          require,
+          subModule,
+          subModule.exports,
+        );
+        return subModule.exports;
+      }
       default:
         throw new Error(`unexpected runtime import ${specifier}`);
     }
@@ -158,6 +198,7 @@ const colors = {
 function props(client: PlanningClient, compact: boolean) {
   return {
     client,
+    host: { id: "host-a", label: "Host A" },
     layout: { compact, platform: compact ? "ios" : "web" },
     theme: { colors },
   };
@@ -299,12 +340,42 @@ test("wide planning presentation renders engine navigation, Board, capacity, det
   await act(async () => {
     await waitForText(renderer, /Configuration inheritance/);
   });
+  assert.deepEqual(fixture.detailRequests.at(-1), {
+    hostId: "host-a",
+    context: "board",
+    taskId: "task-0",
+    paseoWorkspaceId: null,
+    paseoAgentId: null,
+    afterCursor: null,
+  });
   assert.match(renderedText(renderer), /Waiting for DIR-DEPENDENCY/);
-  assert.match(renderedText(renderer), /Task projection created/);
-  assert.match(renderedText(renderer), /Runtime budget/);
-  assert.match(renderedText(renderer), /tokens\s*:\s*170000\s+consumed \+\s*0\s+reserved \/\s*200000/);
+
+  const executionTab = renderer.root.findByProps({
+    accessibilityLabel: "Show Execution tab",
+  });
+  await act(async () => executionTab.props.onPress());
+  await act(async () => {
+    await waitForText(renderer, /Runtime budget/);
+  });
+  assert.match(renderedText(renderer), /170,000\s*\/\s*200,000/);
   assert.match(renderedText(renderer), /Reviewer\s+1/);
   assert.match(renderedText(renderer), /budget_tokens_soft_limit_reached/);
+
+  const activityTab = renderer.root.findByProps({
+    accessibilityLabel: "Show Activity tab",
+  });
+  await act(async () => activityTab.props.onPress());
+  await act(async () => {
+    await waitForText(renderer, /Task projection created/);
+  });
+
+  const detailsTab = renderer.root.findByProps({
+    accessibilityLabel: "Show Details tab",
+  });
+  await act(async () => detailsTab.props.onPress());
+  await act(async () => {
+    await waitForText(renderer, /Configuration inheritance/);
+  });
 
   const manual = renderer.root.findByProps({
     accessibilityLabel: "Set launchPolicy to Manual",
@@ -574,7 +645,15 @@ test("paged cursor invalidation fails closed and refreshes from the first snapsh
   await act(async () => {
     await waitForText(renderer, /Contract-first planning UI shell/);
   });
-  const detail = await fixture.taskDetail({ taskId: "task-0", afterCursor: null });
+  const detail = await fixture.taskDetail({
+    hostId: "host-a",
+    context: "board",
+    taskId: "task-0",
+    paseoWorkspaceId: null,
+    paseoAgentId: null,
+    afterCursor: null,
+  });
+  assert.ok(detail.detail);
   const action = detail.detail.summary.allowedActions.find(
     (candidate) => candidate.kind === "configuration.preview",
   );

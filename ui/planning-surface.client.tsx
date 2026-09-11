@@ -43,6 +43,7 @@ import {
   planningQueryRpc,
   planningTaskDetailRpc,
 } from "../rpc/planning.shared.ts";
+import { TaskDetailView, type TaskDetailTab } from "./task-detail-view.client.ts";
 
 const pageSize = 100;
 const touchHitSlop = 4;
@@ -183,9 +184,10 @@ export function planningGroupRows(
 
 type PlanningSurfaceProps = Pick<
   PluginWorkspacePanelProps,
-  "theme" | "layout"
+  "theme" | "layout" | "host"
 > & {
   client: PlanningClient;
+  navigation?: PluginWorkspacePanelProps["navigation"];
 };
 
 export function ProjectBoard(props: PluginWorkspacePanelProps) {
@@ -200,10 +202,24 @@ export function ProjectBoard(props: PluginWorkspacePanelProps) {
     }),
     [mutatePlanning, queryPlanning, queryTaskDetail],
   );
-  return <PlanningSurface theme={props.theme} layout={props.layout} client={client} />;
+  return (
+    <PlanningSurface
+      client={client}
+      host={props.host}
+      layout={props.layout}
+      navigation={props.navigation}
+      theme={props.theme}
+    />
+  );
 }
 
-export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps) {
+export function PlanningSurface({
+  theme,
+  layout,
+  client,
+  host,
+  navigation,
+}: PlanningSurfaceProps) {
   const [view, setView] = useState<"board" | "list">(
     layout.compact ? "list" : "board",
   );
@@ -217,6 +233,7 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
     layout.compact ? "epic" : "flat",
   );
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [modalTab, setModalTab] = useState<TaskDetailTab>("details");
   const [pageCursor, setPageCursor] = useState<string | null>(null);
   const [previousCursors, setPreviousCursors] = useState<
     readonly (string | null)[]
@@ -261,12 +278,20 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
   const selectedSummary = tasks.find((task) => task.id === selectedTaskId);
 
   const detail = useQuery({
-    queryKey: ["director", "planning-task", selectedTaskId],
+    queryKey: ["director", "planning-task", host.id, selectedTaskId],
     queryFn: () =>
-      client.taskDetail({ taskId: selectedTaskId ?? "", afterCursor: null }),
+      client.taskDetail({
+        hostId: host.id,
+        context: "board",
+        taskId: selectedTaskId,
+        paseoWorkspaceId: null,
+        paseoAgentId: null,
+        afterCursor: null,
+      }),
     enabled: selectedTaskId !== null,
     retry: false,
   });
+  const detailOffline = planningOffline || detail.fetchStatus === "paused";
   const mutation = useMutation({
     mutationFn: (input: PlanningMutationInput) => client.mutate(input),
   });
@@ -278,8 +303,16 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
   >(null);
   const [pendingApply, setPendingApply] = useState<AllowedAction | null>(null);
 
+  function openTask(taskId: string) {
+    setSelectedTaskId(taskId);
+    setModalTab("details");
+    setPreview(null);
+    setPendingApply(null);
+    setConfigurationDraft([]);
+  }
+
   useEffect(() => {
-    if (!detail.data) return;
+    if (!detail.data?.detail) return;
     setConfigurationDraft(
       detail.data.detail.configuration.map((entry) => entry.configured),
     );
@@ -699,7 +732,7 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
         focusable
         hitSlop={touchHitSlop}
         key={task.id}
-        onPress={() => setSelectedTaskId(task.id)}
+        onPress={() => openTask(task.id)}
         style={[
           styles.task,
           { borderLeftColor: stateAccent(task.derivedState) },
@@ -806,7 +839,7 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
         accessibilityRole="button"
         focusable
         hitSlop={touchHitSlop}
-        onPress={() => setSelectedTaskId(task.id)}
+        onPress={() => openTask(task.id)}
         style={layout.compact ? styles.compactListRow : styles.listRow}
       >
         {layout.compact ? (
@@ -986,254 +1019,41 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
   }
 
   function renderDetail(task: TaskDetail) {
-    const launch = task.summary.allowedActions.find(
-      (action) => action.kind === "task.launch-now",
-    );
-    const previewAction = task.summary.allowedActions.find(
-      (action) => action.kind === "configuration.preview",
-    );
+    const workspaceName = workspaceNames.get(task.summary.workspaceId);
+    const epicName = task.summary.epicId
+      ? epicNames.get(task.summary.epicId)
+      : undefined;
+
     return (
-      <ScrollView contentContainerStyle={styles.modalContent}>
-        <View style={styles.modalSection}>
-          <Text style={styles.sectionLabel}>{task.summary.key}</Text>
-          <Text accessibilityRole="header" style={styles.modalTitle}>
-            {task.summary.title}
-          </Text>
-          <Text style={styles.body}>{task.objective}</Text>
-          <Text style={styles.muted}>
-            {stateLabels[task.summary.derivedState]} · {task.summary.priority} priority
-          </Text>
-          <Text style={styles.muted}>
-            Engine launch: {task.summary.schedulingFacts.launchDisposition}
-          </Text>
-          {task.summary.schedulingFacts.explanations.map((explanation) => (
-            <Text key={explanation.code} style={styles.warning}>
-              {explanation.message}
-            </Text>
-          ))}
-          {launch ? (
-            <Pressable
-              accessibilityLabel={launch.label}
-              accessibilityRole="button"
-              onPress={() =>
-                submitAction(launch, {
-                  type: "task.launch-now",
-                  taskId: task.summary.id,
-                })
-              }
-              style={styles.primaryButton}
-            >
-              <Text style={styles.primaryButtonText}>{launch.label}</Text>
-            </Pressable>
-          ) : null}
-        </View>
-
-        {task.summary.runtimeBudget ? (
-          <View style={styles.modalSection}>
-            <Text style={styles.sectionLabel}>Runtime budget</Text>
-            <Text style={task.summary.runtimeBudget.state === "current" ? styles.success : styles.warning}>
-              {attentionLabel(task.summary.runtimeBudget.state)} · soft threshold {task.summary.runtimeBudget.softThresholdBasisPoints} bp
-            </Text>
-            {task.summary.runtimeBudget.reasonCode ? (
-              <Text style={styles.warning}>{task.summary.runtimeBudget.reasonCode}</Text>
-            ) : null}
-            {task.summary.runtimeBudget.dimensions.map((dimension) => (
-              <Text key={dimension.dimension} style={styles.body}>
-                {dimension.dimension}: {dimension.consumed} consumed + {dimension.reserved} reserved / {dimension.enabled ? dimension.limit : "disabled"}
-              </Text>
-            ))}
-            {task.summary.runtimeBudget.counts.map((count) => (
-              <Text key={count.dimension} style={styles.body}>
-                {count.dimension}: {count.consumed} consumed + {count.reserved} reserved / {count.limit}
-              </Text>
-            ))}
-            <Text style={styles.muted}>
-              Turns · Worker {task.summary.runtimeBudget.workerTurns} · Helper {task.summary.runtimeBudget.helperTurns} · Reviewer {task.summary.runtimeBudget.reviewerTurns} · Correction {task.summary.runtimeBudget.correctionTurns}
-            </Text>
-          </View>
-        ) : null}
-
-        <View style={styles.modalSection}>
-          <Text style={styles.sectionLabel}>Acceptance criteria</Text>
-          {task.acceptanceCriteria.map((criterion) => (
-            <Text key={criterion.id} style={styles.body}>
-              {criterion.status === "satisfied" ? "✓" : "○"} {criterion.text}
-            </Text>
-          ))}
-        </View>
-
-        <View style={styles.modalSection}>
-          <Text style={styles.sectionLabel}>Dependencies</Text>
-          {task.dependencies.length === 0 ? (
-            <Text style={styles.muted}>No dependencies</Text>
-          ) : (
-            task.dependencies.map((dependency) => {
-              const override = task.summary.allowedActions.find(
-                (action) =>
-                  action.kind === "dependency.override" &&
-                  action.targetId === dependency.id,
-              );
-              return (
-                <View key={dependency.id} style={{ gap: 5 }}>
-                  <Text style={styles.body}>
-                    {dependency.key} · {dependency.title}
-                  </Text>
-                  <Text style={dependency.satisfied ? styles.success : styles.warning}>
-                    {dependency.explanation.message}
-                  </Text>
-                  {override ? (
-                    <Pressable
-                      accessibilityLabel={override.label}
-                      accessibilityRole="button"
-                      onPress={() =>
-                        submitAction(override, {
-                          type: "dependency.override",
-                          taskId: task.summary.id,
-                          dependencyKind: dependency.kind,
-                          dependencyId: dependency.id,
-                        })
-                      }
-                      style={styles.secondaryButton}
-                    >
-                      <Text style={styles.secondaryButtonText}>{override.label}</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              );
-            })
-          )}
-        </View>
-
-        <View style={styles.modalSection}>
-          <Text style={styles.sectionLabel}>Configuration inheritance</Text>
-          {task.configuration.map((entry) => {
-            const configured =
-              configurationDraft.find((candidate) => candidate.key === entry.key) ??
-              entry.configured;
-            return (
-              <View key={entry.key} style={{ gap: 6 }}>
-                <Text style={styles.body}>{entry.key}</Text>
-                <Text style={styles.muted}>
-                  Effective: {valueLabel(entry.effectiveValue)} from {entry.effectiveSource}
-                </Text>
-                <View style={styles.wrap}>
-                  <Pressable
-                    accessibilityLabel={`Inherit ${entry.key}`}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: configured.mode === "inherit" }}
-                    onPress={() => replaceConfigurationDraft({ key: entry.key, mode: "inherit" })}
-                    style={[styles.chip, configured.mode === "inherit" && styles.chipSelected]}
-                  >
-                    <Text style={[styles.chipText, configured.mode === "inherit" && styles.chipTextSelected]}>
-                      Inherit
-                    </Text>
-                  </Pressable>
-                  {entry.allowedValues.map((value) => {
-                    const selected = configured.mode === "value" && configured.value === value;
-                    return (
-                      <Pressable
-                        accessibilityLabel={`Set ${entry.key} to ${valueLabel(value)}`}
-                        accessibilityRole="button"
-                        accessibilityState={{ selected }}
-                        key={`${entry.key}-${String(value)}`}
-                        onPress={() => replaceConfigurationDraft({ key: entry.key, mode: "value", value })}
-                        style={[styles.chip, selected && styles.chipSelected]}
-                      >
-                        <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
-                          {valueLabel(value)}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              </View>
-            );
-          })}
-          {previewAction ? (
-            <Pressable
-              accessibilityLabel="Preview configuration changes"
-              accessibilityRole="button"
-              onPress={() =>
-                submitAction(previewAction, {
-                  type: "configuration.preview",
-                  target: task.configurationTarget,
-                  overrides: configurationDraft,
-                })
-              }
-              style={styles.secondaryButton}
-            >
-              <Text style={styles.secondaryButtonText}>Preview changes</Text>
-            </Pressable>
-          ) : null}
-          {preview ? (
-            <View accessibilityLiveRegion="polite" style={{ gap: 6 }}>
-              <Text style={styles.sectionLabel}>Preview diff</Text>
-              {preview.diff.length === 0 ? (
-                <Text style={styles.muted}>No effective changes</Text>
-              ) : (
-                preview.diff.map((change) => (
-                  <Text key={change.key} style={styles.body}>
-                    {change.key}: {valueLabel(change.before)} → {valueLabel(change.after)} ({change.effectiveSource})
-                  </Text>
-                ))
-              )}
-              {preview.issues.map((issue) => (
-                <Text key={issue.code} style={styles.danger}>{issue.message}</Text>
-              ))}
-              {preview.applyAction ? (
-                <Pressable
-                  accessibilityLabel={preview.applyAction.label}
-                  accessibilityRole="button"
-                  onPress={() => setPendingApply(preview.applyAction as AllowedAction)}
-                  style={styles.primaryButton}
-                >
-                  <Text style={styles.primaryButtonText}>{preview.applyAction.label}</Text>
-                </Pressable>
-              ) : null}
-              {pendingApply && preview.applyAction?.requestId === pendingApply.requestId ? (
-                <View accessible accessibilityLiveRegion="polite" style={styles.modalSection}>
-                  <Text style={styles.warning}>
-                    Confirm the exact preview before Director Engine applies it to future Runs.
-                  </Text>
-                  <View style={styles.wrap}>
-                    <Pressable
-                      accessibilityLabel="Cancel configuration apply"
-                      accessibilityRole="button"
-                      onPress={() => setPendingApply(null)}
-                      style={styles.secondaryButton}
-                    >
-                      <Text style={styles.secondaryButtonText}>Cancel</Text>
-                    </Pressable>
-                    <Pressable
-                      accessibilityLabel={`Confirm ${pendingApply.label}`}
-                      accessibilityRole="button"
-                      onPress={() =>
-                        submitAction(pendingApply, {
-                          type: "configuration.apply",
-                          target: preview.target,
-                          previewId: preview.previewId,
-                        })
-                      }
-                      style={styles.primaryButton}
-                    >
-                      <Text style={styles.primaryButtonText}>Confirm Apply</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              ) : null}
-            </View>
-          ) : null}
-        </View>
-
-        <View style={styles.modalSection}>
-          <Text style={styles.sectionLabel}>Activity</Text>
-          {task.activity.map((entry) => (
-            <Text key={entry.id} style={styles.body}>
-              {entry.message}
-            </Text>
-          ))}
-        </View>
-      </ScrollView>
+      <View style={{ minHeight: layout.compact ? 420 : 500, flex: 1 }}>
+        <TaskDetailView
+          activeTab={modalTab}
+          activityState={{
+            isPending: detail.isFetching,
+            isError: detail.isError,
+            isOffline: detailOffline,
+            isStale: (detail.isFetching || detail.isError) && Boolean(detail.data),
+            onReload: () => void detail.refetch(),
+          }}
+          configurationDraft={configurationDraft}
+          epicName={epicName}
+          layout={layout}
+          navigation={navigation}
+          onAction={submitAction}
+          onConfigurationDraftChange={(draft) => {
+            setConfigurationDraft(draft);
+            setPreview(null);
+            setPendingApply(null);
+          }}
+          onPendingApplyChange={setPendingApply}
+          onTabChange={setModalTab}
+          pendingApply={pendingApply}
+          preview={preview}
+          task={task}
+          theme={theme}
+          workspaceName={workspaceName}
+        />
+      </View>
     );
   }
 
@@ -1725,13 +1545,22 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
         title="Task details"
       >
         <Modal.Content>
-          {detail.isPending ? (
+          {detailOffline && !detail.data ? (
+            <View accessibilityLiveRegion="polite" style={styles.live}>
+              <Icon color={theme.colors.foregroundMuted} name="CloudOff" size={24} />
+              <Text style={styles.liveTitle}>Waiting for this host</Text>
+              <Text style={styles.liveBody}>
+                Task details will not fall through to another connected host.
+              </Text>
+            </View>
+          ) : null}
+          {detail.isPending && !detailOffline ? (
             <View accessibilityLiveRegion="polite" style={styles.live}>
               <ActivityIndicator color={theme.colors.accent} />
               <Text style={styles.liveTitle}>Loading task details</Text>
             </View>
           ) : null}
-          {detail.isError ? (
+          {detail.isError && !detail.data?.detail ? (
             <View accessibilityLiveRegion="polite" style={styles.live}>
               <Text style={styles.liveTitle}>Task details are unavailable</Text>
               {selectedSummary ? (
@@ -1750,7 +1579,22 @@ export function PlanningSurface({ theme, layout, client }: PlanningSurfaceProps)
               ) : null}
             </View>
           ) : null}
-          {detail.data ? renderDetail(detail.data.detail) : null}
+          {detail.data?.detail ? renderDetail(detail.data.detail) : null}
+          {detail.isError && detail.data?.detail ? (
+            <Text accessibilityLiveRegion="polite" style={styles.warning}>
+              Task detail refresh failed · showing the last exact-host snapshot
+            </Text>
+          ) : null}
+          {detail.data && !detail.data.detail ? (
+            <View accessibilityLiveRegion="polite" style={styles.live}>
+              <Icon color={theme.colors.foregroundMuted} name="Unplug" size={24} />
+              <Text style={styles.liveTitle}>Task details are unavailable</Text>
+              <Text style={styles.liveBody}>
+                {detail.data.unavailableReason?.message ??
+                  "This Task is not available on the selected host."}
+              </Text>
+            </View>
+          ) : null}
           {mutation.isPending ? (
             <Text accessibilityLiveRegion="polite" style={styles.muted}>
               Submitting intent to Director Engine

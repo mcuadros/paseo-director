@@ -128,10 +128,14 @@ responses at 4 MiB. Director Home uses the same boundary at
 `POST /v1/planning/home`, additionally binding its query and page cursor to the
 exact host and engine instance. Organizer Create/Adopt uses the authenticated
 `POST /v1/planning/organizer-bootstrap` Preview/Apply endpoint. It owns no
-retry, filter, state, sorting, pagination, or TaskStore policy. Task-detail and
-non-control planning mutation methods remain explicitly unwired until their
-complete application command/read contracts are available; they never call a
-fixture or infer a fallback.
+retry, filter, state, sorting, pagination, or TaskStore policy. Task detail
+uses the same boundary at `POST /v1/planning/task-detail`. Its disjoint Board
+versus native-agent contexts and echoed response bind the exact host, Task,
+Run, Candidate, native Execution Workspace, and agent or return a bounded
+unavailable reason; the connector never resolves or falls back. Non-control
+planning mutation methods remain explicitly unwired until their complete
+application command contracts are available; they never call a fixture or
+infer a fallback.
 
 The deterministic adapter under `tests/fixtures/` is compiled only by tests.
 It contains exactly 25 Workspaces, 500 open Tasks, and 10,000 historical Tasks,

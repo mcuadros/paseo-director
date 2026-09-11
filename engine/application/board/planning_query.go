@@ -29,9 +29,12 @@ type planningProjectFacts struct {
 	project         domain.Project
 	workspaces      []domain.Workspace
 	epics           []domain.Epic
+	tasks           map[string]domain.Task
+	overrides       []domain.DependencyOverride
 	inputs          []projection.TaskProjectionInput
 	activeRuns      map[string]bool
 	latestRuns      map[string]domain.Run
+	candidates      map[string]domain.Candidate
 	counts          planningCounts
 	workspaceCounts map[string]planningCounts
 	epicProgress    map[string]planningProgress
@@ -134,8 +137,10 @@ func (reader *PlanningReader) loadFacts(ctx context.Context) (planningFacts, err
 		}
 		projectFacts := planningProjectFacts{
 			project: project, workspaces: workspaces, epics: epics,
+			tasks: make(map[string]domain.Task, len(tasks)), overrides: overrides,
 			inputs: make([]projection.TaskProjectionInput, 0, len(tasks)), activeRuns: make(map[string]bool),
 			latestRuns:      make(map[string]domain.Run),
+			candidates:      make(map[string]domain.Candidate),
 			workspaceCounts: make(map[string]planningCounts, len(workspaces)),
 			epicProgress:    make(map[string]planningProgress, len(epics)),
 		}
@@ -171,6 +176,7 @@ func (reader *PlanningReader) loadFacts(ctx context.Context) (planningFacts, err
 			}
 		}
 		for _, task := range tasks {
+			projectFacts.tasks[task.ID] = task
 			dependency, ok := report.Result(task.ID)
 			if !ok {
 				return planningFacts{}, ErrDerivedPlanningInvalid
@@ -204,6 +210,7 @@ func (reader *PlanningReader) loadFacts(ctx context.Context) (planningFacts, err
 						return planningFacts{}, projection.ErrCandidateRunMismatch
 					}
 					candidate = &current
+					projectFacts.candidates[current.ID] = current
 				}
 			}
 			epicID := ""
@@ -877,4 +884,362 @@ func (reader *PlanningReader) Query(ctx context.Context, input planningport.Quer
 		}
 	}
 	return planningport.Snapshot{}, ErrSnapshotChanged
+}
+
+var ErrTaskDetailCursorInvalid = errors.New("task detail cursor is invalid")
+
+type PlanningEventReader interface {
+	Events(context.Context, domain.EventQuery) ([]domain.Event, error)
+}
+
+func detailExplanation(code, message string) *planningport.Explanation {
+	wake := "refresh_exact_host_task_binding"
+	return &planningport.Explanation{
+		Code: code, Message: message, WakeCondition: &wake, HumanActionRequired: false,
+	}
+}
+
+func currentNativeBinding(run *domain.Run, projectID, workspaceID, taskID string) (string, string, *planningport.Explanation) {
+	if run == nil {
+		return "", "", detailExplanation("task_not_started", "No Run has been created for this Task")
+	}
+	state := run.Execution
+	if state.Scope.ProjectID != "" && (state.Scope.ProjectID != projectID || state.Scope.WorkspaceID != workspaceID ||
+		state.Scope.TaskID != taskID || state.Scope.RunID != run.ID) {
+		return "", "", detailExplanation("run_binding_contradictory", "The current Run binding is contradictory; agent navigation is disabled")
+	}
+	workspace, agent := state.HostView.ExternalID, state.PrimarySession.NativeAgentID
+	agentEffect, visibility := state.Agent, state.WorkerVisibility
+	if state.PrimaryRecovery.SchemaVersion != "" && execution.ValidPrimaryRecovery(state.PrimaryRecovery, state) &&
+		state.PrimaryRecovery.Phase == execution.PrimaryRecoveryComplete && state.PrimaryRecovery.ReplacementAgent.ExternalID != "" {
+		agent = state.PrimaryRecovery.ReplacementSession.NativeAgentID
+		agentEffect = state.PrimaryRecovery.ReplacementAgent
+		visibility = state.PrimaryRecovery.ReplacementVisibility
+	}
+	if workspace == "" || agent == "" || agentEffect.ExternalID != agent || visibility == nil ||
+		visibility.AgentID != agent || visibility.ExecutionWorkspaceID != workspace ||
+		visibility.ObservedDigest == "" || visibility.ObservedDigest != visibility.Digest {
+		return "", "", detailExplanation("agent_binding_unavailable", "No exact current Paseo agent and Execution Workspace binding is available")
+	}
+	if state.AgentArchive.Phase == execution.EffectComplete || state.HostViewArchive.Phase == execution.EffectComplete {
+		return "", "", detailExplanation("agent_archived", "The bound Paseo agent is no longer available for navigation")
+	}
+	return workspace, agent, nil
+}
+
+func projectedTaskRow(input projection.TaskProjectionInput) projection.TaskProjectionRow {
+	return projection.TaskProjectionRow{
+		TaskID: input.TaskID, ProjectID: input.ProjectID, WorkspaceID: input.WorkspaceID, EpicID: input.EpicID,
+		Key: input.Key, Title: input.Title, Priority: input.Priority, Labels: cloneText(input.Labels),
+		QueuedAtUnixMillis: input.QueuedAtUnixMillis, UpdatedAtUnixMillis: input.UpdatedAtUnixMillis,
+		Projection: projection.DeriveTaskProjection(input.Facts),
+	}
+}
+
+func taskInput(project *planningProjectFacts, taskID string) (projection.TaskProjectionInput, bool) {
+	for _, input := range project.inputs {
+		if input.TaskID == taskID {
+			return input, true
+		}
+	}
+	return projection.TaskProjectionInput{}, false
+}
+
+type detailMatch struct {
+	project *planningProjectFacts
+	task    domain.Task
+	run     *domain.Run
+	input   projection.TaskProjectionInput
+}
+
+func findTaskDetail(facts planningFacts, input planningport.TaskDetailQueryInput) (detailMatch, *planningport.Explanation) {
+	matches := []detailMatch{}
+	for projectIndex := range facts.projects {
+		project := &facts.projects[projectIndex]
+		for taskID, task := range project.tasks {
+			if input.Context == "board" && (input.TaskID == nil || taskID != *input.TaskID) {
+				continue
+			}
+			runValue, hasRun := project.latestRuns[taskID]
+			var run *domain.Run
+			if hasRun {
+				current := runValue
+				run = &current
+			}
+			if input.Context == "agent" {
+				workspace, agent, unavailable := currentNativeBinding(run, project.project.ID, task.WorkspaceIDs[0], task.ID)
+				if unavailable != nil || input.PaseoWorkspaceID == nil || input.PaseoAgentID == nil ||
+					workspace != *input.PaseoWorkspaceID || agent != *input.PaseoAgentID {
+					continue
+				}
+			}
+			projected, ok := taskInput(project, taskID)
+			if !ok {
+				continue
+			}
+			matches = append(matches, detailMatch{project: project, task: task, run: run, input: projected})
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return detailMatch{}, detailExplanation("task_binding_ambiguous", "More than one Task matches this exact context; no fallback was selected")
+	}
+	if input.Context == "agent" {
+		return detailMatch{}, detailExplanation("agent_task_unbound", "No Director Task is exactly bound to this Paseo agent and workspace")
+	}
+	return detailMatch{}, detailExplanation("task_unavailable", "The requested Task is unavailable on this exact Director host")
+}
+
+func detailBinding(hostID string, match detailMatch) planningport.TaskDetailBinding {
+	binding := planningport.TaskDetailBinding{
+		HostID: hostID, ProjectID: match.task.ProjectID, WorkspaceID: match.task.WorkspaceIDs[0], TaskID: match.task.ID,
+		TaskVersion: strconv.FormatUint(match.task.Version, 10), AgentNavigation: "unavailable",
+	}
+	if match.run == nil {
+		binding.UnavailableReason = detailExplanation("task_not_started", "No Run has been created for this Task")
+		return binding
+	}
+	runID, runNumber, runVersion := match.run.ID, strconv.FormatUint(match.run.Number, 10), strconv.FormatUint(match.run.Version, 10)
+	binding.RunID, binding.RunNumber, binding.RunVersion = &runID, &runNumber, &runVersion
+	if match.run.CurrentCandidateID != "" {
+		if candidate, ok := match.project.candidates[match.run.CurrentCandidateID]; ok && candidate.RunID == match.run.ID && len(candidate.CommitSHA) == 40 {
+			candidateID, candidateSHA := candidate.ID, candidate.CommitSHA
+			binding.CandidateID, binding.CandidateSHA = &candidateID, &candidateSHA
+		}
+	}
+	workspace, agent, unavailable := currentNativeBinding(match.run, match.task.ProjectID, match.task.WorkspaceIDs[0], match.task.ID)
+	if unavailable != nil {
+		binding.UnavailableReason = unavailable
+		return binding
+	}
+	binding.PaseoWorkspaceID, binding.PaseoAgentID = &workspace, &agent
+	binding.AgentNavigation = "available"
+	return binding
+}
+
+func detailAcceptance(task domain.Task) []planningport.TaskAcceptanceCriterion {
+	status := "pending"
+	if task.Complete {
+		status = "satisfied"
+	}
+	return []planningport.TaskAcceptanceCriterion{{ID: "task-acceptance", Text: task.AcceptanceCriteria, Status: status}}
+}
+
+func nodeDetail(project *planningProjectFacts, reference domain.PlanningNodeRef) (string, string, bool) {
+	if reference.Kind == domain.PlanningNodeTask {
+		if task, ok := project.tasks[reference.ID]; ok {
+			return defaultPlanningKey(task.Key, task.ID), task.Title, task.Complete
+		}
+	}
+	if reference.Kind == domain.PlanningNodeEpic {
+		for _, epic := range project.epics {
+			if epic.ID == reference.ID {
+				return defaultPlanningKey(epic.Key, epic.ID), epic.Title, epic.Complete
+			}
+		}
+	}
+	return reference.ID, "Unavailable dependency", false
+}
+
+func detailDependencies(match detailMatch) []planningport.TaskDependencyDetail {
+	result := make([]planningport.TaskDependencyDetail, 0, len(match.task.Dependencies))
+	for _, dependency := range match.task.Dependencies {
+		key, title, complete := nodeDetail(match.project, dependency.On)
+		overrideStatus := "none"
+		for _, override := range match.project.overrides {
+			if override.TaskID == match.task.ID && override.Dependency == dependency {
+				overrideStatus = "pending"
+				if override.Granted && override.ActorKind == domain.PlanningActorHuman && override.TaskVersion == match.task.Version {
+					overrideStatus, complete = "approved", true
+				}
+			}
+		}
+		message := "Waiting for " + key
+		code := "dependency_wait"
+		if complete {
+			message, code = "Dependency requirement is satisfied", "dependency_satisfied"
+		}
+		result = append(result, planningport.TaskDependencyDetail{
+			ID: dependency.On.ID, Kind: string(dependency.On.Kind), Key: key, Title: title, Satisfied: complete,
+			OverrideStatus: overrideStatus, Explanation: planningport.Explanation{Code: code, Message: message, HumanActionRequired: false},
+		})
+	}
+	return result
+}
+
+func activityKind(eventType string) string {
+	switch {
+	case strings.Contains(eventType, "review"):
+		return "review"
+	case strings.Contains(eventType, "validation"), strings.Contains(eventType, "ci"):
+		return "validation"
+	case strings.Contains(eventType, "feedback"), strings.Contains(eventType, "human"), strings.Contains(eventType, "approval"):
+		return "human"
+	case strings.Contains(eventType, "task"), strings.Contains(eventType, "project"), strings.Contains(eventType, "epic"), strings.Contains(eventType, "dependency"):
+		return "planning"
+	default:
+		return "execution"
+	}
+}
+
+func activitySummary(eventType string) string {
+	known := map[string]string{
+		"task.created":         "Task created",
+		"task.updated":         "Task details updated",
+		"run.created":          "Run created",
+		"candidate.admitted":   "Candidate admitted",
+		"review.completed":     "Independent review recorded",
+		"validation.completed": "Validation result recorded",
+		"task.closed":          "Task completed",
+	}
+	if summary := known[eventType]; summary != "" {
+		return summary
+	}
+	return "Director recorded a " + strings.ReplaceAll(strings.ReplaceAll(eventType, ".", " "), "_", " ") + " event"
+}
+
+func boundedDetailID(value string) bool {
+	return value != "" && len(value) <= 128 && value == strings.TrimSpace(value) &&
+		strings.IndexFunc(value, func(character rune) bool { return character < 0x20 || character == 0x7f }) < 0
+}
+
+func (reader *PlanningReader) detailActivity(ctx context.Context, match detailMatch, after uint64) ([]planningport.TaskActivity, error) {
+	eventsStore, ok := reader.store.(PlanningEventReader)
+	if !ok {
+		return []planningport.TaskActivity{}, nil
+	}
+	all := []domain.Event{}
+	taskEvents, err := eventsStore.Events(ctx, domain.EventQuery{AggregateID: match.task.ID, AfterGlobalSequence: after, Limit: 100})
+	if err != nil {
+		return nil, fmt.Errorf("read Task activity: %w", err)
+	}
+	all = append(all, taskEvents...)
+	if match.run != nil {
+		runEvents, runErr := eventsStore.Events(ctx, domain.EventQuery{RunID: match.run.ID, AfterGlobalSequence: after, Limit: 100})
+		if runErr != nil {
+			return nil, fmt.Errorf("read Run activity: %w", runErr)
+		}
+		all = append(all, runEvents...)
+	}
+	slices.SortFunc(all, func(left, right domain.Event) int {
+		if left.GlobalSequence < right.GlobalSequence {
+			return -1
+		}
+		if left.GlobalSequence > right.GlobalSequence {
+			return 1
+		}
+		return 0
+	})
+	seen := map[uint64]struct{}{}
+	result := []planningport.TaskActivity{}
+	for _, event := range all {
+		if _, duplicate := seen[event.GlobalSequence]; duplicate || len(result) == 100 {
+			continue
+		}
+		seen[event.GlobalSequence] = struct{}{}
+		code := event.Type
+		if !boundedDetailID(code) {
+			code = "director.event"
+		}
+		id := event.ID
+		if !boundedDetailID(id) {
+			id = "event-" + strconv.FormatUint(event.GlobalSequence, 10)
+		}
+		result = append(result, planningport.TaskActivity{
+			ID: id, Sequence: strconv.FormatUint(event.GlobalSequence, 10), Kind: activityKind(code), Code: code, Message: activitySummary(code),
+		})
+	}
+	return result, nil
+}
+
+func cloneTaskDetailQuery(input planningport.TaskDetailQueryInput) planningport.TaskDetailQueryInput {
+	result := input
+	if input.TaskID != nil {
+		value := *input.TaskID
+		result.TaskID = &value
+	}
+	if input.PaseoWorkspaceID != nil {
+		value := *input.PaseoWorkspaceID
+		result.PaseoWorkspaceID = &value
+	}
+	if input.PaseoAgentID != nil {
+		value := *input.PaseoAgentID
+		result.PaseoAgentID = &value
+	}
+	if input.AfterCursor != nil {
+		value := *input.AfterCursor
+		result.AfterCursor = &value
+	}
+	return result
+}
+
+// TaskDetail returns one exact-host semantic projection or an explicit
+// unavailable result. It never substitutes another Task, Run, agent, or host.
+func (reader *PlanningReader) TaskDetail(ctx context.Context, input planningport.TaskDetailQueryInput) (planningport.TaskDetailSnapshot, error) {
+	if err := planningport.ValidateTaskDetailQuery(input); err != nil {
+		return planningport.TaskDetailSnapshot{}, ErrPlanningQueryInvalid
+	}
+	afterCursor := uint64(0)
+	if input.AfterCursor != nil {
+		value, err := strconv.ParseUint(*input.AfterCursor, 10, 64)
+		if err != nil {
+			return planningport.TaskDetailSnapshot{}, ErrPlanningQueryInvalid
+		}
+		afterCursor = value
+	}
+	for range snapshotReadAttempts {
+		before, err := reader.store.LatestEventSequence(ctx)
+		if err != nil {
+			return planningport.TaskDetailSnapshot{}, fmt.Errorf("read Task detail cursor: %w", err)
+		}
+		if afterCursor > before {
+			return planningport.TaskDetailSnapshot{}, ErrTaskDetailCursorInvalid
+		}
+		facts, err := reader.loadFacts(ctx)
+		if err != nil {
+			return planningport.TaskDetailSnapshot{}, err
+		}
+		match, unavailable := findTaskDetail(facts, input)
+		var detail *planningport.TaskDetail
+		if unavailable == nil {
+			activity, activityErr := reader.detailActivity(ctx, match, afterCursor)
+			if activityErr != nil {
+				return planningport.TaskDetailSnapshot{}, activityErr
+			}
+			workspaces := make(map[string]domain.Workspace, len(match.project.workspaces))
+			for _, workspace := range match.project.workspaces {
+				workspaces[workspace.ID] = workspace
+			}
+			cursor := strconv.FormatUint(before, 10)
+			summary := taskSummary(projectedTaskRow(match.input), match.input, match.project.project, match.run, workspaces, cursor)
+			detail = &planningport.TaskDetail{
+				Binding: detailBinding(input.HostID, match), Summary: summary, Objective: match.task.Objective,
+				AcceptanceCriteria: detailAcceptance(match.task), Dependencies: detailDependencies(match),
+				ConfigurationTarget: planningport.ConfigurationTarget{Scope: "task", ID: match.task.ID},
+				Configuration:       []planningport.ConfigurationEntry{}, ConfigurationPreview: nil, Activity: activity,
+			}
+		}
+		after, err := reader.store.LatestEventSequence(ctx)
+		if err != nil {
+			return planningport.TaskDetailSnapshot{}, fmt.Errorf("read Task detail cursor: %w", err)
+		}
+		if before != after {
+			continue
+		}
+		definition, err := planningport.EmbeddedDefinition()
+		if err != nil {
+			return planningport.TaskDetailSnapshot{}, err
+		}
+		hash, err := planningport.SchemaSHA256()
+		if err != nil {
+			return planningport.TaskDetailSnapshot{}, err
+		}
+		return planningport.TaskDetailSnapshot{
+			SchemaVersion: definition.SchemaVersion, ContractVersion: definition.ContractVersion, ContractHash: hash,
+			HostID: input.HostID, Cursor: strconv.FormatUint(after, 10), Query: cloneTaskDetailQuery(input), Detail: detail, UnavailableReason: unavailable,
+		}, nil
+	}
+	return planningport.TaskDetailSnapshot{}, ErrSnapshotChanged
 }

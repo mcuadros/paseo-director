@@ -13,10 +13,13 @@ import {
   PLANNING_HOME_QUERY_PATH,
   PLANNING_ORGANIZER_MUTATION_PATH,
   PLANNING_QUERY_PATH,
+  PLANNING_TASK_DETAIL_QUERY_PATH,
   planningMutationInputSchema,
   planningMutationResultSchema,
   planningQueryInputSchema,
   planningSnapshotSchema,
+  taskDetailQueryInputSchema,
+  taskDetailSnapshotSchema,
   homeQueryInputSchema,
   homeSnapshotSchema,
   organizerBootstrapInputSchema,
@@ -27,6 +30,8 @@ import {
   type OrganizerBootstrapResult,
   type PlanningQueryInput,
   type PlanningSnapshot,
+  type TaskDetailQueryInput,
+  type TaskDetailSnapshot,
   type PlanningMutationInput,
   type PlanningMutationResult,
 } from "../generated/planning-contract.shared.ts";
@@ -35,6 +40,7 @@ const requestTimeoutMilliseconds = 10_000;
 
 export type PlanningTransport = {
   query(input: PlanningQueryInput): Promise<PlanningSnapshot>;
+  taskDetail(input: TaskDetailQueryInput): Promise<TaskDetailSnapshot>;
   home?(input: HomeQueryInput): Promise<HomeSnapshot>;
   bootstrapOrganizer?(input: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult>;
   mutate(input: PlanningMutationInput): Promise<PlanningMutationResult>;
@@ -146,6 +152,7 @@ export function createPlanningTransport(options: {
   const baseUrl = loopbackBaseUrl(options.baseUrl);
   const fetchPlanning = options.fetch ?? globalThis.fetch;
   const url = new URL(PLANNING_QUERY_PATH, baseUrl);
+  const taskDetailUrl = new URL(PLANNING_TASK_DETAIL_QUERY_PATH, baseUrl);
   const homeUrl = new URL(PLANNING_HOME_QUERY_PATH, baseUrl);
   const organizerUrl = new URL(PLANNING_ORGANIZER_MUTATION_PATH, baseUrl);
   const mutationUrl = new URL(PLANNING_MUTATION_PATH, baseUrl);
@@ -360,6 +367,90 @@ export function createPlanningTransport(options: {
         throw new PlanningTransportError(
           "ENGINE_PLANNING_PAYLOAD",
           "Director Engine planning response is invalid",
+        );
+      }
+    },
+    async taskDetail(rawInput: TaskDetailQueryInput): Promise<TaskDetailSnapshot> {
+      const input = taskDetailQueryInputSchema.parse(rawInput);
+      const body = JSON.stringify(input);
+      if (new TextEncoder().encode(body).byteLength > PLANNING_MAXIMUM_REQUEST_BYTES) {
+        throw new PlanningTransportError(
+          "ENGINE_TASK_DETAIL_INPUT",
+          "Director Engine Task detail query exceeds the contract bound",
+        );
+      }
+      let response: Response;
+      try {
+        response = await fetchPlanning(taskDetailUrl, {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            "content-type": "application/json",
+            "x-director-contract-version": PLANNING_CONTRACT_VERSION,
+            "x-director-contract-hash": PLANNING_CONTRACT_SHA256,
+          },
+          body,
+          signal: AbortSignal.timeout(requestTimeoutMilliseconds),
+        });
+      } catch {
+        throw new PlanningTransportError(
+          "ENGINE_TASK_DETAIL_UNAVAILABLE",
+          "Task detail is unavailable on this exact Director host",
+        );
+      }
+      if (response.url !== taskDetailUrl.href) {
+        throw new PlanningTransportError(
+          "ENGINE_TASK_DETAIL_ORIGIN",
+          "Director Engine Task detail response origin does not match",
+        );
+      }
+      if (!response.ok) {
+        let responseCode: string | undefined;
+        try {
+          const value = await boundedResponseValue(response);
+          if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && typeof (value as { code?: unknown }).code === "string") {
+            responseCode = (value as { code: string }).code;
+          }
+        } catch {
+          responseCode = undefined;
+        }
+        const code = responseCode === "TASK_DETAIL_HOST_MISMATCH"
+          ? "ENGINE_TASK_DETAIL_HOST_MISMATCH"
+          : responseCode === "TASK_DETAIL_CURSOR_INVALIDATED"
+            ? "ENGINE_TASK_DETAIL_CURSOR_INVALIDATED"
+            : "ENGINE_TASK_DETAIL_RESPONSE";
+        throw new PlanningTransportError(
+          code,
+          code === "ENGINE_TASK_DETAIL_HOST_MISMATCH"
+            ? "Director Engine refused a different Task detail host identity"
+            : code === "ENGINE_TASK_DETAIL_CURSOR_INVALIDATED"
+              ? "Task activity changed; refresh this exact Task"
+              : "Director Engine rejected the Task detail query",
+        );
+      }
+      if (
+        response.headers.get("x-director-contract-version") !== PLANNING_CONTRACT_VERSION ||
+        response.headers.get("x-director-contract-hash") !== PLANNING_CONTRACT_SHA256
+      ) {
+        throw new PlanningTransportError(
+          "ENGINE_TASK_DETAIL_CONTRACT",
+          "Director Engine Task detail contract does not match",
+        );
+      }
+      try {
+        const snapshot = taskDetailSnapshotSchema.parse(await boundedResponseValue(response));
+        if (snapshot.hostId !== input.hostId || JSON.stringify(snapshot.query) !== JSON.stringify(input)) {
+          throw new PlanningTransportError(
+            "ENGINE_TASK_DETAIL_BINDING",
+            "Director Engine returned a different Task detail binding",
+          );
+        }
+        return snapshot;
+      } catch (error) {
+        if (error instanceof PlanningTransportError) throw error;
+        throw new PlanningTransportError(
+          "ENGINE_TASK_DETAIL_PAYLOAD",
+          "Director Engine Task detail response is invalid",
         );
       }
     },

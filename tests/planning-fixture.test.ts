@@ -6,6 +6,15 @@ import test from "node:test";
 import { bindPlanningMutation } from "../generated/planning-contract.shared.ts";
 import { DeterministicPlanningFixture } from "./fixtures/planning-fixture.ts";
 
+const taskDetailQuery = {
+  hostId: "host-a",
+  context: "board" as const,
+  taskId: "task-0",
+  paseoWorkspaceId: null,
+  paseoAgentId: null,
+  afterCursor: null,
+};
+
 function query(overrides: Record<string, unknown> = {}) {
   return {
     projectId: null,
@@ -55,7 +64,8 @@ test("page cursors are bound to the exact snapshot and normalized filter", async
     /another snapshot or filter/,
   );
 
-  const detail = await fixture.taskDetail({ taskId: "task-0", afterCursor: null });
+  const detail = await fixture.taskDetail(taskDetailQuery);
+  assert.ok(detail.detail);
   const action = detail.detail.summary.allowedActions.find(
     (candidate) => candidate.kind === "configuration.preview",
   );
@@ -111,7 +121,8 @@ test("project, workspace, epic, state, priority, label, attention, search, sort,
 
 test("configuration preview/apply and dependency override preserve action bindings", async () => {
   const fixture = new DeterministicPlanningFixture();
-  const detail = await fixture.taskDetail({ taskId: "task-0", afterCursor: null });
+  const detail = await fixture.taskDetail(taskDetailQuery);
+  assert.ok(detail.detail);
   const previewAction = detail.detail.summary.allowedActions.find(
     (action) => action.kind === "configuration.preview",
   );

@@ -2,10 +2,11 @@
 
 import type { PluginContext } from "@getpaseo/plugin";
 
-import { TaskInspector } from "./ui/shells.client";
+import { TaskInspector } from "./ui/task-inspector.client";
 import { DirectorHome } from "./ui/director-home.client";
 import { ProjectBoard } from "./ui/planning-surface.client";
 import { DirectorWorkers } from "./ui/director-workers-panel.client";
+import { contributeTaskNavigation } from "./ui/task-navigation.client";
 import { startConnectorShellFromEnvironment } from "./connector/paseo.server";
 import { connectorStartupStatus } from "./rpc/startup.shared";
 import { boardSnapshotRpc } from "./rpc/board.shared";
@@ -49,6 +50,7 @@ export default function contribute(plugin: PluginContext) {
     title: "Task Inspector",
     icon: "ListChecks",
     context: "agent",
+    locations: ["workspace", "explorer"],
     Component: TaskInspector,
   });
   plugin.addCommandCenterItem({
@@ -58,6 +60,16 @@ export default function contribute(plugin: PluginContext) {
     context: "workspace",
     onSelect({ openPanel }) {
       openPanel("director-workers");
+    },
+  });
+  plugin.addCommandCenterItem({
+    id: "return-to-director-board",
+    title: "Return to Director Board",
+    icon: "Columns3",
+    keywords: ["task", "planning", "back"],
+    context: "agent",
+    onSelect({ openPanel }) {
+      openPanel("project-board");
     },
   });
   plugin.addCommandCenterItem({
@@ -93,6 +105,7 @@ export default function contribute(plugin: PluginContext) {
     connector.queryPlanningTask(input),
   );
   plugin.handle(planningMutationRpc, (input) => connector.mutatePlanning(input));
+  plugin.addClientSide(contributeTaskNavigation);
 
   return () => connector.close();
 }

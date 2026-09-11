@@ -892,11 +892,9 @@ export class PaseoHostConnector implements DirectorHost {
   }
 
   async queryPlanningTask(
-    _input: TaskDetailQueryInput,
+    input: TaskDetailQueryInput,
   ): Promise<TaskDetailSnapshot> {
-    throw new Error(
-      "PLANNING_SURFACE_NOT_WIRED: runtime task-detail queries are owned by later M2 Tasks",
-    );
+    return this.#planningTransport.taskDetail(input);
   }
 
   async mutatePlanning(

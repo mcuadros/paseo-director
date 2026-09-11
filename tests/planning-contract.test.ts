@@ -49,6 +49,15 @@ const query = {
   pageSize: 50,
 } as const;
 
+const taskDetailQuery = {
+  hostId: "host-a",
+  context: "board",
+  taskId: "task-0",
+  paseoWorkspaceId: null,
+  paseoAgentId: null,
+  afterCursor: null,
+} as const;
+
 test("planning identity and vocabularies are closed and versioned", () => {
   assert.equal(PLANNING_SCHEMA_VERSION, 1);
   assert.equal(PLANNING_CONTRACT_VERSION, "director-planning/v1");
@@ -78,12 +87,15 @@ test("planning identity and vocabularies are closed and versioned", () => {
 test("generated query, detail, and mutation RPC schemas reject drift", async () => {
   const fixture = new DeterministicPlanningFixture();
   const snapshot = await fixture.query(query);
-  const detail = await fixture.taskDetail({ taskId: "task-0", afterCursor: null });
+  const detail = await fixture.taskDetail(taskDetailQuery);
   assert.equal(planningSnapshotSchema.safeParse(snapshot).success, true);
   assert.equal(taskDetailSnapshotSchema.safeParse(detail).success, true);
   assert.equal(planningQueryRpc.input.safeParse(query).success, true);
   assert.equal(planningQueryRpc.output.safeParse(snapshot).success, true);
   assert.equal(planningTaskDetailRpc.output.safeParse(detail).success, true);
+  assert.equal(planningTaskDetailRpc.input.safeParse(taskDetailQuery).success, true);
+  assert.equal(planningTaskDetailRpc.input.safeParse({ ...taskDetailQuery, hostId: "" }).success, false);
+  assert.equal(planningTaskDetailRpc.input.safeParse({ ...taskDetailQuery, context: "agent" }).success, false);
 
   for (const drift of [
     { ...query, extra: true },
@@ -144,15 +156,17 @@ test("generated Home and Organizer contracts reject cross-host and Preview/Apply
 
 test("every mutation is bound to an engine-returned action ticket", async () => {
   const fixture = new DeterministicPlanningFixture();
-  const detail = await fixture.taskDetail({ taskId: "task-0", afterCursor: null });
-  const launch = detail.detail.summary.allowedActions.find(
+  const detail = await fixture.taskDetail(taskDetailQuery);
+  assert.ok(detail.detail);
+  const task = detail.detail;
+  const launch = task.summary.allowedActions.find(
     (action) => action.kind === "configuration.preview",
   );
   assert.ok(launch);
   const mutation = bindPlanningMutation(launch, {
     type: "configuration.preview",
-    target: detail.detail.configurationTarget,
-    overrides: detail.detail.configuration.map((entry) => entry.configured),
+    target: task.configurationTarget,
+    overrides: task.configuration.map((entry) => entry.configured),
   });
   assert.equal(mutation.requestId, launch.requestId);
   assert.equal(mutation.idempotencyKey, launch.idempotencyKey);
@@ -162,7 +176,7 @@ test("every mutation is bound to an engine-returned action ticket", async () => 
   assert.throws(() =>
     bindPlanningMutation(launch, {
       type: "task.launch-now",
-      taskId: detail.detail.summary.id,
+      taskId: task.summary.id,
     }),
   );
   assert.throws(() =>
@@ -190,7 +204,7 @@ test("every mutation is bound to an engine-returned action ticket", async () => 
   assert.throws(() =>
     bindPlanningMutation(unapprovedApply, {
       type: "configuration.apply",
-      target: detail.detail.configurationTarget,
+      target: task.configurationTarget,
       previewId: "preview-1",
     }),
   );
@@ -264,8 +278,15 @@ test("the stable v0.7 plugin registers strict planning RPCs without runtime fixt
   }
   const connector = readFileSync("connector/paseo.server.ts", "utf8");
   assert.match(connector, /return this\.#planningTransport\.query\(input\)/);
-  assert.match(connector, /runtime task-detail queries are owned by later M2 Tasks/);
+  assert.match(connector, /return this\.#planningTransport\.taskDetail\(input\)/);
   assert.doesNotMatch(connector, /tests\/fixtures|DeterministicPlanningFixture/);
+  assert.match(entry, /locations:\s*\["workspace", "explorer"\]/);
+  assert.match(entry, /title: "Return to Director Board"/);
+  assert.match(entry, /plugin\.addClientSide\(contributeTaskNavigation\)/);
+  const navigation = readFileSync("ui/task-navigation.client.tsx", "utf8");
+  assert.match(navigation, /client\.addComposerPill\(/);
+  assert.match(navigation, /client\.openPanel\("task-inspector"/);
+  assert.doesNotMatch(navigation, /clipboard|localStorage|window\.|document\./);
   const client = readFileSync("ui/planning-surface.client.tsx", "utf8");
   for (const moduleName of [
     "@getpaseo/plugin",
