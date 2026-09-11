@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	githubport "github.com/mcuadros/director-engine/ports/github"
 )
@@ -27,14 +28,49 @@ type GitHub struct {
 	CreateDispatches uint64
 	UpdateDispatches uint64
 	DraftDispatches  uint64
+	Feedback         map[feedbackdomain.Source][]feedbackdomain.Item
+	FeedbackCode     string
+	FeedbackReads    map[feedbackdomain.Source]uint64
 	nextNumber       int64
 }
 
 var _ githubport.Port = (*GitHub)(nil)
+var _ githubport.FeedbackPort = (*GitHub)(nil)
+var _ githubport.FeedbackObservationPort = (*GitHub)(nil)
 
 func NewGitHub(repositoryID int64, nodeID, owner, name, viewer string) *GitHub {
 	return &GitHub{RepositoryID: repositoryID, RepositoryNodeID: nodeID, Owner: owner, Name: name,
-		Viewer: viewer, RepositoryCode: publicationdomain.CodeOK, nextNumber: 1}
+		Viewer: viewer, RepositoryCode: publicationdomain.CodeOK, Feedback: map[feedbackdomain.Source][]feedbackdomain.Item{},
+		FeedbackCode: "ok", FeedbackReads: map[feedbackdomain.Source]uint64{}, nextNumber: 1}
+}
+
+func (forge *GitHub) ObserveFeedbackPage(_ context.Context, request githubport.FeedbackRequest) (githubport.FeedbackPage, error) {
+	forge.mu.Lock()
+	defer forge.mu.Unlock()
+	forge.FeedbackReads[request.Source]++
+	page := githubport.FeedbackPage{ID: fmt.Sprintf("fake-feedback-%s-%d-%d", request.Source, request.Page, request.TaskStoreNowMillis),
+		Code: forge.FeedbackCode, Source: request.Source, RepositoryID: forge.RepositoryID, RepositoryNodeID: forge.RepositoryNodeID,
+		PullRequestNumber: request.PullRequestNumber, CandidateSHA: request.CandidateSHA, BaseSHA: request.BaseSHA,
+		BindingSHA256: request.BindingSHA256, Page: request.Page, ObservedAtMillis: request.TaskStoreNowMillis,
+		MaximumAgeMillis: feedbackdomain.MaximumObservationAge}
+	if page.Code == "" {
+		page.Code = "ok"
+	}
+	if page.Code != "ok" {
+		return githubport.SealFeedbackPage(page), nil
+	}
+	values := forge.Feedback[request.Source]
+	start := int((request.Page - 1) * request.PageSize)
+	end := min(start+int(request.PageSize), len(values))
+	if start < len(values) {
+		page.Items = slices.Clone(values[start:end])
+	}
+	if end < len(values) {
+		page.NextPage = request.Page + 1
+	} else {
+		page.Complete = true
+	}
+	return githubport.SealFeedbackPage(page), nil
 }
 
 func (forge *GitHub) ObserveRepository(_ context.Context, request githubport.RepositoryRequest) (publicationdomain.RepositoryObservation, error) {

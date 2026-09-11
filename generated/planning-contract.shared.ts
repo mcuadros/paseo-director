@@ -8,7 +8,7 @@ import { z } from "zod";
 
 export const PLANNING_SCHEMA_VERSION = 1 as const;
 export const PLANNING_CONTRACT_VERSION = "director-planning/v1" as const;
-export const PLANNING_CONTRACT_SHA256 = "ce1761fc74f697be7d9e3d65a21e54ced758a3263c9f3079d80a152027a921a3" as const;
+export const PLANNING_CONTRACT_SHA256 = "82b2a019ec4870e4b6035033bc886f51a64e5b9cccc4e936135cfd2eabf546f5" as const;
 export const PLANNING_QUERY_NAMES = [
   "planning.query",
   "planning.task-detail",
@@ -94,6 +94,7 @@ export const PLANNING_CONFIGURATION_KEYS = [
 
 export const opaquePlanningIdSchema = z.string().min(1).max(128);
 export const boundedPlanningTextSchema = z.string().min(1).max(2048);
+export const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 export const uint64DecimalSchema = z
   .string()
   .regex(/^(?:0|[1-9][0-9]{0,19})$/)
@@ -211,6 +212,15 @@ export const runtimeBudgetSummarySchema = z.strictObject({
   reasonCode: opaquePlanningIdSchema.nullable(),
 });
 
+export const feedbackSummarySchema = z.strictObject({
+  phase: z.enum(["observed", "correction_ready", "correction_routed", "needs_you"]),
+  currentActionable: uint64DecimalSchema,
+  auditRecords: uint64DecimalSchema,
+  currentRevision: sha256Schema,
+  correctionBatch: sha256Schema.nullable(),
+  reasonCode: opaquePlanningIdSchema.nullable(),
+});
+
 export const taskSummarySchema = z.strictObject({
   id: opaquePlanningIdSchema,
   projectId: opaquePlanningIdSchema,
@@ -228,6 +238,7 @@ export const taskSummarySchema = z.strictObject({
   allowedActions: z.array(allowedActionSchema).max(20).readonly(),
   schedulingFacts: taskQueueFactsSchema,
   runtimeBudget: runtimeBudgetSummarySchema.nullable(),
+  feedback: feedbackSummarySchema.nullable(),
 });
 
 export const capacityFactsSchema = z.strictObject({

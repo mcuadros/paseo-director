@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/mcuadros/director-engine/domain"
+	"github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
+	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 	"github.com/mcuadros/director-engine/projection"
@@ -123,6 +126,45 @@ func TestPlanningReaderProjectsExactCorrectionReasonAndWakeAction(t *testing.T) 
 		*reason.WakeCondition != "human_review_or_new_root_cause_evidence" || !reason.HumanActionRequired ||
 		reason.Message != "The same correction root cause repeated without acceptance-coverage progress" {
 		t.Fatalf("correction reason/action = %#v", reason)
+	}
+}
+
+func TestPlanningReaderProjectsBoundedFeedbackAuditAndExactHumanGate(t *testing.T) {
+	store := planningScaleStore()
+	task := store.tasks["project-scale"][0]
+	store.tasks["project-scale"][0].Attention = nil
+	head, base := strings.Repeat("1", 40), strings.Repeat("0", 40)
+	binding := feedbackdomain.SealBinding(feedbackdomain.Binding{ProjectID: task.ProjectID, WorkspaceID: task.WorkspaceIDs[0],
+		TaskID: task.ID, TaskVersion: task.Version, RunID: "run-feedback", CandidateID: "candidate-feedback",
+		CandidateSHA: head, BaseSHA: base, CandidateGeneration: 1, ManifestSHA256: strings.Repeat("a", 64)})
+	item := feedbackdomain.Item{Source: feedbackdomain.SourcePaseoDirect, ExternalID: "message-1", RevisionID: "revision-1",
+		Actor: feedbackdomain.Actor{Kind: feedbackdomain.ActorHuman, ID: "human-1", Login: "owner", Authenticated: true,
+			Attestation: feedbackdomain.AttestationPaseoHuman}, Kind: feedbackdomain.KindComment, CandidateSHA: head, BaseSHA: base,
+		ContextSHA256: strings.Repeat("b", 64), Body: "P2 feedback needs an explicit decision", Actionable: true,
+		Severity: correction.SeverityP2, RequiresHumanDecision: true, CreatedAtMillis: 1, UpdatedAtMillis: 2}
+	snapshot := feedbackdomain.SealSnapshot(feedbackdomain.Snapshot{ID: "snapshot-1", Source: feedbackdomain.SourcePaseoDirect,
+		BindingSHA256: binding.BindingSHA256, PageCount: 1, ObservedAtMillis: 3,
+		MaximumAgeMillis: feedbackdomain.MaximumObservationAge, Items: []feedbackdomain.Item{item}})
+	state, _, ok := feedbackdomain.Reconcile(nil, binding, []feedbackdomain.Snapshot{snapshot}, 3)
+	if !ok {
+		t.Fatal("feedback fixture")
+	}
+	store.runs[task.ID] = []domain.Run{{ID: binding.RunID, TaskID: task.ID, Number: 1, CurrentCandidateID: binding.CandidateID,
+		Execution: execution.State{Feedback: &state, NeedsYou: &execution.NeedsYou{Code: execution.NeedCode(state.NeedsYouCode),
+			WakeCondition: state.WakeCondition}}}}
+	store.candidates[binding.CandidateID] = domain.Candidate{ID: binding.CandidateID, RunID: binding.RunID}
+	input := planningQueryInput()
+	search := task.Title
+	input.Search = &search
+	result, err := NewPlanningReader(store).Query(context.Background(), input)
+	if err != nil || len(result.Page.Tasks) != 1 {
+		t.Fatalf("query = %#v, %v", result, err)
+	}
+	summary := result.Page.Tasks[0]
+	if summary.DerivedState != "needs_you" || summary.Feedback == nil || summary.Feedback.Phase != "needs_you" ||
+		summary.Feedback.CurrentActionable != "1" || summary.Feedback.AuditRecords != "1" || summary.Feedback.CurrentRevision != state.CurrentRevision ||
+		len(summary.NeedsYou) != 1 || summary.NeedsYou[0].Code != state.NeedsYouCode || !summary.NeedsYou[0].HumanActionRequired {
+		t.Fatalf("feedback projection = %#v", summary)
 	}
 }
 

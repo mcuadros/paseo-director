@@ -10,6 +10,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/execution"
+	domainfeedback "github.com/mcuadros/director-engine/domain/feedback"
 	"github.com/mcuadros/director-engine/projection"
 )
 
@@ -72,6 +73,8 @@ func attentionForNeed(code execution.NeedCode) projection.AttentionCode {
 		return projection.AttentionRecoveryAmbiguous
 	case strings.Contains(text, "configuration"), strings.Contains(text, "observation_missing"):
 		return projection.AttentionConfigurationRequired
+	case strings.Contains(text, "feedback"):
+		return projection.AttentionFeedbackDecisionRequired
 	case strings.Contains(text, "correction"):
 		return projection.AttentionCorrectionBudgetExhausted
 	case strings.Contains(text, "replacement"):
@@ -166,6 +169,21 @@ func taskStateFacts(
 		facts.Candidate = projection.CandidateFact{
 			Status: projection.FactCurrent, TaskVersion: task.Version,
 			ID: candidate.ID, RunID: run.ID,
+		}
+		if run.Execution.Feedback == nil {
+			facts.Feedback = projection.FeedbackFact{Status: projection.FactCurrent, CandidateID: candidate.ID, State: projection.FeedbackNone}
+		} else {
+			feedback := *run.Execution.Feedback
+			switch {
+			case !domainfeedback.ValidState(feedback):
+				facts.Feedback = projection.FeedbackFact{Status: projection.FactContradictory, CandidateID: candidate.ID}
+			case feedback.Invalidated || feedback.Binding.CandidateID != candidate.ID:
+				facts.Feedback = projection.FeedbackFact{Status: projection.FactStale, CandidateID: candidate.ID}
+			case len(domainfeedback.CurrentActionable(feedback)) > 0:
+				facts.Feedback = projection.FeedbackFact{Status: projection.FactCurrent, CandidateID: candidate.ID, State: projection.FeedbackActionable}
+			default:
+				facts.Feedback = projection.FeedbackFact{Status: projection.FactCurrent, CandidateID: candidate.ID, State: projection.FeedbackResolved}
+			}
 		}
 	}
 	facts.HumanInput = normalizedHumanInput(task, run)

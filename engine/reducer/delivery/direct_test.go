@@ -44,6 +44,7 @@ func TestReduceDirectManualWaitsForExplicitHumanAuthorization(t *testing.T) {
 		t.Fatalf("manual decision = %#v", decision)
 	}
 	authorization := directdomain.SealAuthorization(directdomain.HumanAuthorization{ID: "authorization-1", ActorKind: "human",
+		ActorSource: directdomain.AuthorizationActorSource, Authenticated: true,
 		ActorID: "owner@example.invalid", DecisionID: "decision-1", Action: "integrate_direct",
 		BindingSHA256: state.Binding.SHA256, CandidateSHA: state.Binding.CandidateSHA, BaseSHA: state.Binding.BaseSHA,
 		TargetRef: state.Binding.TargetRef, PolicySHA256: state.Binding.PolicySHA256, AuthorizedAtMillis: 999})

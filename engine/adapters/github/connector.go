@@ -20,6 +20,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/mcuadros/director-engine/domain/correction"
+	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	githubport "github.com/mcuadros/director-engine/ports/github"
 )
@@ -47,10 +49,224 @@ type Runner interface {
 type Connector struct{ runner Runner }
 
 var _ githubport.Port = (*Connector)(nil)
+var _ githubport.FeedbackPort = (*Connector)(nil)
+var _ githubport.FeedbackObservationPort = (*Connector)(nil)
 
 func New() *Connector { return &Connector{runner: commandRunner{}} }
 
 func NewWithRunner(runner Runner) *Connector { return &Connector{runner: runner} }
+
+type feedbackUser struct {
+	ID     int64  `json:"id"`
+	NodeID string `json:"node_id"`
+	Login  string `json:"login"`
+	Type   string `json:"type"`
+}
+
+type feedbackApp struct {
+	ID     int64  `json:"id"`
+	NodeID string `json:"node_id"`
+	Slug   string `json:"slug"`
+}
+
+type feedbackResponse struct {
+	ID                    int64        `json:"id"`
+	NodeID                string       `json:"node_id"`
+	PullRequestReviewID   int64        `json:"pull_request_review_id"`
+	InReplyToID           int64        `json:"in_reply_to_id"`
+	Body                  string       `json:"body"`
+	State                 string       `json:"state"`
+	CommitID              string       `json:"commit_id"`
+	OriginalCommitID      string       `json:"original_commit_id"`
+	Path                  string       `json:"path"`
+	DiffHunk              string       `json:"diff_hunk"`
+	Line                  *int64       `json:"line"`
+	OriginalLine          *int64       `json:"original_line"`
+	Side                  string       `json:"side"`
+	StartLine             *int64       `json:"start_line"`
+	OriginalStartLine     *int64       `json:"original_start_line"`
+	StartSide             string       `json:"start_side"`
+	SubmittedAt           string       `json:"submitted_at"`
+	CreatedAt             string       `json:"created_at"`
+	UpdatedAt             string       `json:"updated_at"`
+	User                  feedbackUser `json:"user"`
+	PerformedViaGitHubApp *feedbackApp `json:"performed_via_github_app"`
+}
+
+func feedbackActor(value feedbackResponse) feedbackdomain.Actor {
+	actor := feedbackdomain.Actor{ID: value.User.NodeID, Login: value.User.Login, Authenticated: true}
+	if actor.ID == "" {
+		actor.ID = "github-user-" + strconv.FormatInt(value.User.ID, 10)
+	}
+	if value.PerformedViaGitHubApp != nil {
+		actor.Kind, actor.Attestation = feedbackdomain.ActorApp, feedbackdomain.AttestationGitHubApp
+		if value.PerformedViaGitHubApp.NodeID != "" {
+			actor.ID = value.PerformedViaGitHubApp.NodeID
+		}
+		if value.PerformedViaGitHubApp.Slug != "" {
+			actor.Login = value.PerformedViaGitHubApp.Slug
+		}
+	} else if strings.EqualFold(value.User.Type, "User") {
+		actor.Kind, actor.Attestation = feedbackdomain.ActorHuman, feedbackdomain.AttestationGitHubUser
+	} else {
+		actor.Kind, actor.Attestation = feedbackdomain.ActorBot, feedbackdomain.AttestationGitHubBot
+	}
+	return actor
+}
+
+func feedbackTime(value string) (int64, bool) {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	return parsed.UnixMilli(), err == nil
+}
+
+func feedbackKind(source feedbackdomain.Source, state string) (feedbackdomain.Kind, bool, bool) {
+	if source != feedbackdomain.SourceGitHubReview {
+		return feedbackdomain.KindComment, true, true
+	}
+	switch strings.ToUpper(state) {
+	case "CHANGES_REQUESTED":
+		return feedbackdomain.KindChangesRequested, true, true
+	case "COMMENTED", "PENDING":
+		return feedbackdomain.KindComment, true, true
+	case "APPROVED":
+		return feedbackdomain.KindApproved, false, true
+	case "DISMISSED":
+		return feedbackdomain.KindDismissed, false, true
+	default:
+		return "", false, false
+	}
+}
+
+func feedbackEndpoint(request githubport.FeedbackRequest) (string, bool) {
+	base := "repos/" + url.PathEscape(request.Owner) + "/" + url.PathEscape(request.Name)
+	identifier := strconv.FormatInt(request.PullRequestNumber, 10)
+	switch request.Source {
+	case feedbackdomain.SourceGitHubReview:
+		return base + "/pulls/" + identifier + "/reviews", true
+	case feedbackdomain.SourceGitHubReviewComment:
+		return base + "/pulls/" + identifier + "/comments", true
+	case feedbackdomain.SourceGitHubIssueComment:
+		return base + "/issues/" + identifier + "/comments", true
+	default:
+		return "", false
+	}
+}
+
+func hasNextPage(link string) bool {
+	for _, part := range strings.Split(link, ",") {
+		if strings.Contains(part, `rel="next"`) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeFeedback(value feedbackResponse, request githubport.FeedbackRequest) (feedbackdomain.Item, bool) {
+	if value.ID <= 0 || value.User.Login == "" {
+		return feedbackdomain.Item{}, false
+	}
+	kind, actionable, ok := feedbackKind(request.Source, value.State)
+	if !ok {
+		return feedbackdomain.Item{}, false
+	}
+	createdText := value.CreatedAt
+	if createdText == "" {
+		createdText = value.SubmittedAt
+	}
+	updatedText := value.UpdatedAt
+	if updatedText == "" {
+		updatedText = value.SubmittedAt
+	}
+	created, createdOK := feedbackTime(createdText)
+	updated, updatedOK := feedbackTime(updatedText)
+	if !createdOK || !updatedOK {
+		return feedbackdomain.Item{}, false
+	}
+	externalID := value.NodeID
+	if externalID == "" {
+		externalID = "github-feedback-" + strconv.FormatInt(value.ID, 10)
+	}
+	body := value.Body
+	if strings.TrimSpace(body) == "" {
+		switch kind {
+		case feedbackdomain.KindApproved:
+			body = "GitHub review approved"
+		case feedbackdomain.KindDismissed:
+			body = "GitHub review dismissed"
+		default:
+			body = "GitHub review submitted without a body"
+		}
+	}
+	candidateSHA := value.CommitID
+	if request.Source == feedbackdomain.SourceGitHubIssueComment {
+		candidateSHA = ""
+	}
+	number := func(value *int64) string {
+		if value == nil {
+			return ""
+		}
+		return strconv.FormatInt(*value, 10)
+	}
+	contextSHA := feedbackdomain.DigestText(strings.Join([]string{value.CommitID, value.OriginalCommitID,
+		strconv.FormatInt(value.PullRequestReviewID, 10), strconv.FormatInt(value.InReplyToID, 10),
+		value.Path, value.DiffHunk, number(value.Line), number(value.OriginalLine), value.Side,
+		number(value.StartLine), number(value.OriginalStartLine), value.StartSide, request.CandidateSHA, request.BaseSHA}, "\x1f"))
+	revision := "github-revision-" + feedbackdomain.DigestText(strings.Join([]string{externalID, updatedText, value.State, body, candidateSHA, contextSHA}, "\x1f"))[:32]
+	severity := correction.SeverityP3
+	if kind == feedbackdomain.KindChangesRequested {
+		severity = correction.SeverityP1
+	}
+	return feedbackdomain.Item{Source: request.Source, ExternalID: externalID, RevisionID: revision, Actor: feedbackActor(value), Kind: kind,
+		CandidateSHA: candidateSHA, BaseSHA: request.BaseSHA, ContextSHA256: contextSHA, Body: body, Actionable: actionable,
+		Severity: severity, CreatedAtMillis: created, UpdatedAtMillis: updated}, true
+}
+
+// ObserveFeedbackPage performs one bounded read. The GitHub port deliberately
+// has no method for replying, resolving a thread, approving, or dismissing.
+func (connector *Connector) ObserveFeedbackPage(ctx context.Context, request githubport.FeedbackRequest) (githubport.FeedbackPage, error) {
+	page := githubport.FeedbackPage{ID: "github-feedback-page-" + feedbackdomain.DigestText(strings.Join([]string{
+		request.Owner, request.Name, strconv.FormatInt(request.PullRequestNumber, 10), string(request.Source), strconv.FormatUint(uint64(request.Page), 10),
+		request.CandidateSHA, request.BaseSHA, request.BindingSHA256, strconv.FormatInt(request.TaskStoreNowMillis, 10)}, "\x1f"))[:32],
+		Code: string(publicationdomain.CodeUnavailable), Source: request.Source, RepositoryID: request.RepositoryID,
+		RepositoryNodeID: request.RepositoryNodeID, PullRequestNumber: request.PullRequestNumber, CandidateSHA: request.CandidateSHA,
+		BaseSHA: request.BaseSHA, BindingSHA256: request.BindingSHA256, Page: request.Page,
+		ObservedAtMillis: request.TaskStoreNowMillis, MaximumAgeMillis: feedbackdomain.MaximumObservationAge}
+	endpoint, ok := feedbackEndpoint(request)
+	if !ok || request.Page == 0 || request.Page > feedbackdomain.MaximumPages || request.PageSize == 0 || request.PageSize > feedbackdomain.MaximumPageSize {
+		page.Code = "invalid_request"
+		return githubport.SealFeedbackPage(page), nil
+	}
+	query := url.Values{}
+	query.Set("per_page", strconv.FormatUint(uint64(request.PageSize), 10))
+	query.Set("page", strconv.FormatUint(uint64(request.Page), 10))
+	result := connector.api(ctx, "GET", endpoint+"?"+query.Encode(), nil)
+	if result.code != publicationdomain.CodeOK {
+		page.Code = string(result.code)
+		return githubport.SealFeedbackPage(page), nil
+	}
+	var response []feedbackResponse
+	if json.Unmarshal(result.body, &response) != nil || len(response) > int(request.PageSize) {
+		page.Code = string(publicationdomain.CodeResponseUnknown)
+		return githubport.SealFeedbackPage(page), nil
+	}
+	page.Items = make([]feedbackdomain.Item, 0, len(response))
+	for _, value := range response {
+		item, valid := normalizeFeedback(value, request)
+		if !valid {
+			page.Code = string(publicationdomain.CodeResponseUnknown)
+			page.Items = nil
+			return githubport.SealFeedbackPage(page), nil
+		}
+		page.Items = append(page.Items, item)
+	}
+	page.Code = "ok"
+	if hasNextPage(result.headers["link"]) {
+		page.NextPage = request.Page + 1
+	} else {
+		page.Complete = true
+	}
+	return githubport.SealFeedbackPage(page), nil
+}
 
 type limitedBuffer struct {
 	bytes.Buffer
@@ -125,6 +341,7 @@ type apiResult struct {
 	started       bool
 	status        int
 	body          []byte
+	headers       map[string]string
 	rateRemaining int64
 	rateResetMS   int64
 	code          publicationdomain.ExternalCode
@@ -209,7 +426,7 @@ func (connector *Connector) api(ctx context.Context, method, endpoint string, in
 	if remainingErr != nil || resetErr != nil || remaining <= 0 {
 		return apiResult{started: true, status: status, code: publicationdomain.CodeRateLimited}
 	}
-	return apiResult{started: true, status: status, body: body, rateRemaining: remaining, rateResetMS: reset * 1000, code: publicationdomain.CodeOK}
+	return apiResult{started: true, status: status, body: body, headers: headers, rateRemaining: remaining, rateResetMS: reset * 1000, code: publicationdomain.CodeOK}
 }
 
 func observationID(prefix string, values ...string) string {

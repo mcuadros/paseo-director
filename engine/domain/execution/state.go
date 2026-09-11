@@ -10,6 +10,7 @@ import (
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
+	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
@@ -295,6 +296,8 @@ type State struct {
 	Review                           *reviewdomain.State                   `json:"review,omitempty"`
 	ReviewHistory                    []reviewdomain.State                  `json:"reviewHistory,omitempty"`
 	Correction                       *correctiondomain.State               `json:"correction,omitempty"`
+	Feedback                         *feedbackdomain.State                 `json:"feedback,omitempty"`
+	FeedbackHistory                  []feedbackdomain.State                `json:"feedbackHistory,omitempty"`
 	Publication                      *publicationdomain.State              `json:"publication,omitempty"`
 	PublicationHistory               []publicationdomain.State             `json:"publicationHistory,omitempty"`
 	DirectDelivery                   *directdomain.State                   `json:"directDelivery,omitempty"`

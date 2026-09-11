@@ -24,6 +24,7 @@ import (
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	domaincorrection "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
+	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
 	gitport "github.com/mcuadros/director-engine/ports/git"
@@ -157,7 +158,7 @@ func currentProjectLease(project domain.Project, run domain.Run, nowMillis int64
 // authority and recorded its fresh-gates plan. Every active/parked correction
 // and every Run-level NeedsYou fact blocks even Git/GitHub observation.
 func correctionAllowsPublication(run domain.Run) bool {
-	if run.Execution.NeedsYou != nil {
+	if run.Execution.NeedsYou != nil || run.Execution.Feedback != nil && feedbackdomain.BlocksDelivery(*run.Execution.Feedback) {
 		return false
 	}
 	state := run.Execution.Correction

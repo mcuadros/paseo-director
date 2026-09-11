@@ -6,6 +6,10 @@ Director Engine owns correction policy and persists one `director.correction-sta
 
 One correction batch includes four source snapshots in fixed order: independent Review, deterministic Validation, authoritative complete Linux CI, and current human feedback. A zero-count snapshot is required when a source has no current findings, so omission is distinguishable from an empty result.
 
+The human-feedback snapshot is produced by the exact-context ingestion contract
+in [Paseo and GitHub human feedback](human-feedback.md). It is routed through
+this correction lineage rather than a second feedback-specific prompt loop.
+
 Every finding is bound to the current Candidate ID and SHA and contains only a bounded class, P0-P3 severity, summary, acceptance-criterion IDs, and one to eight content-addressed evidence references. Raw CI logs, archived agent histories, paths, credentials, and transcripts have no field in the schema. Exact duplicate source rows collapse; conflicting identity reuse fails closed. The engine sorts the unique findings and separately fingerprints the findings, blocking classes, Candidate, acceptance coverage, and complete batch.
 
 The regression fixtures under `engine/domain/correction/testdata` retain only sanitized classifications derived from the M0.4 and M0.6 journal analysis. They contain no raw history or credential-shaped value.

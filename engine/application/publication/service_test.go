@@ -17,6 +17,7 @@ import (
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	domaincorrection "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
+	domainfeedback "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
 	gitport "github.com/mcuadros/director-engine/ports/git"
@@ -361,6 +362,38 @@ func newFixture(t *testing.T, publishBeforeReview bool) *fixture {
 	return &fixture{store: store, branches: branches, github: github, service: service, now: 1_100,
 		command: AdmitCommand{RunID: "run-1", ExpectedRunVersion: 1, GitHubRepositoryID: testRepositoryID,
 			GitHubRepositoryNodeID: "R_kgDOExample", HeadOwner: "example", OwnershipSHA256: strings.Repeat("d", 64), NowMillis: 1_100}}
+}
+
+func publicationBlockingFeedback(t *testing.T, fixture *fixture) domainfeedback.State {
+	t.Helper()
+	run, task, record := fixture.store.run, fixture.store.task, fixture.store.candidates[fixture.store.run.CurrentCandidateID]
+	binding := domainfeedback.SealBinding(domainfeedback.Binding{ProjectID: task.ProjectID, WorkspaceID: task.WorkspaceIDs[0],
+		TaskID: task.ID, TaskVersion: task.Version, RunID: run.ID, CandidateID: record.ID, CandidateSHA: record.CommitSHA,
+		BaseSHA: record.Manifest.BaseSHA, CandidateGeneration: run.Execution.CandidateAuthority.Generation,
+		ManifestSHA256: record.Manifest.BindingSHA256})
+	item := domainfeedback.Item{Source: domainfeedback.SourcePaseoDirect, ExternalID: "feedback-1", RevisionID: "revision-1",
+		Actor: domainfeedback.Actor{Kind: domainfeedback.ActorHuman, ID: "human-1", Login: "owner", Authenticated: true,
+			Attestation: domainfeedback.AttestationPaseoHuman}, Kind: domainfeedback.KindComment,
+		CandidateSHA: record.CommitSHA, BaseSHA: record.Manifest.BaseSHA, ContextSHA256: strings.Repeat("f", 64),
+		Body: "Reopen current work before publication", Actionable: true, Severity: domaincorrection.SeverityP3,
+		CreatedAtMillis: 1_000, UpdatedAtMillis: 1_001}
+	snapshot := domainfeedback.SealSnapshot(domainfeedback.Snapshot{ID: "feedback-snapshot-1", Source: domainfeedback.SourcePaseoDirect,
+		BindingSHA256: binding.BindingSHA256, PageCount: 1, ObservedAtMillis: 1_002,
+		MaximumAgeMillis: domainfeedback.MaximumObservationAge, Items: []domainfeedback.Item{item}})
+	state, _, ok := domainfeedback.Reconcile(nil, binding, []domainfeedback.Snapshot{snapshot}, 1_002)
+	if !ok || !domainfeedback.BlocksDelivery(state) {
+		t.Fatal("blocking feedback fixture")
+	}
+	return state
+}
+
+func TestUnresolvedFeedbackBlocksPublicationBeforeGitOrGitHubObservation(t *testing.T) {
+	fixture := newFixture(t, true)
+	fixture.store.run.Execution.Feedback = func() *domainfeedback.State { value := publicationBlockingFeedback(t, fixture); return &value }()
+	_, err := fixture.service.Admit(context.Background(), fixture.command)
+	if !errors.Is(err, ErrCorrectionPending) || fixture.branches.ObservationCount() != 0 {
+		t.Fatalf("feedback publication gate = %v observations=%d", err, fixture.branches.ObservationCount())
+	}
 }
 
 func correctionState(t *testing.T, run domain.Run) domaincorrection.State {

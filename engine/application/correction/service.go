@@ -21,6 +21,7 @@ import (
 	domaincorrection "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
+	correctionport "github.com/mcuadros/director-engine/ports/correction"
 	gitport "github.com/mcuadros/director-engine/ports/git"
 	"github.com/mcuadros/director-engine/ports/host"
 	correctionreducer "github.com/mcuadros/director-engine/reducer/correction"
@@ -41,6 +42,18 @@ type Store interface {
 	Candidates(context.Context, string) ([]domain.Candidate, error)
 	UpdateRun(context.Context, domain.CommandRequest, domain.Run, domain.Event) (domain.CommandResult, error)
 	AppendCandidate(context.Context, domain.CommandRequest, domain.Candidate, domain.Event) (domain.CommandResult, error)
+}
+
+// IngestFeedback adapts the narrow correction port without giving feedback
+// ingestion access to correction prompting, Candidate admission, or cleanup.
+func (service *Service) IngestFeedback(ctx context.Context, command correctionport.IngestCommand) (correctionport.Result, error) {
+	result, err := service.Ingest(ctx, IngestCommand{RunID: command.RunID, ExpectedRunVersion: command.ExpectedRunVersion,
+		LeaseEpoch: command.LeaseEpoch, OriginalTaskAgentUUID: command.OriginalTaskAgentUUID,
+		CriterionIDs: command.CriterionIDs, FrozenPlanDigest: command.FrozenPlanDigest, CurrentPlanDigest: command.CurrentPlanDigest,
+		FrozenSkillSetDigest: command.FrozenSkillSetDigest, CurrentSkillSetDigest: command.CurrentSkillSetDigest,
+		CurrentDecisionDigest: command.CurrentDecisionDigest, CurrentDiffDigest: command.CurrentDiffDigest,
+		Policy: command.Policy, SourceSnapshots: command.SourceSnapshots, Findings: command.Findings, NowMillis: command.NowMillis})
+	return correctionport.Result{Run: result.Run, Progressed: result.Progressed, Replayed: result.Replayed, Code: result.Code}, err
 }
 
 type Service struct {

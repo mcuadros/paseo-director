@@ -16,6 +16,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/execution"
+	domainfeedback "github.com/mcuadros/director-engine/domain/feedback"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	"github.com/mcuadros/director-engine/domain/scheduling"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
@@ -510,6 +511,26 @@ func runtimeBudgetSummary(input projection.TaskProjectionInput) *planningport.Ru
 	}
 }
 
+func feedbackSummary(run *domain.Run) *planningport.FeedbackSummary {
+	if run == nil || run.Execution.Feedback == nil || !domainfeedback.ValidState(*run.Execution.Feedback) {
+		return nil
+	}
+	state := run.Execution.Feedback
+	var batch, reason *string
+	if state.CorrectionBatchSHA != "" {
+		value := state.CorrectionBatchSHA
+		batch = &value
+	}
+	if state.NeedsYouCode != "" {
+		value := state.NeedsYouCode
+		reason = &value
+	}
+	return &planningport.FeedbackSummary{Phase: string(state.Phase),
+		CurrentActionable: strconv.Itoa(len(domainfeedback.CurrentActionable(*state))),
+		AuditRecords:      strconv.Itoa(len(state.Records)), CurrentRevision: state.CurrentRevision,
+		CorrectionBatch: batch, ReasonCode: reason}
+}
+
 func action(kind, label, target string, version uint64, approval *string, emphasis string) planningport.AllowedAction {
 	digest := sha256.Sum256([]byte(kind + "\x1f" + target + "\x1f" + strconv.FormatUint(version, 10)))
 	request := "action-" + strings.ReplaceAll(kind, ".", "-") + "-" + hex.EncodeToString(digest[:16])
@@ -584,6 +605,7 @@ func taskSummary(row projection.TaskProjectionRow, input projection.TaskProjecti
 			FactsRevision: cursor, Explanations: explanations,
 		},
 		RuntimeBudget: runtimeBudgetSummary(input),
+		Feedback:      feedbackSummary(run),
 	}
 }
 

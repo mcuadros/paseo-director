@@ -28,7 +28,8 @@ func testBinding(policy Policy) Binding {
 }
 
 func testAuthorization(binding Binding) HumanAuthorization {
-	return SealAuthorization(HumanAuthorization{ID: "authorization-1", ActorKind: "human", ActorID: "owner@example.invalid",
+	return SealAuthorization(HumanAuthorization{ID: "authorization-1", ActorKind: "human", ActorSource: AuthorizationActorSource,
+		Authenticated: true, ActorID: "owner@example.invalid",
 		DecisionID: "decision-1", Action: "integrate_direct", BindingSHA256: binding.SHA256,
 		CandidateSHA: binding.CandidateSHA, BaseSHA: binding.BaseSHA, TargetRef: binding.TargetRef,
 		PolicySHA256: binding.PolicySHA256, AuthorizedAtMillis: 1_000})
@@ -88,6 +89,32 @@ func TestManualStateCannotRecordAnIntentBeforeExactHumanAction(t *testing.T) {
 	state, ok = AuthorizeManual(state, authorization)
 	if !ok || state.Phase != PhaseIntentRecorded || state.Integration == nil || state.Integration.Attempt != 0 {
 		t.Fatalf("authorized state = %#v, ok=%v", state, ok)
+	}
+}
+
+func TestManualAuthorizationCannotBeInferredFromFeedbackOrGitHubIdentity(t *testing.T) {
+	policy := testPolicy(IntegrationManual)
+	state, ok := NewState(testBinding(policy), policy)
+	if !ok {
+		t.Fatal("manual state")
+	}
+	invalidated := Invalidate(state, "human_feedback", "fresh_candidate_validation_and_review")
+	if !ValidState(invalidated) || invalidated.Phase != PhaseInvalidated || invalidated.HumanAuthorization != nil {
+		t.Fatalf("pre-authorization invalidation = %#v", invalidated)
+	}
+	for name, mutate := range map[string]func(*HumanAuthorization){
+		"GitHub review identity":  func(value *HumanAuthorization) { value.ActorSource = "github_review" },
+		"ordinary Paseo feedback": func(value *HumanAuthorization) { value.ActorSource = "paseo_feedback" },
+		"unauthenticated action":  func(value *HumanAuthorization) { value.Authenticated = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			authorization := testAuthorization(state.Binding)
+			mutate(&authorization)
+			authorization = SealAuthorization(authorization)
+			if _, accepted := AuthorizeManual(state, authorization); accepted {
+				t.Fatalf("authorization was inferred from %s", name)
+			}
+		})
 	}
 }
 

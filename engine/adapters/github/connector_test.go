@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	githubport "github.com/mcuadros/director-engine/ports/github"
 )
@@ -17,6 +18,63 @@ type queuedRunner struct {
 	results   []Result
 	arguments [][]string
 	inputs    [][]byte
+}
+
+func TestFeedbackConnectorPaginatesAndAttestsHumanBotAndAppWithoutMutation(t *testing.T) {
+	now := time.Date(2026, 9, 11, 1, 0, 0, 0, time.UTC).UnixMilli()
+	head, base := strings.Repeat("b", 40), strings.Repeat("a", 40)
+	body := `[{"id":1,"node_id":"PRR_human","body":"Please fix this","state":"CHANGES_REQUESTED","commit_id":"` + head + `","submitted_at":"2026-09-11T00:59:00Z","user":{"id":11,"node_id":"U_human","login":"owner","type":"User"}},{"id":2,"node_id":"PRR_bot","body":"Automated note","state":"COMMENTED","commit_id":"` + head + `","submitted_at":"2026-09-11T00:59:01Z","user":{"id":12,"node_id":"U_bot","login":"dependabot[bot]","type":"Bot"}}]`
+	output := []byte("HTTP/2.0 200 OK\r\nx-ratelimit-remaining: 4999\r\nx-ratelimit-reset: 2000000000\r\nlink: <https://api.github.com/example?page=2>; rel=\"next\"\r\n\r\n" + body)
+	runner := &queuedRunner{results: []Result{{Started: true, Stdout: output}}}
+	request := githubport.FeedbackRequest{Owner: "example", Name: "product", RepositoryID: 123, RepositoryNodeID: "R_node",
+		PullRequestNumber: 7, Source: feedbackdomain.SourceGitHubReview, Page: 1, PageSize: 100,
+		CandidateSHA: head, BaseSHA: base, BindingSHA256: strings.Repeat("1", 64), TaskStoreNowMillis: now}
+	page, err := NewWithRunner(runner).ObserveFeedbackPage(context.Background(), request)
+	if err != nil || !githubport.CurrentFeedbackPage(page, request) || page.NextPage != 2 || page.Complete || len(page.Items) != 2 {
+		t.Fatalf("page = %#v, %v", page, err)
+	}
+	if page.Items[0].Actor.Kind != feedbackdomain.ActorHuman || page.Items[0].Actor.Attestation != feedbackdomain.AttestationGitHubUser ||
+		page.Items[0].Kind != feedbackdomain.KindChangesRequested || page.Items[0].Severity != "P1" ||
+		page.Items[1].Actor.Kind != feedbackdomain.ActorBot || page.Items[1].Actor.Attestation != feedbackdomain.AttestationGitHubBot {
+		t.Fatalf("items = %#v", page.Items)
+	}
+	arguments := strings.Join(runner.arguments[0], " ")
+	if !strings.Contains(arguments, "repos/example/product/pulls/7/reviews?page=1&per_page=100") || strings.Contains(arguments, "--method") {
+		t.Fatalf("feedback read arguments = %s", arguments)
+	}
+}
+
+func TestFeedbackConnectorKeepsIssueCommentContextAmbiguousAndAppNonHuman(t *testing.T) {
+	now := time.Date(2026, 9, 11, 1, 0, 0, 0, time.UTC).UnixMilli()
+	head, base := strings.Repeat("b", 40), strings.Repeat("a", 40)
+	body := `[{"id":3,"node_id":"IC_app","body":"App generated comment","created_at":"2026-09-11T00:59:00Z","updated_at":"2026-09-11T00:59:00Z","user":{"id":13,"node_id":"U_app_bot","login":"review-app[bot]","type":"Bot"},"performed_via_github_app":{"id":9,"node_id":"A_app","slug":"review-app"}},{"id":4,"node_id":"IC_human","body":"Please follow up","created_at":"2026-09-11T00:59:01Z","updated_at":"2026-09-11T00:59:01Z","user":{"id":14,"node_id":"U_human","login":"owner","type":"User"}}]`
+	runner := &queuedRunner{results: []Result{{Started: true, Stdout: includedJSON(body, 5_000)}}}
+	request := githubport.FeedbackRequest{Owner: "example", Name: "product", RepositoryID: 123, RepositoryNodeID: "R_node",
+		PullRequestNumber: 7, Source: feedbackdomain.SourceGitHubIssueComment, Page: 1, PageSize: 100,
+		CandidateSHA: head, BaseSHA: base, BindingSHA256: strings.Repeat("1", 64), TaskStoreNowMillis: now}
+	page, err := NewWithRunner(runner).ObserveFeedbackPage(context.Background(), request)
+	if err != nil || !githubport.CurrentFeedbackPage(page, request) || !page.Complete || len(page.Items) != 2 {
+		t.Fatalf("page = %#v, %v", page, err)
+	}
+	if page.Items[0].Actor.Kind != feedbackdomain.ActorApp || page.Items[0].CandidateSHA != "" ||
+		page.Items[1].Actor.Kind != feedbackdomain.ActorHuman || page.Items[1].CandidateSHA != "" {
+		t.Fatalf("issue comments = %#v", page.Items)
+	}
+}
+
+func TestFeedbackConnectorBindsReviewThreadAndDiffContextByDigest(t *testing.T) {
+	now := time.Date(2026, 9, 11, 1, 0, 0, 0, time.UTC).UnixMilli()
+	head, base := strings.Repeat("b", 40), strings.Repeat("a", 40)
+	body := `[{"id":5,"node_id":"RC_parent","pull_request_review_id":90,"body":"Parent","commit_id":"` + head + `","original_commit_id":"` + head + `","path":"internal/private.go","diff_hunk":"@@ -1 +1 @@","line":3,"side":"RIGHT","created_at":"2026-09-11T00:59:00Z","updated_at":"2026-09-11T00:59:00Z","user":{"id":14,"node_id":"U_human","login":"owner","type":"User"}},{"id":6,"node_id":"RC_reply","pull_request_review_id":90,"in_reply_to_id":5,"body":"Reply","commit_id":"` + head + `","original_commit_id":"` + head + `","path":"internal/private.go","diff_hunk":"@@ -1 +1 @@","line":3,"side":"RIGHT","created_at":"2026-09-11T00:59:01Z","updated_at":"2026-09-11T00:59:01Z","user":{"id":14,"node_id":"U_human","login":"owner","type":"User"}}]`
+	runner := &queuedRunner{results: []Result{{Started: true, Stdout: includedJSON(body, 5_000)}}}
+	request := githubport.FeedbackRequest{Owner: "example", Name: "product", RepositoryID: 123, RepositoryNodeID: "R_node",
+		PullRequestNumber: 7, Source: feedbackdomain.SourceGitHubReviewComment, Page: 1, PageSize: 100,
+		CandidateSHA: head, BaseSHA: base, BindingSHA256: strings.Repeat("1", 64), TaskStoreNowMillis: now}
+	page, err := NewWithRunner(runner).ObserveFeedbackPage(context.Background(), request)
+	if err != nil || !githubport.CurrentFeedbackPage(page, request) || len(page.Items) != 2 ||
+		page.Items[0].ContextSHA256 == page.Items[1].ContextSHA256 || strings.Contains(page.Items[0].ContextSHA256, "private.go") {
+		t.Fatalf("thread context = %#v, %v", page.Items, err)
+	}
 }
 
 func (runner *queuedRunner) Run(_ context.Context, arguments []string, input []byte) Result {
