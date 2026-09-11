@@ -22,6 +22,7 @@ import (
 	"github.com/mcuadros/director-engine/domain/correction"
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	"github.com/mcuadros/director-engine/domain/execution"
+	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	"github.com/mcuadros/director-engine/domain/review"
 	directport "github.com/mcuadros/director-engine/ports/directdelivery"
 	deliveryreducer "github.com/mcuadros/director-engine/reducer/delivery"
@@ -95,8 +96,25 @@ type AuthorizeManualCommand struct {
 	RunID              string
 	ExpectedRunVersion uint64
 	LeaseEpoch         uint64
+	Actor              AuthenticatedHumanActor
 	Authorization      directdomain.HumanAuthorization
 	NowMillis          int64
+}
+
+// AuthenticatedHumanActor is fixed by the trusted Paseo server ingress. It is
+// deliberately distinct from GitHub review/comment and feedback identities.
+type AuthenticatedHumanActor struct {
+	Kind          string
+	ID            string
+	SessionID     string
+	Source        string
+	Authenticated bool
+}
+
+func validAuthenticatedHuman(actor AuthenticatedHumanActor, authorization directdomain.HumanAuthorization) bool {
+	return actor.Kind == "human" && actor.ID != "" && actor.SessionID != "" && actor.Source == "server" && actor.Authenticated &&
+		authorization.ActorKind == actor.Kind && authorization.ActorID == actor.ID &&
+		authorization.ActorSource == directdomain.AuthorizationActorSource && authorization.Authenticated
 }
 
 type StepCommand struct {
@@ -211,6 +229,9 @@ func ciPassed(value current) bool {
 }
 
 func correctionSettled(value current) bool {
+	if value.run.Execution.Feedback != nil && feedbackdomain.BlocksDelivery(*value.run.Execution.Feedback) {
+		return false
+	}
 	state := value.run.Execution.Correction
 	if state == nil {
 		return true
@@ -337,7 +358,8 @@ func (service *Service) Admit(ctx context.Context, command AdmitCommand) (Result
 func (service *Service) AuthorizeManual(ctx context.Context, command AuthorizeManualCommand) (Result, error) {
 	unlock := service.lock("run:" + command.RunID)
 	defer unlock()
-	if command.RunID == "" || command.LeaseEpoch == 0 || command.NowMillis < 0 {
+	if command.RunID == "" || command.LeaseEpoch == 0 || command.NowMillis < 0 ||
+		!validAuthenticatedHuman(command.Actor, command.Authorization) {
 		return Result{}, ErrInvalidCommand
 	}
 	value, err := service.load(ctx, command.RunID)

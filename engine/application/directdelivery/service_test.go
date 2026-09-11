@@ -15,6 +15,7 @@ import (
 	"github.com/mcuadros/director-engine/domain/correction"
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	"github.com/mcuadros/director-engine/domain/execution"
+	domainfeedback "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	"github.com/mcuadros/director-engine/domain/repository"
 	"github.com/mcuadros/director-engine/domain/review"
@@ -247,6 +248,41 @@ func newFixture(t *testing.T, mode directdomain.IntegrationMode) *fixture {
 	return &fixture{store: store, remote: remote, service: service, policy: directdomain.SealPolicy(policy)}
 }
 
+func directBlockingFeedback(t *testing.T, fixture *fixture) domainfeedback.State {
+	t.Helper()
+	run, task, record := fixture.store.run, fixture.store.task, fixture.store.candidate
+	binding := domainfeedback.SealBinding(domainfeedback.Binding{ProjectID: task.ProjectID, WorkspaceID: task.WorkspaceIDs[0],
+		TaskID: task.ID, TaskVersion: task.Version, RunID: run.ID, CandidateID: record.ID, CandidateSHA: record.CommitSHA,
+		BaseSHA: record.Manifest.BaseSHA, CandidateGeneration: run.Execution.CandidateAuthority.Generation,
+		ManifestSHA256: record.Manifest.BindingSHA256})
+	item := domainfeedback.Item{Source: domainfeedback.SourcePaseoDirect, ExternalID: "feedback-1", RevisionID: "revision-1",
+		Actor: domainfeedback.Actor{Kind: domainfeedback.ActorHuman, ID: "human-1", Login: "owner", Authenticated: true,
+			Attestation: domainfeedback.AttestationPaseoHuman}, Kind: domainfeedback.KindComment,
+		CandidateSHA: record.CommitSHA, BaseSHA: record.Manifest.BaseSHA, ContextSHA256: strings.Repeat("f", 64),
+		Body: "Reopen current work before direct delivery", Actionable: true, Severity: correction.SeverityP3,
+		CreatedAtMillis: 1_000, UpdatedAtMillis: 1_001}
+	snapshot := domainfeedback.SealSnapshot(domainfeedback.Snapshot{ID: "feedback-snapshot-1", Source: domainfeedback.SourcePaseoDirect,
+		BindingSHA256: binding.BindingSHA256, PageCount: 1, ObservedAtMillis: 1_002,
+		MaximumAgeMillis: domainfeedback.MaximumObservationAge, Items: []domainfeedback.Item{item}})
+	state, _, ok := domainfeedback.Reconcile(nil, binding, []domainfeedback.Snapshot{snapshot}, 1_002)
+	if !ok || !domainfeedback.BlocksDelivery(state) {
+		t.Fatal("blocking feedback fixture")
+	}
+	return state
+}
+
+func TestUnresolvedFeedbackBlocksDirectIntentBeforeRemoteObservation(t *testing.T) {
+	fixture := newFixture(t, directdomain.IntegrationAutomatic)
+	state := directBlockingFeedback(t, fixture)
+	fixture.store.run.Execution.Feedback = &state
+	run := fixture.store.run
+	_, err := fixture.service.Admit(context.Background(), AdmitCommand{RunID: run.ID, ExpectedRunVersion: run.Version,
+		LeaseEpoch: 1, Policy: fixture.policy, NowMillis: 2_000})
+	if !errors.Is(err, ErrNotReady) || fixture.remote.observations != 0 || fixture.remote.pushes != 0 {
+		t.Fatalf("feedback direct gate = %v observations=%d pushes=%d", err, fixture.remote.observations, fixture.remote.pushes)
+	}
+}
+
 func admit(t *testing.T, fixture *fixture) domain.Run {
 	t.Helper()
 	run, _ := fixture.store.Run(context.Background(), "run-direct")
@@ -281,11 +317,19 @@ func TestManualDirectWaitsForExplicitHumanActionThenIntegrates(t *testing.T) {
 	run, _ = fixture.store.Run(context.Background(), run.ID)
 	binding := run.Execution.DirectDelivery.Binding
 	authorization := directdomain.SealAuthorization(directdomain.HumanAuthorization{ID: "human-authorization-1",
-		ActorKind: "human", ActorID: "owner@example.invalid", DecisionID: "decision-direct-1", Action: "integrate_direct",
+		ActorKind: "human", ActorSource: directdomain.AuthorizationActorSource, Authenticated: true,
+		ActorID: "owner@example.invalid", DecisionID: "decision-direct-1", Action: "integrate_direct",
 		BindingSHA256: binding.SHA256, CandidateSHA: binding.CandidateSHA, BaseSHA: binding.BaseSHA,
 		TargetRef: binding.TargetRef, PolicySHA256: binding.PolicySHA256, AuthorizedAtMillis: 2_000})
+	githubActor := AuthenticatedHumanActor{Kind: "human", ID: "owner@example.invalid", SessionID: "github-review-1", Source: "github_review", Authenticated: true}
+	if _, err := fixture.service.AuthorizeManual(context.Background(), AuthorizeManualCommand{RunID: run.ID,
+		ExpectedRunVersion: run.Version, LeaseEpoch: 1, Actor: githubActor, Authorization: authorization, NowMillis: 2_000}); !errors.Is(err, ErrInvalidCommand) {
+		t.Fatalf("GitHub review identity authorized direct integration: %v", err)
+	}
 	result, err := fixture.service.AuthorizeManual(context.Background(), AuthorizeManualCommand{RunID: run.ID,
-		ExpectedRunVersion: run.Version, LeaseEpoch: 1, Authorization: authorization, NowMillis: 2_000})
+		ExpectedRunVersion: run.Version, LeaseEpoch: 1,
+		Actor:         AuthenticatedHumanActor{Kind: "human", ID: "owner@example.invalid", SessionID: "paseo-session-1", Source: "server", Authenticated: true},
+		Authorization: authorization, NowMillis: 2_000})
 	if err != nil || !result.Progressed {
 		t.Fatalf("manual authorization = %#v, %v", result, err)
 	}

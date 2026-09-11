@@ -22,6 +22,7 @@ import (
 	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	"github.com/mcuadros/director-engine/domain/execution"
+	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
@@ -520,6 +521,42 @@ func validateRun(run domain.Run) error {
 		}
 		if state.Correction != nil && !correctiondomain.ValidState(*state.Correction) {
 			return fmt.Errorf("%w: invalid correction state", storeport.ErrInvalidRecord)
+		}
+		if state.Feedback != nil {
+			feedback := *state.Feedback
+			if !feedbackdomain.ValidState(feedback) || feedback.Invalidated {
+				return fmt.Errorf("%w: invalid current feedback state", storeport.ErrInvalidRecord)
+			}
+			if state.CandidateAuthority == nil || feedback.Binding.ProjectID != state.Scope.ProjectID ||
+				feedback.Binding.WorkspaceID != state.Scope.WorkspaceID || feedback.Binding.TaskID != state.Scope.TaskID ||
+				feedback.Binding.TaskVersion != state.CandidateAuthority.TaskVersion || feedback.Binding.RunID != state.Scope.RunID ||
+				feedback.Binding.CandidateID != state.CandidateAuthority.CandidateID ||
+				feedback.Binding.CandidateSHA != state.CandidateAuthority.CandidateSHA || feedback.Binding.BaseSHA != state.CandidateAuthority.BaseSHA ||
+				feedback.Binding.CandidateGeneration != state.CandidateAuthority.Generation ||
+				feedback.Binding.ManifestSHA256 != state.CandidateAuthority.BindingSHA256 {
+				return fmt.Errorf("%w: current feedback does not match Candidate authority", storeport.ErrInvalidRecord)
+			}
+			if feedbackdomain.BlocksDelivery(feedback) && (state.Publication != nil || state.DirectDelivery != nil ||
+				state.CandidateAuthority.Downstream.Publication != nil || state.CandidateAuthority.Downstream.Ready != nil ||
+				state.CandidateAuthority.Downstream.Integration != nil) {
+				return fmt.Errorf("%w: unresolved feedback retained delivery authority", storeport.ErrInvalidRecord)
+			}
+		}
+		if len(state.FeedbackHistory) > 64 {
+			return fmt.Errorf("%w: too many historical feedback states", storeport.ErrInvalidRecord)
+		}
+		seenFeedback := make(map[string]struct{}, len(state.FeedbackHistory)+1)
+		if state.Feedback != nil {
+			seenFeedback[state.Feedback.Binding.BindingSHA256] = struct{}{}
+		}
+		for _, feedback := range state.FeedbackHistory {
+			if !feedbackdomain.ValidState(feedback) || !feedback.Invalidated {
+				return fmt.Errorf("%w: invalid historical feedback state", storeport.ErrInvalidRecord)
+			}
+			if _, duplicate := seenFeedback[feedback.Binding.BindingSHA256]; duplicate {
+				return fmt.Errorf("%w: duplicate feedback binding", storeport.ErrInvalidRecord)
+			}
+			seenFeedback[feedback.Binding.BindingSHA256] = struct{}{}
 		}
 		if state.PublicationPolicy != nil && (state.DeliveryMode != domainconfig.DeliveryPullRequest ||
 			!publicationdomain.ValidPolicy(*state.PublicationPolicy)) {
@@ -1639,6 +1676,14 @@ func (store *DoltTaskStore) AppendCandidate(
 			}
 			current.Execution.DirectDeliveryHistory = append(current.Execution.DirectDeliveryHistory, historical)
 			current.Execution.DirectDelivery = nil
+		}
+		if current.Execution.Feedback != nil {
+			historical := *current.Execution.Feedback
+			if !historical.Invalidated {
+				historical = feedbackdomain.Invalidate(historical, "candidate_changed")
+			}
+			current.Execution.FeedbackHistory = append(current.Execution.FeedbackHistory, historical)
+			current.Execution.Feedback = nil
 		}
 		authority := candidatedomain.NewAuthority(generation, candidate.ID, candidate.Claim.Branch, candidate.Claim.TaskVersion, candidate.Manifest)
 		current.Execution.CandidateAuthority = &authority

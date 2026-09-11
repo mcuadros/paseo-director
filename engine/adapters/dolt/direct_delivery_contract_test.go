@@ -11,8 +11,10 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
+	"github.com/mcuadros/director-engine/domain/correction"
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	"github.com/mcuadros/director-engine/domain/execution"
+	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
@@ -149,6 +151,31 @@ func TestDirectDeliveryFrontierAndCorrectionHistorySurviveDoltReopen(t *testing.
 	if err != nil || unchanged.Version != 2 || unchanged.CurrentCandidateID != first.ID ||
 		unchanged.Execution.DirectDelivery == nil || !directdomain.DispatchInFlight(*unchanged.Execution.DirectDelivery) {
 		t.Fatalf("in-flight direct frontier changed = %#v, %v", unchanged, err)
+	}
+	feedbackBinding := feedbackdomain.SealBinding(feedbackdomain.Binding{ProjectID: project.ID, WorkspaceID: workspace.ID,
+		TaskID: task.ID, TaskVersion: unchanged.Execution.CandidateAuthority.TaskVersion, RunID: unchanged.ID,
+		CandidateID: first.ID, CandidateSHA: first.CommitSHA, BaseSHA: first.Manifest.BaseSHA,
+		CandidateGeneration: unchanged.Execution.CandidateAuthority.Generation, ManifestSHA256: first.Manifest.BindingSHA256})
+	feedbackItem := feedbackdomain.Item{Source: feedbackdomain.SourcePaseoDirect, ExternalID: "direct-feedback-1", RevisionID: "revision-1",
+		Actor: feedbackdomain.Actor{Kind: feedbackdomain.ActorHuman, ID: "human-1", Login: "owner", Authenticated: true,
+			Attestation: feedbackdomain.AttestationPaseoHuman}, Kind: feedbackdomain.KindComment,
+		CandidateSHA: first.CommitSHA, BaseSHA: first.Manifest.BaseSHA, ContextSHA256: strings.Repeat("8", 64),
+		Body: "Feedback must wait for the direct dispatch observation", Actionable: true, Severity: correction.SeverityP3,
+		CreatedAtMillis: 1_003, UpdatedAtMillis: 1_004}
+	feedbackSnapshot := feedbackdomain.SealSnapshot(feedbackdomain.Snapshot{ID: "direct-feedback-snapshot", Source: feedbackdomain.SourcePaseoDirect,
+		BindingSHA256: feedbackBinding.BindingSHA256, PageCount: 1, ObservedAtMillis: 1_005,
+		MaximumAgeMillis: feedbackdomain.MaximumObservationAge, Items: []feedbackdomain.Item{feedbackItem}})
+	feedback, _, ok := feedbackdomain.Reconcile(nil, feedbackBinding, []feedbackdomain.Snapshot{feedbackSnapshot}, 1_005)
+	if !ok {
+		t.Fatal("direct feedback fixture rejected")
+	}
+	conflict := unchanged
+	conflict.Execution.Feedback = &feedback
+	conflict.Version++
+	_, err = store.UpdateRun(ctx, command("direct-feedback-conflict", "feedback.observed", conflict.ID, 2, `{}`), conflict,
+		event("direct-feedback-conflict-event", conflict.ID, 4, conflict.ID, 3, "feedback.observed"))
+	if !errors.Is(err, storeport.ErrInvalidRecord) {
+		t.Fatalf("unresolved feedback coexisted with in-flight direct authority: %v", err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)

@@ -164,6 +164,7 @@ function makeTask(index: number, historical: boolean): TaskSummary {
       workerTurns: "8", helperTurns: "2", reviewerTurns: "1", correctionTurns: "1",
       reasonCode: "budget_tokens_soft_limit_reached",
     } : null,
+    feedback: null,
   };
 }
 

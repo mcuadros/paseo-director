@@ -9,7 +9,9 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/candidate"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
+	"github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
+	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 )
 
@@ -61,5 +63,28 @@ func TestPublicationIntentRoundTripsTheDurableRunRecord(t *testing.T) {
 	if err := validateRun(reloaded); err != nil || reloaded.Execution.Publication == nil ||
 		reloaded.Execution.Publication.Binding.BindingSHA256 != publication.Binding.BindingSHA256 {
 		t.Fatalf("reloaded publication = %#v, %v", reloaded.Execution.Publication, err)
+	}
+	feedbackBinding := feedbackdomain.SealBinding(feedbackdomain.Binding{ProjectID: "project-1", WorkspaceID: "workspace-1",
+		TaskID: run.TaskID, TaskVersion: authority.TaskVersion, RunID: run.ID, CandidateID: authority.CandidateID,
+		CandidateSHA: authority.CandidateSHA, BaseSHA: authority.BaseSHA, CandidateGeneration: authority.Generation,
+		ManifestSHA256: authority.BindingSHA256, RepositoryID: binding.GitHubRepositoryID,
+		RepositoryNodeID: binding.GitHubRepositoryNodeID, PullRequestNumber: 7})
+	item := feedbackdomain.Item{Source: feedbackdomain.SourcePaseoDirect, ExternalID: "feedback-1", RevisionID: "revision-1",
+		Actor: feedbackdomain.Actor{Kind: feedbackdomain.ActorHuman, ID: "human-1", Login: "owner", Authenticated: true,
+			Attestation: feedbackdomain.AttestationPaseoHuman}, Kind: feedbackdomain.KindComment,
+		CandidateSHA: authority.CandidateSHA, BaseSHA: authority.BaseSHA, ContextSHA256: strings.Repeat("a", 64),
+		Body: "Feedback invalidates publication before dispatch", Actionable: true, Severity: correction.SeverityP3,
+		CreatedAtMillis: 1_000, UpdatedAtMillis: 1_001}
+	snapshot := feedbackdomain.SealSnapshot(feedbackdomain.Snapshot{ID: "feedback-snapshot", Source: feedbackdomain.SourcePaseoDirect,
+		BindingSHA256: feedbackBinding.BindingSHA256, PageCount: 1, ObservedAtMillis: 1_002,
+		MaximumAgeMillis: feedbackdomain.MaximumObservationAge, Items: []feedbackdomain.Item{item}})
+	feedback, _, ok := feedbackdomain.Reconcile(nil, feedbackBinding, []feedbackdomain.Snapshot{snapshot}, 1_002)
+	if !ok {
+		t.Fatal("feedback fixture")
+	}
+	conflict := reloaded
+	conflict.Execution.Feedback = &feedback
+	if err := validateRun(conflict); err == nil {
+		t.Fatal("unresolved feedback coexisted with active publication authority")
 	}
 }

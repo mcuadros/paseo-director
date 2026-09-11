@@ -31,8 +31,10 @@ is never retry or fallback behavior.
 ## Manual and automatic behavior
 
 Manual direct delivery persists `waiting_human` with no Git effect. Only a
-server-attributed `human` action bound to the exact Candidate, base, target,
-policy, and direct-delivery identity records the integration intent. A restart,
+server-attributed, authenticated Paseo `direct integration` action bound to the
+exact Candidate, base, target, policy, and direct-delivery identity records the
+integration intent. A GitHub review/comment identity or ordinary Paseo feedback
+record cannot be converted into that authorization. A restart,
 ready projection, model claim, or adapter result cannot substitute for that
 action.
 
@@ -73,3 +75,7 @@ bounded identities—never raw Git output, paths, remote URLs, or credentials.
 Correction to a new Candidate moves the old direct state into invalidated
 history and clears all old downstream authority. Cleanup, PR merge, Task
 closure, and delivery-mode changes remain separate engine/coordinator work.
+Unresolved current human feedback applies the same pre-dispatch invalidation:
+an in-flight handoff must first be observed, while a not-yet-dispatched direct
+state moves to immutable history and cannot resume until a fresh Candidate,
+Review, and CI binding exists.

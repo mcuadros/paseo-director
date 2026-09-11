@@ -218,6 +218,18 @@ type RuntimeBudgetSummary struct {
 	ReasonCode               *string                  `json:"reasonCode"`
 }
 
+// FeedbackSummary is the bounded Organizer/Board projection. It exposes only
+// immutable audit identities and counts, never comment bodies or actor
+// credentials, and cannot be used to reply to or resolve a GitHub thread.
+type FeedbackSummary struct {
+	Phase             string  `json:"phase"`
+	CurrentActionable string  `json:"currentActionable"`
+	AuditRecords      string  `json:"auditRecords"`
+	CurrentRevision   string  `json:"currentRevision"`
+	CorrectionBatch   *string `json:"correctionBatch"`
+	ReasonCode        *string `json:"reasonCode"`
+}
+
 type TaskSummary struct {
 	ID              string                `json:"id"`
 	ProjectID       string                `json:"projectId"`
@@ -235,6 +247,7 @@ type TaskSummary struct {
 	AllowedActions  []AllowedAction       `json:"allowedActions"`
 	SchedulingFacts SchedulerFacts        `json:"schedulingFacts"`
 	RuntimeBudget   *RuntimeBudgetSummary `json:"runtimeBudget"`
+	Feedback        *FeedbackSummary      `json:"feedback"`
 }
 
 type CapacityFacts struct {

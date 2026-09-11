@@ -17,7 +17,7 @@ import (
 const (
 	PolicySchemaVersion        = "director.direct-delivery-policy/v1"
 	BindingSchemaVersion       = "director.direct-delivery-binding/v1"
-	AuthorizationSchemaVersion = "director.direct-delivery-authorization/v1"
+	AuthorizationSchemaVersion = "director.direct-delivery-authorization/v2"
 	ObservationSchemaVersion   = "director.direct-delivery-observation/v1"
 	EvidenceSchemaVersion      = "director.direct-delivery-evidence/v1"
 	StateSchemaVersion         = "director.direct-delivery-state/v1"
@@ -26,6 +26,7 @@ const (
 	MaximumHistoricalStates    = 64
 	IntegrationEffectKind      = "direct.integration"
 	IntegrationEffectClass     = "conditional_update"
+	AuthorizationActorSource   = "paseo_authenticated_direct_action"
 )
 
 var (
@@ -204,6 +205,8 @@ type HumanAuthorization struct {
 	SchemaVersion      string `json:"schemaVersion"`
 	ID                 string `json:"id"`
 	ActorKind          string `json:"actorKind"`
+	ActorSource        string `json:"actorSource"`
+	Authenticated      bool   `json:"authenticated"`
 	ActorID            string `json:"actorId"`
 	DecisionID         string `json:"decisionId"`
 	Action             string `json:"action"`
@@ -227,7 +230,8 @@ func SealAuthorization(value HumanAuthorization) HumanAuthorization {
 
 func ValidAuthorization(value HumanAuthorization, binding Binding) bool {
 	return value.SchemaVersion == AuthorizationSchemaVersion && validIdentity(value.ID) &&
-		value.ActorKind == "human" && validIdentity(value.ActorID) && validIdentity(value.DecisionID) &&
+		value.ActorKind == "human" && value.ActorSource == AuthorizationActorSource && value.Authenticated &&
+		validIdentity(value.ActorID) && validIdentity(value.DecisionID) &&
 		value.Action == "integrate_direct" && value.BindingSHA256 == binding.SHA256 &&
 		value.CandidateSHA == binding.CandidateSHA && value.BaseSHA == binding.BaseSHA &&
 		value.TargetRef == binding.TargetRef && value.PolicySHA256 == binding.PolicySHA256 &&
@@ -607,7 +611,8 @@ func ValidState(state State) bool {
 	if state.HumanAuthorization != nil && !ValidAuthorization(*state.HumanAuthorization, state.Binding) {
 		return false
 	}
-	if state.Policy.IntegrationMode == IntegrationManual && state.Phase != PhaseWaitingHuman && state.HumanAuthorization == nil {
+	if state.Policy.IntegrationMode == IntegrationManual && state.Phase != PhaseWaitingHuman &&
+		state.Phase != PhaseNeedsYou && state.Phase != PhaseInvalidated && state.HumanAuthorization == nil {
 		return false
 	}
 	if state.Policy.IntegrationMode == IntegrationAutomatic && (state.HumanAuthorization != nil || !AutomaticTargetAuthorized(state.Policy, state.Binding.TargetRef)) {

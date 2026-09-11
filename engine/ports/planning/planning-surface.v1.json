@@ -100,6 +100,10 @@
       "type": "string",
       "pattern": "^(?:0|[1-9][0-9]{0,19})$"
     },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "pageCursor": {
       "type": "string",
       "minLength": 1,
@@ -452,6 +456,19 @@
         }
       }
     },
+    "feedbackSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "currentActionable", "auditRecords", "currentRevision", "correctionBatch", "reasonCode"],
+      "properties": {
+        "phase": { "enum": ["observed", "correction_ready", "correction_routed", "needs_you"] },
+        "currentActionable": { "$ref": "#/$defs/uint64Decimal" },
+        "auditRecords": { "$ref": "#/$defs/uint64Decimal" },
+        "currentRevision": { "$ref": "#/$defs/sha256" },
+        "correctionBatch": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "reasonCode": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] }
+      }
+    },
     "taskSummary": {
       "type": "object",
       "additionalProperties": false,
@@ -471,7 +488,8 @@
         "needsYou",
         "allowedActions",
         "schedulingFacts",
-        "runtimeBudget"
+        "runtimeBudget",
+        "feedback"
       ],
       "properties": {
         "id": { "$ref": "#/$defs/opaqueId" },
@@ -512,6 +530,9 @@
         "schedulingFacts": { "$ref": "#/$defs/schedulerFacts" },
         "runtimeBudget": {
           "anyOf": [{ "$ref": "#/$defs/runtimeBudgetSummary" }, { "type": "null" }]
+        },
+        "feedback": {
+          "anyOf": [{ "$ref": "#/$defs/feedbackSummary" }, { "type": "null" }]
         }
       }
     },
