@@ -10,10 +10,12 @@ import {
   PLANNING_MAXIMUM_RESPONSE_BYTES,
   PLANNING_MUTATION_ACTOR_HEADERS,
   PLANNING_MUTATION_PATH,
+  PLANNING_DOCTOR_QUERY_PATH,
   PLANNING_HOME_QUERY_PATH,
   PLANNING_ORGANIZER_MUTATION_PATH,
   PLANNING_QUERY_PATH,
   PLANNING_TASK_DETAIL_QUERY_PATH,
+  PLANNING_REPAIR_MUTATION_PATH,
   planningMutationInputSchema,
   planningMutationResultSchema,
   planningQueryInputSchema,
@@ -22,8 +24,14 @@ import {
   taskDetailSnapshotSchema,
   homeQueryInputSchema,
   homeSnapshotSchema,
+  doctorQueryInputSchema,
+  doctorReportSchema,
   organizerBootstrapInputSchema,
   organizerBootstrapResultSchema,
+  repairInputSchema,
+  repairResultSchema,
+  type DoctorQueryInput,
+  type DoctorReport,
   type HomeQueryInput,
   type HomeSnapshot,
   type OrganizerBootstrapInput,
@@ -34,6 +42,8 @@ import {
   type TaskDetailSnapshot,
   type PlanningMutationInput,
   type PlanningMutationResult,
+  type RepairInput,
+  type RepairResult,
 } from "../generated/planning-contract.shared.ts";
 
 const requestTimeoutMilliseconds = 10_000;
@@ -42,6 +52,8 @@ export type PlanningTransport = {
   query(input: PlanningQueryInput): Promise<PlanningSnapshot>;
   taskDetail(input: TaskDetailQueryInput): Promise<TaskDetailSnapshot>;
   home?(input: HomeQueryInput): Promise<HomeSnapshot>;
+  doctor?(input: DoctorQueryInput): Promise<DoctorReport>;
+  repair?(input: RepairInput): Promise<RepairResult>;
   bootstrapOrganizer?(input: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult>;
   mutate(input: PlanningMutationInput): Promise<PlanningMutationResult>;
 };
@@ -154,9 +166,117 @@ export function createPlanningTransport(options: {
   const url = new URL(PLANNING_QUERY_PATH, baseUrl);
   const taskDetailUrl = new URL(PLANNING_TASK_DETAIL_QUERY_PATH, baseUrl);
   const homeUrl = new URL(PLANNING_HOME_QUERY_PATH, baseUrl);
+  const doctorUrl = new URL(PLANNING_DOCTOR_QUERY_PATH, baseUrl);
   const organizerUrl = new URL(PLANNING_ORGANIZER_MUTATION_PATH, baseUrl);
   const mutationUrl = new URL(PLANNING_MUTATION_PATH, baseUrl);
+  const repairUrl = new URL(PLANNING_REPAIR_MUTATION_PATH, baseUrl);
   return {
+    async doctor(rawInput: DoctorQueryInput): Promise<DoctorReport> {
+      const input = doctorQueryInputSchema.parse(rawInput);
+      const body = JSON.stringify(input);
+      let response: Response;
+      try {
+        response = await fetchPlanning(doctorUrl, {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            "content-type": "application/json",
+            "x-director-contract-version": PLANNING_CONTRACT_VERSION,
+            "x-director-contract-hash": PLANNING_CONTRACT_SHA256,
+          },
+          body,
+          signal: AbortSignal.timeout(requestTimeoutMilliseconds),
+        });
+      } catch {
+        throw new PlanningTransportError("ENGINE_DOCTOR_UNAVAILABLE", "Doctor is unavailable on this exact host");
+      }
+      if (response.url !== doctorUrl.href) {
+        throw new PlanningTransportError("ENGINE_DOCTOR_ORIGIN", "Doctor response origin does not match");
+      }
+      if (!response.ok) {
+        let responseCode: string | undefined;
+        try {
+          const value = await boundedResponseValue(response);
+          if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && typeof (value as { code?: unknown }).code === "string") {
+            responseCode = (value as { code: string }).code;
+          }
+        } catch {
+          responseCode = undefined;
+        }
+        const code = responseCode === "DOCTOR_HOST_MISMATCH" ? "ENGINE_DOCTOR_HOST_MISMATCH"
+          : responseCode === "DOCTOR_FACTS_STALE" ? "ENGINE_DOCTOR_FACTS_STALE"
+            : "ENGINE_DOCTOR_RESPONSE";
+        throw new PlanningTransportError(code, code === "ENGINE_DOCTOR_FACTS_STALE"
+          ? "Doctor facts changed; refresh this exact host"
+          : code === "ENGINE_DOCTOR_HOST_MISMATCH" ? "Doctor refused a different host identity" : "Director Engine rejected Doctor");
+      }
+      if (response.headers.get("x-director-contract-version") !== PLANNING_CONTRACT_VERSION ||
+        response.headers.get("x-director-contract-hash") !== PLANNING_CONTRACT_SHA256) {
+        throw new PlanningTransportError("ENGINE_DOCTOR_CONTRACT", "Doctor contract does not match");
+      }
+      try {
+        const report = doctorReportSchema.parse(await boundedResponseValue(response));
+        if (report.hostId !== input.hostId || report.projectId !== input.projectId || report.projectVersion !== input.expectedProjectVersion) {
+          throw new PlanningTransportError("ENGINE_DOCTOR_BINDING", "Doctor response binding does not match");
+        }
+        return report;
+      } catch (error) {
+        if (error instanceof PlanningTransportError) throw error;
+        throw new PlanningTransportError("ENGINE_DOCTOR_PAYLOAD", "Doctor response is invalid");
+      }
+    },
+    async repair(rawInput: RepairInput): Promise<RepairResult> {
+      const actor = options.mutationActor;
+      const identityPattern = /^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/u;
+      if (!actor || actor.kind !== "human" || !identityPattern.test(actor.id) || !identityPattern.test(actor.sessionId)) {
+        throw new PlanningTransportError("ENGINE_REPAIR_ACTOR", "Repair requires a server-authenticated human session");
+      }
+      const input = repairInputSchema.parse(rawInput);
+      const body = JSON.stringify(input);
+      if (new TextEncoder().encode(body).byteLength > PLANNING_MAXIMUM_REQUEST_BYTES) {
+        throw new PlanningTransportError("ENGINE_REPAIR_INPUT", "Repair request exceeds the contract bound");
+      }
+      let response: Response;
+      try {
+        response = await fetchPlanning(repairUrl, {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            "content-type": "application/json",
+            "x-director-contract-version": PLANNING_CONTRACT_VERSION,
+            "x-director-contract-hash": PLANNING_CONTRACT_SHA256,
+            [PLANNING_MUTATION_ACTOR_HEADERS.kind]: actor.kind,
+            [PLANNING_MUTATION_ACTOR_HEADERS.id]: actor.id,
+            [PLANNING_MUTATION_ACTOR_HEADERS.session]: actor.sessionId,
+          },
+          body,
+          signal: AbortSignal.timeout(requestTimeoutMilliseconds),
+        });
+      } catch {
+        throw new PlanningTransportError("ENGINE_REPAIR_UNAVAILABLE", "Repair is unavailable on this exact host");
+      }
+      if (response.url !== repairUrl.href) {
+        throw new PlanningTransportError("ENGINE_REPAIR_ORIGIN", "Repair response origin does not match");
+      }
+      if (!response.ok) {
+        throw new PlanningTransportError("ENGINE_REPAIR_RESPONSE", "Director Engine rejected Repair");
+      }
+      if (response.headers.get("x-director-contract-version") !== PLANNING_CONTRACT_VERSION ||
+        response.headers.get("x-director-contract-hash") !== PLANNING_CONTRACT_SHA256) {
+        throw new PlanningTransportError("ENGINE_REPAIR_CONTRACT", "Repair contract does not match");
+      }
+      try {
+        const result = repairResultSchema.parse(await boundedResponseValue(response));
+        if (result.hostId !== input.hostId || result.projectId !== input.projectId || result.requestId !== input.requestId ||
+          (result.preview !== null && result.preview.projectId !== input.projectId)) {
+          throw new PlanningTransportError("ENGINE_REPAIR_BINDING", "Repair response binding does not match");
+        }
+        return result;
+      } catch (error) {
+        if (error instanceof PlanningTransportError) throw error;
+        throw new PlanningTransportError("ENGINE_REPAIR_PAYLOAD", "Repair response is invalid");
+      }
+    },
     async bootstrapOrganizer(rawInput: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult> {
       const actor = options.mutationActor;
       const identityPattern = /^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/u;

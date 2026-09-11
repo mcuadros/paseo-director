@@ -28,14 +28,18 @@ import {
   type HomeActionKind,
   type HomeProject,
   type HomeSnapshot,
+  type DoctorQueryInput,
   type PlanningMutationInput,
   type PlanningMutationIntent,
   type OrganizerBootstrapInput,
+  type RepairInput,
 } from "../generated/planning-contract.shared.ts";
 import {
+  doctorQueryRpc,
   homeQueryRpc,
   planningMutationRpc,
   organizerBootstrapRpc,
+  repairProjectRpc,
 } from "../rpc/planning.shared.ts";
 import {
   directorHomeScene,
@@ -110,10 +114,17 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
   const loadHome = useRpc(homeQueryRpc);
   const mutatePlanning = useRpc(planningMutationRpc);
   const bootstrapOrganizer = useRpc(organizerBootstrapRpc);
+  const queryDoctor = useRpc(doctorQueryRpc);
+  const repairProject = useRpc(repairProjectRpc);
   const toast = useToast();
   const queryClient = useQueryClient();
   const [entry, setEntry] = useState<OrganizerEntry | null>(null);
   const [inspectedProject, setInspectedProject] = useState<string | null>(null);
+  const [repairRequest, setRepairRequest] = useState<{
+    projectId: string;
+    projectVersion: string;
+    requestId: string;
+  } | null>(null);
   const home = useInfiniteQuery({
     queryKey: ["director", "home", host.id],
     initialPageParam: null as string | null,
@@ -153,11 +164,28 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     },
     onError: () => toast.error("Organizer Preview/Apply is unavailable on this exact host."),
   });
+  const doctor = useMutation({
+    mutationFn: (input: DoctorQueryInput) => queryDoctor(input),
+  });
+  const repair = useMutation({
+    mutationFn: (input: RepairInput) => repairProject(input),
+    onSuccess: async (result) => {
+      if (result.status === "applied") {
+        toast.show(result.message, { variant: "success" });
+        await queryClient.resetQueries({ queryKey: ["director", "home", host.id], exact: true });
+      } else if (result.status === "refused") {
+        toast.show(result.message, { variant: "warning" });
+      }
+    },
+  });
   useEffect(() => {
     setEntry(null);
     setInspectedProject(null);
+    setRepairRequest(null);
     organizer.reset();
     control.reset();
+    doctor.reset();
+    repair.reset();
   }, [host.id]);
   const snapshot = "snapshot" in scene ? scene.snapshot : null;
   const stale = scene.kind === "stale";
@@ -349,14 +377,63 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       navigation?.openWorkspace({ workspaceId: action.paseoWorkspaceId });
       return;
     }
-    if (action.kind === "doctor" || action.kind === "open_needs_you") {
-      setInspectedProject(action.projectId);
+    if ((action.kind === "doctor" || action.kind === "open_needs_you") && action.projectId) {
+      openDoctorForProject(action.projectId);
+      return;
+    }
+    if (action.kind === "repair" && action.projectId) {
+      openRepairForProject(action.projectId);
       return;
     }
     const intent = mutationIntent(action);
     if (intent && action.command) {
       control.mutate(bindPlanningMutation(action.command, intent));
     }
+  }
+
+  function openDoctorForProject(projectId: string): void {
+    const target = snapshot?.page.projects.find((project) => project.id === projectId);
+    if (!target || stale) return;
+    setInspectedProject(projectId);
+    doctor.reset();
+    doctor.mutate({ hostId: host.id, projectId, expectedProjectVersion: target.version });
+  }
+
+  function openRepairForProject(projectId: string): void {
+    const target = snapshot?.page.projects.find((project) => project.id === projectId);
+    const requestId = organizerRequestId();
+    if (!target || !requestId || stale) return;
+    setRepairRequest({ projectId, projectVersion: target.version, requestId });
+    repair.reset();
+    repair.mutate({
+      schemaVersion: PLANNING_SCHEMA_VERSION,
+      contractVersion: PLANNING_CONTRACT_VERSION,
+      contractHash: PLANNING_CONTRACT_SHA256,
+      hostId: host.id,
+      requestId,
+      kind: "repair.preview",
+      projectId,
+      expectedProjectVersion: target.version,
+      previewId: null,
+      confirmed: false,
+    });
+  }
+
+  function handleApplyRepair(): void {
+    const preview = repair.data?.status === "preview" ? repair.data.preview : null;
+    if (!repairRequest || !preview || !preview.valid || stale || repair.isPending) return;
+    repair.mutate({
+      schemaVersion: PLANNING_SCHEMA_VERSION,
+      contractVersion: PLANNING_CONTRACT_VERSION,
+      contractHash: PLANNING_CONTRACT_SHA256,
+      hostId: host.id,
+      requestId: repairRequest.requestId,
+      kind: "repair.apply",
+      projectId: repairRequest.projectId,
+      expectedProjectVersion: repairRequest.projectVersion,
+      previewId: preview.id,
+      confirmed: true,
+    });
   }
 
   function actionButton(action: HomeAction) {
@@ -389,6 +466,18 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     if (project.health === "healthy") return styles.successText;
     if (project.health === "needs_you" || project.health === "disconnected") return styles.dangerText;
     return styles.warningText;
+  }
+
+  function diagnosticTextStyle(status: string) {
+    if (status === "healthy" || status === "passed") return styles.successText;
+    if (status === "degraded" || status === "stale") return styles.warningText;
+    return styles.dangerText;
+  }
+
+  function diagnosticBannerStyle(status: string) {
+    if (status === "healthy" || status === "passed") return { borderLeftColor: theme.colors.statusSuccess };
+    if (status === "degraded" || status === "stale") return { borderLeftColor: theme.colors.statusWarning };
+    return styles.bannerDanger;
   }
 
   function projectCard(project: HomeProject) {
@@ -442,6 +531,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     entry.projectId === "" || entry.projectName === "" || entry.repositoryPath === "" || organizer.isPending;
   const entryApplyDisabled = entryPreviewDisabled || organizer.data?.status !== "preview" || organizer.data.preview?.valid !== true;
   const inspected = snapshot?.page.projects.find((project) => project.id === inspectedProject) ?? null;
+  const repairTarget = snapshot?.page.projects.find((project) => project.id === repairRequest?.projectId) ?? null;
 
   const errorCopy = scene.kind === "error"
     ? scene.code === "contract"
@@ -642,20 +732,187 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       </Modal>
       <Modal
         icon={<Icon color={inspected?.health === "needs_you" ? theme.colors.statusDanger : theme.colors.foreground} name={inspected?.health === "needs_you" ? "CircleAlert" : "Stethoscope"} size={18} />}
-        onOpenChange={(open) => { if (!open) setInspectedProject(null); }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setInspectedProject(null);
+            doctor.reset();
+          }
+        }}
         open={inspected !== null}
         title={inspected?.health === "needs_you" ? `Needs you · ${inspected.name}` : `Doctor · ${inspected?.name ?? "Project"}`}
       >
         <Modal.Content>
           <ScrollView contentContainerStyle={styles.modalContent}>
-            {inspected ? (
+            {doctor.isPending ? (
+              <View accessibilityLiveRegion="polite" style={styles.liveState}>
+                <ActivityIndicator color={theme.colors.accent} />
+                <Text style={styles.sectionTitle}>Running read-only Doctor…</Text>
+                <Text style={[styles.body, styles.centered]}>Reading one exact host-bound engine snapshot. No repair, install, dispatch, or write is attempted.</Text>
+              </View>
+            ) : doctor.isError ? (
+              <View accessibilityLiveRegion="polite" style={[styles.banner, styles.bannerDanger]}>
+                <Text style={[styles.bannerTitle, styles.dangerText]}>Doctor unavailable</Text>
+                <Text style={styles.body}>The exact host rejected or could not produce current diagnostic facts. No other host or cached report was used.</Text>
+                <Text style={styles.dangerText}>Missing capability: Current exact-host Doctor response</Text>
+                <Text style={styles.body}>Restore this host’s matching Director Engine and connector contract, then run Doctor again.</Text>
+              </View>
+            ) : doctor.data ? (
               <>
-                <Text style={styles.body}>Health {healthLabels[inspected.health]} · lease {inspected.lease.state} · sync {inspected.sync.state}</Text>
-                {inspected.healthReasons.length === 0 && inspected.needsYouReasons.length === 0 ? (
-                  <Text style={styles.body}>No bounded health reason is currently reported.</Text>
+                <View accessibilityLiveRegion="polite" style={[styles.banner, diagnosticBannerStyle(doctor.data.status)]}>
+                  <Text style={[styles.bannerTitle, diagnosticTextStyle(doctor.data.status)]}>
+                    Doctor {readableCode(doctor.data.status)} · {doctor.data.blockingCount} blocking
+                  </Text>
+                  <Text style={styles.body}>{doctor.data.assurance}</Text>
+                  <Text selectable style={styles.operationalLine}>
+                    Engine {doctor.data.hostInstanceId} · Project v{doctor.data.projectVersion} · Event {doctor.data.cursor} · Observation {doctor.data.observationId.slice(0, 16)}…
+                  </Text>
+                </View>
+
+                <View style={styles.panel}>
+                  <Text accessibilityRole="header" style={styles.sectionTitle}>Blocking preflight and capabilities</Text>
+                  {doctor.data.checks.map((check) => (
+                    <View key={check.id} style={[styles.banner, diagnosticBannerStyle(check.status)]}>
+                      <Text style={[styles.bannerTitle, diagnosticTextStyle(check.status)]}>
+                        {readableCode(check.status)} · {check.title}
+                      </Text>
+                      <Text style={styles.body}>{check.detail}</Text>
+                      {check.missingCapability ? <Text style={styles.dangerText}>Missing capability: {check.missingCapability}</Text> : null}
+                      {check.installationGuidance.map((step) => <Text key={`${check.id}:${step}`} style={styles.body}>• {step}</Text>)}
+                      {check.status !== "passed" ? <Text style={styles.operationalLine}>Code {check.code}</Text> : null}
+                    </View>
+                  ))}
+                </View>
+
+                <View style={styles.actions}>
+                  <Pressable
+                    accessibilityHint={doctor.data.repair.reason?.message}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: !doctor.data.repair.available || stale }}
+                    disabled={!doctor.data.repair.available || stale}
+                    onPress={() => {
+                      const id = doctor.data.projectId;
+                      setInspectedProject(null);
+                      doctor.reset();
+                      openRepairForProject(id);
+                    }}
+                    style={[styles.action, styles.primaryAction, (!doctor.data.repair.available || stale) && styles.disabledAction]}
+                  >
+                    <Icon color={theme.colors.accentForeground} name="Wrench" size={16} />
+                    <Text style={[styles.actionText, styles.primaryActionText]}>Preview Repair…</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setInspectedProject(null);
+                      doctor.reset();
+                    }}
+                    style={styles.action}
+                  >
+                    <Text style={styles.actionText}>Close</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : null}
+          </ScrollView>
+        </Modal.Content>
+      </Modal>
+
+      <Modal
+        icon={<Icon color={theme.colors.statusWarning} name="Wrench" size={18} />}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRepairRequest(null);
+            repair.reset();
+          }
+        }}
+        open={repairRequest !== null}
+        title={`Repair Project · ${repairTarget?.name ?? "Project"}`}
+      >
+        <Modal.Content>
+          <ScrollView contentContainerStyle={styles.modalContent}>
+            {repairRequest ? (
+              <>
+                <View accessibilityLiveRegion="polite" style={styles.banner}>
+                  <Text style={styles.bannerTitle}>Two-Phase Repair: Preview & Human Confirmation</Text>
+                  <Text style={styles.body}>
+                    Doctor never mutates. Director Engine calculates and hashes the exact effects; the client cannot repair, install, or choose another host.
+                  </Text>
+                </View>
+
+                {repair.isPending ? (
+                  <View accessibilityLiveRegion="polite" style={styles.liveState}>
+                    <ActivityIndicator color={theme.colors.accent} />
+                    <Text style={styles.sectionTitle}>{repair.variables?.kind === "repair.apply" ? "Applying exact confirmed Repair…" : "Preparing exact Repair Preview…"}</Text>
+                  </View>
+                ) : repair.isError ? (
+                  <View accessibilityLiveRegion="polite" style={[styles.banner, styles.bannerDanger]}>
+                    <Text style={[styles.bannerTitle, styles.dangerText]}>Repair error</Text>
+                    <Text style={styles.body}>The exact host could not complete this request. No effect, retry, installation, or cross-host fallback is inferred.</Text>
+                    <Text style={styles.dangerText}>Missing capability: Current exact-host Repair response</Text>
+                    <Text style={styles.body}>Restore the matching engine executor and current observations, then run Doctor and Preview again.</Text>
+                  </View>
+                ) : repair.data?.status === "applied" ? (
+                  <View accessibilityLiveRegion="polite" style={[styles.banner, { borderLeftColor: theme.colors.statusSuccess }]}>
+                    <Text style={[styles.bannerTitle, styles.successText]}>Repair applied</Text>
+                    <Text style={styles.body}>{repair.data.message}</Text>
+                    <Text style={styles.body}>Updated Project version {repair.data.projectVersion} · Event {repair.data.cursor}</Text>
+                    <Text style={styles.operationalLine}>Success is engine readback, not client narration. Run Doctor again to verify health.</Text>
+                  </View>
+                ) : repair.data?.status === "refused" ? (
+                  <View accessibilityLiveRegion="polite" style={[styles.banner, styles.bannerDanger]}>
+                    <Text style={[styles.bannerTitle, styles.dangerText]}>Repair refused</Text>
+                    <Text style={styles.body}>{repair.data.message}</Text>
+                    <Text style={styles.dangerText}>Reason {repair.data.refusalCode}</Text>
+                    <Text style={styles.operationalLine}>Nothing was retried or redirected. Run Doctor and Preview again from current facts.</Text>
+                  </View>
+                ) : repair.data?.status === "preview" && repair.data.preview ? (
+                  <>
+                    <View accessibilityLiveRegion="polite" style={styles.previewPanel}>
+                      <Text accessibilityRole="header" style={styles.sectionTitle}>
+                        {repair.data.preview.valid ? "Repair Preview ready" : "Repair blocked"}
+                      </Text>
+                      <Text selectable style={styles.operationalLine}>
+                        Preview {repair.data.preview.id.slice(0, 16)}… · Project v{repair.data.preview.projectVersion} · Event {repair.data.preview.cursor} · Observation {repair.data.preview.observationId.slice(0, 12)}…
+                      </Text>
+                      <Text style={[styles.detailLabel, { marginTop: 4 }]}>Exact effects</Text>
+                      {repair.data.preview.operations.map((operation) => (
+                        <View key={operation.id} style={styles.field}>
+                          <Text style={styles.sectionTitle}>{operation.description}</Text>
+                          <Text style={styles.body}>Affects {operation.affectedResource} · {readableCode(operation.effectClass)}</Text>
+                          <Text style={styles.operationalLine}>Non-destructive · no automatic installation</Text>
+                        </View>
+                      ))}
+                      {repair.data.preview.issues.map((issue) => (
+                        <Text key={issue.code} style={styles.dangerText}>{issue.message}</Text>
+                      ))}
+                    </View>
+
+                    <Text style={styles.dangerText}>{repair.data.preview.confirmation}</Text>
+
+                    <View style={styles.actions}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: !repair.data.preview.valid || stale }}
+                        disabled={!repair.data.preview.valid || stale}
+                        onPress={handleApplyRepair}
+                        style={[styles.action, styles.primaryAction, (!repair.data.preview.valid || stale) && styles.disabledAction]}
+                      >
+                        <Icon color={theme.colors.accentForeground} name="CheckCircle2" size={16} />
+                        <Text style={[styles.actionText, styles.primaryActionText]}>Confirm exact Repair</Text>
+                      </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={() => {
+                          setRepairRequest(null);
+                          repair.reset();
+                        }}
+                        style={styles.action}
+                      >
+                        <Text style={styles.actionText}>Cancel</Text>
+                      </Pressable>
+                    </View>
+                  </>
                 ) : null}
-                {inspected.healthReasons.map((reason) => <Text key={reason.code} style={styles.body}>{reason.message}</Text>)}
-                {inspected.needsYouReasons.map((reason) => <Text key={reason.code} style={styles.dangerText}>{readableCode(reason.code)} · {reason.count}</Text>)}
               </>
             ) : null}
           </ScrollView>

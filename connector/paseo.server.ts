@@ -38,8 +38,12 @@ import type {
   TaskDetailSnapshot,
   HomeQueryInput,
   HomeSnapshot,
+  DoctorQueryInput,
+  DoctorReport,
   OrganizerBootstrapInput,
   OrganizerBootstrapResult,
+  RepairInput,
+  RepairResult,
 } from "../generated/planning-contract.shared.ts";
 import type { ConnectorStartupStatus } from "../rpc/startup.shared.ts";
 import { loadConnectorCredential } from "./credential.server.ts";
@@ -882,6 +886,20 @@ export class PaseoHostConnector implements DirectorHost {
       throw new Error("HOME_SURFACE_NOT_WIRED");
     }
     return this.#planningTransport.home(input);
+  }
+
+  async queryDoctor(input: DoctorQueryInput): Promise<DoctorReport> {
+    if (!this.#planningTransport.doctor) {
+      throw new Error("DOCTOR_SURFACE_NOT_WIRED");
+    }
+    return this.#planningTransport.doctor(input);
+  }
+
+  async repairProject(input: RepairInput): Promise<RepairResult> {
+    if (!this.#planningTransport.repair) {
+      throw new Error("REPAIR_SURFACE_NOT_WIRED");
+    }
+    return this.#planningTransport.repair(input);
   }
 
   async bootstrapOrganizer(input: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult> {

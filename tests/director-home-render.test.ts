@@ -44,6 +44,7 @@ function snapshot() {
           { kind: "open_board", label: "Board", hostId: "host-a", projectId: "project-shared", enabled: true, unavailableReason: null, paseoWorkspaceId: "native-board", command: null, emphasis: "primary" },
           { kind: "open_organizer", label: "Organizer", hostId: "host-a", projectId: "project-shared", enabled: true, unavailableReason: null, paseoWorkspaceId: "native-organizer", command: null, emphasis: "secondary" },
           { kind: "doctor", label: "Doctor", hostId: "host-a", projectId: "project-shared", enabled: true, unavailableReason: null, paseoWorkspaceId: null, command: null, emphasis: "secondary" },
+          { kind: "repair", label: "Repair…", hostId: "host-a", projectId: "project-shared", enabled: true, unavailableReason: null, paseoWorkspaceId: null, command: null, emphasis: "secondary" },
         ],
       }],
       totals: { projects: "1", healthy: "0", degraded: "1", paused: "0", needsYou: "0", activeWork: "1" },
@@ -57,7 +58,13 @@ function snapshot() {
   });
 }
 
-function loadHomeComponent(homeRpc: () => Promise<unknown>, mutationRpc: () => Promise<unknown>, organizerRpc: (input: unknown) => Promise<unknown> = mutationRpc) {
+function loadHomeComponent(
+  homeRpc: () => Promise<unknown>,
+  mutationRpc: () => Promise<unknown>,
+  organizerRpc: (input: unknown) => Promise<unknown> = mutationRpc,
+  doctorRpc: (input: unknown) => Promise<unknown> = mutationRpc,
+  repairRpc: (input: unknown) => Promise<unknown> = mutationRpc,
+) {
   const source = readFileSync("ui/director-home.client.tsx", "utf8");
   const compiled = ts.transpileModule(source, {
     fileName: "ui/director-home.client.tsx",
@@ -72,7 +79,11 @@ function loadHomeComponent(homeRpc: () => Promise<unknown>, mutationRpc: () => P
   const require = (specifier: string): unknown => {
     switch (specifier) {
       case "@getpaseo/plugin":
-        return { useRpc: (contract: unknown) => contract === PlanningRpc.homeQueryRpc ? homeRpc : contract === PlanningRpc.organizerBootstrapRpc ? organizerRpc : mutationRpc };
+        return { useRpc: (contract: unknown) => contract === PlanningRpc.homeQueryRpc ? homeRpc
+          : contract === PlanningRpc.organizerBootstrapRpc ? organizerRpc
+            : contract === PlanningRpc.doctorQueryRpc ? doctorRpc
+              : contract === PlanningRpc.repairProjectRpc ? repairRpc
+                : mutationRpc };
       case "@getpaseo/plugin/react-native":
         return { Icon: "Icon", Modal, useToast: () => ({ show() {}, error() {} }) };
       case "@tanstack/react-query": return ReactQuery;
@@ -228,6 +239,120 @@ test("DirectorHome Create entry submits Preview before exact confirmed Apply", a
   assert.equal(calls[1]!.previewId, previewId);
   assert.equal(calls[1]!.requestId, calls[0]!.requestId);
 
+  await act(async () => renderer.unmount());
+  queryClient.clear();
+});
+
+test("DirectorHome renders engine-owned Doctor and exact server-confirmed Repair states", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const doctorReport = {
+    schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION, contractHash: PLANNING_CONTRACT_SHA256,
+    cursor: "9", hostId: "host-a", hostInstanceId: "engine-a", projectId: "project-shared", projectName: "Rendered Project", projectVersion: "3",
+    observationId: "a".repeat(64), observedAt: "2026-09-11T16:00:00Z", maximumAgeMillis: "30000", status: "blocking", readOnly: true,
+    assurance: "Doctor is projection-only: it reads bounded engine facts and never installs, repairs, writes, dispatches, retries, or falls through to another host.",
+    checks: [
+      { id: "taskstore-read", category: "dynamic_state", status: "passed", code: "taskstore_read_current", title: "Director TaskStore", detail: "The exact read-only snapshot is current.", blocking: false, missingCapability: null, installationGuidance: [] },
+      { id: "preflight-provider-codex", category: "provider", status: "blocking", code: "provider_codex_missing", title: "OpenAI Codex CLI 0.147.0", detail: "The exact required provider tuple is unavailable.", blocking: true, missingCapability: "OpenAI Codex CLI 0.147.0", installationGuidance: ["Install the official exact version on this daemon and rerun Doctor."] },
+    ],
+    blockingCount: "1", repair: { available: true, reason: null },
+  } as const;
+  const repairCalls: Record<string, unknown>[] = [];
+  const repairRpc = async (raw: unknown) => {
+    const input = raw as Record<string, unknown>;
+    repairCalls.push(input);
+    const preview = {
+      id: "b".repeat(64), requestId: input.requestId, hostId: "host-a", hostInstanceId: "engine-a", projectId: "project-shared",
+      projectName: "Rendered Project", projectVersion: "3", cursor: "9", observationId: "a".repeat(64),
+      operations: [{ id: "repair-dynamic-state", kind: "reconcile_dynamic_state", description: "Reconcile only the configured TaskStore/Dolt synchronization stream from durable event facts.", affectedResource: "TaskStore/Dolt synchronization stream", effectClass: "conditional_update", destructive: false, automaticInstall: false }],
+      valid: true, issues: [], confirmation: "Applying this exact Preview requires a fresh server-authenticated human confirmation.",
+    };
+    return input.kind === "repair.preview"
+      ? { schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION, contractHash: PLANNING_CONTRACT_SHA256, hostId: "host-a", projectId: "project-shared", cursor: "9", requestId: input.requestId, status: "preview", message: "Preview ready", preview, projectVersion: null, refusalCode: null }
+      : { schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION, contractHash: PLANNING_CONTRACT_SHA256, hostId: "host-a", projectId: "project-shared", cursor: "10", requestId: input.requestId, status: "applied", message: "The exact confirmed Repair was applied by Director Engine.", preview: null, projectVersion: "4", refusalCode: null };
+  };
+  const DirectorHome = loadHomeComponent(async () => snapshot(), async () => { throw new Error("unused"); }, undefined, async () => doctorReport, repairRpc);
+  const queryClient = new ReactQuery.QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const props = {
+    host: { id: "host-a", label: "Client host label" },
+    layout: { compact: false, platform: "web" },
+    theme: { colors: { accent: "accent", accentForeground: "accent-foreground", border: "border", foreground: "foreground", foregroundMuted: "muted", statusDanger: "danger", statusSuccess: "success", statusWarning: "warning", surface0: "surface-0", surface1: "surface-1", surface2: "surface-2" } },
+  };
+  let renderer!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(React.createElement(ReactQuery.QueryClientProvider, { client: queryClient }, React.createElement(DirectorHome, props)));
+  });
+  await act(async () => waitForText(renderer, /Rendered Project/));
+
+  const doctorButton = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Doctor")[0]!;
+  await act(async () => doctorButton.parent!.props.onPress());
+  await act(async () => waitForText(renderer, /Doctor\s+Blocking/));
+
+  assert.match(renderedText(renderer), /projection-only/);
+  assert.match(renderedText(renderer), /Director TaskStore/);
+  assert.match(renderedText(renderer), /Missing capability:\s+OpenAI Codex CLI 0\.147\.0/);
+  assert.match(renderedText(renderer), /Install the official exact version/);
+  assert.match(renderedText(renderer), /Observation\s+aaaaaaaaaaaaaaaa/);
+
+  const repairFromDoctor = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Preview Repair…")[0]!;
+  await act(async () => repairFromDoctor.parent!.props.onPress());
+  await act(async () => waitForText(renderer, /Repair Preview ready/));
+
+  assert.match(renderedText(renderer), /Two-Phase Repair: Preview & Human Confirmation/);
+  assert.match(renderedText(renderer), /Director Engine calculates and hashes the exact effects/);
+  assert.match(renderedText(renderer), /Reconcile only the configured TaskStore/);
+  assert.match(renderedText(renderer), /Non-destructive · no automatic installation/);
+  assert.match(renderedText(renderer), /fresh server-authenticated human confirmation/);
+
+  const confirmApply = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Confirm exact Repair")[0]!;
+  await act(async () => confirmApply.parent!.props.onPress());
+  await act(async () => waitForText(renderer, /Repair applied/));
+
+  assert.match(renderedText(renderer), /Updated Project version\s+4/);
+  assert.match(renderedText(renderer), /Success is engine readback, not client narration/);
+  assert.equal(repairCalls.length, 2);
+  assert.equal(repairCalls[0]!.kind, "repair.preview");
+  assert.equal(repairCalls[0]!.confirmed, false);
+  assert.equal(repairCalls[1]!.kind, "repair.apply");
+  assert.equal(repairCalls[1]!.confirmed, true);
+  assert.equal(repairCalls[1]!.previewId, "b".repeat(64));
+  assert.equal(repairCalls[1]!.requestId, repairCalls[0]!.requestId);
+
+  await act(async () => renderer.unmount());
+  queryClient.clear();
+});
+
+test("DirectorHome renders fail-closed Repair refusal without hiding the reason", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const repairRpc = async (raw: unknown) => {
+    const input = raw as Record<string, unknown>;
+    const base = { schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION, contractHash: PLANNING_CONTRACT_SHA256,
+      hostId: "host-a", projectId: "project-shared", requestId: input.requestId };
+    if (input.kind === "repair.preview") {
+      return { ...base, cursor: "9", status: "preview", message: "Preview ready", projectVersion: null, refusalCode: null,
+        preview: { id: "b".repeat(64), requestId: input.requestId, hostId: "host-a", hostInstanceId: "engine-a", projectId: "project-shared", projectName: "Rendered Project", projectVersion: "3", cursor: "9", observationId: "a".repeat(64),
+          operations: [{ id: "repair-dynamic-state", kind: "reconcile_dynamic_state", description: "Reconcile only the configured TaskStore/Dolt synchronization stream.", affectedResource: "TaskStore/Dolt synchronization stream", effectClass: "conditional_update", destructive: false, automaticInstall: false }],
+          valid: true, issues: [], confirmation: "Applying this exact Preview requires a fresh server-authenticated human confirmation." } };
+    }
+    return { ...base, cursor: "10", status: "refused", message: "Repair refused because Project facts changed.", preview: null, projectVersion: null, refusalCode: "repair_preview_stale" };
+  };
+  const DirectorHome = loadHomeComponent(async () => snapshot(), async () => { throw new Error("unused"); }, undefined, undefined, repairRpc);
+  const queryClient = new ReactQuery.QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const props = {
+    host: { id: "host-a", label: "Client host label" }, layout: { compact: true, platform: "android" },
+    theme: { colors: { accent: "accent", accentForeground: "accent-foreground", border: "border", foreground: "foreground", foregroundMuted: "muted", statusDanger: "danger", statusSuccess: "success", statusWarning: "warning", surface0: "surface-0", surface1: "surface-1", surface2: "surface-2" } },
+  };
+  let renderer!: TestRenderer.ReactTestRenderer;
+  await act(async () => { renderer = TestRenderer.create(React.createElement(ReactQuery.QueryClientProvider, { client: queryClient }, React.createElement(DirectorHome, props))); });
+  await act(async () => waitForText(renderer, /Rendered Project/));
+  const open = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Repair…")[0]!;
+  await act(async () => open.parent!.props.onPress());
+  await act(async () => waitForText(renderer, /Repair Preview ready/));
+  const confirm = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Confirm exact Repair")[0]!;
+  await act(async () => confirm.parent!.props.onPress());
+  await act(async () => waitForText(renderer, /Repair refused/));
+  assert.match(renderedText(renderer), /Repair refused because Project facts changed/);
+  assert.match(renderedText(renderer), /repair_preview_stale/);
+  assert.match(renderedText(renderer), /Nothing was retried or redirected/);
   await act(async () => renderer.unmount());
   queryClient.clear();
 });

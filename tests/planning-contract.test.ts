@@ -22,8 +22,12 @@ import {
   taskDetailSnapshotSchema,
   homeQueryInputSchema,
   homeSnapshotSchema,
+  doctorQueryInputSchema,
+  doctorReportSchema,
   organizerBootstrapInputSchema,
   organizerBootstrapResultSchema,
+  repairInputSchema,
+  repairResultSchema,
   type AllowedAction,
 } from "../generated/planning-contract.shared.ts";
 import {
@@ -31,7 +35,9 @@ import {
   planningQueryRpc,
   planningTaskDetailRpc,
   homeQueryRpc,
+  doctorQueryRpc,
   organizerBootstrapRpc,
+  repairProjectRpc,
 } from "../rpc/planning.shared.ts";
 import { DeterministicPlanningFixture } from "./fixtures/planning-fixture.ts";
 
@@ -154,6 +160,74 @@ test("generated Home and Organizer contracts reject cross-host and Preview/Apply
   assert.equal(organizerBootstrapRpc.output, organizerBootstrapResultSchema);
 });
 
+test("generated Doctor and Repair contracts require concrete guidance and exact confirmed effects", () => {
+  const doctor = {
+    schemaVersion: PLANNING_SCHEMA_VERSION,
+    contractVersion: PLANNING_CONTRACT_VERSION,
+    contractHash: PLANNING_CONTRACT_SHA256,
+    cursor: "9",
+    hostId: "host-a",
+    hostInstanceId: "engine-a",
+    projectId: "project-a",
+    projectName: "Project A",
+    projectVersion: "3",
+    observationId: "a".repeat(64),
+    observedAt: "2026-09-11T16:00:00Z",
+    maximumAgeMillis: "30000",
+    status: "blocking",
+    readOnly: true,
+    assurance: "Doctor reads exact bounded engine facts and never mutates any system.",
+    checks: [{
+      id: "preflight-provider-codex",
+      category: "provider",
+      status: "blocking",
+      code: "provider_codex_missing",
+      title: "OpenAI Codex CLI 0.147.0",
+      detail: "The exact required provider tuple is unavailable.",
+      blocking: true,
+      missingCapability: "OpenAI Codex CLI 0.147.0",
+      installationGuidance: ["Install the official exact version on this daemon and rerun Doctor."],
+    }],
+    blockingCount: "1",
+    repair: { available: false, reason: { code: "repair_unavailable", message: "No exact engine repair effect is available.", wakeCondition: null, humanActionRequired: false } },
+  } as const;
+  assert.equal(doctorQueryInputSchema.safeParse({ hostId: "host-a", projectId: "project-a", expectedProjectVersion: "3" }).success, true);
+  assert.equal(doctorReportSchema.safeParse(doctor).success, true);
+  assert.equal(doctorQueryRpc.output.safeParse(doctor).success, true);
+  assert.equal(doctorReportSchema.safeParse({ ...doctor, readOnly: false }).success, false);
+  assert.equal(doctorReportSchema.safeParse({ ...doctor, checks: [{ ...doctor.checks[0], missingCapability: null, installationGuidance: [] }] }).success, false);
+  assert.equal(doctorReportSchema.safeParse({ ...doctor, checks: [{ ...doctor.checks[0], status: "passed", blocking: false }] }).success, false);
+
+  const repairBase = {
+    schemaVersion: PLANNING_SCHEMA_VERSION,
+    contractVersion: PLANNING_CONTRACT_VERSION,
+    contractHash: PLANNING_CONTRACT_SHA256,
+    hostId: "host-a",
+    requestId: "repair-request-0001",
+    projectId: "project-a",
+    expectedProjectVersion: "3",
+  } as const;
+  const previewInput = { ...repairBase, kind: "repair.preview", previewId: null, confirmed: false } as const;
+  assert.equal(repairInputSchema.safeParse(previewInput).success, true);
+  assert.equal(repairInputSchema.safeParse({ ...previewInput, confirmed: true }).success, false);
+  const preview = {
+    id: "b".repeat(64), requestId: repairBase.requestId, hostId: "host-a", hostInstanceId: "engine-a",
+    projectId: "project-a", projectName: "Project A", projectVersion: "3", cursor: "9", observationId: "a".repeat(64),
+    operations: [{ id: "repair-dynamic-state", kind: "reconcile_dynamic_state", description: "Reconcile only the configured TaskStore synchronization stream.", affectedResource: "TaskStore synchronization stream", effectClass: "conditional_update", destructive: false, automaticInstall: false }],
+    valid: true, issues: [], confirmation: "Applying this exact Preview requires a fresh server-authenticated human confirmation.",
+  } as const;
+  const previewResult = {
+    schemaVersion: PLANNING_SCHEMA_VERSION, contractVersion: PLANNING_CONTRACT_VERSION, contractHash: PLANNING_CONTRACT_SHA256,
+    hostId: "host-a", projectId: "project-a", cursor: "9", requestId: repairBase.requestId,
+    status: "preview", message: "Preview ready", preview, projectVersion: null, refusalCode: null,
+  };
+  assert.equal(repairResultSchema.safeParse(previewResult).success, true);
+  assert.equal(repairProjectRpc.output.safeParse(previewResult).success, true);
+  assert.equal(repairResultSchema.safeParse({ ...previewResult, preview: { ...preview, operations: [{ ...preview.operations[0], automaticInstall: true }] } }).success, false);
+  assert.equal(repairInputSchema.safeParse({ ...repairBase, kind: "repair.apply", previewId: preview.id, confirmed: true }).success, true);
+  assert.equal(repairInputSchema.safeParse({ ...repairBase, kind: "repair.apply", previewId: preview.id, confirmed: false }).success, false);
+});
+
 test("every mutation is bound to an engine-returned action ticket", async () => {
   const fixture = new DeterministicPlanningFixture();
   const detail = await fixture.taskDetail(taskDetailQuery);
@@ -254,6 +328,11 @@ test("the engine schema closes every object and is the generated source", () => 
     "homeSnapshot",
     "homeProject",
     "homeAction",
+    "doctorQueryInput",
+    "doctorReport",
+    "repairInput",
+    "repairPreview",
+    "repairResult",
     "organizerBootstrapInput",
     "organizerBootstrapPreview",
     "organizerBootstrapResult",
@@ -272,6 +351,8 @@ test("the stable v0.7 plugin registers strict planning RPCs without runtime fixt
     "plugin.handle(planningTaskDetailRpc",
     "plugin.handle(planningMutationRpc",
     "plugin.handle(homeQueryRpc",
+    "plugin.handle(doctorQueryRpc",
+    "plugin.handle(repairProjectRpc",
     "plugin.handle(organizerBootstrapRpc",
   ]) {
     assert.ok(entry.includes(registration), registration);

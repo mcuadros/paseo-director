@@ -12,8 +12,12 @@ import {
   taskDetailSnapshotSchema,
   homeQueryInputSchema,
   homeSnapshotSchema,
+  doctorQueryInputSchema,
+  doctorReportSchema,
   organizerBootstrapInputSchema,
   organizerBootstrapResultSchema,
+  repairInputSchema,
+  repairResultSchema,
 } from "../generated/planning-contract.shared.ts";
 
 export const planningQueryRpc = defineRpc({
@@ -26,6 +30,18 @@ export const homeQueryRpc = defineRpc({
   name: "director.home-query",
   input: homeQueryInputSchema,
   output: homeSnapshotSchema,
+});
+
+export const doctorQueryRpc = defineRpc({
+  name: "director.doctor-query",
+  input: doctorQueryInputSchema,
+  output: doctorReportSchema,
+});
+
+export const repairProjectRpc = defineRpc({
+  name: "director.repair-project",
+  input: repairInputSchema,
+  output: repairResultSchema,
 });
 
 export const organizerBootstrapRpc = defineRpc({

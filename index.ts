@@ -14,10 +14,12 @@ import { directorWorkersRpc } from "./rpc/workers.shared";
 import { loadDirectorWorkers } from "./connector/engine-workers.server";
 import {
   planningMutationRpc,
+  doctorQueryRpc,
   homeQueryRpc,
   organizerBootstrapRpc,
   planningQueryRpc,
   planningTaskDetailRpc,
+  repairProjectRpc,
 } from "./rpc/planning.shared";
 
 export default function contribute(plugin: PluginContext) {
@@ -100,6 +102,8 @@ export default function contribute(plugin: PluginContext) {
   );
   plugin.handle(planningQueryRpc, (input) => connector.queryPlanning(input));
   plugin.handle(homeQueryRpc, (input) => connector.queryHome(input));
+  plugin.handle(doctorQueryRpc, (input) => connector.queryDoctor(input));
+  plugin.handle(repairProjectRpc, (input) => connector.repairProject(input));
   plugin.handle(organizerBootstrapRpc, (input) => connector.bootstrapOrganizer(input));
   plugin.handle(planningTaskDetailRpc, (input) =>
     connector.queryPlanningTask(input),

@@ -13,6 +13,8 @@ const (
 	QueryPath             = "/v1/planning/query"
 	TaskDetailQueryPath   = "/v1/planning/task-detail"
 	HomeQueryPath         = "/v1/planning/home"
+	DoctorQueryPath       = "/v1/planning/doctor"
+	RepairMutationPath    = "/v1/planning/repair"
 	OrganizerMutationPath = "/v1/planning/organizer-bootstrap"
 	MaximumRequestBytes   = 64 * 1024
 	MaximumResponseBytes  = 4 * 1024 * 1024
@@ -538,6 +540,132 @@ type HomeSnapshot struct {
 	ContractHash    string   `json:"contractHash"`
 	Cursor          string   `json:"cursor"`
 	Page            HomePage `json:"page"`
+}
+
+type DoctorQueryInput struct {
+	HostID                 string `json:"hostId"`
+	ProjectID              string `json:"projectId"`
+	ExpectedProjectVersion string `json:"expectedProjectVersion"`
+}
+
+func ValidateDoctorQuery(input DoctorQueryInput) error {
+	if !validOpaque(input.HostID) || !validOpaque(input.ProjectID) {
+		return ErrQueryInvalid
+	}
+	if _, err := ParseExpectedVersion(input.ExpectedProjectVersion); err != nil {
+		return ErrQueryInvalid
+	}
+	return nil
+}
+
+type DoctorCheck struct {
+	ID                   string   `json:"id"`
+	Category             string   `json:"category"`
+	Status               string   `json:"status"`
+	Code                 string   `json:"code"`
+	Title                string   `json:"title"`
+	Detail               string   `json:"detail"`
+	Blocking             bool     `json:"blocking"`
+	MissingCapability    *string  `json:"missingCapability"`
+	InstallationGuidance []string `json:"installationGuidance"`
+}
+
+type DoctorRepairAvailability struct {
+	Available bool         `json:"available"`
+	Reason    *Explanation `json:"reason"`
+}
+
+type DoctorReport struct {
+	SchemaVersion    int                      `json:"schemaVersion"`
+	ContractVersion  string                   `json:"contractVersion"`
+	ContractHash     string                   `json:"contractHash"`
+	Cursor           string                   `json:"cursor"`
+	HostID           string                   `json:"hostId"`
+	HostInstanceID   string                   `json:"hostInstanceId"`
+	ProjectID        string                   `json:"projectId"`
+	ProjectName      string                   `json:"projectName"`
+	ProjectVersion   string                   `json:"projectVersion"`
+	ObservationID    string                   `json:"observationId"`
+	ObservedAt       string                   `json:"observedAt"`
+	MaximumAgeMillis string                   `json:"maximumAgeMillis"`
+	Status           string                   `json:"status"`
+	ReadOnly         bool                     `json:"readOnly"`
+	Assurance        string                   `json:"assurance"`
+	Checks           []DoctorCheck            `json:"checks"`
+	BlockingCount    string                   `json:"blockingCount"`
+	Repair           DoctorRepairAvailability `json:"repair"`
+}
+
+type RepairInput struct {
+	SchemaVersion          int     `json:"schemaVersion"`
+	ContractVersion        string  `json:"contractVersion"`
+	ContractHash           string  `json:"contractHash"`
+	HostID                 string  `json:"hostId"`
+	RequestID              string  `json:"requestId"`
+	Kind                   string  `json:"kind"`
+	ProjectID              string  `json:"projectId"`
+	ExpectedProjectVersion string  `json:"expectedProjectVersion"`
+	PreviewID              *string `json:"previewId"`
+	Confirmed              bool    `json:"confirmed"`
+}
+
+func ValidateRepairInput(input RepairInput) error {
+	hash, err := SchemaSHA256()
+	if err != nil || input.SchemaVersion != 1 || input.ContractVersion != "director-planning/v1" || input.ContractHash != hash ||
+		!validOpaque(input.HostID) || len(input.RequestID) < 16 || !validOpaque(input.RequestID) || !validOpaque(input.ProjectID) {
+		return ErrQueryInvalid
+	}
+	if _, err := ParseExpectedVersion(input.ExpectedProjectVersion); err != nil {
+		return ErrQueryInvalid
+	}
+	preview := input.Kind == "repair.preview"
+	apply := input.Kind == "repair.apply"
+	if (!preview && !apply) || preview == (input.PreviewID != nil) || preview == input.Confirmed ||
+		(apply && (input.PreviewID == nil || !validSHA256(*input.PreviewID) || !input.Confirmed)) {
+		return ErrQueryInvalid
+	}
+	return nil
+}
+
+type RepairOperation struct {
+	ID               string `json:"id"`
+	Kind             string `json:"kind"`
+	Description      string `json:"description"`
+	AffectedResource string `json:"affectedResource"`
+	EffectClass      string `json:"effectClass"`
+	Destructive      bool   `json:"destructive"`
+	AutomaticInstall bool   `json:"automaticInstall"`
+}
+
+type RepairPreview struct {
+	ID             string            `json:"id"`
+	RequestID      string            `json:"requestId"`
+	HostID         string            `json:"hostId"`
+	HostInstanceID string            `json:"hostInstanceId"`
+	ProjectID      string            `json:"projectId"`
+	ProjectName    string            `json:"projectName"`
+	ProjectVersion string            `json:"projectVersion"`
+	Cursor         string            `json:"cursor"`
+	ObservationID  string            `json:"observationId"`
+	Operations     []RepairOperation `json:"operations"`
+	Valid          bool              `json:"valid"`
+	Issues         []Explanation     `json:"issues"`
+	Confirmation   string            `json:"confirmation"`
+}
+
+type RepairResult struct {
+	SchemaVersion   int            `json:"schemaVersion"`
+	ContractVersion string         `json:"contractVersion"`
+	ContractHash    string         `json:"contractHash"`
+	HostID          string         `json:"hostId"`
+	ProjectID       string         `json:"projectId"`
+	Cursor          string         `json:"cursor"`
+	RequestID       string         `json:"requestId"`
+	Status          string         `json:"status"`
+	Message         string         `json:"message"`
+	Preview         *RepairPreview `json:"preview"`
+	ProjectVersion  *string        `json:"projectVersion"`
+	RefusalCode     *string        `json:"refusalCode"`
 }
 
 type OrganizerBootstrapInput struct {

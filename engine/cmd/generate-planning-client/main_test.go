@@ -31,6 +31,8 @@ func TestRenderIsDeterministicAndCarriesClosedPlanningSurface(t *testing.T) {
 		[]byte(`planningPageCursorSchema`),
 		[]byte(`planningSnapshotSchema`),
 		[]byte(`taskDetailSnapshotSchema`),
+		[]byte(`doctorReportSchema`),
+		[]byte(`repairResultSchema`),
 		[]byte(`planningMutationInputSchema`),
 		[]byte(`interface PlanningClient`),
 		[]byte(`bindPlanningMutation`),

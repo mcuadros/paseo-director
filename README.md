@@ -75,8 +75,9 @@ boundaries on which later M1 Tasks can build.
 
 Director Home now provides host-bound Create/Adopt Preview/Apply entry points,
 cross-Project health and active-work summaries, Needs-you aggregation,
-Organizer/Board access, and engine-declared operational actions. It keeps
-offline cached facts visibly stale and disabled and never selects another host.
+Organizer/Board access, read-only engine Doctor reports, and exact
+server-confirmed Repair Preview/Apply. It keeps offline cached facts visibly
+stale and disabled and never selects another host.
 See [Director Home and Project health](docs/director-home.md).
 
 ## Development
@@ -153,9 +154,11 @@ director-engine serve-board \
   --host-label "Paseo host label"
 ```
 
-The Home and Board query endpoints are unauthenticated. Organizer Preview/Apply
-and operational mutations require the connector's server-authenticated human
-headers. Their public contract version/hash are
+The Home, Board, and Doctor query endpoints are unauthenticated. Organizer
+Preview/Apply and operational mutations require the connector's
+server-authenticated human headers. The Repair connector transport carries the
+same server identity, and Repair Apply requires it together with the exact
+Preview digest and explicit confirmation. Their public contract version/hash are
 compatibility checks, not credentials. Run it only on the accepted single-user
 Linux host and keep its port confined to loopback; never proxy or expose it to
 another host or user. Any local process able to reach the port can read Project
@@ -188,7 +191,9 @@ shape is:
 `passwordFile` may be `null` only for an explicitly configured passwordless
 local test store. The server never bootstraps or repairs the selected database;
 missing identity, schema, or connection facts fail startup or the
-query closed with a bounded error. The endpoint accepts only the generated
+query closed with a bounded error. An unavailable Repair executor disables
+Repair and fails closed; it never turns a client Preview into an effect. The
+endpoint accepts only the generated
 contract version and hash. Home summaries return no SQL, credentials,
 repository paths/remotes, objectives, acceptance-criteria text, or raw adapter
 output. The authenticated Organizer Preview returns only the exact path and
