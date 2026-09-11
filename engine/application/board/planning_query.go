@@ -363,6 +363,14 @@ func explanationMessage(code string) string {
 		return "The original Task Agent provider is unavailable; no hidden replacement was started"
 	case "correction_prompt_result_ambiguous":
 		return "The correction prompt result is ambiguous and cannot be resent automatically"
+	case "cleanup_response_unknown":
+		return "Cleanup result is ambiguous; recoverable material and any recreated resource are preserved"
+	case "cleanup_snapshot_unverified":
+		return "Cleanup is blocked until the exact recovery snapshot is durably verified"
+	case "cleanup_disk_pressure":
+		return "Cleanup is blocked by disk pressure; unintegrated work remains in place"
+	case "cleanup_owner_mismatch", "cleanup_repository_mismatch", "cleanup_binding_changed":
+		return "Cleanup ownership or repository identity changed; no destructive effect was authorized"
 	}
 	message := strings.ReplaceAll(code, "_", " ")
 	if message == "" {

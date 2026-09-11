@@ -237,6 +237,37 @@ func TestAutomaticIntegrationRequiresExplicitAuthorityAndFreezesPolicy(t *testin
 	}
 }
 
+func TestCleanupDefaultsInheritanceAndSecurityEnvelope(t *testing.T) {
+	defaults := configurationDocument(t, func(*domainconfig.Configuration) {})
+	effective, err := approvedEnvelope(t, defaults).ResolveEffective(defaults, "product", TaskOverride{})
+	policy, ok := effective.CleanupPolicy(strings.Repeat("a", 64))
+	if err != nil || !ok || !effective.TerminateOnCompletion || !effective.DeleteRemoteTaskBranch ||
+		effective.CancellationCleanup != domainconfig.CancellationCleanupSnapshotThenDelete || effective.RecoveryRetentionDays != 7 ||
+		!policy.TerminateOnCompletion || !policy.DeleteRemoteTaskBranch || policy.RetentionMillis != 7*24*60*60*1_000 {
+		t.Fatalf("cleanup defaults = %#v %#v %v", effective, policy, err)
+	}
+
+	restricted := configurationDocument(t, func(configuration *domainconfig.Configuration) {
+		configuration.Defaults.TerminateOnCompletion = boolPointer(false)
+		configuration.Defaults.DeleteRemoteTaskBranch = boolPointer(false)
+		configuration.Defaults.CancellationCleanup = domainconfig.CancellationCleanupRetain
+		configuration.Defaults.RecoveryRetentionDays = 3
+	})
+	if _, err := approvedEnvelope(t, restricted).ResolveEffective(defaults, "product", TaskOverride{}); !errors.Is(err, ErrOutsideSecurityEnvelope) {
+		t.Fatalf("cleanup authority expansion = %v", err)
+	}
+	effective, err = approvedEnvelope(t, defaults).ResolveEffective(defaults, "product", TaskOverride{
+		TerminateOnCompletion: boolPointer(false), DeleteRemoteTaskBranch: boolPointer(false),
+		CancellationCleanup: domainconfig.CancellationCleanupRetain, RecoveryRetentionDays: int64Pointer(3),
+	})
+	if err != nil || effective.TerminateOnCompletion || effective.DeleteRemoteTaskBranch ||
+		effective.CancellationCleanup != domainconfig.CancellationCleanupRetain || effective.RecoveryRetentionDays != 3 ||
+		effective.Sources.TerminateOnCompletion != ScopeTask || effective.Sources.CancellationCleanup != ScopeTask ||
+		effective.Sources.DeleteRemoteTaskBranch != ScopeTask || effective.Sources.RecoveryRetentionDays != ScopeTask {
+		t.Fatalf("cleanup tightening = %#v %v", effective, err)
+	}
+}
+
 func TestValidationPolicyUsesOnlyFrozenGitHubProviderIdentities(t *testing.T) {
 	effective := EffectiveConfiguration{DeliveryMode: domainconfig.DeliveryPullRequest, GitHubCI: &domainconfig.GitHubCI{
 		WorkflowID: 99, WorkflowName: "maintained-linux-ci", CycleRuntimeSeconds: 1_800,

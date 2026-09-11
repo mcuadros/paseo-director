@@ -201,6 +201,33 @@ func TestPublishBeforeReviewIsOptionalAndExplicit(t *testing.T) {
 	}
 }
 
+func TestCleanupConfigurationIsOptionalDefaultedAndBounded(t *testing.T) {
+	document, err := Parse(validConfigurationJSON())
+	if err != nil || document.Configuration().Defaults.TerminateOnCompletion != nil ||
+		document.Configuration().Defaults.DeleteRemoteTaskBranch != nil || document.Configuration().Defaults.RecoveryRetentionDays != 0 {
+		t.Fatalf("optional cleanup fields = %#v %v", document.Configuration().Defaults, err)
+	}
+	explicit := bytes.Replace(validConfigurationJSON(), []byte(`"autoFixReviewFeedback": true`), []byte(`"autoFixReviewFeedback": true,
+    "terminateOnCompletion": false,
+    "cancellationCleanup": "retain",
+    "deleteRemoteTaskBranch": false,
+    "recoveryRetentionDays": 3`), 1)
+	document, err = Parse(explicit)
+	value := document.Configuration().Defaults
+	if err != nil || value.TerminateOnCompletion == nil || *value.TerminateOnCompletion || value.DeleteRemoteTaskBranch == nil ||
+		*value.DeleteRemoteTaskBranch || value.CancellationCleanup != CancellationCleanupRetain || value.RecoveryRetentionDays != 3 {
+		t.Fatalf("explicit cleanup = %#v %v", value, err)
+	}
+	for _, invalid := range [][]byte{
+		bytes.Replace(explicit, []byte(`"retain"`), []byte(`"delete_now"`), 1),
+		bytes.Replace(explicit, []byte(`"recoveryRetentionDays": 3`), []byte(`"recoveryRetentionDays": 8`), 1),
+	} {
+		if _, err := Parse(invalid); err == nil {
+			t.Fatal("invalid cleanup policy admitted")
+		}
+	}
+}
+
 func TestGitHubCIConfigurationFreezesWorkflowProviderIdentityAndFourCycleLimit(t *testing.T) {
 	configured := bytes.Replace(validConfigurationJSON(), []byte(`"autoFixReviewFeedback": true`), []byte(`"autoFixReviewFeedback": true,
     "githubCi": {
@@ -314,7 +341,7 @@ func TestParseValidConfigurationIsCanonicalAndDefensive(t *testing.T) {
 
 func TestSchemaIsPublishedClosedAndVersioned(t *testing.T) {
 	hash, err := SchemaSHA256()
-	if err != nil || hash != "46c700970cfc8c12f1f473032620aa974f5d0e0cff824ef4a0de0b7fe6a4ff55" {
+	if err != nil || hash != "6ccf6c6be882780f98a04d2dc0715a434b8c3a54abb1bc45f38f3a3f7e3ad2c6" {
 		t.Fatalf("configuration schema hash = %q: %v", hash, err)
 	}
 	var schema struct {

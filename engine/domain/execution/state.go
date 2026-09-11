@@ -7,6 +7,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain/agentprofile"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	cleanupdomain "github.com/mcuadros/director-engine/domain/cleanup"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
@@ -311,6 +312,9 @@ type State struct {
 	DirectDeliveryHistory            []directdomain.State                  `json:"directDeliveryHistory,omitempty"`
 	Integration                      *integrationdomain.State              `json:"integration,omitempty"`
 	IntegrationHistory               []integrationdomain.State             `json:"integrationHistory,omitempty"`
+	CleanupPolicy                    *cleanupdomain.Policy                 `json:"cleanupPolicy,omitempty"`
+	Cleanup                          *cleanupdomain.State                  `json:"cleanup,omitempty"`
+	CleanupHistory                   []cleanupdomain.State                 `json:"cleanupHistory,omitempty"`
 	OperationalObservation           *OperationalObservation               `json:"operationalObservation,omitempty"`
 	OperationalObservationRunVersion uint64                                `json:"operationalObservationRunVersion,omitempty"`
 	OperationalObservationConsumed   bool                                  `json:"operationalObservationConsumed,omitempty"`

@@ -97,6 +97,10 @@ This is a complete minimal document:
     "autoFixReviewFeedback": true,
     "requireDifferentReviewerModel": false,
     "publishBeforeReview": false,
+    "terminateOnCompletion": true,
+    "cancellationCleanup": "snapshot_then_delete",
+    "deleteRemoteTaskBranch": true,
+    "recoveryRetentionDays": 7,
     "githubCi": {
       "workflowId": 99,
       "workflowName": "maintained-linux-ci",
@@ -189,6 +193,16 @@ exact-head merge after all current quality, feedback, repository, and
 mergeability gates pass. Changing manual to automatic expands delivery
 authority and is refused outside the human-approved security envelope;
 changing automatic to manual is a tightening Workspace or Task override.
+
+Cleanup policy is also inherited field by field. `terminateOnCompletion` and
+`deleteRemoteTaskBranch` default to `true`. Cancellation defaults to
+`snapshot_then_delete`; `retain` terminates exact owned agents but leaves the
+workspace, worktree, and refs in place. Recovery retention defaults to seven
+days and cannot exceed seven. Disabling termination or remote deletion,
+selecting `retain`, or shortening retention tightens the security envelope;
+the reverse changes expand destructive authority and require a broader
+human-approved envelope. The complete effect and recovery contract is in
+[Local recovery and remote cleanup](local-remote-cleanup.md).
 
 `githubCi` is optional and valid only with `pull_request` delivery. When
 present, it freezes the exact workflow database ID/name, a maximum runtime for

@@ -9,6 +9,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	cleanupdomain "github.com/mcuadros/director-engine/domain/cleanup"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	"github.com/mcuadros/director-engine/domain/execution"
 	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
@@ -253,5 +254,74 @@ func TestIntegrationIntentDispatchObservationAndEvidenceSurviveDoltReopen(t *tes
 	final, err := store.Run(ctx, run.ID)
 	if err != nil || final.Execution.Integration == nil || final.Execution.Integration.Phase != integrationdomain.PhaseComplete || !integrationdomain.ValidState(*final.Execution.Integration) || final.Execution.CandidateAuthority.Downstream.Integration == nil {
 		t.Fatalf("reopened integration = %#v %v", final.Execution.Integration, err)
+	}
+	cleanupPolicy, ok := cleanupdomain.NewPolicy(record.Manifest.ConfigurationSHA256)
+	if !ok {
+		t.Fatal("cleanup policy")
+	}
+	cleanupBinding := cleanupdomain.SealBinding(cleanupdomain.Binding{ProjectID: project.ID, WorkspaceID: workspace.ID,
+		TaskID: task.ID, RunID: final.ID, CandidateID: record.ID, CandidateSHA: record.CommitSHA, BaseSHA: record.Manifest.BaseSHA,
+		TreeSHA: record.Manifest.TreeSHA, CandidateGeneration: final.Execution.CandidateAuthority.Generation, TaskVersion: final.Execution.CandidateAuthority.TaskVersion,
+		ConfigurationSHA256: record.Manifest.ConfigurationSHA256, RepositoryID: final.Execution.RepositoryBinding.RepositoryID,
+		RepositoryBindingSHA256: final.Execution.RepositoryBindingHash, SourceDevice: 1, SourceInode: 2, CommonDevice: 1,
+		CommonInode: 3, WorktreeDevice: 1, WorktreeInode: 4, CanonicalRemoteSHA256: strings.Repeat("5", 64),
+		SourcePathSHA256: strings.Repeat("6", 64), CommonDirectorySHA256: strings.Repeat("7", 64), WorktreePathSHA256: strings.Repeat("8", 64),
+		Branch: record.Claim.Branch, BaseRef: record.Claim.BaseRef, WorktreeID: "worktree-1", TaskAgentID: "task-agent-1",
+		TaskWorkspaceID: "task-workspace-1", OwnershipSHA256: strings.Repeat("9", 64), CleanupAdmittedAtMillis: 2_200,
+		IntegrationKind: "pull_request", IntegrationEvidenceID: final.Execution.Integration.Evidence.ID,
+		IntegrationEvidenceSHA256: final.Execution.Integration.Evidence.SHA256, MergeCommitSHA: final.Execution.Integration.Evidence.MergeCommitSHA,
+		LeaseEpoch: 1, PolicySHA256: cleanupPolicy.SHA256})
+	cleanup, ok := cleanupdomain.NewState(cleanupBinding, cleanupPolicy, cleanupdomain.TriggerIntegrated, cleanupdomain.LifecycleRestored)
+	if !ok {
+		t.Fatalf("cleanup state binding=%v policy=%v authority=%#v", cleanupdomain.ValidBinding(cleanupBinding), cleanupdomain.ValidPolicy(cleanupPolicy), final.Execution.CandidateAuthority)
+	}
+	for _, kind := range []cleanupdomain.ResourceKind{cleanupdomain.ResourceTaskAgent, cleanupdomain.ResourceSnapshot,
+		cleanupdomain.ResourceTaskWorkspace, cleanupdomain.ResourceWorktree, cleanupdomain.ResourceRemoteRef, cleanupdomain.ResourceLocalRef} {
+		index := cleanupdomain.EffectIndex(cleanup, kind)
+		effect := cleanup.Effects[index]
+		status := cleanupdomain.StatusAbsent
+		observation := cleanupdomain.Observation{EffectID: effect.ID, BindingSHA256: cleanup.Binding.SHA256, Kind: kind,
+			Attempt: effect.Attempt, Status: status, Code: cleanupdomain.CodeOK, ObservedAtMillis: 2_200,
+			MaximumAgeMillis: cleanupdomain.MaximumObservationAgeMillis}
+		if kind == cleanupdomain.ResourceTaskAgent {
+			observation.Status, observation.Archived, observation.ProcessAbsent = cleanupdomain.StatusTerminated, true, true
+		}
+		if kind == cleanupdomain.ResourceSnapshot {
+			observation.Status, observation.CandidateTreeSHA, observation.ProspectiveTreeSHA, observation.IndexTreeSHA =
+				cleanupdomain.StatusClean, record.Manifest.TreeSHA, record.Manifest.TreeSHA, record.Manifest.TreeSHA
+		}
+		sealed := cleanupdomain.SealObservation(observation)
+		cleanup, ok = cleanupdomain.RecordObservation(cleanup, kind, sealed, 2_200)
+		if !ok {
+			t.Fatalf("record cleanup %s", kind)
+		}
+		cleanup, ok = cleanupdomain.CompleteEffect(cleanup, kind, nil)
+		if !ok {
+			t.Fatalf("complete cleanup %s", kind)
+		}
+	}
+	cleanup, ok = cleanupdomain.Complete(cleanup, 2_200)
+	if !ok {
+		t.Fatal("complete cleanup")
+	}
+	final.Execution.LeaseBinding = execution.LeaseBinding{HolderInstance: "engine-1", HolderProcessIdentity: "process-1", Epoch: 1}
+	final.Execution.CleanupPolicy, final.Execution.Cleanup = &cleanupPolicy, &cleanup
+	authority = *final.Execution.CandidateAuthority
+	authority.Downstream.Cleanup = &candidatedomain.EvidenceBinding{ID: cleanup.Evidence.ID, CandidateID: authority.CandidateID,
+		CandidateSHA: authority.CandidateSHA, BaseSHA: authority.BaseSHA, Generation: authority.Generation, BindingSHA256: authority.BindingSHA256}
+	final.Execution.CandidateAuthority = &authority
+	previousVersion := final.Version
+	final.Version++
+	result, err = store.UpdateRun(ctx, command("cleanup-complete", "cleanup.complete", final.ID, previousVersion, `{}`), final,
+		event("cleanup-complete-event", final.ID, 6, final.ID, final.Version, "cleanup.complete"))
+	requireApplied(t, result, err)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store = openContractStore(t, fixture, storeID, true)
+	final, err = store.Run(ctx, run.ID)
+	if err != nil || final.Execution.Cleanup == nil || final.Execution.Cleanup.Phase != cleanupdomain.PhaseComplete ||
+		!cleanupdomain.ValidState(*final.Execution.Cleanup) || final.Execution.CandidateAuthority.Downstream.Cleanup == nil {
+		t.Fatalf("reopened cleanup = %#v %v", final.Execution.Cleanup, err)
 	}
 }

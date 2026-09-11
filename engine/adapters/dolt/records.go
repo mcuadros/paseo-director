@@ -18,6 +18,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	cleanupdomain "github.com/mcuadros/director-engine/domain/cleanup"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
@@ -767,6 +768,44 @@ func validateRun(run domain.Run) error {
 				return fmt.Errorf("%w: duplicate integration identity", storeport.ErrInvalidRecord)
 			}
 			seenIntegrations[integration.ID] = struct{}{}
+		}
+		if state.CleanupPolicy != nil && !cleanupdomain.ValidPolicy(*state.CleanupPolicy) {
+			return fmt.Errorf("%w: invalid cleanup policy", storeport.ErrInvalidRecord)
+		}
+		if state.Cleanup != nil {
+			cleanup := *state.Cleanup
+			authority := state.CandidateAuthority
+			if state.CleanupPolicy == nil || cleanup.Policy.SHA256 != state.CleanupPolicy.SHA256 ||
+				!cleanupdomain.ValidState(cleanup) || authority == nil || authority.Invalidated ||
+				cleanup.Binding.ProjectID != state.Scope.ProjectID || cleanup.Binding.WorkspaceID != state.Scope.WorkspaceID ||
+				cleanup.Binding.TaskID != state.Scope.TaskID || cleanup.Binding.RunID != state.Scope.RunID ||
+				cleanup.Binding.CandidateID != authority.CandidateID || cleanup.Binding.CandidateSHA != authority.CandidateSHA ||
+				cleanup.Binding.BaseSHA != authority.BaseSHA || cleanup.Binding.CandidateGeneration != authority.Generation ||
+				cleanup.Binding.TaskVersion != authority.TaskVersion || cleanup.Binding.ConfigurationSHA256 != authority.ConfigurationSHA256 ||
+				cleanup.Binding.RepositoryID != state.RepositoryBinding.RepositoryID ||
+				cleanup.Binding.RepositoryBindingSHA256 != state.RepositoryBindingHash || cleanup.Binding.LeaseEpoch != state.LeaseBinding.Epoch {
+				return fmt.Errorf("%w: cleanup is not bound to current Candidate authority", storeport.ErrInvalidRecord)
+			}
+			if cleanup.Trigger == cleanupdomain.TriggerIntegrated {
+				if authority.Downstream.Integration == nil || cleanup.Binding.IntegrationEvidenceID != authority.Downstream.Integration.ID {
+					return fmt.Errorf("%w: cleanup lacks exact integration authority", storeport.ErrInvalidRecord)
+				}
+			}
+			if cleanup.Phase == cleanupdomain.PhaseComplete {
+				if cleanup.Evidence == nil || authority.Downstream.Cleanup == nil || authority.Downstream.Cleanup.ID != cleanup.Evidence.ID {
+					return fmt.Errorf("%w: cleanup evidence is not authoritative", storeport.ErrInvalidRecord)
+				}
+			} else if authority.Downstream.Cleanup != nil {
+				return fmt.Errorf("%w: incomplete cleanup retained downstream authority", storeport.ErrInvalidRecord)
+			}
+		}
+		if len(state.CleanupHistory) > 64 {
+			return fmt.Errorf("%w: too many historical cleanup states", storeport.ErrInvalidRecord)
+		}
+		for _, cleanup := range state.CleanupHistory {
+			if !cleanupdomain.ValidState(cleanup) || (cleanup.Phase != cleanupdomain.PhaseComplete && cleanup.Phase != cleanupdomain.PhaseRetained && cleanup.Phase != cleanupdomain.PhaseNeedsYou) {
+				return fmt.Errorf("%w: invalid historical cleanup state", storeport.ErrInvalidRecord)
+			}
 		}
 	}
 	return nil

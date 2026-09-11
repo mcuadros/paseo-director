@@ -343,3 +343,17 @@ func TestControlBoardExplanationsAndActionsAreExact(t *testing.T) {
 		t.Fatalf("cancelled Task relaunch projection = %#v", projected)
 	}
 }
+
+func TestCleanupReasonsArePathFreeForBoardAndOrganizer(t *testing.T) {
+	for code, want := range map[string]string{
+		"cleanup_response_unknown":    "recoverable material",
+		"cleanup_snapshot_unverified": "recovery snapshot",
+		"cleanup_disk_pressure":       "unintegrated work",
+		"cleanup_owner_mismatch":      "ownership or repository identity",
+	} {
+		message := explanationMessage(code)
+		if !strings.Contains(message, want) || strings.Contains(message, "/") || strings.Contains(message, "token") {
+			t.Fatalf("message %q for %s", message, code)
+		}
+	}
+}

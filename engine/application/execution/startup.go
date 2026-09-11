@@ -11,6 +11,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	cleanupdomain "github.com/mcuadros/director-engine/domain/cleanup"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	gitport "github.com/mcuadros/director-engine/ports/git"
@@ -205,6 +206,15 @@ func validateExecutionGraph(run domain.Run) error {
 	if !domainexecution.ValidControlPolicy(state.ControlPolicy) || !domainexecution.ValidRunControl(state.Control, state) {
 		return errors.New("Run execution control is invalid")
 	}
+	if state.CleanupPolicy != nil && !cleanupdomain.ValidPolicy(*state.CleanupPolicy) {
+		return errors.New("Run cleanup policy is invalid")
+	}
+	if state.Cleanup != nil && (state.CleanupPolicy == nil || !cleanupdomain.ValidState(*state.Cleanup) ||
+		state.Cleanup.Policy.SHA256 != state.CleanupPolicy.SHA256 || state.Cleanup.Binding.RunID != run.ID ||
+		state.Cleanup.Binding.TaskID != run.TaskID || state.Cleanup.Binding.RepositoryBindingSHA256 != state.RepositoryBindingHash ||
+		state.Cleanup.Binding.LeaseEpoch != state.LeaseBinding.Epoch) {
+		return errors.New("Run cleanup state is invalid")
+	}
 	if state.LastStartupReconciliation != nil &&
 		!domainexecution.ValidStartupReconciliation(*state.LastStartupReconciliation) {
 		return errors.New("last startup reconciliation is invalid")
@@ -339,7 +349,9 @@ func validateExecutionGraph(run domain.Run) error {
 	if state.WorktreeRemove.ID != "" && state.HostViewArchive.Phase != domainexecution.EffectComplete {
 		return errors.New("worktree cleanup precedes host-view archival")
 	}
-	if state.Terminal && !controlCleanupComplete(state) && (state.AgentArchive.Phase != domainexecution.EffectComplete ||
+	productCleanupComplete := state.Cleanup != nil && cleanupdomain.ValidState(*state.Cleanup) &&
+		(state.Cleanup.Phase == cleanupdomain.PhaseComplete || state.Cleanup.Phase == cleanupdomain.PhaseRetained)
+	if state.Terminal && !productCleanupComplete && !controlCleanupComplete(state) && (state.AgentArchive.Phase != domainexecution.EffectComplete ||
 		state.HostViewArchive.Phase != domainexecution.EffectComplete || state.WorktreeRemove.Phase != domainexecution.EffectComplete) {
 		return errors.New("terminal Run lacks completed cleanup facts")
 	}
@@ -497,11 +509,35 @@ func cleanupIntentFacts(state domainexecution.State) []domainexecution.CleanupIn
 			EffectID: effect.ID, Kind: effect.Kind, Phase: effect.Phase, Attempt: effect.Attempt,
 		})
 	}
+	if state.Cleanup != nil {
+		phase := func(value cleanupdomain.EffectPhase) domainexecution.EffectPhase {
+			switch value {
+			case cleanupdomain.EffectIntent, cleanupdomain.EffectRetained:
+				return domainexecution.EffectIntentRecorded
+			case cleanupdomain.EffectDispatching, cleanupdomain.EffectObservationRequired:
+				return domainexecution.EffectDispatching
+			case cleanupdomain.EffectComplete:
+				return domainexecution.EffectComplete
+			default:
+				return ""
+			}
+		}
+		for _, effect := range append(append([]cleanupdomain.Effect(nil), state.Cleanup.Effects...), state.Cleanup.RetentionEffects...) {
+			result = append(result, domainexecution.CleanupIntentFact{EffectID: effect.ID,
+				Kind: domainexecution.EffectKind("cleanup." + string(effect.Kind)), Phase: phase(effect.Phase), Attempt: effect.Attempt})
+		}
+	}
 	return result
 }
 
 func startupFrontier(run domain.Run) domainexecution.EffectKind {
 	state := run.Execution
+	if state.Cleanup != nil {
+		// The dedicated cleanup service owns its exact effect frontier and
+		// reconstructs it from state.Cleanup; the walking-skeleton closure path
+		// must not create a second archive or removal intent.
+		return ""
+	}
 	if run.CurrentCandidateID != "" {
 		if state.AgentArchive.ID == "" {
 			return domainexecution.EffectAgentCreate
