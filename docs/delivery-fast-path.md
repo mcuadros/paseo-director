@@ -39,9 +39,14 @@ CI, mark the draft ready, gate, integrate, clean resources, or close the Task.
 `review-handoff` accepts active, restored, and reclaimed/historical lifecycle
 bindings. Use `--ownership-file` for the raw opaque token and
 `--handoff-file` for a stable private output. Both files stay outside Git
-checkouts; the ownership input and coordinator state are owner-only mode
-`0600`. Only the ownership hash may appear in the manifest, output, PR marker,
-or Beads.
+checkouts; the ownership input, handoff, and coordinator state are owner-only
+mode `0600`. Raw ownership exists only in the ownership input. Coordinator
+state v2, cleanup-plan v2, the handoff manifest, command output, diagnostics,
+locks, PR content/markers, and Beads may contain only its SHA-256. Exact schema
+v1 state is migrated under the ownership-bound state lock, invalidating any
+legacy derived cleanup-plan hash; derived schema-v1 cleanup plans must be
+regenerated and admitted as v2 plans after restart or response loss. PR
+metadata and child argv reject the token or ownership-file path.
 
 The daemon's `finished`, `error`, and `permission` terminal callbacks
 synchronously enqueue coordinator reconciliation in less than one second.

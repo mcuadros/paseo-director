@@ -43,7 +43,9 @@ const OWNERSHIP_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{15,127}$/u;
 const MAX_JSON_BYTES = 1_048_576;
 const MAX_COMMAND_OUTPUT = 4 * 1_048_576;
 const COMMAND_TIMEOUT_MS = 120_000;
-const STATE_SCHEMA_VERSION = 1;
+const LEGACY_STATE_SCHEMA_VERSION = 1;
+const STATE_SCHEMA_VERSION = 2;
+const CLEANUP_PLAN_SCHEMA_VERSION = 2;
 const OUTPUT_SCHEMA_VERSION = 1;
 const PASEO_AGENT_STATUSES = new Set([
   "initializing",
@@ -83,12 +85,51 @@ const COMMON_OPTIONS = [
   "lifecycle-state",
   "pr",
 ];
+const STATE_BINDING_KEYS = [
+  "actor",
+  "base",
+  "baseRef",
+  "branch",
+  "candidate",
+  "checkout",
+  "checkoutState",
+  "controlRepo",
+  "headOwner",
+  "ownershipTokenHash",
+  "remote",
+  "repo",
+  "repoId",
+  "task",
+  "agentId",
+  "lifecycleState",
+  "workspaceId",
+];
+const LEGACY_STATE_BINDING_KEYS = STATE_BINDING_KEYS.map((key) =>
+  key === "ownershipTokenHash" ? "ownership" : key,
+);
+const DELIVERY_BINDING_KEYS = [...STATE_BINDING_KEYS, "pr"];
+const HANDOFF_OWNERSHIP_KEYS = [
+  "actor",
+  "agentId",
+  "branch",
+  "checkout",
+  "checkoutState",
+  "headOwner",
+  "ownershipTokenHash",
+  "remote",
+  "repository",
+  "repositoryId",
+  "taskAssignee",
+  "lifecycleState",
+  "workspaceId",
+];
 
 // A handoff manifest stays usable while its lifecycle binding only ever loses
 // live facts: active may become restored, and either may become historical.
 const LIVE_LIFECYCLE_STATES = new Set(["active", "restored"]);
 
 const MUTATING_COMMANDS = new Set(["publish-draft", "remote-ci", "publish", "integrate", "cleanup-apply"]);
+const STATE_LOCK_COMMANDS = new Set([...MUTATING_COMMANDS, "cleanup-plan"]);
 const COMMANDS = new Set([
   "snapshot",
   "review-handoff",
@@ -192,16 +233,45 @@ function selectedPaseoPassword() {
   return embedded !== null && embedded.length > 0 ? embedded : null;
 }
 
-function containsSelectedPaseoPassword(value) {
-  const password = selectedPaseoPassword();
-  if (password === null) return false;
+function containsProtectedString(value, protectedValue) {
+  if (typeof protectedValue !== "string" || protectedValue.length === 0) {
+    return false;
+  }
   const visit = (item) => {
-    if (typeof item === "string") return item.includes(password);
+    if (typeof item === "string") return item.includes(protectedValue);
     if (Array.isArray(item)) return item.some(visit);
     if (isObject(item)) return Object.values(item).some(visit);
     return false;
   };
   return visit(value);
+}
+
+function containsSelectedPaseoPassword(value) {
+  return containsProtectedString(value, selectedPaseoPassword());
+}
+
+function containsProtectedMaterial(value, ownership, ownershipFile = undefined) {
+  const ownershipFileVariants =
+    typeof ownershipFile === "string"
+      ? [ownershipFile, resolve(ownershipFile)]
+      : [];
+  return containsSelectedPaseoPassword(value) ||
+    [ownership, ...ownershipFileVariants].some((protectedValue) =>
+      containsProtectedString(value, protectedValue),
+    );
+}
+
+function containsProtectedError(error, ownership, ownershipFile = undefined) {
+  return containsProtectedMaterial(
+    {
+      code: error?.code,
+      details: error?.details,
+      effect: error?.effect,
+      message: error?.message,
+    },
+    ownership,
+    ownershipFile,
+  );
 }
 
 function selectedEnvironment(executable, args) {
@@ -359,7 +429,7 @@ function optionValues(argv) {
     refuse(
       !token.startsWith("--") || token === "--",
       "ARGUMENT_INVALID",
-      `unexpected argument ${boundedText(token, 120)}`,
+      "unexpected argument",
     );
     const key = token.slice(2);
     refuse(key.length === 0, "ARGUMENT_INVALID", "empty option name");
@@ -367,7 +437,7 @@ function optionValues(argv) {
     refuse(
       value === undefined || value.startsWith("--"),
       "ARGUMENT_MISSING_VALUE",
-      `--${key} requires a value`,
+      "option requires a value",
     );
     index += 1;
     if (key === "required-check") {
@@ -377,7 +447,7 @@ function optionValues(argv) {
       refuse(
         options[key] !== undefined,
         "ARGUMENT_DUPLICATE",
-        `--${key} may appear only once`,
+        "duplicate option",
       );
       options[key] = value;
     }
@@ -431,6 +501,10 @@ export function parseCli(argv) {
   );
   options.ownership = ownership;
   delete options["ownership-file"];
+  Object.defineProperty(options, "ownershipFile", {
+    value: ownershipPath,
+    enumerable: false,
+  });
   return { command, options };
 }
 
@@ -456,7 +530,7 @@ function validateOptions(command, rawOptions) {
     unknown.length > 0,
     "OPTION_UNKNOWN",
     "unknown command options",
-    { options: unknown.toSorted() },
+    { unknownOptionCount: unknown.length },
   );
   for (const key of COMMON_OPTIONS) {
     refuse(rawOptions[key] === undefined, "OPTION_REQUIRED", `--${key} is required`);
@@ -563,12 +637,12 @@ function validateOptions(command, rawOptions) {
   };
 
   if (
-    MUTATING_COMMANDS.has(command) || rawOptions["state-file"] !== undefined
+    STATE_LOCK_COMMANDS.has(command) || rawOptions["state-file"] !== undefined
   ) {
     refuse(
       rawOptions["state-file"] === undefined,
       "OPTION_REQUIRED",
-      "--state-file is required for mutating commands",
+      "--state-file is required for commands that consume coordinator state",
     );
     options.stateFile = canonicalPath(rawOptions["state-file"], "state file", {
       mustExist: false,
@@ -642,7 +716,32 @@ function validateOptions(command, rawOptions) {
     );
     options.title = rawOptions.title;
   }
+  if (typeof rawOptions.ownershipFile === "string") {
+    Object.defineProperty(options, "ownershipFile", {
+      value: rawOptions.ownershipFile,
+      enumerable: false,
+    });
+  }
+  validatePullRequestInputs(options);
   return options;
+}
+
+function validatePullRequestInputs(options) {
+  const fields = {
+    repo: options.repo,
+    remote: options.remote,
+    baseRef: options.baseRef,
+    branch: options.branch,
+    headOwner: options.headOwner,
+    head: `${options.headOwner}:${options.branch}`,
+    ...(options.title === undefined ? {} : { title: options.title }),
+    ...(options.bodyFile === undefined ? {} : { bodyFile: options.bodyFile }),
+  };
+  refuse(
+    containsProtectedMaterial(fields, options.ownership, options.ownershipFile),
+    "PROTECTED_MATERIAL_REDACTED",
+    "pull request inputs contained protected material",
+  );
 }
 
 function stateBinding(options) {
@@ -656,7 +755,7 @@ function stateBinding(options) {
     checkoutState: options.checkoutState,
     controlRepo: options.controlRepo,
     headOwner: options.headOwner,
-    ownership: options.ownership,
+    ownershipTokenHash: digest(options.ownership),
     remote: options.remote,
     repo: options.repo,
     repoId: options.repoId,
@@ -664,6 +763,14 @@ function stateBinding(options) {
     agentId: options.agentId,
     lifecycleState: options.lifecycleState,
     workspaceId: options.workspaceId,
+  };
+}
+
+function legacyStateBinding(options) {
+  return {
+    ...stateBinding(options),
+    ownership: options.ownership,
+    ownershipTokenHash: undefined,
   };
 }
 
@@ -684,40 +791,79 @@ function loadState(options, { required = false } = {}) {
     refuse(required, "STATE_MISSING", "state file does not exist");
     return newState(options);
   }
-  const state = readJsonFile(options.stateFile, "coordinator state");
   const stateStatus = lstatSync(options.stateFile);
   refuse(
-    (stateStatus.mode & 0o077) !== 0 ||
+    !stateStatus.isFile() ||
+      stateStatus.isSymbolicLink() ||
+      (stateStatus.mode & 0o077) !== 0 ||
       (typeof process.getuid === "function" && stateStatus.uid !== process.getuid()),
     "STATE_PERMISSIONS_INVALID",
-    "state file must be owned by the current user with mode 0600",
+    "state file must be an owner-only regular file with mode 0600",
   );
+  const state = readJsonFile(options.stateFile, "coordinator state");
   assertExactKeys(
     state,
     ["schemaVersion", "binding", "effects", "cleanupPlanHash", "pullRequestNumber"],
     "state",
   );
+  refuse(!isObject(state.effects), "STATE_INVALID", "state effects are invalid");
+  if (state.schemaVersion === LEGACY_STATE_SCHEMA_VERSION) {
+    assertExactKeys(
+      state.binding,
+      LEGACY_STATE_BINDING_KEYS,
+      "legacy state binding",
+      "STATE_INVALID",
+    );
+    refuse(
+      canonicalJson(state.binding) !== canonicalJson(legacyStateBinding(options)),
+      "STATE_BINDING_MISMATCH",
+      "state file is bound to different immutable inputs",
+    );
+    const { cleanupPlanHash: _legacyCleanupPlanHash, ...withoutCleanupBinding } = state;
+    const migrated = {
+      ...withoutCleanupBinding,
+      schemaVersion: STATE_SCHEMA_VERSION,
+      binding: stateBinding(options),
+    };
+    refuse(
+      containsProtectedMaterial(migrated, options.ownership, options.ownershipFile),
+      "STATE_LEGACY_OWNERSHIP_UNSAFE",
+      "legacy coordinator state contains ownership material outside its migratable binding",
+    );
+    persistState(options, migrated);
+    return migrated;
+  }
   refuse(
     state.schemaVersion !== STATE_SCHEMA_VERSION,
     "STATE_SCHEMA_UNSUPPORTED",
     "state schema version is unsupported",
   );
   refuse(
+    containsProtectedMaterial(state, options.ownership, options.ownershipFile),
+    "STATE_OWNERSHIP_MATERIAL_FORBIDDEN",
+    "coordinator state contains raw ownership material",
+  );
+  assertExactKeys(
+    state.binding,
+    STATE_BINDING_KEYS,
+    "state binding",
+    "STATE_INVALID",
+  );
+  refuse(
     canonicalJson(state.binding) !== canonicalJson(stateBinding(options)),
     "STATE_BINDING_MISMATCH",
     "state file is bound to different immutable inputs",
   );
-  refuse(!isObject(state.effects), "STATE_INVALID", "state effects are invalid");
   return state;
 }
 
-function persistState(path, state) {
+function persistState(options, state) {
   refuse(
-    containsSelectedPaseoPassword(state),
+    containsProtectedMaterial(state, options.ownership, options.ownershipFile),
     "PROTECTED_MATERIAL_REDACTED",
     "coordinator state contained protected material",
   );
-  persistPrivateJson(path, state, {
+  persistPrivateJson(options.stateFile, state, {
     identityCode: "STATE_IDENTITY_INVALID",
     temporaryCode: "STATE_TEMP_EXISTS",
   });
@@ -728,6 +874,7 @@ async function withStateLock(options, operation) {
     {
       lockPath: `${options.stateFile}.lock`,
       bindingHash: digest(stateBinding(options)),
+      acceptedBindingHashes: [digest(legacyStateBinding(options))],
       label: "coordinator state lock",
       busyCode: "COORDINATOR_BUSY",
       invalidCode: "STATE_LOCK_INVALID",
@@ -738,7 +885,7 @@ async function withStateLock(options, operation) {
   );
 }
 
-function bindPullRequest(stateFile, state, number) {
+function bindPullRequest(options, state, number) {
   refuse(
     state.pullRequestNumber !== undefined && state.pullRequestNumber !== number,
     "PULL_REQUEST_NUMBER_MISMATCH",
@@ -746,7 +893,7 @@ function bindPullRequest(stateFile, state, number) {
   );
   if (state.pullRequestNumber === undefined) {
     state.pullRequestNumber = number;
-    persistState(stateFile, state);
+    persistState(options, state);
   }
 }
 
@@ -765,19 +912,19 @@ function effectRecord(state, effect, effectClass) {
   return created;
 }
 
-function markDispatch(stateFile, state, effect, effectClass) {
+function markDispatch(options, state, effect, effectClass) {
   const record = effectRecord(state, effect, effectClass);
   record.phase = "dispatching";
   record.attempts += 1;
-  persistState(stateFile, state);
+  persistState(options, state);
   return record;
 }
 
-function markEffect(stateFile, state, effect, effectClass, phase, evidence = undefined) {
+function markEffect(options, state, effect, effectClass, phase, evidence = undefined) {
   const record = effectRecord(state, effect, effectClass);
   record.phase = phase;
   if (evidence !== undefined) record.evidence = evidence;
-  persistState(stateFile, state);
+  persistState(options, state);
   return record;
 }
 
@@ -1255,6 +1402,7 @@ function marker(options) {
 }
 
 function exactPullRequests(run, options) {
+  validatePullRequestInputs(options);
   const pulls = runJson(run, "gh", [
     "api",
     `repos/${options.repo}/pulls?state=all&head=${encodeURIComponent(`${options.headOwner}:${options.branch}`)}&base=${encodeURIComponent(options.baseRef)}&per_page=100`,
@@ -1404,6 +1552,11 @@ function validateReviewManifestEvidence(options) {
     readJsonFile(options.manifestFile, "review handoff manifest"),
   );
   refuse(
+    containsProtectedMaterial(manifest, options.ownership, options.ownershipFile),
+    "REVIEW_MANIFEST_OWNERSHIP_MATERIAL_FORBIDDEN",
+    "review handoff manifest contains raw ownership material",
+  );
+  refuse(
     !isObject(manifest) ||
       manifest.schemaVersion !== 1 ||
       manifest.authoritative !== false ||
@@ -1439,6 +1592,12 @@ function validateReviewManifestEvidence(options) {
       ]),
     "REVIEW_MANIFEST_SCHEMA_INVALID",
     "review handoff manifest lacks the complete review routing contract",
+  );
+  assertExactKeys(
+    manifest.ownership,
+    HANDOFF_OWNERSHIP_KEYS,
+    "review handoff ownership binding",
+    "REVIEW_MANIFEST_SCHEMA_INVALID",
   );
   refuse(
     manifest.ownership?.actor !== manifest.ownership?.taskAssignee ||
@@ -1850,7 +2009,7 @@ function remoteCiFacts(run, options) {
 function remoteCi(run, options) {
   const validation = validateValidation(options);
   const state = loadState(options);
-  persistState(options.stateFile, state);
+  persistState(options, state);
   const snapshot = baseSnapshot(run, options, { includePaseo: false });
   requireRemoteCandidate(snapshot, options);
   const facts = remoteCiFacts(run, options);
@@ -1875,7 +2034,7 @@ function remoteCi(run, options) {
     "REMOTE_CI_OBSERVATION_CHANGED",
     "another authoritative remote CI observation is already recorded for this Candidate",
   );
-  markEffect(options.stateFile, state, "remote_ci.observe", "store_only", "complete", {
+  markEffect(options, state, "remote_ci.observe", "store_only", "complete", {
     observationId,
     workflowRunId: facts.workflow.id,
   });
@@ -2204,6 +2363,11 @@ function cleanupFacts(run, options, task, { allowAbsentWorkspace = false } = {})
 function validateCleanupPlan(options) {
   refuse(!options.planFile, "OPTION_REQUIRED", "--plan-file is required");
   const document = readJsonFile(options.planFile, "cleanup plan");
+  refuse(
+    containsProtectedMaterial(document, options.ownership, options.ownershipFile),
+    "CLEANUP_PLAN_OWNERSHIP_MATERIAL_FORBIDDEN",
+    "cleanup plan contains raw ownership material",
+  );
   const plan =
     document?.schemaVersion === OUTPUT_SCHEMA_VERSION &&
     document?.command === "cleanup-plan" &&
@@ -2211,7 +2375,18 @@ function validateCleanupPlan(options) {
       ? document.result
       : document;
   assertExactKeys(plan, ["schemaVersion", "command", "binding", "integration", "resources", "planHash"], "cleanup plan");
-  refuse(plan.schemaVersion !== 1 || plan.command !== "cleanup-plan", "CLEANUP_PLAN_INVALID", "cleanup plan schema is invalid");
+  refuse(
+    plan.schemaVersion !== CLEANUP_PLAN_SCHEMA_VERSION ||
+      plan.command !== "cleanup-plan",
+    "CLEANUP_PLAN_SCHEMA_UNSUPPORTED",
+    "cleanup plan schema is unsupported; regenerate it from current coordinator state",
+  );
+  assertExactKeys(
+    plan.binding,
+    DELIVERY_BINDING_KEYS,
+    "cleanup plan binding",
+    "CLEANUP_PLAN_INVALID",
+  );
   const withoutHash = { ...plan };
   delete withoutHash.planHash;
   refuse(plan.planHash !== digest(withoutHash), "CLEANUP_PLAN_HASH_MISMATCH", "cleanup plan hash is invalid");
@@ -2246,7 +2421,7 @@ function persistIntegrationVerification(run, options, pull, state) {
   try {
     const evidence = verifyIntegration(run, options, pull);
     markEffect(
-      options.stateFile,
+      options,
       state,
       "integrate.merge",
       "conditional_update",
@@ -2271,7 +2446,7 @@ function persistIntegrationVerification(run, options, pull, state) {
         pullRequest: pull.number,
       };
       markEffect(
-        options.stateFile,
+        options,
         state,
         "integrate.merge",
         "conditional_update",
@@ -2302,7 +2477,7 @@ async function publishLeasedRef(run, options, deps, state, effect, refresh) {
   const pushRecord = effectRecord(state, effect, "conditional_update");
   let snapshot = refresh();
   if (snapshot.refs.head === options.candidate) {
-    markEffect(options.stateFile, state, effect, "conditional_update", "complete", {
+    markEffect(options, state, effect, "conditional_update", "complete", {
       head: options.candidate,
     });
     return refresh();
@@ -2317,7 +2492,7 @@ async function publishLeasedRef(run, options, deps, state, effect, refresh) {
     "TERMINAL_DRIFT",
     "completed publication branch later changed",
   );
-  markDispatch(options.stateFile, state, effect, "conditional_update");
+  markDispatch(options, state, effect, "conditional_update");
   await dispatchHook(deps, "before", effect, { options, state });
   snapshot = refresh();
   refuse(
@@ -2336,25 +2511,26 @@ async function publishLeasedRef(run, options, deps, state, effect, refresh) {
   await dispatchHook(deps, "after", effect, { options, result: pushed, state });
   const observed = observeRemoteRef(run, options, options.branch, true);
   if (observed !== options.candidate) {
-    markEffect(options.stateFile, state, effect, "conditional_update", "unknown", {
+    markEffect(options, state, effect, "conditional_update", "unknown", {
       observed,
     });
     throw new CoordinatorError("PUSH_RESULT_UNKNOWN", "branch publication was not proven");
   }
-  markEffect(options.stateFile, state, effect, "conditional_update", "complete", {
+  markEffect(options, state, effect, "conditional_update", "complete", {
     head: options.candidate,
   });
   return refresh();
 }
 
 function publicationBody(options) {
+  validatePullRequestInputs(options);
   const bodyStatus = lstatSync(options.bodyFile);
   refuse(!bodyStatus.isFile() || bodyStatus.isSymbolicLink(), "BODY_FILE_INVALID", "PR body must be a regular non-symlink file");
   refuse(bodyStatus.size > 131_072, "BODY_FILE_OVERSIZE", "PR body is too large");
   const body = readFileSync(options.bodyFile, "utf8");
   refuse(body.includes("\0"), "BODY_FILE_INVALID", "PR body contains a NUL byte");
   refuse(
-    containsSelectedPaseoPassword(body),
+    containsProtectedMaterial(body, options.ownership, options.ownershipFile),
     "PROTECTED_MATERIAL_REDACTED",
     "pull request body contained protected material",
   );
@@ -2375,12 +2551,12 @@ async function markReadyForReview(run, options, deps, state, pull, refresh) {
       "PULL_REQUEST_READINESS_UNOWNED",
       "non-draft pull request lacks an owned readiness effect",
     );
-    markEffect(options.stateFile, state, "publish.ready", "conditional_update", "complete", {
+    markEffect(options, state, "publish.ready", "conditional_update", "complete", {
       number: pull.number,
     });
     return pull;
   }
-  markDispatch(options.stateFile, state, "publish.ready", "conditional_update");
+  markDispatch(options, state, "publish.ready", "conditional_update");
   await dispatchHook(deps, "before", "publish.ready", { options, state });
   refresh();
   pull = exactPullRequests(run, options);
@@ -2401,7 +2577,7 @@ async function markReadyForReview(run, options, deps, state, pull, refresh) {
     "PULL_REQUEST_STILL_DRAFT",
     "owned pull request did not leave draft at the exact Candidate",
   );
-  markEffect(options.stateFile, state, "publish.ready", "conditional_update", "complete", {
+  markEffect(options, state, "publish.ready", "conditional_update", "complete", {
     number: observed.number,
   });
   return observed;
@@ -2424,10 +2600,11 @@ async function publishDraft(run, options, deps) {
     "DRAFT_PUBLICATION_CANNOT_CONSUME_REVIEW",
     "draft publication precedes review and refuses review evidence",
   );
+  const completeBody = publicationBody(options);
   const manifest = validateReviewManifestEvidence(options);
   const validation = validateValidation(options);
   const state = loadState(options);
-  persistState(options.stateFile, state);
+  persistState(options, state);
   const refresh = () => {
     const snapshot = baseSnapshot(run, options);
     refuse(
@@ -2451,8 +2628,7 @@ async function publishDraft(run, options, deps) {
     );
     refuse(pull.head?.sha !== options.candidate, "PULL_REQUEST_HEAD_CHANGED", "owned draft head changed");
   } else {
-    const completeBody = publicationBody(options);
-    markDispatch(options.stateFile, state, "publish_draft.pr", "unique_create");
+    markDispatch(options, state, "publish_draft.pr", "unique_create");
     await dispatchHook(deps, "before", "publish_draft.pr", { options, state });
     snapshot = refresh();
     requireRemoteCandidate(snapshot, options);
@@ -2477,7 +2653,7 @@ async function publishDraft(run, options, deps) {
       pull = exactPullRequests(run, options);
     }
     if (!pull) {
-      markEffect(options.stateFile, state, "publish_draft.pr", "unique_create", "unknown");
+      markEffect(options, state, "publish_draft.pr", "unique_create", "unknown");
       throw new CoordinatorError("PULL_REQUEST_RESULT_UNKNOWN", "draft pull request creation was not proven");
     }
     refuse(
@@ -2486,12 +2662,12 @@ async function publishDraft(run, options, deps) {
       "created pull request is not an open draft at the Candidate",
     );
   }
-  markEffect(options.stateFile, state, "publish_draft.pr", "unique_create", "complete", {
+  markEffect(options, state, "publish_draft.pr", "unique_create", "complete", {
     draft: true,
     number: pull.number,
     url: pull.html_url,
   });
-  bindPullRequest(options.stateFile, state, pull.number);
+  bindPullRequest(options, state, pull.number);
   return {
     candidate: options.candidate,
     draft: true,
@@ -2515,7 +2691,7 @@ async function publish(run, options, deps) {
   const remoteCi = requireAuthoritativeRemoteCi(options, routing.harness);
   const validation = validateValidation(options);
   const state = loadState(options);
-  persistState(options.stateFile, state);
+  persistState(options, state);
   const refresh = () => {
     const snapshot = baseSnapshot(run, options);
     requireCurrentReviewContext(run, options, routing, snapshot.task, validation);
@@ -2534,11 +2710,11 @@ async function publish(run, options, deps) {
   refuse(pull.state !== "open", "PULL_REQUEST_NOT_OPEN", "owned pull request is not open");
   refuse(pull.head?.sha !== options.candidate, "PULL_REQUEST_HEAD_CHANGED", "owned pull request head changed");
   pull = await markReadyForReview(run, options, deps, state, pull, refresh);
-  markEffect(options.stateFile, state, "publish.pr", "conditional_update", "complete", {
+  markEffect(options, state, "publish.pr", "conditional_update", "complete", {
     number: pull.number,
     url: pull.html_url,
   });
-  bindPullRequest(options.stateFile, state, pull.number);
+  bindPullRequest(options, state, pull.number);
   return {
     candidate: options.candidate,
     draft: false,
@@ -2553,9 +2729,9 @@ async function publish(run, options, deps) {
 
 async function integrate(run, options, deps) {
   const state = loadState(options);
-  persistState(options.stateFile, state);
+  persistState(options, state);
   refuse(options.pr === "absent", "PULL_REQUEST_NUMBER_REQUIRED", "exact PR number is required");
-  bindPullRequest(options.stateFile, state, options.pr);
+  bindPullRequest(options, state, options.pr);
   let pull = prAfterPossibleMerge(run, options);
   if (pull.merged === true) {
     return persistIntegrationVerification(run, options, pull, state);
@@ -2567,7 +2743,7 @@ async function integrate(run, options, deps) {
     "ATOMIC_MERGE_UNSUPPORTED",
     "GitHub CLI lacks the required expected-head merge primitive",
   );
-  markDispatch(options.stateFile, state, "integrate.merge", "conditional_update");
+  markDispatch(options, state, "integrate.merge", "conditional_update");
   await dispatchHook(deps, "before", "integrate.merge", { gate, options, state });
   gateCore(run, options);
   const merged = run("gh", [
@@ -2583,7 +2759,7 @@ async function integrate(run, options, deps) {
   await dispatchHook(deps, "after", "integrate.merge", { options, result: merged, state });
   pull = prAfterPossibleMerge(run, options);
   if (pull.merged !== true) {
-    markEffect(options.stateFile, state, "integrate.merge", "conditional_update", "unknown");
+    markEffect(options, state, "integrate.merge", "conditional_update", "unknown");
     throw new CoordinatorError("MERGE_RESULT_UNKNOWN", "atomic merge was not proven after dispatch");
   }
   return persistIntegrationVerification(run, options, pull, state);
@@ -2597,16 +2773,16 @@ async function cleanupApply(run, options, deps) {
     refuse(state.cleanupPlanHash !== plan.planHash, "CLEANUP_PLAN_REPLACED", "another cleanup plan was already admitted");
   } else {
     state.cleanupPlanHash = plan.planHash;
-    persistState(options.stateFile, state);
+    persistState(options, state);
   }
   const task = taskFacts(run, options);
 
   if (options.lifecycleState === "active") {
     let facts = cleanupFacts(run, options, task, { allowAbsentWorkspace: state.effects["cleanup.workspace"]?.phase === "dispatching" || state.effects["cleanup.workspace"]?.phase === "complete" });
     if (facts.agent?.archived) {
-      markEffect(options.stateFile, state, "cleanup.agent", "idempotent_close", "complete", { archivedAt: facts.agent.archivedAt });
+      markEffect(options, state, "cleanup.agent", "idempotent_close", "complete", { archivedAt: facts.agent.archivedAt });
     } else {
-      markDispatch(options.stateFile, state, "cleanup.agent", "idempotent_close");
+      markDispatch(options, state, "cleanup.agent", "idempotent_close");
       await dispatchHook(deps, "before", "cleanup.agent", { options, state });
       const archived = run("paseo", ["archive", options.agentId, "--json"], { cwd: options.controlRepo });
       await dispatchHook(deps, "after", "cleanup.agent", { options, result: archived, state });
@@ -2616,7 +2792,7 @@ async function cleanupApply(run, options, deps) {
         task,
       );
       refuse(observed.Archived !== true, "AGENT_ARCHIVE_UNKNOWN", "Task Agent archive was not proven");
-      markEffect(options.stateFile, state, "cleanup.agent", "idempotent_close", "complete", { archivedAt: observed.ArchivedAt });
+      markEffect(options, state, "cleanup.agent", "idempotent_close", "complete", { archivedAt: observed.ArchivedAt });
     }
 
     facts = cleanupFacts(run, options, task, { allowAbsentWorkspace: state.effects["cleanup.workspace"]?.phase === "dispatching" || state.effects["cleanup.workspace"]?.phase === "complete" });
@@ -2626,9 +2802,9 @@ async function cleanupApply(run, options, deps) {
         "WORKSPACE_ARCHIVE_AMBIGUOUS",
         "workspace absence is not tied to a recorded archive attempt",
       );
-      markEffect(options.stateFile, state, "cleanup.workspace", "idempotent_close", "complete", { absent: true });
+      markEffect(options, state, "cleanup.workspace", "idempotent_close", "complete", { absent: true });
     } else {
-      markDispatch(options.stateFile, state, "cleanup.workspace", "idempotent_close");
+      markDispatch(options, state, "cleanup.workspace", "idempotent_close");
       await dispatchHook(deps, "before", "cleanup.workspace", { options, state });
       const archived = run("paseo", ["workspace", "archive", options.workspaceId, "--json"], { cwd: options.controlRepo });
       await dispatchHook(deps, "after", "cleanup.workspace", { options, result: archived, state });
@@ -2640,7 +2816,7 @@ async function cleanupApply(run, options, deps) {
         "WORKSPACE_ARCHIVE_UNKNOWN",
         "Paseo workspace archive was not proven",
       );
-      markEffect(options.stateFile, state, "cleanup.workspace", "idempotent_close", "complete", { absent: true });
+      markEffect(options, state, "cleanup.workspace", "idempotent_close", "complete", { absent: true });
     }
   }
 
@@ -2663,7 +2839,7 @@ async function cleanupApply(run, options, deps) {
         "worktree absence is not tied to a recorded removal attempt",
       );
       markEffect(
-        options.stateFile,
+        options,
         state,
         "cleanup.worktree",
         "destructive_terminal",
@@ -2682,7 +2858,7 @@ async function cleanupApply(run, options, deps) {
         "DESTRUCTIVE_TARGET_PRESENT_AFTER_HANDOFF",
         "worktree remains present after a possible removal handoff",
       );
-      markDispatch(options.stateFile, state, "cleanup.worktree", "destructive_terminal");
+      markDispatch(options, state, "cleanup.worktree", "destructive_terminal");
       await dispatchHook(deps, "before", "cleanup.worktree", { options, state });
       facts = cleanupFacts(run, options, task, { allowAbsentWorkspace: true });
       if (facts.worktree !== null) {
@@ -2691,7 +2867,7 @@ async function cleanupApply(run, options, deps) {
         facts = cleanupFacts(run, options, task, { allowAbsentWorkspace: true });
       }
       refuse(facts.worktree !== null, "WORKTREE_REMOVAL_UNKNOWN", "worktree removal was not proven");
-      markEffect(options.stateFile, state, "cleanup.worktree", "destructive_terminal", "complete", { absent: true });
+      markEffect(options, state, "cleanup.worktree", "destructive_terminal", "complete", { absent: true });
     }
   }
 
@@ -2712,7 +2888,7 @@ async function cleanupApply(run, options, deps) {
         "DESTRUCTIVE_ABSENCE_AMBIGUOUS",
         `${kind} ref is absent without a recorded deletion intent`,
       );
-      markEffect(options.stateFile, state, effect, "destructive_terminal", "complete", { absent: true });
+      markEffect(options, state, effect, "destructive_terminal", "complete", { absent: true });
       return;
     }
     refuse(
@@ -2720,13 +2896,13 @@ async function cleanupApply(run, options, deps) {
       "DESTRUCTIVE_TARGET_PRESENT_AFTER_HANDOFF",
       `${kind} ref is present after a possible or completed deletion`,
     );
-    markDispatch(options.stateFile, state, effect, "destructive_terminal");
+    markDispatch(options, state, effect, "destructive_terminal");
     await dispatchHook(deps, "before", effect, { options, state });
     const immediate = cleanupFacts(run, options, task, { allowAbsentWorkspace: true });
     const immediateCurrent =
       kind === "remote" ? immediate.remoteBranch : immediate.localBranch;
     if (immediateCurrent === null) {
-      markEffect(options.stateFile, state, effect, "destructive_terminal", "complete", { absent: true });
+      markEffect(options, state, effect, "destructive_terminal", "complete", { absent: true });
       return;
     }
     const ref = `refs/heads/${options.branch}`;
@@ -2749,10 +2925,10 @@ async function cleanupApply(run, options, deps) {
     const observed = cleanupFacts(run, options, task, { allowAbsentWorkspace: true });
     const after = kind === "remote" ? observed.remoteBranch : observed.localBranch;
     if (after !== null) {
-      markEffect(options.stateFile, state, effect, "destructive_terminal", "unknown", { present: true });
+      markEffect(options, state, effect, "destructive_terminal", "unknown", { present: true });
       throw new CoordinatorError("DESTRUCTIVE_RESULT_UNKNOWN", `${kind} ref deletion was not proven`);
     }
-    markEffect(options.stateFile, state, effect, "destructive_terminal", "complete", { absent: true });
+    markEffect(options, state, effect, "destructive_terminal", "complete", { absent: true });
   }
 
   await destructiveRef("cleanup.remote-branch", "remote");
@@ -2810,7 +2986,7 @@ export async function execute(command, rawOptions, dependencies = {}) {
       const task = taskFacts(run, options);
       const resources = cleanupFacts(run, options, task);
       const plan = {
-        schemaVersion: 1,
+        schemaVersion: CLEANUP_PLAN_SCHEMA_VERSION,
         command: "cleanup-plan",
         binding: deliveryBinding(options),
         integration,
@@ -2830,7 +3006,7 @@ export async function execute(command, rawOptions, dependencies = {}) {
       result,
     };
     refuse(
-      containsSelectedPaseoPassword(output),
+      containsProtectedMaterial(output, options.ownership, options.ownershipFile),
       "PROTECTED_MATERIAL_REDACTED",
       "coordinator output contained protected material",
     );
@@ -2842,14 +3018,32 @@ export async function execute(command, rawOptions, dependencies = {}) {
     }
     return output;
   };
-  return MUTATING_COMMANDS.has(command)
-    ? withStateLock(options, operation)
-    : operation();
+  const protectedOperation = async () => {
+    try {
+      return await operation();
+    } catch (error) {
+      if (containsProtectedError(error, options.ownership, options.ownershipFile)) {
+        throw new CoordinatorError(
+          "PROTECTED_MATERIAL_REDACTED",
+          "coordinator failure contained protected material",
+        );
+      }
+      throw error;
+    }
+  };
+  return STATE_LOCK_COMMANDS.has(command)
+    ? withStateLock(options, protectedOperation)
+    : protectedOperation();
 }
 
-export function errorOutput(command, error) {
+export function errorOutput(
+  command,
+  error,
+  ownership = undefined,
+  ownershipFile = undefined,
+) {
   if (error instanceof CoordinatorInterruption) {
-    return {
+    const output = {
       schemaVersion: OUTPUT_SCHEMA_VERSION,
       command,
       outcome: "interrupted",
@@ -2857,6 +3051,16 @@ export function errorOutput(command, error) {
       message: error.message,
       effect: error.effect,
     };
+    if (containsProtectedMaterial(output, ownership, ownershipFile)) {
+      return {
+        schemaVersion: OUTPUT_SCHEMA_VERSION,
+        command,
+        outcome: "refused",
+        code: "PROTECTED_MATERIAL_REDACTED",
+        message: "coordinator interruption contained protected material",
+      };
+    }
+    return output;
   }
   if (error instanceof CoordinatorError) {
     const output = {
@@ -2867,7 +3071,7 @@ export function errorOutput(command, error) {
       message: boundedText(error.message),
       ...(error.details === undefined ? {} : { details: canonicalize(error.details) }),
     };
-    if (containsSelectedPaseoPassword(output)) {
+    if (containsProtectedMaterial(output, ownership, ownershipFile)) {
       return {
         schemaVersion: OUTPUT_SCHEMA_VERSION,
         command,

@@ -29,6 +29,21 @@ const HARNESS_VERSION = 2;
 const MAX_JSON_BYTES = 1_048_576;
 const ACTOR_PATTERN = /^paseo:[a-zA-Z0-9-]{8,128}$/u;
 const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{2,199}$/u;
+const HANDOFF_OWNERSHIP_KEYS = [
+  "actor",
+  "agentId",
+  "branch",
+  "checkout",
+  "checkoutState",
+  "headOwner",
+  "ownershipTokenHash",
+  "remote",
+  "repository",
+  "repositoryId",
+  "taskAssignee",
+  "lifecycleState",
+  "workspaceId",
+];
 
 function manifestFromDocument(document) {
   const manifest =
@@ -69,6 +84,12 @@ function manifestFromDocument(document) {
       manifest.diff.changedPathCount !== manifest.diff.changedPaths.length,
     "REVIEW_MANIFEST_INVALID",
     "review manifest acceptance or diff summary is invalid",
+  );
+  assertExactKeys(
+    manifest.ownership,
+    HANDOFF_OWNERSHIP_KEYS,
+    "review manifest ownership binding",
+    "HARNESS_SCHEMA_INVALID",
   );
   const withoutHash = { ...manifest };
   delete withoutHash.manifestHash;
@@ -554,7 +575,7 @@ function parseArguments(argv) {
       "review harness options require explicit values",
     );
     const key = option.slice(2);
-    refuse(options[key] !== undefined, "HARNESS_ARGUMENT_INVALID", `duplicate --${key}`);
+    refuse(options[key] !== undefined, "HARNESS_ARGUMENT_INVALID", "duplicate option");
     options[key] = value;
   }
   return options;
