@@ -1,6 +1,6 @@
-# Board/List walking-skeleton contract
+# Board/List product contract
 
-The minimal Director for Paseo Board and List are two presentations of one
+Director for Paseo Board and List are two presentations of one
 Director Engine snapshot. They never query Dolt, inspect Runs, or infer a Task
 state in TypeScript.
 
@@ -90,10 +90,13 @@ target; ADR-0016 still reserves production TaskStore scale proof for
 The panel defaults to a flat Board in a wide layout and an Epic-grouped List in
 a compact layout. Users can switch between flat and Epic grouping without
 changing engine state or order. Wide Board shows all ordinary lanes and adds
-`Needs you` only when the selected Project reports such work. Compact Board
-shows one lane at a time through accessible tabs. List and grouped Board use
-the Task/Epic identities already supplied by the engine; they never infer a
-lane or rank.
+`Needs you` only when the current engine page contains such work. Compact
+Board shows one lane at a time through accessible tabs. Done history is an
+exclusive query scope and List presentation, never a draggable Board lane.
+List and grouped Board use the Task/Epic/Workspace identities already supplied
+by the engine; they never infer a lane or rank. Wide List has the fixed columns
+Task, State, Workspace, Epic, Priority, and Updated. Compact List retains fixed
+Task and Status columns with Workspace/Epic metadata in the Task cell.
 
 Only one cursor page is retained and rendered at a time. Previous/Next actions
 preserve an opaque cursor history while every Task and group row uses a stable
@@ -106,10 +109,18 @@ an accepted action, host query invalidation, or an explicit retry, without
 automatic retry. A manual `Try again` action reissues only the read query.
 Cached data remains visible during a refresh or a later transient error and is
 explicitly marked as the last, potentially stale engine snapshot. Loading,
-unavailable, empty, updating, stale, and populated states have visible text and
-polite live-region announcements. Colors come
-only from Paseo theme tokens, compact spacing comes from `layout.compact`, and
-no action depends on hover.
+offline, unavailable, empty, updating, stale, and populated states have visible
+text and polite live-region announcements. Colors come only from Paseo theme
+tokens, compact spacing comes from `layout.compact`, and no action depends on
+hover. Pressable controls and Task rows are focusable for keyboard clients,
+have semantic accessibility roles, expose selected states, and keep 44-point
+touch targets. Paseo supplies the surrounding shell and opens the full filter
+matrix in its native desktop-dialog/compact-sheet `Modal`; the plugin body
+does not reproduce host chrome. The primary surface uses one compact toolbar,
+an unboxed capacity/query summary, and direct Board/List content. Semantic
+lane/card accents come only from the active Paseo theme's accent, warning,
+success, and muted tokens, so the same information hierarchy works in dark and
+light themes without a plugin palette.
 
 Focused Go tests cover fact-to-state mapping, deterministic ordering, empty and
 failure results, torn-read retry, ownership mismatches, updates, contract
