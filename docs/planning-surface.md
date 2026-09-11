@@ -1,7 +1,8 @@
-# Contract-first M2 planning presentation
+# Contract-first Board and List presentation
 
-The M2 planning shell is a complete React Native presentation over one
-Director Engine contract. Its Board/List query is backed by the standalone Go
+The planning shell composes the M2 query and scale boundary with the final M5
+Board and List presentation over one Director Engine contract. Its Board/List
+query is backed by the standalone Go
 engine's TaskStore fact reader and pure projection; the connector only
 transports the result. Configuration inheritance, revision activation,
 scheduling decisions, and security-envelope admission live in the engine and
@@ -60,6 +61,9 @@ The Project Board plugin panel now supplies:
 - Project switching and virtualized Workspace/Epic navigation;
 - Board/List modes over the same query, with flat or Epic grouping that
   preserves engine order;
+- compact AO-inspired Board cards and responsive fixed List columns for Task,
+  State, Workspace, Epic, Priority, and Updated (Task and Status on compact
+  clients);
 - Project, Workspace, Epic, state, priority, label, attention, search, and stable-sort
   inputs;
 - snapshot-bound Previous/Next paging and bounded `FlatList` rendering;
@@ -82,10 +86,37 @@ uses React Native primitives plus Paseo's `Modal`, takes every color from
 `theme.colors`, and switches density/layout from `layout.compact`. It uses no
 DOM, browser storage, native-route workaround, direct TaskStore access, raw
 Paseo domain call, drag-to-state behavior, or TypeScript lifecycle policy.
-Initial, empty, data, updating, stale-cache, page-invalidated, and unavailable
-states are visible and accessible. Wide layouts default to a flat Board;
-compact/mobile layouts default to an Epic-grouped List and use one Board lane
-at a time.
+Initial, empty, data, updating, offline, stale-cache, page-invalidated, and
+unavailable states are visible and accessible. Cached results remain visibly
+marked as potentially stale while offline. Wide layouts default to a flat
+Board; compact/mobile layouts default to an Epic-grouped List and use one
+Board lane at a time. Controls and Task rows are focusable, expose semantic
+roles and selected state for keyboard and assistive technology, and retain a
+44-point touch target without hover-only behavior.
+
+The current [Paseo v0.7 plugin reference](https://paseo.sh/docs/plugins/v0.7/reference)
+makes Paseo the owner of the surrounding route, panel title, host picker,
+navigation, error boundary, and query context. The plugin body therefore starts
+with one compact view/group/filter toolbar and an unboxed
+Project/capacity/query summary instead of drawing a second application header
+or nested dashboard chrome. The filter matrix opens in Paseo's native
+`Modal`—a desktop dialog or compact bottom sheet—and exposes every state,
+Workspace, Epic, priority, label, attention, search, and sort input without
+displacing the work surface.
+
+AO influences information density rather than supplying another visual
+system. Lane headers and Task-card leading edges use only Paseo's semantic
+`accent`, `statusWarning`, `statusSuccess`, and muted-foreground tokens; cards
+surface Workspace/Epic scope and engine-declared execution disposition in a
+compact hierarchy. The same component is consequently native to the active
+Paseo dark or light theme with no screenshot-only palette.
+
+Done is history membership, not a Board lane. Selecting `Done history` issues
+the same engine query with the exclusive `done` state and presents the result
+as a List; returning to Board clears that history scope. `Needs you` remains
+the first canonical lane but is omitted when the current engine page contains
+no matching Task. Lane counts explicitly describe the current page rather
+than pretending to be aggregate counts.
 
 ## Deliberate runtime boundary
 

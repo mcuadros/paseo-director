@@ -16,7 +16,9 @@ import type {
   PlanningMutationInput,
   PlanningQueryInput,
   PlanningSnapshot,
+  DerivedState,
   TaskDetailQueryInput,
+  TaskSummary,
 } from "../generated/planning-contract.shared.ts";
 import * as PlanningRpc from "../rpc/planning.shared.ts";
 import { DeterministicPlanningFixture } from "./fixtures/planning-fixture.ts";
@@ -74,7 +76,16 @@ MockModal.Content = function MockModalContent(props: Record<string, unknown>) {
   );
 };
 
-function loadPlanningSurface() {
+type PlanningSurfaceModule = {
+  PlanningSurface: React.ComponentType<Record<string, unknown>>;
+  planningDateLabel(value: string): string;
+  visibleBoardLaneStates(
+    tasks: readonly TaskSummary[],
+    selectedStates: readonly DerivedState[],
+  ): readonly DerivedState[];
+};
+
+function loadPlanningModule(): PlanningSurfaceModule {
   const source = readFileSync("ui/planning-surface.client.tsx", "utf8");
   const compiled = ts.transpileModule(source, {
     fileName: "ui/planning-surface.client.tsx",
@@ -92,7 +103,7 @@ function loadPlanningSurface() {
       case "@getpaseo/plugin":
         return { useRpc: () => async () => undefined };
       case "@getpaseo/plugin/react-native":
-        return { Modal: MockModal };
+        return { Icon: "Icon", Modal: MockModal };
       case "@tanstack/react-query":
         return ReactQuery;
       case "react":
@@ -123,7 +134,11 @@ function loadPlanningSurface() {
     module,
     module.exports,
   );
-  return module.exports.PlanningSurface as React.ComponentType<Record<string, unknown>>;
+  return module.exports as PlanningSurfaceModule;
+}
+
+function loadPlanningSurface() {
+  return loadPlanningModule().PlanningSurface;
 }
 
 const colors = {
@@ -184,6 +199,54 @@ function textColor(node: TestRenderer.ReactTestInstance): unknown {
   }, undefined);
 }
 
+async function showFilters(renderer: TestRenderer.ReactTestRenderer) {
+  const control = renderer.root.findByProps({ accessibilityLabel: "Open task filters" });
+  assert.equal(control.props.accessibilityState?.expanded, false);
+  await act(async () => control.props.onPress());
+  assert.ok(renderer.root.findByProps({ title: "Filter tasks" }));
+}
+
+test("Board columns stay canonical and Done remains query-only history", async () => {
+  const fixture = new DeterministicPlanningFixture();
+  const snapshot = await fixture.query({
+    projectId: null,
+    workspaceIds: [],
+    epicIds: [],
+    states: [],
+    priorities: [],
+    labels: [],
+    attention: [],
+    search: null,
+    sort: "scheduler_order",
+    cursor: null,
+    pageSize: 100,
+  });
+  const planningModule = loadPlanningModule();
+  assert.deepEqual(
+    planningModule.visibleBoardLaneStates(snapshot.page.tasks, []),
+    ["needs_you", "queued", "building", "validating", "in_review", "ready"],
+  );
+  assert.deepEqual(
+    planningModule.visibleBoardLaneStates(
+      snapshot.page.tasks.filter((task) => task.derivedState !== "needs_you"),
+      [],
+    ),
+    ["queued", "building", "validating", "in_review", "ready"],
+  );
+  assert.deepEqual(
+    planningModule.visibleBoardLaneStates(snapshot.page.tasks, [
+      "ready",
+      "done",
+      "queued",
+    ]),
+    ["queued", "ready"],
+  );
+  assert.equal(
+    planningModule.planningDateLabel("2026-09-11T23:59:59.000Z"),
+    "2026-09-11",
+  );
+});
+
 test("wide planning presentation renders engine navigation, Board, capacity, detail, and configuration preview", async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
@@ -208,12 +271,11 @@ test("wide planning presentation renders engine navigation, Board, capacity, det
 
   const text = renderedText(renderer);
   for (const expected of [
-    /Planning/,
     /Director/,
     /Workspace 01/,
     /M2-1/,
-    /Tasks\s+3\s*\/\s*4/,
-    /Agents\s+5\s*\/\s*8/,
+    /3\s*\/\s*4\s+active/,
+    /5\s*\/\s*8\s+agents/,
     /Needs you/,
     /Budget\s+Soft paused/,
     /A human may approve a scoped dependency override/,
@@ -227,9 +289,9 @@ test("wide planning presentation renders engine navigation, Board, capacity, det
   assert.match(renderedText(renderer), /M2-1 · Milestone epic 1/);
 
   const task = renderer.root.findByProps({
-    accessibilityHint: "Opens task details",
+    accessibilityHint: "Opens engine-projected task details. Task state cannot be moved here.",
     accessibilityLabel:
-      "DIR-00001, Contract-first planning UI shell, Needs you, urgent priority, A human may approve a scoped dependency override",
+      "DIR-00001, Contract-first planning UI shell, Needs you, urgent priority, Workspace 01, M2-1 · Milestone epic 1, A human may approve a scoped dependency override",
   });
   await act(async () => {
     task.props.onPress();
@@ -279,7 +341,9 @@ test("wide planning presentation renders engine navigation, Board, capacity, det
     await waitForText(renderer, /Open task 2/);
   });
   const launchTask = renderer.root
-    .findAllByProps({ accessibilityHint: "Opens task details" })
+    .findAllByProps({
+      accessibilityHint: "Opens engine-projected task details. Task state cannot be moved here.",
+    })
     .find((node) => String(node.props.accessibilityLabel).includes(", Queued,"));
   assert.ok(launchTask);
   await act(async () => launchTask.props.onPress());
@@ -294,6 +358,118 @@ test("wide planning presentation renders engine navigation, Board, capacity, det
   for (const node of renderer.root.findAll((candidate) => String(candidate.type) === "Text")) {
     assert.ok(themeValues.has(String(textColor(node))), `unstyled Text: ${node.children.join("")}`);
   }
+
+  await act(async () => renderer.unmount());
+  queryClient.clear();
+});
+
+test("wide List uses fixed purposeful columns and accessible engine-ordered rows", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
+  const fixture = new DeterministicPlanningFixture();
+  const PlanningSurface = loadPlanningSurface();
+  const queryClient = new ReactQuery.QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  let renderer!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      React.createElement(
+        ReactQuery.QueryClientProvider,
+        { client: queryClient },
+        React.createElement(PlanningSurface, props(fixture, false)),
+      ),
+    );
+  });
+  await act(async () => {
+    await waitForText(renderer, /Contract-first planning UI shell/);
+  });
+
+  const listTab = renderer.root
+    .findAllByProps({ accessibilityRole: "tab" })
+    .find((node) => node.findAll((child) =>
+      String(child.type) === "Text" && child.children.join("") === "List"
+    ).length > 0);
+  assert.ok(listTab);
+  await act(async () => listTab.props.onPress());
+
+  const columns = renderer.root.findByProps({
+    accessibilityLabel:
+      "Task list columns: Task, State, Workspace, Epic, Priority, Updated",
+  });
+  assert.ok(columns);
+  for (const heading of ["Task", "State", "Workspace", "Epic", "Priority", "Updated"]) {
+    assert.ok(columns.findAll((node) =>
+      String(node.type) === "Text" && node.children.join("") === heading
+    ).length > 0, `missing ${heading} column`);
+  }
+  const firstRow = renderer.root.findAllByProps({
+    accessibilityHint: "Opens engine-projected task details. Task state cannot be moved here.",
+  })[0];
+  assert.ok(firstRow);
+  assert.equal(firstRow.props.focusable, true);
+  assert.equal(firstRow.props.hitSlop, 4);
+  assert.match(renderedText(renderer), /Workspace 01/);
+  assert.match(renderedText(renderer), /M2-1 · Milestone epic 1/);
+  assert.match(renderedText(renderer), /2026-09-09/);
+
+  await act(async () => renderer.unmount());
+  queryClient.clear();
+});
+
+test("Done history is an exclusive List query and never a movable Board lane", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
+  const fixture = new DeterministicPlanningFixture();
+  const PlanningSurface = loadPlanningSurface();
+  const queryClient = new ReactQuery.QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  let renderer!: TestRenderer.ReactTestRenderer;
+  await act(async () => {
+    renderer = TestRenderer.create(
+      React.createElement(
+        ReactQuery.QueryClientProvider,
+        { client: queryClient },
+        React.createElement(PlanningSurface, props(fixture, false)),
+      ),
+    );
+  });
+  await act(async () => {
+    await waitForText(renderer, /Contract-first planning UI shell/);
+  });
+
+  await showFilters(renderer);
+  const done = renderer.root.findByProps({ accessibilityLabel: "Filter state Done" });
+  await act(async () => done.props.onPress());
+  await act(async () => {
+    await waitForText(renderer, /Historical task/);
+  });
+  assert.deepEqual(fixture.requests.at(-1)?.states, ["done"]);
+  const selectedList = renderer.root
+    .findAllByProps({ accessibilityRole: "tab" })
+    .find((node) => node.props.accessibilityState?.selected && node.findAll((child) =>
+      String(child.type) === "Text" && child.children.join("") === "List"
+    ).length > 0);
+  assert.ok(selectedList);
+
+  const boardTab = renderer.root
+    .findAllByProps({ accessibilityRole: "tab" })
+    .find((node) => node.findAll((child) =>
+      String(child.type) === "Text" && child.children.join("") === "Board"
+    ).length > 0);
+  assert.ok(boardTab);
+  await act(async () => boardTab.props.onPress());
+  await act(async () => {
+    await waitForText(renderer, /Open task/);
+  });
+  assert.deepEqual(fixture.requests.at(-1)?.states, []);
+  assert.equal(
+    renderer.root.findAllByProps({ accessibilityRole: "header" }).filter((node) =>
+      node.children.join("") === "Done"
+    ).length,
+    0,
+  );
 
   await act(async () => renderer.unmount());
   queryClient.clear();
@@ -330,6 +506,10 @@ test("compact List uses bounded virtualized rendering and stable opaque keys", a
     /List/,
   );
   assert.match(renderedText(renderer), /M2-1 · Milestone epic 1/);
+  assert.ok(renderer.root.findByProps({
+    accessibilityLabel: "Task list columns: Task and status",
+  }));
+  await showFilters(renderer);
   const lists = renderer.root.findAll((node) => String(node.type) === "FlatList");
   const workspaceList = lists.find((node) =>
     Array.isArray(node.props.data) && node.props.data.length === 25,
@@ -351,7 +531,9 @@ test("compact List uses bounded virtualized rendering and stable opaque keys", a
   );
   assert.equal(taskList.props.keyExtractor(taskRow), "task:task-0");
   assert.ok(
-    renderer.root.findAllByProps({ accessibilityHint: "Opens task details" }).length <= 16,
+    renderer.root.findAllByProps({
+      accessibilityHint: "Opens engine-projected task details. Task state cannot be moved here.",
+    }).length <= 16,
   );
 
   const done = renderer.root.findByProps({ accessibilityLabel: "Filter state Done" });
@@ -362,7 +544,9 @@ test("compact List uses bounded virtualized rendering and stable opaque keys", a
   assert.deepEqual(fixture.requests.at(-1)?.states, ["done"]);
   assert.match(renderedText(renderer), /10000\s+matching tasks/);
   assert.ok(
-    renderer.root.findAllByProps({ accessibilityHint: "Opens task details" }).length <= 16,
+    renderer.root.findAllByProps({
+      accessibilityHint: "Opens engine-projected task details. Task state cannot be moved here.",
+    }).length <= 16,
   );
 
   await act(async () => renderer.unmount());
@@ -526,8 +710,75 @@ test("loading, initial error, retry, stale refresh, and updated data preserve ca
     await waitForText(renderer, /No tasks match this query/);
   });
 
+  const noProjects: PlanningSnapshot = PlanningContract.planningSnapshotSchema.parse({
+    ...empty,
+    cursor: "202",
+    page: {
+      ...empty.page,
+      selectedProjectId: null,
+      projects: [],
+      workspaces: [],
+      epics: [],
+    },
+  });
+  await act(async () => {
+    const refresh = queryClient.refetchQueries({ queryKey: ["director", "planning"] });
+    while (pending.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+    pending.shift()?.resolve(noProjects);
+    await refresh;
+    await waitForText(renderer, /No projects/);
+  });
+
   await act(async () => renderer.unmount());
   queryClient.clear();
+});
+
+test("offline startup and cached offline state remain explicit without changing the query", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
+  const fixture = new DeterministicPlanningFixture();
+  const PlanningSurface = loadPlanningSurface();
+  const queryClient = new ReactQuery.QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  let renderer!: TestRenderer.ReactTestRenderer;
+  ReactQuery.onlineManager.setOnline(false);
+  try {
+    await act(async () => {
+      renderer = TestRenderer.create(
+        React.createElement(
+          ReactQuery.QueryClientProvider,
+          { client: queryClient },
+          React.createElement(PlanningSurface, props(fixture, true)),
+        ),
+      );
+    });
+    assert.match(renderedText(renderer), /Waiting for connection/);
+    assert.equal(fixture.requests.length, 0);
+    assert.equal(
+      renderer.root.findAllByProps({ accessibilityLabel: "Open task filters" }).length,
+      0,
+    );
+
+    await act(async () => {
+      ReactQuery.onlineManager.setOnline(true);
+      await waitForText(renderer, /Contract-first planning UI shell/);
+    });
+    assert.equal(fixture.requests.length, 1);
+    assert.ok(renderer.root.findByProps({ accessibilityLabel: "Open task filters" }));
+
+    await act(async () => {
+      ReactQuery.onlineManager.setOnline(false);
+      void queryClient.refetchQueries({ queryKey: ["director", "planning"] });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    assert.match(renderedText(renderer), /Offline · showing the last engine snapshot/);
+    assert.match(renderedText(renderer), /Contract-first planning UI shell/);
+  } finally {
+    if (renderer) await act(async () => renderer.unmount());
+    ReactQuery.onlineManager.setOnline(true);
+    queryClient.clear();
+  }
 });
 
 test("selections and query controls submit engine inputs without card movement or local sorting", async () => {
@@ -551,11 +802,13 @@ test("selections and query controls submit engine inputs without card movement o
   await act(async () => {
     await waitForText(renderer, /Contract-first planning UI shell/);
   });
+  assert.ok(renderer.root.findByProps({ accessibilityLabel: "Open task filters" }));
+  await showFilters(renderer);
   const workspace = renderer.root.findByProps({
     accessibilityLabel: "Filter workspace Workspace 01",
   });
+  await act(async () => workspace.props.onPress());
   await act(async () => {
-    workspace.props.onPress();
     await new Promise((resolve) => setTimeout(resolve, 25));
   });
   assert.deepEqual(fixture.requests.at(-1)?.workspaceIds, ["workspace-0"]);
@@ -563,23 +816,51 @@ test("selections and query controls submit engine inputs without card movement o
   await act(async () => {
     await waitForText(renderer, /Contract-first planning UI shell/);
   });
+  const epic = renderer.root.findByProps({ accessibilityLabel: "Filter epic M2-1" });
+  await act(async () => epic.props.onPress());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 25)));
+  assert.deepEqual(fixture.requests.at(-1)?.epicIds, ["epic-0"]);
+
+  const priority = renderer.root.findByProps({
+    accessibilityLabel: "Filter priority urgent",
+  });
+  await act(async () => priority.props.onPress());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 25)));
+  assert.deepEqual(fixture.requests.at(-1)?.priorities, ["urgent"]);
+
+  const label = renderer.root.findByProps({ accessibilityLabel: "Filter label m2" });
+  await act(async () => label.props.onPress());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 25)));
+  assert.deepEqual(fixture.requests.at(-1)?.labels, ["m2"]);
+
+  const state = renderer.root.findByProps({
+    accessibilityLabel: "Filter state Needs you",
+  });
+  await act(async () => state.props.onPress());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 25)));
+  assert.deepEqual(fixture.requests.at(-1)?.states, ["needs_you"]);
+
   const sort = renderer.root.findByProps({
     accessibilityLabel: "Sort by Task key",
   });
+  await act(async () => sort.props.onPress());
   await act(async () => {
-    sort.props.onPress();
     await new Promise((resolve) => setTimeout(resolve, 25));
   });
   assert.equal(fixture.requests.at(-1)?.sort, "key_asc");
   assert.deepEqual(fixture.requests.at(-1)?.workspaceIds, ["workspace-0"]);
+  assert.deepEqual(fixture.requests.at(-1)?.epicIds, ["epic-0"]);
+  assert.deepEqual(fixture.requests.at(-1)?.priorities, ["urgent"]);
+  assert.deepEqual(fixture.requests.at(-1)?.labels, ["m2"]);
+  assert.deepEqual(fixture.requests.at(-1)?.states, ["needs_you"]);
   await act(async () => {
     await waitForText(renderer, /Contract-first planning UI shell/);
   });
   const attention = renderer.root.findByProps({
     accessibilityLabel: "Filter attention Policy override required",
   });
+  await act(async () => attention.props.onPress());
   await act(async () => {
-    attention.props.onPress();
     await new Promise((resolve) => setTimeout(resolve, 25));
   });
   assert.deepEqual(fixture.requests.at(-1)?.attention, ["policy_override_required"]);
@@ -587,7 +868,9 @@ test("selections and query controls submit engine inputs without card movement o
     await waitForText(renderer, /Contract-first planning UI shell/);
   });
 
-  const task = renderer.root.findAllByProps({ accessibilityHint: "Opens task details" })[0];
+  const task = renderer.root.findAllByProps({
+    accessibilityHint: "Opens engine-projected task details. Task state cannot be moved here.",
+  })[0];
   assert.ok(task);
   await act(async () => {
     task.props.onPress();
@@ -605,6 +888,10 @@ test("selections and query controls submit engine inputs without card movement o
   assert.doesNotMatch(source, /useInfiniteQuery/);
   assert.match(source, /useRpc\(planningQueryRpc\)/);
   assert.doesNotMatch(source, /QueryClientProvider|new QueryClient/);
+  assert.match(source, /title="Filter tasks"/);
+  assert.match(source, /borderLeftColor: stateAccent/);
+  assert.match(source, /borderTopColor: stateAccent/);
+  assert.doesNotMatch(source, />Planning<\/Text>/);
 
   await act(async () => renderer.unmount());
   queryClient.clear();
