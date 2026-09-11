@@ -845,6 +845,14 @@ func MarkCorrectionRouted(state State, batchSHA string) (State, bool) {
 	return state, ValidState(state)
 }
 
+// DispatchInFlight identifies the durable response-loss window between
+// recording a correction-ready feedback batch and observing that the
+// correction router accepted that exact batch. Candidate replacement and
+// base invalidation must retain the current state until this window closes.
+func DispatchInFlight(state State) bool {
+	return ValidState(state) && !state.Invalidated && state.Phase == PhaseCorrectionReady
+}
+
 func RequireManual(state State, code, wake string) (State, bool) {
 	if !ValidState(state) || state.Invalidated || !identifierPattern.MatchString(code) || !identifierPattern.MatchString(wake) {
 		return state, false

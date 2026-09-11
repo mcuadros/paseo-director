@@ -6,9 +6,12 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mcuadros/director-engine/domain"
+	domainexecution "github.com/mcuadros/director-engine/domain/execution"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	"github.com/mcuadros/director-engine/projection"
 )
 
@@ -24,6 +27,35 @@ type planningFactStore struct {
 	bulkRunReads        int
 	bulkCandidateReads  int
 	bulkTaskUpdateReads int
+}
+
+func TestBaseInvalidationProjectsAnExactBoardOrganizerReason(t *testing.T) {
+	policy, ok := domainvalidation.NewPolicy(99, "maintained-linux-ci", []domainvalidation.RequiredCheck{{ID: "linux-ci",
+		Kind: domainvalidation.CheckRunKind, Name: "Linux CI", AppID: 15368, AppSlug: "github-actions"}}, 60_000)
+	if !ok {
+		t.Fatal("policy")
+	}
+	binding := domainvalidation.SealBinding(domainvalidation.Binding{TaskID: "task-1", RunID: "run-1", CandidateID: "candidate-1",
+		CandidateSHA: strings.Repeat("b", 40), BaseSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("c", 40),
+		ManifestSHA256: strings.Repeat("1", 64), CandidateGeneration: 1, CISlotID: "ci-slot-1", BaseRef: "refs/heads/main",
+		RepositoryBindingSHA256: strings.Repeat("2", 64), CanonicalRemote: "https://github.com/example/product",
+		GitHubRepositoryID: 123, GitHubRepositoryNodeID: "R_node", RepositoryOwner: "example", RepositoryName: "product",
+		ViewerLogin: "example", PolicySHA256: policy.SHA256})
+	state, ok := domainvalidation.NewState(binding, policy, 1)
+	if !ok {
+		t.Fatal("state")
+	}
+	state = domainvalidation.Invalidate(state, domainvalidation.CodeBaseChanged)
+	run := domain.Run{ID: "run-1", TaskID: "task-1", Number: 1, CurrentCandidateID: "candidate-1",
+		Execution: domainexecution.State{SchemaVersion: domainexecution.SchemaVersion, ValidationPolicy: &policy, Validation: &state}}
+	task := domain.Task{ID: "task-1", ProjectID: "project-1", WorkspaceIDs: []string{"workspace-1"}, Version: 1}
+	record := domain.Candidate{ID: "candidate-1", RunID: "run-1"}
+	facts := taskStateFacts(domain.Project{ID: "project-1", State: "active"}, task, false, &run, &record)
+	result := projection.DeriveTaskProjection(facts)
+	if result.State != projection.StateValidating || !slices.Contains(result.Blockers, projection.BlockerBaseRevalidationRequired) ||
+		!slices.Contains(result.Blockers, projection.BlockerValidationStale) {
+		t.Fatalf("projection = %#v", result)
+	}
 }
 
 func (store *planningFactStore) Projects(context.Context) ([]domain.Project, error) {

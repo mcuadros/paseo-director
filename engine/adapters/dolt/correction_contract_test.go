@@ -14,6 +14,7 @@ import (
 	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
+	validationdomain "github.com/mcuadros/director-engine/domain/validation"
 )
 
 func TestCorrectionStateAndPriorAuthorityHistorySurviveDoltReopen(t *testing.T) {
@@ -32,9 +33,14 @@ func TestCorrectionStateAndPriorAuthorityHistorySurviveDoltReopen(t *testing.T) 
 		event("correction-task-event", "", 1, task.ID, 0, "task.created"))
 	requireApplied(t, result, err)
 	publicationPolicy := publicationdomain.NewPolicy("pull_request", true, []string{"release"})
+	validationPolicy, ok := validationdomain.NewPolicy(99, "maintained-linux-ci", []validationdomain.RequiredCheck{{ID: "linux-ci",
+		Kind: validationdomain.CheckRunKind, Name: "Linux CI", AppID: 15368, AppSlug: "github-actions"}}, 60_000)
+	if !ok {
+		t.Fatal("validation policy rejected")
+	}
 	run := domain.Run{ID: "run-correction", TaskID: task.ID, Number: 1, BaseSHA: strings.Repeat("0", 40), Execution: execution.State{
 		SchemaVersion: execution.SchemaVersion, Scope: execution.Scope{ProjectID: project.ID, WorkspaceID: workspace.ID, TaskID: task.ID, RunID: "run-correction"},
-		DeliveryMode: domainconfig.DeliveryPullRequest, PublicationPolicy: &publicationPolicy,
+		DeliveryMode: domainconfig.DeliveryPullRequest, PublicationPolicy: &publicationPolicy, ValidationPolicy: &validationPolicy,
 	}}
 	result, err = store.CreateRun(ctx, command("correction-run", "run.create", run.ID, 0, `{}`), run,
 		event("correction-run-event", run.ID, 1, run.ID, 0, "run.created"))
@@ -79,8 +85,48 @@ func TestCorrectionStateAndPriorAuthorityHistorySurviveDoltReopen(t *testing.T) 
 		t.Fatal("publication draft evidence rejected")
 	}
 	run.Execution.PublicationPolicy, run.Execution.Publication = &publicationPolicy, &publication
-	run.Execution.CandidateAuthority.Downstream = candidatedomain.Downstream{Validation: bound("validation-1"), Review: bound("review-1"),
-		CI: bound("ci-1"), Publication: bound(publication.Evidence.ID), Feedback: bound("feedback-1"), Ready: bound("ready-1"), Integration: bound("integration-1")}
+	validationBinding := validationdomain.SealBinding(validationdomain.Binding{TaskID: task.ID, RunID: run.ID, CandidateID: first.ID,
+		CandidateSHA: first.CommitSHA, BaseSHA: first.Manifest.BaseSHA, TreeSHA: first.Manifest.TreeSHA,
+		ManifestSHA256: first.Manifest.BindingSHA256, CandidateGeneration: run.Execution.CandidateAuthority.Generation,
+		CISlotID: "ci-slot-1", BaseRef: first.Claim.BaseRef, RepositoryBindingSHA256: first.Manifest.RepositoryBindingSHA256,
+		CanonicalRemote: "https://github.com/example/correction", GitHubRepositoryID: 123, GitHubRepositoryNodeID: "R_correction",
+		RepositoryOwner: "example", RepositoryName: "correction", ViewerLogin: "example", PolicySHA256: validationPolicy.SHA256})
+	validation, ok := validationdomain.NewState(validationBinding, validationPolicy, 1)
+	if !ok {
+		t.Fatal("validation state rejected")
+	}
+	workflows := validationdomain.SealWorkflowScan(validationdomain.WorkflowScan{Pages: 1, TotalCount: 1, Runs: []validationdomain.WorkflowRun{{
+		ID: 500, WorkflowID: 99, Name: "maintained-linux-ci", HeadSHA: first.CommitSHA, HeadRepositoryID: 123,
+		CheckSuiteID: 700, Status: "completed", Conclusion: "success", Attempt: 1, StartedAtMillis: 1_000, UpdatedAtMillis: 1_001}}})
+	checks := validationdomain.SealCheckScan(validationdomain.CheckScan{Pages: 1, TotalCount: 1, Checks: []validationdomain.CheckRun{{
+		ID: 600, Name: "Linux CI", HeadSHA: first.CommitSHA, SuiteID: 700, SuiteHeadSHA: first.CommitSHA, AppID: 15368,
+		AppSlug: "github-actions", Status: "completed", Conclusion: "success", DetailsURLSHA256: strings.Repeat("b", 64),
+		StartedAtMillis: 1_000, CompletedAtMillis: 1_001}}})
+	statuses := validationdomain.SealStatusScan(validationdomain.StatusScan{Pages: 1, CombinedState: "checks_only_no_statuses", Statuses: []validationdomain.CommitStatus{}})
+	repositoryBefore := validationdomain.SealRepositoryObservation(validationdomain.RepositoryObservation{ID: "repository-before", Code: validationdomain.CodeOK,
+		RepositoryID: 123, RepositoryNodeID: "R_correction", Owner: "example", Name: "correction", ViewerLogin: "example",
+		Authenticated: true, CanReadChecks: true, TLSVerified: true, APIVersion: "2022-11-28", RateRemaining: 5_000,
+		ObservedAtMillis: 1_001, MaximumAgeMillis: validationdomain.MaximumObservationAgeMS})
+	repositoryAfter := validationdomain.SealRepositoryObservation(validationdomain.RepositoryObservation{ID: "repository-after", Code: validationdomain.CodeOK,
+		RepositoryID: 123, RepositoryNodeID: "R_correction", Owner: "example", Name: "correction", ViewerLogin: "example",
+		Authenticated: true, CanReadChecks: true, TLSVerified: true, APIVersion: "2022-11-28", RateRemaining: 5_000,
+		ObservedAtMillis: 1_001, MaximumAgeMillis: validationdomain.MaximumObservationAgeMS})
+	validationDecision := validationdomain.Evaluate(validationBinding, validationPolicy, workflows, checks, statuses,
+		validationdomain.RepositoryObservationSHA256(repositoryBefore), validationdomain.RepositoryObservationSHA256(repositoryAfter),
+		strings.Repeat("c", 64), strings.Repeat("d", 64), 1_001)
+	if validationDecision.Evidence == nil {
+		t.Fatalf("validation decision = %#v", validationDecision)
+	}
+	validation.Phase, validation.Code, validation.Evidence = validationdomain.PhasePassed, validationdomain.CodeOK, validationDecision.Evidence
+	validation.Workflows, validation.Checks, validation.Statuses = &workflows, &checks, &statuses
+	validation.Repository, validation.RepositoryAfter = &repositoryBefore, &repositoryAfter
+	validation.BaseBeforeSHA256, validation.BaseAfterSHA256 = strings.Repeat("c", 64), strings.Repeat("d", 64)
+	if !validationdomain.ValidState(validation) {
+		t.Fatal("terminal validation state rejected")
+	}
+	run.Execution.ValidationPolicy, run.Execution.Validation = &validationPolicy, &validation
+	run.Execution.CandidateAuthority.Downstream = candidatedomain.Downstream{Validation: bound(validation.Evidence.ID), Review: bound("review-1"),
+		CI: bound(validation.Evidence.ID), Publication: bound(publication.Evidence.ID), Feedback: bound("feedback-1"), Ready: bound("ready-1"), Integration: bound("integration-1")}
 	snapshots := []correctiondomain.SourceSnapshot{{Source: correctiondomain.SourceReview, Revision: strings.Repeat("1", 64), Count: 1},
 		{Source: correctiondomain.SourceValidation, Revision: strings.Repeat("2", 64), Count: 0},
 		{Source: correctiondomain.SourceCI, Revision: strings.Repeat("3", 64), Count: 0},
@@ -126,7 +172,9 @@ func TestCorrectionStateAndPriorAuthorityHistorySurviveDoltReopen(t *testing.T) 
 		stored.Execution.Publication != nil || len(stored.Execution.PublicationHistory) != 1 ||
 		!stored.Execution.PublicationHistory[0].Invalidated || stored.Execution.PublicationHistory[0].Evidence != nil ||
 		stored.Execution.PublicationHistory[0].OwnedPullRequest == nil ||
-		stored.Execution.PublicationHistory[0].OwnedPullRequest.Number != publication.OwnedPullRequest.Number {
+		stored.Execution.PublicationHistory[0].OwnedPullRequest.Number != publication.OwnedPullRequest.Number ||
+		stored.Execution.Validation != nil || len(stored.Execution.ValidationHistory) != 1 ||
+		!stored.Execution.ValidationHistory[0].Invalidated || stored.Execution.ValidationHistory[0].Evidence != nil {
 		t.Fatalf("reopened correction Run = %#v", stored)
 	}
 }

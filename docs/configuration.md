@@ -95,7 +95,21 @@ This is a complete minimal document:
     "autoFixCiFailures": true,
     "autoFixReviewFeedback": true,
     "requireDifferentReviewerModel": false,
-    "publishBeforeReview": false
+    "publishBeforeReview": false,
+    "githubCi": {
+      "workflowId": 99,
+      "workflowName": "maintained-linux-ci",
+      "cycleRuntimeSeconds": 1800,
+      "requiredChecks": [
+        {
+          "id": "linux-ci",
+          "kind": "check_run",
+          "name": "Linux CI",
+          "appId": 15368,
+          "appSlug": "github-actions"
+        }
+      ]
+    }
   },
   "workspaceOverrides": [],
   "skills": [
@@ -166,6 +180,13 @@ with the exact previous-head lease, replaces its deterministic Candidate-bound
 body, and invalidates all prior readiness evidence. Enabling early draft
 publication outside a frozen human-approved envelope is refused; disabling it
 is a tightening override.
+
+`githubCi` is optional and valid only with `pull_request` delivery. When
+present, it freezes the exact workflow database ID/name, a maximum runtime for
+one cycle, and one to 32 provider-bound required checks. A Check Run uses
+`appId` plus `appSlug`; a legacy Commit Status uses `creatorId` plus
+`creatorLogin`. The corresponding Run `ciCycles` budget may not exceed four.
+Names without provider identity are never treated as configured authority.
 
 ## Preview and Apply
 

@@ -27,6 +27,7 @@ import (
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	gitport "github.com/mcuadros/director-engine/ports/git"
 	githubport "github.com/mcuadros/director-engine/ports/github"
 )
@@ -191,6 +192,15 @@ func reviewFacts(run domain.Run) (string, string, string, string, bool) {
 	approved := false
 	state := run.Execution.Review
 	authority := run.Execution.CandidateAuthority
+	if run.Execution.Validation != nil && run.Execution.ValidationPolicy != nil &&
+		domainvalidation.ValidPolicy(*run.Execution.ValidationPolicy) && authority != nil {
+		ci := run.Execution.Validation
+		if ci.Policy.SHA256 == run.Execution.ValidationPolicy.SHA256 && domainvalidation.ValidState(*ci) && !ci.Invalidated && ci.Binding.CandidateID == authority.CandidateID &&
+			ci.Binding.CandidateSHA == authority.CandidateSHA && ci.Binding.BaseSHA == authority.BaseSHA &&
+			ci.Binding.CandidateGeneration == authority.Generation && ci.Evidence != nil {
+			validation, validationID = string(ci.Evidence.Outcome), ci.Evidence.ID
+		}
+	}
 	if state == nil || authority == nil || state.Invalidated || !domainreview.ValidState(*state) ||
 		state.Binding.TaskID != run.TaskID || state.Binding.RunID != run.ID ||
 		state.Binding.CandidateID != authority.CandidateID || state.Binding.CandidateSHA != authority.CandidateSHA ||
@@ -205,7 +215,10 @@ func reviewFacts(run domain.Run) (string, string, string, string, bool) {
 	if state.Evidence != nil && domainreview.ValidEvidence(*state.Evidence, *state) {
 		status = string(state.Evidence.Verdict)
 		reviewID = state.Evidence.ID
-		approved = state.Evidence.Verdict == domainreview.VerdictApproveCandidate &&
+		validationAuthorityReady := run.Execution.ValidationPolicy == nil && run.Execution.Validation == nil ||
+			run.Execution.Validation != nil && authority.Downstream.Validation != nil && authority.Downstream.CI != nil
+		approved = state.Evidence.Verdict == domainreview.VerdictApproveCandidate && validation == "passed" &&
+			validationAuthorityReady &&
 			authority.Downstream.Review != nil && authority.Downstream.Review.ID == state.Evidence.ID &&
 			authority.Downstream.Review.CandidateID == authority.CandidateID &&
 			authority.Downstream.Review.CandidateSHA == authority.CandidateSHA &&
@@ -234,7 +247,7 @@ func desiredTemplate(task domain.Task, run domain.Run, record domain.Candidate, 
 
 func currentBinding(task domain.Task, run domain.Run, record domain.Candidate, state publicationdomain.State) bool {
 	authority := run.Execution.CandidateAuthority
-	return authority != nil && candidate.ValidAuthority(*authority) && !authority.Invalidated &&
+	return !state.Invalidated && authority != nil && candidate.ValidAuthority(*authority) && !authority.Invalidated &&
 		run.Execution.DeliveryMode == domainconfig.DeliveryPullRequest && run.Execution.DirectDelivery == nil &&
 		len(run.Execution.DirectDeliveryHistory) == 0 &&
 		run.CurrentCandidateID == record.ID && record.RunID == run.ID && task.Version == authority.TaskVersion &&

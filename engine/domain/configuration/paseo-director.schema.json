@@ -200,6 +200,39 @@
         "costMicrousd": { "type": "integer", "minimum": 1 }
       }
     },
+    "githubRequiredCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "name"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "kind": { "enum": ["check_run", "commit_status"] },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "appId": { "type": "integer", "minimum": 1 },
+        "appSlug": { "$ref": "#/$defs/token" },
+        "creatorId": { "type": "integer", "minimum": 1 },
+        "creatorLogin": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})|[A-Za-z0-9][A-Za-z0-9-]{0,38}\\[bot\\])$"
+        }
+      }
+    },
+    "githubCi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflowId", "workflowName", "cycleRuntimeSeconds", "requiredChecks"],
+      "properties": {
+        "workflowId": { "type": "integer", "minimum": 1 },
+        "workflowName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "cycleRuntimeSeconds": { "type": "integer", "minimum": 1, "maximum": 21600 },
+        "requiredChecks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/githubRequiredCheck" }
+        }
+      }
+    },
     "defaults": {
       "type": "object",
       "additionalProperties": false,
@@ -219,7 +252,8 @@
         "autoFixCiFailures": { "type": "boolean" },
         "autoFixReviewFeedback": { "type": "boolean" },
         "requireDifferentReviewerModel": { "type": "boolean", "default": false },
-        "publishBeforeReview": { "type": "boolean", "default": false }
+        "publishBeforeReview": { "type": "boolean", "default": false },
+        "githubCi": { "$ref": "#/$defs/githubCi" }
       }
     },
     "workspaceOverride": {

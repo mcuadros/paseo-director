@@ -47,8 +47,10 @@ const (
 var embeddedSchema []byte
 
 var (
-	identifierPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
-	tokenPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
+	identifierPattern  = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+	tokenPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
+	secretShapePattern = regexp.MustCompile(`(?i)(?:github_pat_|gh[pousr]_|sk-)[A-Za-z0-9_-]{16,}|(?:password|secret|token|credential|authorization)\s*[:=]\s*\S+`)
+	githubActorPattern = regexp.MustCompile(`^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})|[A-Za-z0-9][A-Za-z0-9-]{0,38}\[bot\])$`)
 )
 
 // LaunchPolicy is the closed launch-policy vocabulary represented by this
@@ -181,6 +183,28 @@ type RunBudget struct {
 	CostMicrousd int64 `json:"costMicrousd,omitempty"`
 }
 
+// GitHubRequiredCheck freezes the authoritative provider identity. Check Run
+// names and legacy Commit Status contexts are never authoritative by display
+// text alone.
+type GitHubRequiredCheck struct {
+	ID           string `json:"id"`
+	Kind         string `json:"kind"`
+	Name         string `json:"name"`
+	AppID        int64  `json:"appId,omitempty"`
+	AppSlug      string `json:"appSlug,omitempty"`
+	CreatorID    int64  `json:"creatorId,omitempty"`
+	CreatorLogin string `json:"creatorLogin,omitempty"`
+}
+
+// GitHubCI is optional because direct-delivery Projects have no GitHub checks
+// phase. Pull-request Runs which enable it freeze this complete object.
+type GitHubCI struct {
+	WorkflowID          int64                 `json:"workflowId"`
+	WorkflowName        string                `json:"workflowName"`
+	CycleRuntimeSeconds int64                 `json:"cycleRuntimeSeconds"`
+	RequiredChecks      []GitHubRequiredCheck `json:"requiredChecks"`
+}
+
 // Defaults is the Project-level configuration inherited by Workspaces and
 // Tasks. The application configuration package resolves the effective values.
 type Defaults struct {
@@ -192,6 +216,7 @@ type Defaults struct {
 	AutoFixReviewFeedback         bool         `json:"autoFixReviewFeedback"`
 	RequireDifferentReviewerModel bool         `json:"requireDifferentReviewerModel,omitempty"`
 	PublishBeforeReview           bool         `json:"publishBeforeReview,omitempty"`
+	GitHubCI                      *GitHubCI    `json:"githubCi,omitempty"`
 }
 
 // WorkspaceOverride records explicit Inherit/concrete selections. Pointer
@@ -309,6 +334,11 @@ func cloneConfiguration(value Configuration) Configuration {
 	value.AgentProfiles.Organizer = cloneAgentProfile(value.AgentProfiles.Organizer)
 	value.AgentProfiles.Worker = cloneAgentProfile(value.AgentProfiles.Worker)
 	value.AgentProfiles.Reviewer = cloneAgentProfile(value.AgentProfiles.Reviewer)
+	if value.Defaults.GitHubCI != nil {
+		githubCI := *value.Defaults.GitHubCI
+		githubCI.RequiredChecks = slices.Clone(githubCI.RequiredChecks)
+		value.Defaults.GitHubCI = &githubCI
+	}
 	value.WorkspaceOverrides = cloneWorkspaceOverrides(value.WorkspaceOverrides)
 	value.Skills = slices.Clone(value.Skills)
 	value.Templates = slices.Clone(value.Templates)
@@ -775,6 +805,62 @@ func validateRunBudget(path string, budget RunBudget, issues *[]Issue) {
 	}
 }
 
+func validateGitHubCI(path string, configuration *GitHubCI, budget RunBudget, delivery DeliveryMode, issues *[]Issue) {
+	if configuration == nil {
+		return
+	}
+	if delivery != DeliveryPullRequest {
+		*issues = append(*issues, issue("github_ci_delivery_invalid", path, "GitHub CI can be configured only for pull-request delivery"))
+	}
+	if configuration.WorkflowID <= 0 {
+		*issues = append(*issues, issue("github_ci_workflow_invalid", path+".workflowId", "workflow database ID must be positive"))
+	}
+	if !validBoundedName(configuration.WorkflowName, 200) || secretShapePattern.MatchString(configuration.WorkflowName) {
+		*issues = append(*issues, issue("github_ci_workflow_invalid", path+".workflowName", "workflow name must be bounded, trimmed, and non-secret"))
+	}
+	if configuration.CycleRuntimeSeconds < 1 || configuration.CycleRuntimeSeconds > 21_600 ||
+		configuration.CycleRuntimeSeconds >= budget.ElapsedSeconds {
+		*issues = append(*issues, issue("github_ci_runtime_invalid", path+".cycleRuntimeSeconds", "CI runtime must be positive, at most six hours, and below the Run elapsed-time budget"))
+	}
+	if budget.CICycles > 4 {
+		*issues = append(*issues, issue("github_ci_cycle_limit_invalid", "$.defaults.runBudget.ciCycles", "GitHub CI permits at most four total cycles per Run"))
+	}
+	if len(configuration.RequiredChecks) == 0 || len(configuration.RequiredChecks) > 32 {
+		*issues = append(*issues, issue("github_ci_checks_invalid", path+".requiredChecks", "between one and 32 required checks are required"))
+	}
+	seen := make(map[string]struct{}, len(configuration.RequiredChecks))
+	providers := make(map[string]struct{}, len(configuration.RequiredChecks))
+	for index, check := range configuration.RequiredChecks {
+		base := fmt.Sprintf("%s.requiredChecks[%d]", path, index)
+		if !validIdentifier(check.ID) {
+			*issues = append(*issues, issue("github_ci_check_invalid", base+".id", "check id must be a lowercase Director identifier"))
+		} else if _, duplicate := seen[check.ID]; duplicate {
+			*issues = append(*issues, issue("github_ci_check_duplicate", base+".id", "check id must be unique"))
+		}
+		seen[check.ID] = struct{}{}
+		provider := strings.Join([]string{check.Kind, check.Name, strconv.FormatInt(check.AppID, 10), strconv.FormatInt(check.CreatorID, 10)}, "\x1f")
+		if _, duplicate := providers[provider]; duplicate {
+			*issues = append(*issues, issue("github_ci_check_provider_duplicate", base, "provider-bound check identity must be unique"))
+		}
+		providers[provider] = struct{}{}
+		if !validBoundedName(check.Name, 200) || secretShapePattern.MatchString(check.Name) {
+			*issues = append(*issues, issue("github_ci_check_invalid", base+".name", "check name must be bounded, trimmed, and non-secret"))
+		}
+		switch check.Kind {
+		case "check_run":
+			if check.AppID <= 0 || !validToken(check.AppSlug) || check.CreatorID != 0 || check.CreatorLogin != "" {
+				*issues = append(*issues, issue("github_ci_check_identity_invalid", base, "Check Run identity requires only appId and appSlug"))
+			}
+		case "commit_status":
+			if check.CreatorID <= 0 || !githubActorPattern.MatchString(check.CreatorLogin) || check.AppID != 0 || check.AppSlug != "" {
+				*issues = append(*issues, issue("github_ci_check_identity_invalid", base, "Commit Status identity requires only creatorId and creatorLogin"))
+			}
+		default:
+			*issues = append(*issues, issue("github_ci_check_kind_invalid", base+".kind", "check kind must be check_run or commit_status"))
+		}
+	}
+}
+
 func validate(value Configuration) error {
 	var issues []Issue
 	if value.Schema != SchemaID {
@@ -838,6 +924,7 @@ func validate(value Configuration) error {
 	}
 	validateLimits("$.defaults.limits", value.Defaults.Limits, &issues)
 	validateRunBudget("$.defaults.runBudget", value.Defaults.RunBudget, &issues)
+	validateGitHubCI("$.defaults.githubCi", value.Defaults.GitHubCI, value.Defaults.RunBudget, value.Defaults.DeliveryMode, &issues)
 	if value.WorkspaceOverrides == nil {
 		issues = append(issues, issue("field_required", "$.workspaceOverrides", "an explicit Workspace override array is required"))
 	}

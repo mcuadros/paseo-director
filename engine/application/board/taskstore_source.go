@@ -11,6 +11,9 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/execution"
 	domainfeedback "github.com/mcuadros/director-engine/domain/feedback"
+	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
+	domainreview "github.com/mcuadros/director-engine/domain/review"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	"github.com/mcuadros/director-engine/projection"
 )
 
@@ -119,6 +122,81 @@ func normalizedHumanInput(task domain.Task, run *domain.Run) projection.HumanInp
 	return result
 }
 
+func normalizedValidation(run *domain.Run, candidateID string) projection.ValidationFact {
+	if run == nil || run.Execution.Validation == nil {
+		return projection.ValidationFact{Status: projection.FactMissing}
+	}
+	state := run.Execution.Validation
+	result := projection.ValidationFact{Status: projection.FactCurrent, CandidateID: state.Binding.CandidateID, Reason: state.Code}
+	if run.Execution.ValidationPolicy == nil || !domainvalidation.ValidPolicy(*run.Execution.ValidationPolicy) ||
+		state.Policy.SHA256 != run.Execution.ValidationPolicy.SHA256 || !domainvalidation.ValidState(*state) || state.Binding.CandidateID != candidateID {
+		return projection.ValidationFact{Status: projection.FactContradictory, CandidateID: state.Binding.CandidateID}
+	}
+	if state.Invalidated {
+		result.Status, result.Outcome, result.Reason = projection.FactStale, projection.ValidationPending, state.InvalidationCode
+		return result
+	}
+	switch state.Phase {
+	case domainvalidation.PhaseIntent, domainvalidation.PhaseReserved, domainvalidation.PhasePending,
+		domainvalidation.PhaseWaiting:
+		result.Outcome = projection.ValidationPending
+	case domainvalidation.PhasePassed:
+		result.Outcome = projection.ValidationPassed
+	case domainvalidation.PhaseFailed, domainvalidation.PhaseTimedOut, domainvalidation.PhaseNeedsYou:
+		result.Outcome = projection.ValidationFailed
+	default:
+		result.Status = projection.FactContradictory
+	}
+	return result
+}
+
+func normalizedReview(run *domain.Run, candidateID string) projection.ReviewFact {
+	if run == nil || run.Execution.Review == nil {
+		return projection.ReviewFact{Status: projection.FactMissing}
+	}
+	state := run.Execution.Review
+	result := projection.ReviewFact{Status: projection.FactCurrent, CandidateID: state.Binding.CandidateID, Outcome: projection.ReviewPending}
+	if !domainreview.ValidState(*state) || state.Binding.CandidateID != candidateID {
+		return projection.ReviewFact{Status: projection.FactContradictory, CandidateID: state.Binding.CandidateID}
+	}
+	if state.Invalidated {
+		result.Status = projection.FactStale
+		return result
+	}
+	if state.Evidence != nil {
+		switch state.Evidence.Verdict {
+		case domainreview.VerdictApproveCandidate:
+			result.Outcome = projection.ReviewApproved
+		case domainreview.VerdictChangesRequested:
+			result.Outcome = projection.ReviewChangesRequested
+		case domainreview.VerdictNeedsHumanDecision:
+			result.Outcome = projection.ReviewNeedsHuman
+		}
+	} else if state.Prompt.Phase == domainreview.EffectDispatching || state.Prompt.Phase == domainreview.EffectComplete {
+		result.Outcome = projection.ReviewRunning
+	}
+	return result
+}
+
+func normalizedDelivery(run *domain.Run, candidateID string) projection.DeliveryFact {
+	if run == nil || run.Execution.Publication == nil {
+		return projection.DeliveryFact{Status: projection.FactMissing}
+	}
+	state := run.Execution.Publication
+	result := projection.DeliveryFact{Status: projection.FactCurrent, CandidateID: state.Binding.CandidateID, State: projection.DeliveryPendingPublication}
+	if !publicationdomain.ValidState(*state) || state.Binding.CandidateID != candidateID {
+		return projection.DeliveryFact{Status: projection.FactContradictory, CandidateID: state.Binding.CandidateID}
+	}
+	if state.Invalidated {
+		result.Status = projection.FactStale
+		return result
+	}
+	if state.Evidence != nil && state.Evidence.Ready {
+		result.State = projection.DeliveryPublished
+	}
+	return result
+}
+
 func taskStateFacts(
 	project domain.Project,
 	task domain.Task,
@@ -170,6 +248,9 @@ func taskStateFacts(
 			Status: projection.FactCurrent, TaskVersion: task.Version,
 			ID: candidate.ID, RunID: run.ID,
 		}
+		facts.Validation = normalizedValidation(run, candidate.ID)
+		facts.Review = normalizedReview(run, candidate.ID)
+		facts.Delivery = normalizedDelivery(run, candidate.ID)
 		if run.Execution.Feedback == nil {
 			facts.Feedback = projection.FeedbackFact{Status: projection.FactCurrent, CandidateID: candidate.ID, State: projection.FeedbackNone}
 		} else {

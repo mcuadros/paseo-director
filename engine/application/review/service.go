@@ -25,6 +25,7 @@ import (
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	"github.com/mcuadros/director-engine/domain/execution"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	"github.com/mcuadros/director-engine/ports/host"
 	reviewport "github.com/mcuadros/director-engine/ports/review"
 )
@@ -225,6 +226,19 @@ func (service *Service) Admit(ctx context.Context, command AdmitCommand) (StepRe
 	state.ReviewerRoot = command.ReviewerRoot
 	state.CheckoutPath = command.CheckoutPath
 	state.PrimaryHeadSHA = record.CommitSHA
+	if run.Execution.Validation != nil {
+		if run.Execution.ValidationPolicy == nil || !domainvalidation.ValidPolicy(*run.Execution.ValidationPolicy) ||
+			run.Execution.Validation.Policy.SHA256 != run.Execution.ValidationPolicy.SHA256 {
+			return StepResult{Run: run}, ErrInvalidCommand
+		}
+		observation, available := domainvalidation.ReviewObservation(*run.Execution.Validation)
+		if available {
+			if !domainreview.ValidCIObservation(observation, state.Binding) {
+				return StepResult{Run: run}, ErrInvalidCommand
+			}
+			state.CIObservation = &observation
+		}
+	}
 	next := run
 	next.Execution.Review = &state
 	next, err = service.persist(ctx, run, next, "review.intent_recorded")

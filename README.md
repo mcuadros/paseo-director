@@ -381,6 +381,7 @@ policy-free boundary rather than a second execution engine.
 - [Contributing workflow](CONTRIBUTING.md)
 - [Deterministic coordinator CLI](docs/coordinator-cli.md)
 - [Event-driven delivery fast path](docs/delivery-fast-path.md)
+- [GitHub checks and base invalidation](docs/github-checks.md)
 - [Director Workers visibility contract](docs/director-workers.md)
 
 Development is tracked with Beads. Run `bd ready` to inspect unblocked work.

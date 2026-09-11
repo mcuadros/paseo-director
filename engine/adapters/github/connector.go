@@ -23,6 +23,7 @@ import (
 	"github.com/mcuadros/director-engine/domain/correction"
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	githubport "github.com/mcuadros/director-engine/ports/github"
 )
 
@@ -49,6 +50,7 @@ type Runner interface {
 type Connector struct{ runner Runner }
 
 var _ githubport.Port = (*Connector)(nil)
+var _ githubport.ChecksPort = (*Connector)(nil)
 var _ githubport.FeedbackPort = (*Connector)(nil)
 var _ githubport.FeedbackObservationPort = (*Connector)(nil)
 
@@ -639,4 +641,251 @@ func (connector *Connector) SetPullRequestDraft(ctx context.Context, request git
 		return githubport.DispatchResult{Handoff: true, Code: responseCode(result)}, nil
 	}
 	return githubport.DispatchResult{Handoff: true, Code: publicationdomain.CodeOK}, nil
+}
+
+func validationCode(code publicationdomain.ExternalCode) domainvalidation.Code {
+	switch code {
+	case publicationdomain.CodeOK:
+		return domainvalidation.CodeOK
+	case publicationdomain.CodeTLS:
+		return domainvalidation.CodeTLS
+	case publicationdomain.CodeRateLimited:
+		return domainvalidation.CodeRateLimited
+	case publicationdomain.CodeUnauthorized:
+		return domainvalidation.CodeUnauthorized
+	case publicationdomain.CodeForbidden:
+		return domainvalidation.CodeForbidden
+	case publicationdomain.CodeNotFound:
+		return domainvalidation.CodeNotFound
+	case publicationdomain.CodeServer:
+		return domainvalidation.CodeServer
+	case publicationdomain.CodeRepositoryMismatch:
+		return domainvalidation.CodeRepositoryMismatch
+	default:
+		return domainvalidation.CodeUnavailable
+	}
+}
+
+func (connector *Connector) ObserveChecksRepository(ctx context.Context, request githubport.ChecksRepositoryRequest) (domainvalidation.RepositoryObservation, error) {
+	observation := domainvalidation.RepositoryObservation{ID: observationID("github-checks-repository", request.Owner, request.Name,
+		strconv.FormatInt(request.TaskStoreNowMillis, 10)), Code: domainvalidation.CodeUnavailable, RepositoryID: request.RepositoryID,
+		RepositoryNodeID: request.RepositoryNodeID, Owner: request.Owner, Name: request.Name, ViewerLogin: request.ExpectedViewer,
+		APIVersion: apiVersion, ObservedAtMillis: request.TaskStoreNowMillis, MaximumAgeMillis: domainvalidation.MaximumObservationAgeMS}
+	user := connector.api(ctx, "GET", "user", nil)
+	if user.code != publicationdomain.CodeOK {
+		observation.Code = validationCode(user.code)
+		return domainvalidation.SealRepositoryObservation(observation), nil
+	}
+	repository := connector.api(ctx, "GET", "repos/"+request.Owner+"/"+request.Name, nil)
+	if repository.code != publicationdomain.CodeOK {
+		observation.Code = validationCode(repository.code)
+		return domainvalidation.SealRepositoryObservation(observation), nil
+	}
+	var viewer userResponse
+	var value repositoryResponse
+	if json.Unmarshal(user.body, &viewer) != nil || json.Unmarshal(repository.body, &value) != nil {
+		observation.Code = domainvalidation.CodeResponseUnknown
+		return domainvalidation.SealRepositoryObservation(observation), nil
+	}
+	observation.Code, observation.RepositoryID, observation.RepositoryNodeID = domainvalidation.CodeOK, value.ID, value.NodeID
+	observation.Owner, observation.Name, observation.ViewerLogin = value.Owner.Login, value.Name, viewer.Login
+	observation.Authenticated, observation.CanReadChecks, observation.TLSVerified = viewer.Login != "", value.Permissions.Pull, true
+	observation.Archived, observation.Disabled = value.Archived, value.Disabled
+	observation.RateRemaining = min(user.rateRemaining, repository.rateRemaining)
+	return domainvalidation.SealRepositoryObservation(observation), nil
+}
+
+type workflowRunsResponse struct {
+	TotalCount   uint32 `json:"total_count"`
+	WorkflowRuns []struct {
+		ID             int64  `json:"id"`
+		WorkflowID     int64  `json:"workflow_id"`
+		Name           string `json:"name"`
+		HeadSHA        string `json:"head_sha"`
+		CheckSuiteID   int64  `json:"check_suite_id"`
+		Status         string `json:"status"`
+		Conclusion     string `json:"conclusion"`
+		RunAttempt     uint32 `json:"run_attempt"`
+		RunStartedAt   string `json:"run_started_at"`
+		UpdatedAt      string `json:"updated_at"`
+		HeadRepository struct {
+			ID int64 `json:"id"`
+		} `json:"head_repository"`
+	} `json:"workflow_runs"`
+}
+
+func pageBoundary(total, count, page, size uint32) (uint32, bool, bool) {
+	if page == 0 || size == 0 || count > size {
+		return 0, false, false
+	}
+	consumed := (page-1)*size + count
+	if consumed >= total {
+		return 0, true, consumed == total
+	}
+	return page + 1, false, count == size
+}
+
+func parsedTime(value string) int64 {
+	if value == "" {
+		return 0
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return -1
+	}
+	return parsed.UnixMilli()
+}
+
+func (connector *Connector) ListWorkflowRuns(ctx context.Context, request githubport.CandidatePageRequest) (domainvalidation.WorkflowPage, error) {
+	page := domainvalidation.WorkflowPage{ID: observationID("github-workflow-runs", request.Owner, request.Name, request.CandidateSHA,
+		strconv.FormatUint(uint64(request.Page), 10), strconv.FormatInt(request.TaskStoreNowMillis, 10)), Code: domainvalidation.CodeUnavailable,
+		CandidateSHA: request.CandidateSHA, Page: request.Page, ObservedAtMillis: request.TaskStoreNowMillis,
+		MaximumAgeMillis: domainvalidation.MaximumObservationAgeMS}
+	endpoint := fmt.Sprintf("repos/%s/%s/actions/runs?head_sha=%s&per_page=%d&page=%d", request.Owner, request.Name,
+		url.QueryEscape(request.CandidateSHA), request.PageSize, request.Page)
+	response := connector.api(ctx, "GET", endpoint, nil)
+	if response.code != publicationdomain.CodeOK {
+		page.Code = validationCode(response.code)
+		return domainvalidation.SealWorkflowPage(page), nil
+	}
+	var value workflowRunsResponse
+	if json.Unmarshal(response.body, &value) != nil || len(value.WorkflowRuns) > int(request.PageSize) {
+		page.Code = domainvalidation.CodeResponseUnknown
+		return domainvalidation.SealWorkflowPage(page), nil
+	}
+	page.Code, page.TotalCount = domainvalidation.CodeOK, value.TotalCount
+	for _, run := range value.WorkflowRuns {
+		observed := domainvalidation.WorkflowRun{ID: run.ID, WorkflowID: run.WorkflowID, Name: run.Name,
+			HeadSHA: run.HeadSHA, HeadRepositoryID: run.HeadRepository.ID, CheckSuiteID: run.CheckSuiteID, Status: run.Status,
+			Conclusion: run.Conclusion, Attempt: run.RunAttempt, StartedAtMillis: parsedTime(run.RunStartedAt), UpdatedAtMillis: parsedTime(run.UpdatedAt)}
+		if !domainvalidation.ValidWorkflowRun(observed) {
+			page.Code, page.Runs = domainvalidation.CodeRedactionFailure, nil
+			return domainvalidation.SealWorkflowPage(page), nil
+		}
+		page.Runs = append(page.Runs, observed)
+	}
+	next, complete, exact := pageBoundary(value.TotalCount, uint32(len(page.Runs)), request.Page, request.PageSize)
+	if !exact {
+		page.Code, page.Runs = domainvalidation.CodePaginationIncomplete, nil
+		return domainvalidation.SealWorkflowPage(page), nil
+	}
+	page.NextPage, page.Complete = next, complete
+	return domainvalidation.SealWorkflowPage(page), nil
+}
+
+type checkRunsResponse struct {
+	TotalCount uint32 `json:"total_count"`
+	CheckRuns  []struct {
+		ID          int64  `json:"id"`
+		Name        string `json:"name"`
+		HeadSHA     string `json:"head_sha"`
+		Status      string `json:"status"`
+		Conclusion  string `json:"conclusion"`
+		DetailsURL  string `json:"details_url"`
+		StartedAt   string `json:"started_at"`
+		CompletedAt string `json:"completed_at"`
+		CheckSuite  struct {
+			ID      int64  `json:"id"`
+			HeadSHA string `json:"head_sha"`
+		} `json:"check_suite"`
+		App struct {
+			ID   int64  `json:"id"`
+			Slug string `json:"slug"`
+		} `json:"app"`
+	} `json:"check_runs"`
+}
+
+func (connector *Connector) ListCheckRuns(ctx context.Context, request githubport.CandidatePageRequest) (domainvalidation.CheckPage, error) {
+	page := domainvalidation.CheckPage{ID: observationID("github-check-runs", request.Owner, request.Name, request.CandidateSHA,
+		strconv.FormatUint(uint64(request.Page), 10), strconv.FormatInt(request.TaskStoreNowMillis, 10)), Code: domainvalidation.CodeUnavailable,
+		CandidateSHA: request.CandidateSHA, Page: request.Page, ObservedAtMillis: request.TaskStoreNowMillis,
+		MaximumAgeMillis: domainvalidation.MaximumObservationAgeMS}
+	endpoint := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs?filter=latest&per_page=%d&page=%d", request.Owner, request.Name,
+		url.PathEscape(request.CandidateSHA), request.PageSize, request.Page)
+	response := connector.api(ctx, "GET", endpoint, nil)
+	if response.code != publicationdomain.CodeOK {
+		page.Code = validationCode(response.code)
+		return domainvalidation.SealCheckPage(page), nil
+	}
+	var value checkRunsResponse
+	if json.Unmarshal(response.body, &value) != nil || len(value.CheckRuns) > int(request.PageSize) {
+		page.Code = domainvalidation.CodeResponseUnknown
+		return domainvalidation.SealCheckPage(page), nil
+	}
+	page.Code, page.TotalCount = domainvalidation.CodeOK, value.TotalCount
+	for _, check := range value.CheckRuns {
+		observed := domainvalidation.CheckRun{ID: check.ID, Name: check.Name, HeadSHA: check.HeadSHA,
+			SuiteID: check.CheckSuite.ID, SuiteHeadSHA: check.CheckSuite.HeadSHA, AppID: check.App.ID, AppSlug: check.App.Slug,
+			Status: check.Status, Conclusion: check.Conclusion, DetailsURLSHA256: publicationdomain.DigestText(check.DetailsURL),
+			StartedAtMillis: parsedTime(check.StartedAt), CompletedAtMillis: parsedTime(check.CompletedAt)}
+		if !domainvalidation.ValidCheckRun(observed) {
+			page.Code, page.Checks = domainvalidation.CodeRedactionFailure, nil
+			return domainvalidation.SealCheckPage(page), nil
+		}
+		page.Checks = append(page.Checks, observed)
+	}
+	next, complete, exact := pageBoundary(value.TotalCount, uint32(len(page.Checks)), request.Page, request.PageSize)
+	if !exact {
+		page.Code, page.Checks = domainvalidation.CodePaginationIncomplete, nil
+		return domainvalidation.SealCheckPage(page), nil
+	}
+	page.NextPage, page.Complete = next, complete
+	return domainvalidation.SealCheckPage(page), nil
+}
+
+type statusesResponse struct {
+	State      string `json:"state"`
+	TotalCount uint32 `json:"total_count"`
+	Statuses   []struct {
+		ID        int64  `json:"id"`
+		Context   string `json:"context"`
+		SHA       string `json:"sha"`
+		State     string `json:"state"`
+		TargetURL string `json:"target_url"`
+		UpdatedAt string `json:"updated_at"`
+		Creator   struct {
+			ID    int64  `json:"id"`
+			Login string `json:"login"`
+		} `json:"creator"`
+	} `json:"statuses"`
+}
+
+func (connector *Connector) ListCommitStatuses(ctx context.Context, request githubport.CandidatePageRequest) (domainvalidation.StatusPage, error) {
+	page := domainvalidation.StatusPage{ID: observationID("github-commit-statuses", request.Owner, request.Name, request.CandidateSHA,
+		strconv.FormatUint(uint64(request.Page), 10), strconv.FormatInt(request.TaskStoreNowMillis, 10)), Code: domainvalidation.CodeUnavailable,
+		CandidateSHA: request.CandidateSHA, Page: request.Page, ObservedAtMillis: request.TaskStoreNowMillis,
+		MaximumAgeMillis: domainvalidation.MaximumObservationAgeMS}
+	endpoint := fmt.Sprintf("repos/%s/%s/commits/%s/status?per_page=%d&page=%d", request.Owner, request.Name,
+		url.PathEscape(request.CandidateSHA), request.PageSize, request.Page)
+	response := connector.api(ctx, "GET", endpoint, nil)
+	if response.code != publicationdomain.CodeOK {
+		page.Code = validationCode(response.code)
+		return domainvalidation.SealStatusPage(page), nil
+	}
+	var value statusesResponse
+	if json.Unmarshal(response.body, &value) != nil || len(value.Statuses) > int(request.PageSize) {
+		page.Code = domainvalidation.CodeResponseUnknown
+		return domainvalidation.SealStatusPage(page), nil
+	}
+	page.Code, page.TotalCount, page.CombinedState = domainvalidation.CodeOK, value.TotalCount, value.State
+	if value.TotalCount == 0 {
+		page.CombinedState = "checks_only_no_statuses"
+	}
+	for _, status := range value.Statuses {
+		observed := domainvalidation.CommitStatus{ID: status.ID, Context: status.Context, SHA: status.SHA,
+			State: status.State, CreatorID: status.Creator.ID, CreatorLogin: status.Creator.Login,
+			TargetURLSHA256: publicationdomain.DigestText(status.TargetURL), UpdatedAtMillis: parsedTime(status.UpdatedAt)}
+		if !domainvalidation.ValidCommitStatus(observed) {
+			page.Code, page.Statuses, page.CombinedState, page.TotalCount = domainvalidation.CodeRedactionFailure, nil, "", 0
+			return domainvalidation.SealStatusPage(page), nil
+		}
+		page.Statuses = append(page.Statuses, observed)
+	}
+	next, complete, exact := pageBoundary(value.TotalCount, uint32(len(page.Statuses)), request.Page, request.PageSize)
+	if !exact {
+		page.Code, page.Statuses = domainvalidation.CodePaginationIncomplete, nil
+		return domainvalidation.SealStatusPage(page), nil
+	}
+	page.NextPage, page.Complete = next, complete
+	return domainvalidation.SealStatusPage(page), nil
 }

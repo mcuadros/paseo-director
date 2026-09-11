@@ -19,6 +19,7 @@ import (
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	"github.com/mcuadros/director-engine/domain/repository"
 	"github.com/mcuadros/director-engine/domain/review"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	directport "github.com/mcuadros/director-engine/ports/directdelivery"
 )
 
@@ -280,6 +281,22 @@ func TestUnresolvedFeedbackBlocksDirectIntentBeforeRemoteObservation(t *testing.
 		LeaseEpoch: 1, Policy: fixture.policy, NowMillis: 2_000})
 	if !errors.Is(err, ErrNotReady) || fixture.remote.observations != 0 || fixture.remote.pushes != 0 {
 		t.Fatalf("feedback direct gate = %v observations=%d pushes=%d", err, fixture.remote.observations, fixture.remote.pushes)
+	}
+}
+
+func TestConfiguredGitHubValidationCanNeverEnterDirectLane(t *testing.T) {
+	fixture := newFixture(t, directdomain.IntegrationAutomatic)
+	policy, ok := domainvalidation.NewPolicy(99, "maintained-linux-ci", []domainvalidation.RequiredCheck{{ID: "linux-ci",
+		Kind: domainvalidation.CheckRunKind, Name: "Linux CI", AppID: 15368, AppSlug: "github-actions"}}, 60_000)
+	if !ok {
+		t.Fatal("validation policy")
+	}
+	fixture.store.run.Execution.ValidationPolicy = &policy
+	run := fixture.store.run
+	_, err := fixture.service.Admit(context.Background(), AdmitCommand{RunID: run.ID, ExpectedRunVersion: run.Version,
+		LeaseEpoch: 1, Policy: fixture.policy, NowMillis: 2_000})
+	if !errors.Is(err, ErrNotReady) || fixture.remote.observations != 0 || fixture.remote.pushes != 0 {
+		t.Fatalf("configured GitHub validation entered direct lane: %v observations=%d pushes=%d", err, fixture.remote.observations, fixture.remote.pushes)
 	}
 }
 

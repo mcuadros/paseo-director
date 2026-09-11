@@ -87,4 +87,18 @@ func TestPublicationIntentRoundTripsTheDurableRunRecord(t *testing.T) {
 	if err := validateRun(conflict); err == nil {
 		t.Fatal("unresolved feedback coexisted with active publication authority")
 	}
+	conflict.Execution.Publication = nil
+	conflictAuthority := *conflict.Execution.CandidateAuthority
+	bound := func(id string) *candidate.EvidenceBinding {
+		return &candidate.EvidenceBinding{ID: id, CandidateID: conflictAuthority.CandidateID,
+			CandidateSHA: conflictAuthority.CandidateSHA, BaseSHA: conflictAuthority.BaseSHA,
+			Generation: conflictAuthority.Generation, BindingSHA256: conflictAuthority.BindingSHA256}
+	}
+	conflictAuthority.Downstream.Validation = bound("validation-1")
+	conflictAuthority.Downstream.CI = bound("ci-1")
+	conflictAuthority.Downstream.Review = bound("review-1")
+	conflict.Execution.CandidateAuthority = &conflictAuthority
+	if err := validateRun(conflict); err == nil {
+		t.Fatal("unresolved feedback retained Validation, CI, or Review authority")
+	}
 }

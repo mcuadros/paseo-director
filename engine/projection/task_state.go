@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mcuadros/director-engine/domain/agentoutcome"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 )
 
 // FactStatus classifies whether one normalized durable or external fact is
@@ -77,6 +78,7 @@ type ValidationFact struct {
 	Status      FactStatus
 	CandidateID string
 	Outcome     ValidationOutcome
+	Reason      domainvalidation.Code
 }
 
 type ReviewOutcome string
@@ -262,6 +264,9 @@ const (
 	BlockerValidationContradictory    BlockerCode = "validation_contradictory"
 	BlockerValidationPending          BlockerCode = "validation_pending"
 	BlockerValidationFailed           BlockerCode = "validation_failed"
+	BlockerBaseRevalidationRequired   BlockerCode = "base_revalidation_required"
+	BlockerValidationExternalWait     BlockerCode = "validation_external_wait"
+	BlockerValidationAmbiguous        BlockerCode = "validation_ambiguous"
 	BlockerReviewMissing              BlockerCode = "review_missing"
 	BlockerReviewStale                BlockerCode = "review_stale"
 	BlockerReviewContradictory        BlockerCode = "review_contradictory"
@@ -312,6 +317,9 @@ var blockerCodeOrder = [...]BlockerCode{
 	BlockerValidationContradictory,
 	BlockerValidationPending,
 	BlockerValidationFailed,
+	BlockerBaseRevalidationRequired,
+	BlockerValidationExternalWait,
+	BlockerValidationAmbiguous,
 	BlockerReviewMissing,
 	BlockerReviewStale,
 	BlockerReviewContradictory,
@@ -570,6 +578,20 @@ func assessClaims(
 
 func assessValidation(facts TaskStateFacts, assessment *projectionAssessment) bool {
 	validation := facts.Validation
+	switch validation.Reason {
+	case "", domainvalidation.CodeOK, domainvalidation.CodePending, domainvalidation.CodeFailed, domainvalidation.CodeTimedOut:
+	case domainvalidation.CodeBaseChanged, domainvalidation.CodeBaseRace:
+		assessment.block(BlockerBaseRevalidationRequired)
+	case domainvalidation.CodeUnavailable, domainvalidation.CodeRateLimited, domainvalidation.CodeServer:
+		assessment.block(BlockerValidationExternalWait)
+	case domainvalidation.CodeWorkflowAmbiguous, domainvalidation.CodeCheckAmbiguous, domainvalidation.CodeCheckSuiteAmbiguous,
+		domainvalidation.CodeStatusAmbiguous, domainvalidation.CodePaginationIncomplete, domainvalidation.CodeResponseUnknown,
+		domainvalidation.CodeRepositoryMismatch, domainvalidation.CodeWorkflowSHAMismatch, domainvalidation.CodeCheckSHAMismatch,
+		domainvalidation.CodeStatusSHAMismatch, domainvalidation.CodeRedactionFailure:
+		assessment.block(BlockerValidationAmbiguous)
+	default:
+		assessment.block(BlockerValidationContradictory)
+	}
 	switch validation.Status {
 	case FactMissing:
 		assessment.block(BlockerValidationMissing)

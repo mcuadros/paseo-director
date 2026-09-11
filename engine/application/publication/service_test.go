@@ -20,6 +20,7 @@ import (
 	domainfeedback "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	gitport "github.com/mcuadros/director-engine/ports/git"
 	githubport "github.com/mcuadros/director-engine/ports/github"
 )
@@ -560,6 +561,37 @@ func TestReviewBeforePRIsDefaultAndRepeatPublicationIsIdempotent(t *testing.T) {
 	_, createsAfter, updatesAfter, readyAfter := fixture.github.Snapshot()
 	if createsAfter != creates || updatesAfter != updates || readyAfter != ready {
 		t.Fatal("repeat publication duplicated a GitHub effect")
+	}
+}
+
+func TestConfiguredValidationCannotBeBypassedByLegacyReviewCI(t *testing.T) {
+	fixture := newFixture(t, true)
+	if _, err := fixture.service.Admit(context.Background(), fixture.command); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTo(t, fixture, func(run domain.Run) bool {
+		return run.Execution.Publication != nil && run.Execution.Publication.Evidence != nil && run.Execution.Publication.Evidence.Draft
+	})
+	attachApproval(t, fixture)
+	policy, ok := domainvalidation.NewPolicy(99, "maintained-linux-ci", []domainvalidation.RequiredCheck{{ID: "linux-ci",
+		Kind: domainvalidation.CheckRunKind, Name: "Linux CI", AppID: 15368, AppSlug: "github-actions"}}, 60_000)
+	if !ok {
+		t.Fatal("validation policy")
+	}
+	fixture.store.run.Execution.ValidationPolicy = &policy
+	for range 20 {
+		_, err := fixture.service.Reconcile(context.Background(), "run-1", fixture.now)
+		if err != nil && !errors.Is(err, ErrReviewRequired) && !errors.Is(err, ErrResponseUnknown) {
+			t.Fatal(err)
+		}
+		run, _ := fixture.store.Run(context.Background(), "run-1")
+		if errors.Is(err, ErrReviewRequired) && run.Execution.Publication.Evidence != nil && run.Execution.Publication.Evidence.Draft {
+			break
+		}
+	}
+	run, _ := fixture.store.Run(context.Background(), "run-1")
+	if run.Execution.Publication.Ready.Phase == publicationdomain.EffectComplete || run.Execution.Publication.Evidence == nil || !run.Execution.Publication.Evidence.Draft {
+		t.Fatalf("configured Validation was bypassed: %#v", run.Execution.Publication)
 	}
 }
 

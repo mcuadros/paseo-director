@@ -288,13 +288,23 @@ func TestCurrentFeedbackAtomicallyInvalidatesPRAndDirectDeliveryAuthority(t *tes
 	t.Run("pull request", func(t *testing.T) {
 		fixture := newFixture(t)
 		installPublication(t, fixture)
+		authority := *fixture.store.run.Execution.CandidateAuthority
+		authority.Downstream.Validation = evidence(authority, "validation-1")
+		authority.Downstream.CI = evidence(authority, "ci-1")
+		authority.Downstream.Review = evidence(authority, "review-1")
+		fixture.store.run.Execution.CandidateAuthority = &authority
 		result, err := fixture.service.IngestDirect(context.Background(), DirectCommand{RoutingContext: fixture.routing,
 			Item: directItem(domaincorrection.SeverityP3)})
 		if err != nil || !result.CorrectionRouted || result.Run.Execution.Publication != nil ||
 			len(result.Run.Execution.PublicationHistory) != 1 || !result.Run.Execution.PublicationHistory[0].Invalidated ||
 			result.Run.Execution.PublicationHistory[0].InvalidationCode != "human_feedback" ||
+			result.Run.Execution.CandidateAuthority.Downstream.Validation != nil ||
+			result.Run.Execution.CandidateAuthority.Downstream.CI != nil ||
+			result.Run.Execution.CandidateAuthority.Downstream.Review != nil ||
 			result.Run.Execution.CandidateAuthority.Downstream.Publication != nil ||
-			result.Run.Execution.CandidateAuthority.Downstream.Ready != nil {
+			result.Run.Execution.CandidateAuthority.Downstream.Ready != nil ||
+			result.Run.Execution.CandidateAuthority.Downstream.Integration != nil ||
+			result.Run.Execution.CandidateAuthority.Downstream.Feedback == nil {
 			t.Fatalf("PR feedback invalidation = %#v, %v", result, err)
 		}
 	})

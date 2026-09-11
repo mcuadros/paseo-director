@@ -216,6 +216,25 @@ func TestPublishBeforeReviewRequiresExplicitConfigurationAndCannotExpandEnvelope
 	}
 }
 
+func TestValidationPolicyUsesOnlyFrozenGitHubProviderIdentities(t *testing.T) {
+	effective := EffectiveConfiguration{DeliveryMode: domainconfig.DeliveryPullRequest, GitHubCI: &domainconfig.GitHubCI{
+		WorkflowID: 99, WorkflowName: "maintained-linux-ci", CycleRuntimeSeconds: 1_800,
+		RequiredChecks: []domainconfig.GitHubRequiredCheck{
+			{ID: "legacy-lint", Kind: "commit_status", Name: "legacy/lint", CreatorID: 7, CreatorLogin: "ci-owner"},
+			{ID: "linux-ci", Kind: "check_run", Name: "Linux CI", AppID: 15368, AppSlug: "github-actions"},
+		},
+	}}
+	policy, ok := effective.ValidationPolicy()
+	if !ok || policy.WorkflowID != 99 || policy.CycleRuntimeMillis != 1_800_000 || len(policy.RequiredChecks) != 2 ||
+		policy.RequiredChecks[0].ID != "legacy-lint" || policy.RequiredChecks[1].AppID != 15368 {
+		t.Fatalf("validation policy = %#v", policy)
+	}
+	effective.DeliveryMode = domainconfig.DeliveryDirect
+	if _, ok := effective.ValidationPolicy(); ok {
+		t.Fatal("direct delivery silently acquired GitHub CI configuration")
+	}
+}
+
 func TestOptionalCostLimitMayTightenButNotBeRemovedOrRaised(t *testing.T) {
 	unlimited := configurationDocument(t, func(*domainconfig.Configuration) {})
 	finite := configurationDocument(t, func(configuration *domainconfig.Configuration) {

@@ -11,6 +11,7 @@ import (
 
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	githubport "github.com/mcuadros/director-engine/ports/github"
 )
 
@@ -183,5 +184,46 @@ func TestConnectorMutationsUseBodyStdinAndExactRepositoryArguments(t *testing.T)
 		ExpectedHeadSHA: strings.Repeat("b", 40), ExpectedBaseRef: "main", ExpectedUpdatedAt: time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC).UnixMilli(), Draft: true})
 	if !ready.Handoff || !strings.Contains(strings.Join(runner.arguments[2], " "), "--undo") || !strings.Contains(strings.Join(runner.arguments[2], " "), "example/product") {
 		t.Fatalf("draft = %#v args=%v", ready, runner.arguments[2])
+	}
+}
+
+func TestChecksConnectorUsesExactCandidateIdentityAndBoundedPages(t *testing.T) {
+	sha := strings.Repeat("b", 40)
+	runner := &queuedRunner{results: []Result{
+		{Started: true, Stdout: includedJSON(`{"login":"example"}`, 5_000)},
+		{Started: true, Stdout: includedJSON(`{"id":123,"node_id":"R_node","name":"product","owner":{"login":"example"},"archived":false,"disabled":false,"permissions":{"pull":true,"push":true}}`, 4_999)},
+		{Started: true, Stdout: includedJSON(`{"total_count":1,"workflow_runs":[{"id":500,"workflow_id":99,"name":"maintained-linux-ci","head_sha":"`+sha+`","check_suite_id":700,"status":"completed","conclusion":"success","run_attempt":1,"run_started_at":"2026-09-11T00:00:00Z","updated_at":"2026-09-11T00:01:00Z","head_repository":{"id":123}}]}`, 4_998)},
+		{Started: true, Stdout: includedJSON(`{"total_count":1,"check_runs":[{"id":600,"name":"Linux CI","head_sha":"`+sha+`","status":"completed","conclusion":"success","details_url":"https://github.com/example/product/actions/runs/500","started_at":"2026-09-11T00:00:00Z","completed_at":"2026-09-11T00:01:00Z","check_suite":{"id":700,"head_sha":"`+sha+`"},"app":{"id":15368,"slug":"github-actions"}}]}`, 4_997)},
+		{Started: true, Stdout: includedJSON(`{"state":"success","total_count":0,"statuses":[]}`, 4_996)},
+	}}
+	connector := NewWithRunner(runner)
+	repository, err := connector.ObserveChecksRepository(context.Background(), githubport.ChecksRepositoryRequest{Owner: "example", Name: "product", RepositoryID: 123, RepositoryNodeID: "R_node", ExpectedViewer: "example", TaskStoreNowMillis: 1_000})
+	if err != nil || repository.Code != domainvalidation.CodeOK || !repository.CanReadChecks {
+		t.Fatalf("repository = %#v, %v", repository, err)
+	}
+	request := githubport.CandidatePageRequest{Owner: "example", Name: "product", RepositoryID: 123, CandidateSHA: sha, Page: 1, PageSize: 100, TaskStoreNowMillis: 1_000}
+	workflows, _ := connector.ListWorkflowRuns(context.Background(), request)
+	checks, _ := connector.ListCheckRuns(context.Background(), request)
+	statuses, _ := connector.ListCommitStatuses(context.Background(), request)
+	if !domainvalidation.CurrentWorkflowPage(workflows, sha, 1, 1_000) || len(workflows.Runs) != 1 || workflows.Runs[0].HeadRepositoryID != 123 ||
+		!domainvalidation.CurrentCheckPage(checks, sha, 1, 1_000) || len(checks.Checks) != 1 || checks.Checks[0].SuiteHeadSHA != sha ||
+		!domainvalidation.CurrentStatusPage(statuses, sha, 1, 1_000) || statuses.CombinedState != "checks_only_no_statuses" {
+		t.Fatalf("workflow/check/status = %#v %#v %#v", workflows, checks, statuses)
+	}
+	for _, arguments := range runner.arguments[2:] {
+		joined := strings.Join(arguments, " ")
+		if !strings.Contains(joined, sha) || !strings.Contains(joined, "per_page=100") || !strings.Contains(joined, "page=1") ||
+			!strings.Contains(joined, "X-GitHub-Api-Version: 2022-11-28") {
+			t.Fatalf("unbound GitHub argv: %v", arguments)
+		}
+	}
+}
+
+func TestChecksConnectorRedactsSecretShapedProviderNames(t *testing.T) {
+	sha := strings.Repeat("b", 40)
+	runner := &queuedRunner{results: []Result{{Started: true, Stdout: includedJSON(`{"total_count":1,"check_runs":[{"id":600,"name":"token=github_pat_abcdefghijklmnop","head_sha":"`+sha+`","status":"completed","conclusion":"success","details_url":"https://example.invalid","started_at":"2026-09-11T00:00:00Z","completed_at":"2026-09-11T00:01:00Z","check_suite":{"id":700,"head_sha":"`+sha+`"},"app":{"id":15368,"slug":"github-actions"}}]}`, 5_000)}}}
+	page, err := NewWithRunner(runner).ListCheckRuns(context.Background(), githubport.CandidatePageRequest{Owner: "example", Name: "product", RepositoryID: 123, CandidateSHA: sha, Page: 1, PageSize: 100, TaskStoreNowMillis: 1_000})
+	if err != nil || page.Code != domainvalidation.CodeRedactionFailure || len(page.Checks) != 0 || strings.Contains(fmt.Sprintf("%#v", page), "github_pat_") {
+		t.Fatalf("redacted page = %#v, %v", page, err)
 	}
 }

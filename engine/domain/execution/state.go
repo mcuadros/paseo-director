@@ -14,6 +14,7 @@ import (
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
+	validationdomain "github.com/mcuadros/director-engine/domain/validation"
 )
 
 const SchemaVersion = "director.execution/v1"
@@ -255,6 +256,7 @@ type State struct {
 	ReviewPolicy                     reviewdomain.ProfilePolicy            `json:"reviewPolicy"`
 	DeliveryMode                     domainconfig.DeliveryMode             `json:"deliveryMode,omitempty"`
 	PublicationPolicy                *publicationdomain.Policy             `json:"publicationPolicy,omitempty"`
+	ValidationPolicy                 *validationdomain.Policy              `json:"validationPolicy,omitempty"`
 	Isolation                        IsolationObservation                  `json:"isolation,omitempty"`
 	OperationalPolicy                OperationalPolicy                     `json:"operationalPolicy,omitempty"`
 	LifecycleSurfaces                LifecycleSurfaces                     `json:"lifecycleSurfaces,omitempty"`
@@ -295,6 +297,8 @@ type State struct {
 	CandidateAuthorityHistory        []candidatedomain.HistoricalAuthority `json:"candidateAuthorityHistory,omitempty"`
 	Review                           *reviewdomain.State                   `json:"review,omitempty"`
 	ReviewHistory                    []reviewdomain.State                  `json:"reviewHistory,omitempty"`
+	Validation                       *validationdomain.State               `json:"validation,omitempty"`
+	ValidationHistory                []validationdomain.State              `json:"validationHistory,omitempty"`
 	Correction                       *correctiondomain.State               `json:"correction,omitempty"`
 	Feedback                         *feedbackdomain.State                 `json:"feedback,omitempty"`
 	FeedbackHistory                  []feedbackdomain.State                `json:"feedbackHistory,omitempty"`

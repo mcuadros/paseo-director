@@ -67,6 +67,9 @@ const (
 	BlockerValidationContradictory    BlockerCode = "validation_contradictory"
 	BlockerValidationPending          BlockerCode = "validation_pending"
 	BlockerValidationFailed           BlockerCode = "validation_failed"
+	BlockerBaseRevalidationRequired   BlockerCode = "base_revalidation_required"
+	BlockerValidationExternalWait     BlockerCode = "validation_external_wait"
+	BlockerValidationAmbiguous        BlockerCode = "validation_ambiguous"
 	BlockerReviewMissing              BlockerCode = "review_missing"
 	BlockerReviewStale                BlockerCode = "review_stale"
 	BlockerReviewContradictory        BlockerCode = "review_contradictory"
@@ -117,6 +120,9 @@ var blockerCodeOrder = [...]BlockerCode{
 	BlockerValidationContradictory,
 	BlockerValidationPending,
 	BlockerValidationFailed,
+	BlockerBaseRevalidationRequired,
+	BlockerValidationExternalWait,
+	BlockerValidationAmbiguous,
 	BlockerReviewMissing,
 	BlockerReviewStale,
 	BlockerReviewContradictory,
@@ -233,6 +239,7 @@ type ValidationFact struct {
 	Status      FactStatus
 	CandidateID string
 	Outcome     ValidationOutcome
+	Reason      string
 }
 
 type ReviewOutcome string
@@ -635,6 +642,20 @@ func assessClaims(a *assessment, facts Facts, runCurrent, candidateCurrent bool)
 
 func assessValidation(a *assessment, facts Facts, candidateCurrent bool) (bool, ValidationOutcome) {
 	fact := facts.Validation
+	switch fact.Reason {
+	case "", "VALIDATION_OK", "VALIDATION_PENDING", "VALIDATION_FAILED", "VALIDATION_TIMED_OUT":
+	case "VALIDATION_BASE_CHANGED", "VALIDATION_BASE_RACE":
+		a.block(BlockerBaseRevalidationRequired)
+	case "VALIDATION_UNAVAILABLE", "VALIDATION_RATE_LIMITED", "VALIDATION_SERVER_ERROR":
+		a.block(BlockerValidationExternalWait)
+	case "VALIDATION_WORKFLOW_AMBIGUOUS", "VALIDATION_REQUIRED_CHECK_AMBIGUOUS", "VALIDATION_CHECK_SUITE_AMBIGUOUS",
+		"VALIDATION_STATUS_AMBIGUOUS", "VALIDATION_PAGINATION_INCOMPLETE", "VALIDATION_RESPONSE_UNKNOWN",
+		"VALIDATION_REPOSITORY_MISMATCH", "VALIDATION_WORKFLOW_SHA_MISMATCH", "VALIDATION_CHECK_SHA_MISMATCH",
+		"VALIDATION_STATUS_SHA_MISMATCH", "VALIDATION_REDACTION_FAILURE":
+		a.block(BlockerValidationAmbiguous)
+	default:
+		a.block(BlockerValidationContradictory)
+	}
 	if !candidateCurrent {
 		if fact.Status != FactMissing {
 			a.block(BlockerValidationContradictory)

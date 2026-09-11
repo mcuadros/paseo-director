@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mcuadros/director-engine/domain/agentoutcome"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	oracle "github.com/mcuadros/director-engine/internal/testkit/projectionoracle"
 )
 
@@ -28,7 +29,7 @@ func productionFacts(facts oracle.Facts) TaskStateFacts {
 		},
 		Validation: ValidationFact{
 			Status: FactStatus(facts.Validation.Status), CandidateID: facts.Validation.CandidateID,
-			Outcome: ValidationOutcome(facts.Validation.Outcome),
+			Outcome: ValidationOutcome(facts.Validation.Outcome), Reason: domainvalidation.Code(facts.Validation.Reason),
 		},
 		Review: ReviewFact{
 			Status: FactStatus(facts.Review.Status), CandidateID: facts.Review.CandidateID,

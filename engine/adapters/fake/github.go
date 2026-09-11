@@ -11,6 +11,7 @@ import (
 
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
+	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	githubport "github.com/mcuadros/director-engine/ports/github"
 )
 
@@ -24,7 +25,12 @@ type GitHub struct {
 	Name             string
 	Viewer           string
 	RepositoryCode   publicationdomain.ExternalCode
+	ChecksCode       domainvalidation.Code
 	Pulls            []publicationdomain.PullRequest
+	WorkflowRuns     []domainvalidation.WorkflowRun
+	CheckRuns        []domainvalidation.CheckRun
+	CommitStatuses   []domainvalidation.CommitStatus
+	CombinedStatus   string
 	CreateDispatches uint64
 	UpdateDispatches uint64
 	DraftDispatches  uint64
@@ -35,12 +41,14 @@ type GitHub struct {
 }
 
 var _ githubport.Port = (*GitHub)(nil)
+var _ githubport.ChecksPort = (*GitHub)(nil)
 var _ githubport.FeedbackPort = (*GitHub)(nil)
 var _ githubport.FeedbackObservationPort = (*GitHub)(nil)
 
 func NewGitHub(repositoryID int64, nodeID, owner, name, viewer string) *GitHub {
 	return &GitHub{RepositoryID: repositoryID, RepositoryNodeID: nodeID, Owner: owner, Name: name,
-		Viewer: viewer, RepositoryCode: publicationdomain.CodeOK, Feedback: map[feedbackdomain.Source][]feedbackdomain.Item{},
+		Viewer: viewer, RepositoryCode: publicationdomain.CodeOK, ChecksCode: domainvalidation.CodeOK,
+		CombinedStatus: "checks_only_no_statuses", Feedback: map[feedbackdomain.Source][]feedbackdomain.Item{},
 		FeedbackCode: "ok", FeedbackReads: map[feedbackdomain.Source]uint64{}, nextNumber: 1}
 }
 
@@ -200,4 +208,73 @@ func (forge *GitHub) ReplacePulls(pulls []publicationdomain.PullRequest) {
 	for _, pull := range pulls {
 		forge.nextNumber = max(forge.nextNumber, pull.Number+1)
 	}
+}
+
+func (forge *GitHub) ObserveChecksRepository(_ context.Context, request githubport.ChecksRepositoryRequest) (domainvalidation.RepositoryObservation, error) {
+	forge.mu.Lock()
+	defer forge.mu.Unlock()
+	code := forge.ChecksCode
+	if code == "" {
+		code = domainvalidation.CodeOK
+	}
+	return domainvalidation.SealRepositoryObservation(domainvalidation.RepositoryObservation{
+		ID: fmt.Sprintf("fake-checks-repository-%d", request.TaskStoreNowMillis), Code: code,
+		RepositoryID: forge.RepositoryID, RepositoryNodeID: forge.RepositoryNodeID, Owner: forge.Owner, Name: forge.Name,
+		ViewerLogin: forge.Viewer, Authenticated: code == domainvalidation.CodeOK, CanReadChecks: code == domainvalidation.CodeOK,
+		TLSVerified: code != domainvalidation.CodeTLS, APIVersion: "2022-11-28", RateRemaining: 5_000,
+		ObservedAtMillis: request.TaskStoreNowMillis, MaximumAgeMillis: domainvalidation.MaximumObservationAgeMS,
+	}), nil
+}
+
+func pageRange(length int, request githubport.CandidatePageRequest) (int, int) {
+	start := int((request.Page - 1) * request.PageSize)
+	if start > length {
+		start = length
+	}
+	return start, min(start+int(request.PageSize), length)
+}
+
+func pageEnd(length, end int, page uint32) (uint32, bool) {
+	if end < length {
+		return page + 1, false
+	}
+	return 0, true
+}
+
+func (forge *GitHub) ListWorkflowRuns(_ context.Context, request githubport.CandidatePageRequest) (domainvalidation.WorkflowPage, error) {
+	forge.mu.Lock()
+	defer forge.mu.Unlock()
+	start, end := pageRange(len(forge.WorkflowRuns), request)
+	next, complete := pageEnd(len(forge.WorkflowRuns), end, request.Page)
+	return domainvalidation.SealWorkflowPage(domainvalidation.WorkflowPage{ID: fmt.Sprintf("fake-workflows-%d-%d", request.Page, request.TaskStoreNowMillis),
+		Code: domainvalidation.CodeOK, CandidateSHA: request.CandidateSHA, Page: request.Page, TotalCount: uint32(len(forge.WorkflowRuns)),
+		NextPage: next, Complete: complete, Runs: slices.Clone(forge.WorkflowRuns[start:end]), ObservedAtMillis: request.TaskStoreNowMillis,
+		MaximumAgeMillis: domainvalidation.MaximumObservationAgeMS}), nil
+}
+
+func (forge *GitHub) ListCheckRuns(_ context.Context, request githubport.CandidatePageRequest) (domainvalidation.CheckPage, error) {
+	forge.mu.Lock()
+	defer forge.mu.Unlock()
+	start, end := pageRange(len(forge.CheckRuns), request)
+	next, complete := pageEnd(len(forge.CheckRuns), end, request.Page)
+	return domainvalidation.SealCheckPage(domainvalidation.CheckPage{ID: fmt.Sprintf("fake-checks-%d-%d", request.Page, request.TaskStoreNowMillis),
+		Code: domainvalidation.CodeOK, CandidateSHA: request.CandidateSHA, Page: request.Page, TotalCount: uint32(len(forge.CheckRuns)),
+		NextPage: next, Complete: complete, Checks: slices.Clone(forge.CheckRuns[start:end]), ObservedAtMillis: request.TaskStoreNowMillis,
+		MaximumAgeMillis: domainvalidation.MaximumObservationAgeMS}), nil
+}
+
+func (forge *GitHub) ListCommitStatuses(_ context.Context, request githubport.CandidatePageRequest) (domainvalidation.StatusPage, error) {
+	forge.mu.Lock()
+	defer forge.mu.Unlock()
+	start, end := pageRange(len(forge.CommitStatuses), request)
+	next, complete := pageEnd(len(forge.CommitStatuses), end, request.Page)
+	rollup := forge.CombinedStatus
+	if len(forge.CommitStatuses) == 0 {
+		rollup = "checks_only_no_statuses"
+	}
+	return domainvalidation.SealStatusPage(domainvalidation.StatusPage{ID: fmt.Sprintf("fake-statuses-%d-%d", request.Page, request.TaskStoreNowMillis),
+		Code: domainvalidation.CodeOK, CandidateSHA: request.CandidateSHA, CombinedState: rollup, Page: request.Page,
+		TotalCount: uint32(len(forge.CommitStatuses)), NextPage: next, Complete: complete,
+		Statuses: slices.Clone(forge.CommitStatuses[start:end]), ObservedAtMillis: request.TaskStoreNowMillis,
+		MaximumAgeMillis: domainvalidation.MaximumObservationAgeMS}), nil
 }

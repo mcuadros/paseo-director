@@ -27,6 +27,9 @@ missing sibling and never starts a second complete CI for the Candidate. A
 corrected commit is a new Candidate; it updates the same owned draft and gets a
 new CI observation and independent Review.
 
+The product-side observation, pagination, budget, and base-race contract is
+documented in [GitHub checks and base invalidation](github-checks.md).
+
 The Task Agent stops at Candidate and coordinator-native handoff. Only the
 Director Engine or authorized coordinator may publish a draft, record remote
 CI, mark the draft ready, gate, integrate, clean resources, or close the Task.
