@@ -1,0 +1,377 @@
+{
+  "schemaVersion": "director.real-incident-corpus/v1",
+  "source": {
+    "kind": "documented_paseo_curated_activity",
+    "window": "2026-09-06/2026-09-11",
+    "completeness": "partial",
+    "obstacleCode": "DIR-M5.13-GAP-SOURCE-BOUNDARY",
+    "obstacle": "Documented Paseo activity omits worker-notification bodies, archived-agent lastError text, historical permission payloads, and the complete store-outage observation. Raw agent state and archived session backups are excluded by the Task's secret boundary."
+  },
+  "reportedCoverage": {
+    "providerFailures": 11,
+    "permissionStalls": 55,
+    "taskStoreOutages": 1
+  },
+  "fixtures": [
+    {
+      "id": "DIR-M5.13-INCIDENT-APP-SERVER-01",
+      "kind": "provider_failure",
+      "occurrenceCount": 1,
+      "observedDate": "2026-09-11",
+      "identities": {
+        "coordinator": "<COORDINATING_AGENT>",
+        "agent": "<APP_SERVER_AGENT>",
+        "workspace": "<APP_SERVER_WORKSPACE>",
+        "worktree": "<APP_SERVER_WORKTREE>",
+        "host": "<DAEMON_HOST>",
+        "session": "<APP_SERVER_SESSION>"
+      },
+      "trace": {
+        "completeness": "partial",
+        "providerText": null,
+        "publishedExcerpt": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites",
+        "missingTrace": "The documented surface does not expose the complete app-server error body or an exact per-occurrence timestamp."
+      },
+      "classifierProbe": {
+        "lastError": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites",
+        "pendingPermission": false,
+        "expectedConnectorSignals": [
+          "policy_rejection"
+        ],
+        "expectedEngineClass": "terminal_policy"
+      },
+      "recoveryScenarios": [
+        {
+          "name": "initial_terminal_observation",
+          "agentStatus": "error",
+          "archivedAtPresent": false,
+          "originalAgentProcessAbsent": false,
+          "controlBlocksDispatch": false,
+          "expectedDisposition": "archive_original",
+          "expectedFailureClass": "terminal_policy",
+          "expectedCode": ""
+        },
+        {
+          "name": "after_original_archival",
+          "agentStatus": "closed",
+          "archivedAtPresent": true,
+          "originalAgentProcessAbsent": true,
+          "controlBlocksDispatch": false,
+          "expectedDisposition": "authorize_replacement",
+          "expectedFailureClass": "terminal_policy",
+          "expectedCode": ""
+        }
+      ],
+      "coordinator": {
+        "disposition": "adopt_existing",
+        "observedResult": "The existing agent and dirty worktree were preserved as the recovery target."
+      },
+      "observedCorrectCause": {
+        "signal": "configuration_rejection",
+        "failureClass": "terminal_configuration"
+      },
+      "findingCodes": [
+        "DIR-M5.13-F001",
+        "DIR-M5.13-F002"
+      ]
+    },
+    {
+      "id": "DIR-M5.13-INCIDENT-APP-SERVER-02",
+      "kind": "provider_failure",
+      "occurrenceCount": 1,
+      "observedDate": "2026-09-11",
+      "identities": {
+        "coordinator": "<COORDINATING_AGENT>",
+        "agent": "<APP_SERVER_AGENT>",
+        "workspace": "<APP_SERVER_WORKSPACE>",
+        "worktree": "<APP_SERVER_WORKTREE>",
+        "host": "<DAEMON_HOST>",
+        "session": "<APP_SERVER_SESSION>"
+      },
+      "trace": {
+        "completeness": "partial",
+        "providerText": null,
+        "publishedExcerpt": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites",
+        "missingTrace": "The documented surface reports an immediate repeat but does not expose its complete app-server error body or exact timestamp."
+      },
+      "classifierProbe": {
+        "lastError": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites",
+        "pendingPermission": false,
+        "expectedConnectorSignals": [
+          "policy_rejection"
+        ],
+        "expectedEngineClass": "terminal_policy"
+      },
+      "recoveryScenarios": [
+        {
+          "name": "repeated_terminal_observation",
+          "agentStatus": "error",
+          "archivedAtPresent": false,
+          "originalAgentProcessAbsent": false,
+          "controlBlocksDispatch": false,
+          "expectedDisposition": "archive_original",
+          "expectedFailureClass": "terminal_policy",
+          "expectedCode": ""
+        }
+      ],
+      "coordinator": {
+        "disposition": "adopt_existing",
+        "observedResult": "The immediate replacement-path retry failed before Task execution; the existing agent and worktree remained the retained recovery target."
+      },
+      "observedCorrectCause": {
+        "signal": "configuration_rejection",
+        "failureClass": "terminal_configuration"
+      },
+      "findingCodes": [
+        "DIR-M5.13-F001",
+        "DIR-M5.13-F002"
+      ]
+    },
+    {
+      "id": "DIR-M5.13-INCIDENT-CONTENT-FILTER-01",
+      "kind": "provider_failure",
+      "occurrenceCount": 1,
+      "observedDate": null,
+      "identities": {
+        "coordinator": "<COORDINATING_AGENT>",
+        "agent": "<CONTENT_FILTER_AGENT_1>",
+        "workspace": "<CONTENT_FILTER_WORKSPACE_1>",
+        "worktree": "<CONTENT_FILTER_WORKTREE_1>",
+        "host": "<DAEMON_HOST>",
+        "session": "<CONTENT_FILTER_SESSION_1>"
+      },
+      "trace": {
+        "completeness": "partial",
+        "providerText": null,
+        "publishedExcerpt": "flagged for possible cybersecurity risk",
+        "missingTrace": "The documented surface exposes only this content-filter excerpt, not the complete provider error, timestamp, disposition, or result."
+      },
+      "classifierProbe": {
+        "lastError": "flagged for possible cybersecurity risk",
+        "pendingPermission": false,
+        "expectedConnectorSignals": [
+          "unclassified"
+        ],
+        "expectedEngineClass": "ambiguous"
+      },
+      "recoveryScenarios": [
+        {
+          "name": "bounded_excerpt_only",
+          "agentStatus": "error",
+          "archivedAtPresent": false,
+          "originalAgentProcessAbsent": false,
+          "controlBlocksDispatch": false,
+          "expectedDisposition": "needs_you",
+          "expectedFailureClass": "ambiguous",
+          "expectedCode": "primary_recovery_failure_requires_human"
+        }
+      ],
+      "coordinator": {
+        "disposition": "unavailable_from_documented_surface",
+        "observedResult": "Unavailable because the curated activity omits the per-occurrence outcome."
+      },
+      "observedCorrectCause": null,
+      "findingCodes": [
+        "DIR-M5.13-GAP-CONTENT-FILTER"
+      ]
+    },
+    {
+      "id": "DIR-M5.13-INCIDENT-CONTENT-FILTER-02",
+      "kind": "provider_failure",
+      "occurrenceCount": 1,
+      "observedDate": null,
+      "identities": {
+        "coordinator": "<COORDINATING_AGENT>",
+        "agent": "<CONTENT_FILTER_AGENT_2>",
+        "workspace": "<CONTENT_FILTER_WORKSPACE_2>",
+        "worktree": "<CONTENT_FILTER_WORKTREE_2>",
+        "host": "<DAEMON_HOST>",
+        "session": "<CONTENT_FILTER_SESSION_2>"
+      },
+      "trace": {
+        "completeness": "partial",
+        "providerText": null,
+        "publishedExcerpt": "flagged for possible cybersecurity risk",
+        "missingTrace": "The documented surface exposes only this content-filter excerpt, not the complete provider error, timestamp, disposition, or result."
+      },
+      "classifierProbe": {
+        "lastError": "flagged for possible cybersecurity risk",
+        "pendingPermission": false,
+        "expectedConnectorSignals": [
+          "unclassified"
+        ],
+        "expectedEngineClass": "ambiguous"
+      },
+      "recoveryScenarios": [
+        {
+          "name": "bounded_excerpt_only",
+          "agentStatus": "error",
+          "archivedAtPresent": false,
+          "originalAgentProcessAbsent": false,
+          "controlBlocksDispatch": false,
+          "expectedDisposition": "needs_you",
+          "expectedFailureClass": "ambiguous",
+          "expectedCode": "primary_recovery_failure_requires_human"
+        }
+      ],
+      "coordinator": {
+        "disposition": "unavailable_from_documented_surface",
+        "observedResult": "Unavailable because the curated activity omits the per-occurrence outcome."
+      },
+      "observedCorrectCause": null,
+      "findingCodes": [
+        "DIR-M5.13-GAP-CONTENT-FILTER"
+      ]
+    },
+    {
+      "id": "DIR-M5.13-INCIDENT-PROVIDER-UNAVAILABLE-AGGREGATE",
+      "kind": "provider_failure",
+      "occurrenceCount": 7,
+      "observedDate": null,
+      "identities": {
+        "coordinator": "<COORDINATING_AGENT>",
+        "agent": "<UNAVAILABLE_PROVIDER_AGENTS>",
+        "workspace": "<UNAVAILABLE_PROVIDER_WORKSPACES>",
+        "worktree": "<UNAVAILABLE_PROVIDER_WORKTREES>",
+        "host": "<DAEMON_HOST>",
+        "session": "<UNAVAILABLE_PROVIDER_SESSIONS>"
+      },
+      "trace": {
+        "completeness": "missing",
+        "providerText": null,
+        "publishedExcerpt": null,
+        "missingTrace": "Seven additional provider failures are reported by count, but the documented surface exposes neither their error bodies nor per-occurrence identities, timestamps, dispositions, or results."
+      },
+      "classifierProbe": null,
+      "recoveryScenarios": [],
+      "coordinator": {
+        "disposition": "unavailable_from_documented_surface",
+        "observedResult": "Unavailable because the curated activity omits these seven worker notifications."
+      },
+      "observedCorrectCause": null,
+      "findingCodes": [
+        "DIR-M5.13-GAP-PROVIDER-TRACES"
+      ]
+    },
+    {
+      "id": "DIR-M5.13-INCIDENT-PERMISSIONS-AGGREGATE",
+      "kind": "permission_stall",
+      "occurrenceCount": 55,
+      "observedDate": null,
+      "identities": {
+        "coordinator": "<COORDINATING_AGENT>",
+        "agent": "<PERMISSION_AGENTS>",
+        "workspace": "<PERMISSION_WORKSPACES>",
+        "worktree": "<PERMISSION_WORKTREES>",
+        "host": "<DAEMON_HOST>",
+        "session": "<PERMISSION_SESSIONS>"
+      },
+      "trace": {
+        "completeness": "missing",
+        "providerText": null,
+        "publishedExcerpt": null,
+        "missingTrace": "The documented surface reports 55 historical pending-permission queries but exposes only current pending requests, not the historical payloads, timestamps, dispositions, or results."
+      },
+      "classifierProbe": {
+        "lastError": "<PERMISSION_TEXT_WITHHELD>",
+        "pendingPermission": true,
+        "expectedConnectorSignals": [
+          "unclassified"
+        ],
+        "expectedEngineClass": "ambiguous"
+      },
+      "recoveryScenarios": [
+        {
+          "name": "pending_permission_precedes_error_text",
+          "agentStatus": "error",
+          "archivedAtPresent": false,
+          "originalAgentProcessAbsent": false,
+          "controlBlocksDispatch": false,
+          "expectedDisposition": "needs_you",
+          "expectedFailureClass": "ambiguous",
+          "expectedCode": "primary_recovery_failure_requires_human"
+        }
+      ],
+      "coordinator": {
+        "disposition": "unavailable_from_documented_surface",
+        "observedResult": "Unavailable because the documented API has no historical permission-request surface."
+      },
+      "observedCorrectCause": null,
+      "findingCodes": [
+        "DIR-M5.13-GAP-PERMISSIONS"
+      ]
+    },
+    {
+      "id": "DIR-M5.13-INCIDENT-TASKSTORE-01",
+      "kind": "taskstore_outage",
+      "occurrenceCount": 1,
+      "observedDate": "2026-09-11",
+      "identities": {
+        "coordinator": "<COORDINATING_AGENT>",
+        "agent": "<TASKSTORE_OBSERVER>",
+        "workspace": "<ROOT_WORKSPACE>",
+        "worktree": "<NO_WORKTREE>",
+        "host": "<DAEMON_HOST>",
+        "session": "<COORDINATOR_SESSION>"
+      },
+      "trace": {
+        "completeness": "partial",
+        "providerText": null,
+        "publishedExcerpt": "connection refused",
+        "missingTrace": "The documented surface exposes the refusal phrase and that the shared store stopped, but not the complete error, timestamp sequence, or all affected dispositions."
+      },
+      "classifierProbe": {
+        "lastError": "connection refused",
+        "pendingPermission": false,
+        "expectedConnectorSignals": [
+          "unclassified"
+        ],
+        "expectedEngineClass": "ambiguous"
+      },
+      "recoveryScenarios": [
+        {
+          "name": "control_store_blocks_recovery_dispatch",
+          "agentStatus": "error",
+          "archivedAtPresent": false,
+          "originalAgentProcessAbsent": false,
+          "controlBlocksDispatch": true,
+          "expectedDisposition": "wait_external",
+          "expectedFailureClass": "none",
+          "expectedCode": ""
+        }
+      ],
+      "coordinator": {
+        "disposition": "restart_store_then_reobserve",
+        "observedResult": "The shared store was restarted once and Task state was read back before coordination continued."
+      },
+      "observedCorrectCause": null,
+      "findingCodes": [
+        "DIR-M5.13-GAP-TASKSTORE-TRACE"
+      ]
+    }
+  ],
+  "divergenceFindings": [
+    {
+      "code": "DIR-M5.13-F001",
+      "title": "Missing host dependency is classified as a policy rejection",
+      "incidentIds": [
+        "DIR-M5.13-INCIDENT-APP-SERVER-01",
+        "DIR-M5.13-INCIDENT-APP-SERVER-02"
+      ],
+      "engineDecision": "The connector emits policy_rejection because the bounded excerpt contains sandbox; ClassifyProviderFailure returns terminal_policy.",
+      "observedCorrectDecision": "The failure was a missing host dependency, corresponding to configuration_rejection and terminal_configuration.",
+      "behaviorChanged": false
+    },
+    {
+      "code": "DIR-M5.13-F002",
+      "title": "Adopt existing is unreachable from a terminal failure class",
+      "incidentIds": [
+        "DIR-M5.13-INCIDENT-APP-SERVER-01",
+        "DIR-M5.13-INCIDENT-APP-SERVER-02"
+      ],
+      "engineDecision": "For the produced terminal_policy class the reducer selects archive_original, then authorize_replacement after termination; it never selects adopt_existing.",
+      "observedCorrectDecision": "The coordinator preserved and adopted the existing agent/worktree; the immediate replacement-path retry failed before Task execution.",
+      "behaviorChanged": false
+    }
+  ]
+}
