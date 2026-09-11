@@ -9,8 +9,10 @@ import (
 	"strings"
 
 	"github.com/mcuadros/director-engine/domain"
+	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	"github.com/mcuadros/director-engine/domain/execution"
 	domainfeedback "github.com/mcuadros/director-engine/domain/feedback"
+	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
 	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
@@ -179,7 +181,25 @@ func normalizedReview(run *domain.Run, candidateID string) projection.ReviewFact
 }
 
 func normalizedDelivery(run *domain.Run, candidateID string) projection.DeliveryFact {
-	if run == nil || run.Execution.Publication == nil {
+	if run == nil {
+		return projection.DeliveryFact{Status: projection.FactMissing}
+	}
+	if run.Execution.DirectDelivery != nil {
+		state := run.Execution.DirectDelivery
+		result := projection.DeliveryFact{Status: projection.FactCurrent, CandidateID: state.Binding.CandidateID, State: projection.DeliveryPublished}
+		if !directdomain.ValidState(*state) || state.Binding.CandidateID != candidateID {
+			return projection.DeliveryFact{Status: projection.FactContradictory, CandidateID: state.Binding.CandidateID}
+		}
+		if state.Phase == directdomain.PhaseInvalidated {
+			result.Status = projection.FactStale
+			return result
+		}
+		if state.Phase == directdomain.PhaseComplete {
+			result.State = projection.DeliveryIntegrated
+		}
+		return result
+	}
+	if run.Execution.Publication == nil {
 		return projection.DeliveryFact{Status: projection.FactMissing}
 	}
 	state := run.Execution.Publication
@@ -193,6 +213,20 @@ func normalizedDelivery(run *domain.Run, candidateID string) projection.Delivery
 	}
 	if state.Evidence != nil && state.Evidence.Ready {
 		result.State = projection.DeliveryPublished
+	}
+	if run.Execution.Integration != nil {
+		integration := run.Execution.Integration
+		if state.Evidence == nil || !integrationdomain.ValidState(*integration) || integration.Binding.CandidateID != candidateID ||
+			integration.Binding.PublicationEvidenceID != state.Evidence.ID {
+			return projection.DeliveryFact{Status: projection.FactContradictory, CandidateID: integration.Binding.CandidateID}
+		}
+		if integration.Phase == integrationdomain.PhaseInvalidated {
+			result.Status = projection.FactStale
+			return result
+		}
+		if integration.Phase == integrationdomain.PhaseComplete {
+			result.State = projection.DeliveryIntegrated
+		}
 	}
 	return result
 }

@@ -79,6 +79,7 @@ This is a complete minimal document:
   "defaults": {
     "launchPolicy": "manual",
     "deliveryMode": "pull_request",
+    "integrationMode": "manual",
     "limits": {
       "maxActiveTasks": 6,
       "maxActiveTasksPerWorkspace": 2,
@@ -181,6 +182,14 @@ body, and invalidates all prior readiness evidence. Enabling early draft
 publication outside a frozen human-approved envelope is refused; disabling it
 is a tightening override.
 
+`integrationMode` is optional and defaults to `manual`. Manual mode persists
+the exact Candidate as Ready and waits for a separately server-authenticated
+Paseo integrate action. `automatic` permits the Director Engine to dispatch an
+exact-head merge after all current quality, feedback, repository, and
+mergeability gates pass. Changing manual to automatic expands delivery
+authority and is refused outside the human-approved security envelope;
+changing automatic to manual is a tightening Workspace or Task override.
+
 `githubCi` is optional and valid only with `pull_request` delivery. When
 present, it freezes the exact workflow database ID/name, a maximum runtime for
 one cycle, and one to 32 provider-bound required checks. A Check Run uses
@@ -224,7 +233,7 @@ Each revision aggregate is constructed inside an immutable security envelope
 established from an exact canonical configuration by a separately authenticated
 human confirmation. Its hash is part of every Preview and frozen Run snapshot.
 Organizer proposals may tighten that envelope: remove repositories, switch
-automatic launch to manual, switch direct delivery to pull request, lower
+automatic launch or integration to manual, switch direct delivery to pull request, lower
 capacity or budgets, or turn automatic correction off. They cannot add or
 retarget a repository, change provider/model/effort/permission authority,
 enable a more powerful launch/delivery mode, raise capacity or budgets, or

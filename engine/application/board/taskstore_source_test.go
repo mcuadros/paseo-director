@@ -29,6 +29,19 @@ type planningFactStore struct {
 	bulkTaskUpdateReads int
 }
 
+func TestIntegrationNeedsYouReasonAndWakeConditionReachBoardProjection(t *testing.T) {
+	task := domain.Task{ID: "task-integration", Version: 3}
+	run := domain.Run{Execution: domainexecution.State{NeedsYou: &domainexecution.NeedsYou{
+		Code: "integration_feedback_present", WakeCondition: "fresh_candidate_validation_review_feedback_and_publication",
+		CleanupAuthorized: false,
+	}}}
+	fact := normalizedHumanInput(task, &run)
+	if fact.State != projection.HumanInputPending || fact.Code != projection.AttentionFeedbackDecisionRequired ||
+		fact.ReasonCode != "integration_feedback_present" || fact.WakeCondition != "fresh_candidate_validation_review_feedback_and_publication" {
+		t.Fatalf("integration attention = %#v", fact)
+	}
+}
+
 func TestBaseInvalidationProjectsAnExactBoardOrganizerReason(t *testing.T) {
 	policy, ok := domainvalidation.NewPolicy(99, "maintained-linux-ci", []domainvalidation.RequiredCheck{{ID: "linux-ci",
 		Kind: domainvalidation.CheckRunKind, Name: "Linux CI", AppID: 15368, AppSlug: "github-actions"}}, 60_000)

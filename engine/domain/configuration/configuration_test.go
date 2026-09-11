@@ -314,7 +314,7 @@ func TestParseValidConfigurationIsCanonicalAndDefensive(t *testing.T) {
 
 func TestSchemaIsPublishedClosedAndVersioned(t *testing.T) {
 	hash, err := SchemaSHA256()
-	if err != nil || hash != "c8fce2640c419a6f2473a4466ca4e1fd905ff14304975b0ddd685df0d5d980c8" {
+	if err != nil || hash != "46c700970cfc8c12f1f473032620aa974f5d0e0cff824ef4a0de0b7fe6a4ff55" {
 		t.Fatalf("configuration schema hash = %q: %v", hash, err)
 	}
 	var schema struct {
@@ -795,6 +795,10 @@ func TestParseRejectsSemanticConflicts(t *testing.T) {
 		"empty override": {
 			input: strings.Replace(valid, `"deliveryMode": "direct"`, `"deliveryMode": "inherit"`, 1),
 			code:  "override_empty",
+		},
+		"invalid integration mode": {
+			input: strings.Replace(valid, `"deliveryMode": "pull_request"`, `"deliveryMode": "pull_request", "integrationMode": "instant"`, 1),
+			code:  "integration_mode_invalid",
 		},
 		"reference traversal": {
 			input: strings.Replace(valid, `skills/commits/SKILL.md`, `skills/../secrets/SKILL.md`, 1),

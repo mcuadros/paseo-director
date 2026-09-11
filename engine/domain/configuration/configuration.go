@@ -73,6 +73,16 @@ const (
 	DeliveryInherit     DeliveryMode = "inherit"
 )
 
+// IntegrationMode is independent from launch policy. Manual is the product
+// default; automatic is an explicit expansion of delivery authority.
+type IntegrationMode string
+
+const (
+	IntegrationManual    IntegrationMode = "manual"
+	IntegrationAutomatic IntegrationMode = "automatic"
+	IntegrationInherit   IntegrationMode = "inherit"
+)
+
 // Provider is an admitted provider-family identity. Exact provider tuples are
 // reconciled outside this schema before launch.
 type Provider string
@@ -208,37 +218,39 @@ type GitHubCI struct {
 // Defaults is the Project-level configuration inherited by Workspaces and
 // Tasks. The application configuration package resolves the effective values.
 type Defaults struct {
-	LaunchPolicy                  LaunchPolicy `json:"launchPolicy"`
-	DeliveryMode                  DeliveryMode `json:"deliveryMode"`
-	Limits                        Limits       `json:"limits"`
-	RunBudget                     RunBudget    `json:"runBudget"`
-	AutoFixCIFailures             bool         `json:"autoFixCiFailures"`
-	AutoFixReviewFeedback         bool         `json:"autoFixReviewFeedback"`
-	RequireDifferentReviewerModel bool         `json:"requireDifferentReviewerModel,omitempty"`
-	PublishBeforeReview           bool         `json:"publishBeforeReview,omitempty"`
-	GitHubCI                      *GitHubCI    `json:"githubCi,omitempty"`
+	LaunchPolicy                  LaunchPolicy    `json:"launchPolicy"`
+	DeliveryMode                  DeliveryMode    `json:"deliveryMode"`
+	IntegrationMode               IntegrationMode `json:"integrationMode,omitempty"`
+	Limits                        Limits          `json:"limits"`
+	RunBudget                     RunBudget       `json:"runBudget"`
+	AutoFixCIFailures             bool            `json:"autoFixCiFailures"`
+	AutoFixReviewFeedback         bool            `json:"autoFixReviewFeedback"`
+	RequireDifferentReviewerModel bool            `json:"requireDifferentReviewerModel,omitempty"`
+	PublishBeforeReview           bool            `json:"publishBeforeReview,omitempty"`
+	GitHubCI                      *GitHubCI       `json:"githubCi,omitempty"`
 }
 
 // WorkspaceOverride records explicit Inherit/concrete selections. Pointer
 // fields distinguish an inherited value from an explicit zero or false value.
 // Effective reduction remains in the engine application boundary.
 type WorkspaceOverride struct {
-	WorkspaceID                   string       `json:"workspaceId"`
-	LaunchPolicy                  LaunchPolicy `json:"launchPolicy"`
-	DeliveryMode                  DeliveryMode `json:"deliveryMode"`
-	MaxActiveTasks                *int         `json:"maxActiveTasks,omitempty"`
-	MaxActiveTasksPerWorkspace    *int         `json:"maxActiveTasksPerWorkspace,omitempty"`
-	MaxConcurrentAgents           *int         `json:"maxConcurrentAgents,omitempty"`
-	MaxSubagentsPerTask           *int         `json:"maxSubagentsPerTask,omitempty"`
-	ElapsedSeconds                *int64       `json:"elapsedSeconds,omitempty"`
-	Tokens                        *int64       `json:"tokens,omitempty"`
-	Turns                         *int64       `json:"turns,omitempty"`
-	CICycles                      *int64       `json:"ciCycles,omitempty"`
-	CostMicrousd                  *int64       `json:"costMicrousd,omitempty"`
-	AutoFixCIFailures             *bool        `json:"autoFixCiFailures,omitempty"`
-	AutoFixReviewFeedback         *bool        `json:"autoFixReviewFeedback,omitempty"`
-	RequireDifferentReviewerModel *bool        `json:"requireDifferentReviewerModel,omitempty"`
-	PublishBeforeReview           *bool        `json:"publishBeforeReview,omitempty"`
+	WorkspaceID                   string          `json:"workspaceId"`
+	LaunchPolicy                  LaunchPolicy    `json:"launchPolicy"`
+	DeliveryMode                  DeliveryMode    `json:"deliveryMode"`
+	IntegrationMode               IntegrationMode `json:"integrationMode,omitempty"`
+	MaxActiveTasks                *int            `json:"maxActiveTasks,omitempty"`
+	MaxActiveTasksPerWorkspace    *int            `json:"maxActiveTasksPerWorkspace,omitempty"`
+	MaxConcurrentAgents           *int            `json:"maxConcurrentAgents,omitempty"`
+	MaxSubagentsPerTask           *int            `json:"maxSubagentsPerTask,omitempty"`
+	ElapsedSeconds                *int64          `json:"elapsedSeconds,omitempty"`
+	Tokens                        *int64          `json:"tokens,omitempty"`
+	Turns                         *int64          `json:"turns,omitempty"`
+	CICycles                      *int64          `json:"ciCycles,omitempty"`
+	CostMicrousd                  *int64          `json:"costMicrousd,omitempty"`
+	AutoFixCIFailures             *bool           `json:"autoFixCiFailures,omitempty"`
+	AutoFixReviewFeedback         *bool           `json:"autoFixReviewFeedback,omitempty"`
+	RequireDifferentReviewerModel *bool           `json:"requireDifferentReviewerModel,omitempty"`
+	PublishBeforeReview           *bool           `json:"publishBeforeReview,omitempty"`
 }
 
 // FileReference identifies one explicitly included Organizer file. Directory
@@ -724,6 +736,7 @@ func validateReferences(field, prefix, suffix string, references []FileReference
 
 func workspaceOverrideEmpty(override WorkspaceOverride) bool {
 	return override.LaunchPolicy == LaunchInherit && override.DeliveryMode == DeliveryInherit &&
+		(override.IntegrationMode == "" || override.IntegrationMode == IntegrationInherit) &&
 		override.MaxActiveTasks == nil && override.MaxActiveTasksPerWorkspace == nil &&
 		override.MaxConcurrentAgents == nil && override.MaxSubagentsPerTask == nil &&
 		override.ElapsedSeconds == nil && override.Tokens == nil && override.Turns == nil &&
@@ -922,6 +935,9 @@ func validate(value Configuration) error {
 	if value.Defaults.DeliveryMode != DeliveryPullRequest && value.Defaults.DeliveryMode != DeliveryDirect {
 		issues = append(issues, issue("delivery_mode_invalid", "$.defaults.deliveryMode", "Project delivery mode must be pull_request or direct"))
 	}
+	if value.Defaults.IntegrationMode != "" && value.Defaults.IntegrationMode != IntegrationManual && value.Defaults.IntegrationMode != IntegrationAutomatic {
+		issues = append(issues, issue("integration_mode_invalid", "$.defaults.integrationMode", "Project integration mode must be manual or automatic"))
+	}
 	validateLimits("$.defaults.limits", value.Defaults.Limits, &issues)
 	validateRunBudget("$.defaults.runBudget", value.Defaults.RunBudget, &issues)
 	validateGitHubCI("$.defaults.githubCi", value.Defaults.GitHubCI, value.Defaults.RunBudget, value.Defaults.DeliveryMode, &issues)
@@ -945,6 +961,9 @@ func validate(value Configuration) error {
 		}
 		if override.DeliveryMode != DeliveryInherit && override.DeliveryMode != DeliveryPullRequest && override.DeliveryMode != DeliveryDirect {
 			issues = append(issues, issue("delivery_mode_invalid", base+".deliveryMode", "override delivery mode must be inherit, pull_request, or direct"))
+		}
+		if override.IntegrationMode != "" && override.IntegrationMode != IntegrationInherit && override.IntegrationMode != IntegrationManual && override.IntegrationMode != IntegrationAutomatic {
+			issues = append(issues, issue("integration_mode_invalid", base+".integrationMode", "override integration mode must be inherit, manual, or automatic"))
 		}
 		if workspaceOverrideEmpty(override) {
 			issues = append(issues, issue("override_empty", base, "an override must contain at least one concrete value"))

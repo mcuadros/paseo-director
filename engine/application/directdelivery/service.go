@@ -250,6 +250,7 @@ func currentBinding(value current, policy directdomain.Policy) (directdomain.Bin
 	if !currentCandidate(value) || !reviewApproved(value) || !ciPassed(value) || !correctionSettled(value) ||
 		value.run.Execution.DeliveryMode != domainconfig.DeliveryDirect || !directdomain.ValidPolicy(policy) ||
 		value.run.Execution.PublicationPolicy != nil || value.run.Execution.Publication != nil || len(value.run.Execution.PublicationHistory) != 0 ||
+		value.run.Execution.IntegrationPolicy != nil || value.run.Execution.Integration != nil || len(value.run.Execution.IntegrationHistory) != 0 ||
 		value.run.Execution.ValidationPolicy != nil || value.run.Execution.Validation != nil || len(value.run.Execution.ValidationHistory) != 0 ||
 		value.run.Execution.Review == nil || value.run.Execution.Review.Evidence == nil ||
 		value.run.Execution.Review.CIObservation == nil || policy.ConfigurationSHA256 != value.candidate.Manifest.ConfigurationSHA256 ||
@@ -312,6 +313,7 @@ func (service *Service) Admit(ctx context.Context, command AdmitCommand) (Result
 		return Result{Run: value.run}, err
 	}
 	if value.run.Execution.PublicationPolicy != nil || value.run.Execution.Publication != nil || len(value.run.Execution.PublicationHistory) != 0 ||
+		value.run.Execution.IntegrationPolicy != nil || value.run.Execution.Integration != nil || len(value.run.Execution.IntegrationHistory) != 0 ||
 		value.run.Execution.CandidateAuthority != nil && value.run.Execution.CandidateAuthority.Downstream.Publication != nil {
 		return Result{Run: value.run, Code: deliveryreducer.DirectCodePRFallbackForbidden}, ErrFallbackForbidden
 	}
@@ -377,7 +379,8 @@ func (service *Service) AuthorizeManual(ctx context.Context, command AuthorizeMa
 	if value.run.Version != command.ExpectedRunVersion || !currentLease(value.project, value.run, command.LeaseEpoch, command.NowMillis) ||
 		command.LeaseEpoch != state.Binding.LeaseEpoch || !currentCandidate(value) || !reviewApproved(value) || !ciPassed(value) ||
 		!correctionSettled(value) || value.run.Execution.PublicationPolicy != nil || value.run.Execution.Publication != nil ||
-		len(value.run.Execution.PublicationHistory) != 0 || value.run.Execution.CandidateAuthority.Downstream.Publication != nil {
+		len(value.run.Execution.PublicationHistory) != 0 || value.run.Execution.IntegrationPolicy != nil || value.run.Execution.Integration != nil ||
+		len(value.run.Execution.IntegrationHistory) != 0 || value.run.Execution.CandidateAuthority.Downstream.Publication != nil {
 		return Result{Run: value.run}, ErrNotReady
 	}
 	nextState, ok := directdomain.AuthorizeManual(*state, command.Authorization)
@@ -397,7 +400,8 @@ func reducerFacts(value current, nowMillis int64) deliveryreducer.DirectFacts {
 	}
 	authority := value.run.Execution.CandidateAuthority
 	publication := value.run.Execution.PublicationPolicy != nil || value.run.Execution.Publication != nil ||
-		len(value.run.Execution.PublicationHistory) != 0 || authority != nil && authority.Downstream.Publication != nil
+		len(value.run.Execution.PublicationHistory) != 0 || value.run.Execution.IntegrationPolicy != nil ||
+		value.run.Execution.Integration != nil || len(value.run.Execution.IntegrationHistory) != 0 || authority != nil && authority.Downstream.Publication != nil
 	return deliveryreducer.DirectFacts{SchemaVersion: deliveryreducer.DirectSchemaVersion, State: state,
 		TaskBlocked: value.task.Attention != nil, ProjectActive: value.project.State == "active",
 		LeaseCurrent: currentLease(value.project, value.run, state.Binding.LeaseEpoch, nowMillis),

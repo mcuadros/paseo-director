@@ -23,6 +23,7 @@ import (
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	"github.com/mcuadros/director-engine/domain/execution"
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
+	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
@@ -552,12 +553,14 @@ func (service *Service) invalidateBase(ctx context.Context, run domain.Run, stat
 	// the same deterministic base observation can then invalidate the binding.
 	if run.Execution.Publication != nil && publicationdomain.DispatchInFlight(*run.Execution.Publication) ||
 		run.Execution.DirectDelivery != nil && directdomain.DispatchInFlight(*run.Execution.DirectDelivery) ||
+		run.Execution.Integration != nil && integrationdomain.DispatchInFlight(*run.Execution.Integration) ||
 		run.Execution.Feedback != nil && feedbackdomain.DispatchInFlight(*run.Execution.Feedback) {
 		return Result{Run: run, WaitingExternal: true, Code: code}, ErrValidationDispatching
 	}
 	if run.Execution.Review != nil && len(run.Execution.ReviewHistory) >= 64 ||
 		run.Execution.Publication != nil && len(run.Execution.PublicationHistory) >= publicationdomain.MaximumHistoricalStates ||
 		run.Execution.DirectDelivery != nil && len(run.Execution.DirectDeliveryHistory) >= directdomain.MaximumHistoricalStates ||
+		run.Execution.Integration != nil && len(run.Execution.IntegrationHistory) >= integrationdomain.MaximumHistoricalStates ||
 		run.Execution.Feedback != nil && len(run.Execution.FeedbackHistory) >= 64 {
 		return Result{Run: run, Code: code}, ErrValidationRefused
 	}
@@ -601,6 +604,14 @@ func (service *Service) invalidateBase(ctx context.Context, run domain.Run, stat
 		next.Execution.DirectDeliveryHistory = append(slices.Clone(next.Execution.DirectDeliveryHistory), invalid)
 		next.Execution.DirectDelivery = nil
 	}
+	if next.Execution.Integration != nil {
+		invalid := integrationdomain.Invalidate(*next.Execution.Integration, string(code), "fresh_candidate_validation_review_feedback_and_publication")
+		if !integrationdomain.ValidState(invalid) || invalid.Phase != integrationdomain.PhaseInvalidated {
+			return Result{Run: run, Code: code}, ErrValidationRefused
+		}
+		next.Execution.IntegrationHistory = append(slices.Clone(next.Execution.IntegrationHistory), invalid)
+		next.Execution.Integration = nil
+	}
 	if next.Execution.Feedback != nil {
 		invalid := feedbackdomain.Invalidate(*next.Execution.Feedback, strings.ToLower(string(code)))
 		if !feedbackdomain.ValidState(invalid) || !invalid.Invalidated {
@@ -631,6 +642,11 @@ func (service *Service) Reconcile(ctx context.Context, runID string, nowMillis i
 	}
 	if state.Invalidated {
 		return Result{Run: run, Invalidated: true, Code: state.InvalidationCode}, ErrValidationInvalidated
+	}
+	if run.Execution.CandidateAuthority != nil && run.Execution.CandidateAuthority.Downstream.Integration != nil &&
+		run.Execution.Integration != nil && run.Execution.Integration.Phase == integrationdomain.PhaseComplete &&
+		integrationdomain.ValidState(*run.Execution.Integration) {
+		return Result{Run: run, Terminal: true, Outcome: state.Evidence.Outcome, Code: state.Code}, nil
 	}
 	if state.Evidence != nil {
 		repository, observeErr := service.github.ObserveChecksRepository(ctx, githubport.ChecksRepositoryRequest{Owner: state.Binding.RepositoryOwner,

@@ -23,6 +23,7 @@ import (
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	"github.com/mcuadros/director-engine/domain/execution"
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
+	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	validationdomain "github.com/mcuadros/director-engine/domain/validation"
@@ -554,6 +555,10 @@ func validateRun(run domain.Run) error {
 			!validationdomain.ValidPolicy(*state.ValidationPolicy)) {
 			return fmt.Errorf("%w: invalid pull-request Validation policy", storeport.ErrInvalidRecord)
 		}
+		if state.IntegrationPolicy != nil && (state.DeliveryMode != domainconfig.DeliveryPullRequest ||
+			!integrationdomain.ValidPolicy(*state.IntegrationPolicy)) {
+			return fmt.Errorf("%w: invalid integration policy", storeport.ErrInvalidRecord)
+		}
 		if state.DeliveryMode != domainconfig.DeliveryPullRequest &&
 			(state.Validation != nil || len(state.ValidationHistory) != 0) {
 			return fmt.Errorf("%w: Validation conflicts with frozen delivery mode", storeport.ErrInvalidRecord)
@@ -592,7 +597,7 @@ func validateRun(run domain.Run) error {
 				feedback.Binding.ManifestSHA256 != state.CandidateAuthority.BindingSHA256 {
 				return fmt.Errorf("%w: current feedback does not match Candidate authority", storeport.ErrInvalidRecord)
 			}
-			if feedbackdomain.BlocksDelivery(feedback) && (state.Publication != nil || state.DirectDelivery != nil ||
+			if feedbackdomain.BlocksDelivery(feedback) && (state.Publication != nil || state.DirectDelivery != nil || state.Integration != nil ||
 				state.CandidateAuthority.Downstream.Validation != nil || state.CandidateAuthority.Downstream.CI != nil ||
 				state.CandidateAuthority.Downstream.Review != nil || state.CandidateAuthority.Downstream.Publication != nil ||
 				state.CandidateAuthority.Downstream.Ready != nil || state.CandidateAuthority.Downstream.Integration != nil) {
@@ -619,7 +624,7 @@ func validateRun(run domain.Run) error {
 			!publicationdomain.ValidPolicy(*state.PublicationPolicy)) {
 			return fmt.Errorf("%w: invalid publication policy", storeport.ErrInvalidRecord)
 		}
-		if state.Publication != nil && state.DirectDelivery != nil {
+		if state.Publication != nil && state.DirectDelivery != nil || state.Integration != nil && state.DirectDelivery != nil {
 			return fmt.Errorf("%w: pull-request and direct delivery cannot both be active", storeport.ErrInvalidRecord)
 		}
 		if state.Publication != nil {
@@ -716,6 +721,52 @@ func validateRun(run domain.Run) error {
 				return fmt.Errorf("%w: duplicate direct-delivery identity", storeport.ErrInvalidRecord)
 			}
 			seenDirectDeliveries[direct.ID] = struct{}{}
+		}
+		if len(state.IntegrationHistory) > integrationdomain.MaximumHistoricalStates {
+			return fmt.Errorf("%w: too many historical integration states", storeport.ErrInvalidRecord)
+		}
+		seenIntegrations := make(map[string]struct{}, len(state.IntegrationHistory)+1)
+		if state.Integration != nil {
+			integration := *state.Integration
+			if state.DeliveryMode != domainconfig.DeliveryPullRequest || state.IntegrationPolicy == nil ||
+				integration.Policy.SHA256 != state.IntegrationPolicy.SHA256 || !integrationdomain.ValidState(integration) {
+				return fmt.Errorf("%w: invalid integration state", storeport.ErrInvalidRecord)
+			}
+			seenIntegrations[integration.ID] = struct{}{}
+			if integration.Phase != integrationdomain.PhaseInvalidated {
+				authority := state.CandidateAuthority
+				if authority == nil || authority.Invalidated || integration.Binding.CandidateID != authority.CandidateID ||
+					integration.Binding.CandidateSHA != authority.CandidateSHA || integration.Binding.BaseSHA != authority.BaseSHA ||
+					integration.Binding.ManifestSHA256 != authority.BindingSHA256 || integration.Binding.CandidateGeneration != authority.Generation ||
+					integration.Binding.TaskVersion != authority.TaskVersion || integration.Binding.ConfigurationSHA256 != authority.ConfigurationSHA256 ||
+					integration.Binding.RepositoryID != state.RepositoryBinding.RepositoryID ||
+					integration.Binding.RepositoryBindingSHA256 != state.RepositoryBindingHash || state.Publication == nil ||
+					state.Publication.Evidence == nil || !state.Publication.Evidence.Ready ||
+					integration.Binding.PublicationEvidenceID != state.Publication.Evidence.ID || state.Validation == nil ||
+					state.Validation.Evidence == nil || integration.Binding.ValidationEvidenceID != state.Validation.Evidence.ID ||
+					integration.Binding.ValidationEvidenceSHA256 != state.Validation.Evidence.SHA256 || state.Review == nil ||
+					state.Review.Evidence == nil || state.Review.CIObservation == nil ||
+					integration.Binding.ReviewEvidenceID != state.Review.Evidence.ID ||
+					integration.Binding.ReviewerUUID != state.Review.Evidence.ReviewerUUID ||
+					integration.Binding.CIObservationID != state.Review.CIObservation.ID ||
+					integration.Binding.CIObservationSHA256 != state.Review.CIObservation.SHA256 ||
+					authority.Downstream.Ready == nil || authority.Downstream.Ready.ID != integration.Binding.ReadyEvidenceID {
+					return fmt.Errorf("%w: integration is not bound to current Candidate authority", storeport.ErrInvalidRecord)
+				}
+				if integration.Phase == integrationdomain.PhaseComplete && (integration.Evidence == nil || authority.Downstream.Integration == nil ||
+					authority.Downstream.Integration.ID != integration.Evidence.ID) {
+					return fmt.Errorf("%w: integration evidence is not authoritative", storeport.ErrInvalidRecord)
+				}
+			}
+		}
+		for _, integration := range state.IntegrationHistory {
+			if !integrationdomain.ValidState(integration) || integration.Phase != integrationdomain.PhaseInvalidated {
+				return fmt.Errorf("%w: invalid historical integration state", storeport.ErrInvalidRecord)
+			}
+			if _, duplicate := seenIntegrations[integration.ID]; duplicate {
+				return fmt.Errorf("%w: duplicate integration identity", storeport.ErrInvalidRecord)
+			}
+			seenIntegrations[integration.ID] = struct{}{}
 		}
 	}
 	return nil
@@ -1616,7 +1667,8 @@ func (store *DoltTaskStore) UpdateRun(
 		}
 		if current.Execution.DeliveryMode != run.Execution.DeliveryMode ||
 			!reflect.DeepEqual(current.Execution.PublicationPolicy, run.Execution.PublicationPolicy) ||
-			!reflect.DeepEqual(current.Execution.ValidationPolicy, run.Execution.ValidationPolicy) {
+			!reflect.DeepEqual(current.Execution.ValidationPolicy, run.Execution.ValidationPolicy) ||
+			!reflect.DeepEqual(current.Execution.IntegrationPolicy, run.Execution.IntegrationPolicy) {
 			return mutationResult{}, fmt.Errorf("%w: frozen Run delivery policy is immutable", storeport.ErrInvalidRecord)
 		}
 		if run.CurrentCandidateID != "" {
@@ -1715,6 +1767,7 @@ func (store *DoltTaskStore) AppendCandidate(
 		}
 		if current.Execution.Publication != nil && publicationdomain.DispatchInFlight(*current.Execution.Publication) ||
 			current.Execution.DirectDelivery != nil && directdomain.DispatchInFlight(*current.Execution.DirectDelivery) ||
+			current.Execution.Integration != nil && integrationdomain.DispatchInFlight(*current.Execution.Integration) ||
 			current.Execution.Feedback != nil && feedbackdomain.DispatchInFlight(*current.Execution.Feedback) {
 			return mutationResult{}, storeport.ErrReferentialIntegrity
 		}
@@ -1773,6 +1826,17 @@ func (store *DoltTaskStore) AppendCandidate(
 			}
 			current.Execution.DirectDeliveryHistory = append(current.Execution.DirectDeliveryHistory, historical)
 			current.Execution.DirectDelivery = nil
+		}
+		if current.Execution.Integration != nil {
+			if len(current.Execution.IntegrationHistory) >= integrationdomain.MaximumHistoricalStates {
+				return mutationResult{}, storeport.ErrReferentialIntegrity
+			}
+			historical := integrationdomain.Invalidate(*current.Execution.Integration, "candidate_changed", "fresh_candidate_validation_review_feedback_and_publication")
+			if !integrationdomain.ValidState(historical) || historical.Phase != integrationdomain.PhaseInvalidated {
+				return mutationResult{}, storeport.ErrReferentialIntegrity
+			}
+			current.Execution.IntegrationHistory = append(current.Execution.IntegrationHistory, historical)
+			current.Execution.Integration = nil
 		}
 		if current.Execution.Feedback != nil {
 			historical := *current.Execution.Feedback

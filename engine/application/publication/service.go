@@ -159,7 +159,8 @@ func currentProjectLease(project domain.Project, run domain.Run, nowMillis int64
 // authority and recorded its fresh-gates plan. Every active/parked correction
 // and every Run-level NeedsYou fact blocks even Git/GitHub observation.
 func correctionAllowsPublication(run domain.Run) bool {
-	if run.Execution.NeedsYou != nil || run.Execution.Feedback != nil && feedbackdomain.BlocksDelivery(*run.Execution.Feedback) {
+	if run.Execution.NeedsYou != nil || run.Execution.Integration != nil ||
+		run.Execution.Feedback != nil && feedbackdomain.BlocksDelivery(*run.Execution.Feedback) {
 		return false
 	}
 	state := run.Execution.Correction
@@ -249,6 +250,7 @@ func currentBinding(task domain.Task, run domain.Run, record domain.Candidate, s
 	authority := run.Execution.CandidateAuthority
 	return !state.Invalidated && authority != nil && candidate.ValidAuthority(*authority) && !authority.Invalidated &&
 		run.Execution.DeliveryMode == domainconfig.DeliveryPullRequest && run.Execution.DirectDelivery == nil &&
+		run.Execution.Integration == nil &&
 		len(run.Execution.DirectDeliveryHistory) == 0 &&
 		run.CurrentCandidateID == record.ID && record.RunID == run.ID && task.Version == authority.TaskVersion &&
 		authority.CandidateID == state.Binding.CandidateID && authority.CandidateSHA == state.Binding.CandidateSHA &&
