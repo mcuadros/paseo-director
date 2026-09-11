@@ -1,57 +1,63 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package correction is the exclusive home of the pure, versioned correction
-// turn reducer.
+// routing reducer.
 package correction
 
 import (
 	"slices"
-	"strings"
-	"unicode"
-	"unicode/utf8"
+
+	domaincorrection "github.com/mcuadros/director-engine/domain/correction"
+	"github.com/mcuadros/director-engine/domain/runtimebudget"
 )
 
-const SchemaVersion = "director.reducer.correction/v1"
+const SchemaVersion = "director.reducer.correction/v2"
 
-// FindingSet carries every current correction input by durable identity. The
-// prompt receives the union as one batch; it never receives review findings in
-// serial turns which could consume the correction budget one item at a time.
-type FindingSet struct {
-	Review        []string `json:"review,omitempty"`
-	Validation    []string `json:"validation,omitempty"`
-	HumanFeedback []string `json:"humanFeedback,omitempty"`
-}
+const (
+	CodeFactsInvalid             = "correction_facts_invalid"
+	CodeFrozenContextChanged     = "correction_frozen_context_changed"
+	CodeOriginalAgentChanged     = "correction_original_agent_changed"
+	CodeProviderUnavailable      = "correction_provider_unavailable"
+	CodeProviderAmbiguous        = "correction_provider_ambiguous"
+	CodeHumanDecisionRequired    = "correction_human_decision_required"
+	CodeP2DecisionRequired       = "correction_p2_decision_required"
+	CodeAutomaticFixDisabled     = "correction_automatic_fix_disabled"
+	CodeAttemptLimitExhausted    = "correction_attempt_limit_exhausted"
+	CodeNewBlockingClassAfterCap = "correction_new_blocking_class_after_cap"
+	CodeRootCauseRepeated        = "correction_root_cause_repeated"
+	CodeOutputBindingInvalid     = "correction_output_binding_invalid"
+	CodeAcknowledgementRepeated  = "correction_acknowledgement_repeated"
+	CodeUnchangedCandidate       = "correction_unchanged_candidate"
+	CodePromptResultAmbiguous    = "correction_prompt_result_ambiguous"
+)
 
-// TurnOutput is the Task Agent's bounded result from one authorized correction
-// turn. AcknowledgementOnly is explicit so prose cannot be interpreted as a
-// correction, and BatchedFindingIDs proves the agent received the whole batch.
-type TurnOutput struct {
-	AgentID             string   `json:"agentId"`
-	CandidateSHA        string   `json:"candidateSha,omitempty"`
-	AcknowledgementOnly bool     `json:"acknowledgementOnly"`
-	BatchedFindingIDs   []string `json:"batchedFindingIds"`
-}
+type ProviderState string
 
-// Facts is the closed input for dispatching or reconciling one correction
-// turn. PLAN and skill material is reused only when its current digest equals
-// the frozen Run digest. Human decisions and the Candidate diff are always
-// refreshed and carried by their current digests.
+const (
+	ProviderCurrent     ProviderState = "current"
+	ProviderUnavailable ProviderState = "unavailable"
+	ProviderAmbiguous   ProviderState = "ambiguous"
+)
+
+// Facts is the complete closed correction decision input. Current digests and
+// identities are reread for every decision; the model cannot choose them.
 type Facts struct {
-	SchemaVersion             string      `json:"schemaVersion"`
-	TaskAgentID               string      `json:"taskAgentId"`
-	BaseSHA                   string      `json:"baseSha"`
-	PreviousCandidateSHA      string      `json:"previousCandidateSha"`
-	FrozenPlanDigest          string      `json:"frozenPlanDigest"`
-	CurrentPlanDigest         string      `json:"currentPlanDigest"`
-	FrozenSkillSetDigest      string      `json:"frozenSkillSetDigest"`
-	CurrentSkillSetDigest     string      `json:"currentSkillSetDigest"`
-	CurrentDecisionDigest     string      `json:"currentDecisionDigest"`
-	CurrentDiffDigest         string      `json:"currentDiffDigest"`
-	Findings                  FindingSet  `json:"findings"`
-	CorrectionAttempts        uint64      `json:"correctionAttempts"`
-	CorrectionAttemptLimit    uint64      `json:"correctionAttemptLimit"`
-	AcknowledgementRejections uint64      `json:"acknowledgementRejections"`
-	Output                    *TurnOutput `json:"output,omitempty"`
+	SchemaVersion         string                    `json:"schemaVersion"`
+	State                 domaincorrection.State    `json:"state"`
+	CurrentTaskAgentUUID  string                    `json:"currentTaskAgentUuid"`
+	CurrentCandidateID    string                    `json:"currentCandidateId"`
+	CurrentCandidateSHA   string                    `json:"currentCandidateSha"`
+	CurrentPlanDigest     string                    `json:"currentPlanDigest"`
+	CurrentSkillSetDigest string                    `json:"currentSkillSetDigest"`
+	CurrentDecisionDigest string                    `json:"currentDecisionDigest"`
+	CurrentDiffDigest     string                    `json:"currentDiffDigest"`
+	ProviderState         ProviderState             `json:"providerState"`
+	BudgetDisposition     runtimebudget.Disposition `json:"budgetDisposition"`
+	BudgetReason          runtimebudget.ReasonCode  `json:"budgetReason,omitempty"`
+	CIBudgetAvailable     bool                      `json:"ciBudgetAvailable"`
+	RepeatingRootCause    bool                      `json:"repeatingRootCause"`
+	NewBlockingClasses    []string                  `json:"newBlockingClasses"`
+	Output                *domaincorrection.Output  `json:"output,omitempty"`
 }
 
 type DecisionKind string
@@ -59,131 +65,142 @@ type DecisionKind string
 const (
 	DecisionDispatchCorrection        DecisionKind = "dispatch_correction"
 	DecisionRejectAcknowledgementOnce DecisionKind = "reject_acknowledgement_once"
-	DecisionAdmitCorrectedCandidate   DecisionKind = "admit_corrected_candidate"
+	DecisionObserveCorrectedCandidate DecisionKind = "observe_corrected_candidate"
 	DecisionEscalate                  DecisionKind = "escalate"
 )
 
-// Decision carries only identities needed for the next deterministic effect.
-// Reuse digests and refresh digests stay separate so an adapter cannot replace
-// a current decision/diff with the frozen context bundle.
 type Decision struct {
-	SchemaVersion             string       `json:"schemaVersion"`
-	Kind                      DecisionKind `json:"kind"`
-	Code                      string       `json:"code,omitempty"`
-	CandidateSHA              string       `json:"candidateSha,omitempty"`
-	BatchedFindingIDs         []string     `json:"batchedFindingIds,omitempty"`
-	ReusePlanDigest           string       `json:"reusePlanDigest,omitempty"`
-	ReuseSkillSetDigest       string       `json:"reuseSkillSetDigest,omitempty"`
-	RefreshDecisionDigest     string       `json:"refreshDecisionDigest,omitempty"`
-	RefreshDiffDigest         string       `json:"refreshDiffDigest,omitempty"`
-	AcknowledgementRejections uint64       `json:"acknowledgementRejections,omitempty"`
-	CleanupAuthorized         bool         `json:"cleanupAuthorized"`
+	SchemaVersion             string                         `json:"schemaVersion"`
+	Kind                      DecisionKind                   `json:"kind"`
+	Code                      string                         `json:"code,omitempty"`
+	AttemptReason             domaincorrection.AttemptReason `json:"attemptReason,omitempty"`
+	CandidateSHA              string                         `json:"candidateSha,omitempty"`
+	BatchSHA256               string                         `json:"batchSha256,omitempty"`
+	BatchedFindingIDs         []string                       `json:"batchedFindingIds,omitempty"`
+	FindingFingerprint        string                         `json:"findingFingerprint,omitempty"`
+	ClassFingerprint          string                         `json:"classFingerprint,omitempty"`
+	CandidateFingerprint      string                         `json:"candidateFingerprint,omitempty"`
+	CoverageFingerprint       string                         `json:"coverageFingerprint,omitempty"`
+	ReusePlanDigest           string                         `json:"reusePlanDigest,omitempty"`
+	ReuseSkillSetDigest       string                         `json:"reuseSkillSetDigest,omitempty"`
+	RefreshDecisionDigest     string                         `json:"refreshDecisionDigest,omitempty"`
+	RefreshDiffDigest         string                         `json:"refreshDiffDigest,omitempty"`
+	AcknowledgementRejections uint32                         `json:"acknowledgementRejections,omitempty"`
+	CleanupAuthorized         bool                           `json:"cleanupAuthorized"`
 }
 
 func escalate(code string) Decision {
 	return Decision{SchemaVersion: SchemaVersion, Kind: DecisionEscalate, Code: code}
 }
 
-func digestPresent(value string) bool {
-	if len(value) != 64 {
-		return false
-	}
-	for _, character := range value {
-		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
-			return false
-		}
-	}
-	return true
+func hasSource(batch domaincorrection.Batch, source domaincorrection.Source) bool {
+	return slices.ContainsFunc(batch.Findings, func(finding domaincorrection.Finding) bool { return finding.Source == source })
 }
 
-func shaPresent(value string) bool {
-	return len(value) == 40 && digestPresent(value+strings.Repeat("0", 24))
-}
-
-func validIdentity(value string) bool {
-	return value != "" && len(value) <= 200 && utf8.ValidString(value) &&
-		strings.IndexFunc(value, unicode.IsControl) < 0
-}
-
-func findingBatch(findings FindingSet) ([]string, bool) {
-	batch := append([]string(nil), findings.Review...)
-	batch = append(batch, findings.Validation...)
-	batch = append(batch, findings.HumanFeedback...)
-	if len(batch) == 0 || len(batch) > 1_000 {
-		return nil, false
+func attemptReason(state domaincorrection.State) domaincorrection.AttemptReason {
+	if len(state.Attempts) == 0 {
+		return domaincorrection.ReasonInitial
 	}
-	seen := make(map[string]struct{}, len(batch))
-	for _, id := range batch {
-		if !validIdentity(id) {
-			return nil, false
-		}
-		if _, duplicate := seen[id]; duplicate {
-			return nil, false
-		}
-		seen[id] = struct{}{}
+	if state.AcknowledgementRejections > 0 && state.Attempts[len(state.Attempts)-1].Classification == domaincorrection.ClassificationChurn {
+		return domaincorrection.ReasonAcknowledgementRejected
 	}
-	slices.Sort(batch)
-	return batch, true
+	return domaincorrection.ReasonFindingsChanged
 }
 
-// Reduce admits one correction action from closed facts. It never grants
-// cleanup, publication, review, or integration authority.
+func contextDecision(state domaincorrection.State, batch domaincorrection.Batch) Decision {
+	return Decision{
+		SchemaVersion: SchemaVersion, BatchSHA256: batch.SHA256,
+		BatchedFindingIDs: domaincorrection.FindingIDs(batch), FindingFingerprint: batch.FindingFingerprint,
+		ClassFingerprint: batch.ClassFingerprint, CandidateFingerprint: batch.CandidateFingerprint,
+		CoverageFingerprint: batch.CoverageFingerprint, ReusePlanDigest: state.FrozenPlanDigest,
+		ReuseSkillSetDigest: state.FrozenSkillSetDigest, RefreshDecisionDigest: state.CurrentDecisionDigest,
+		RefreshDiffDigest: state.CurrentDiffDigest,
+	}
+}
+
+// Reduce chooses only correction dispatch, one acknowledgement rejection,
+// exact-Candidate observation, or a typed fail-closed escalation.
 func Reduce(facts Facts) Decision {
-	if facts.SchemaVersion != SchemaVersion {
-		return escalate("correction_facts_version_mismatch")
+	state := facts.State
+	batch, batchOK := domaincorrection.CurrentBatch(state)
+	if facts.SchemaVersion != SchemaVersion || !domaincorrection.ValidState(state) || !batchOK ||
+		facts.CurrentCandidateID != state.CurrentCandidateID || facts.CurrentCandidateSHA != state.CurrentCandidateSHA ||
+		facts.CurrentDecisionDigest != state.CurrentDecisionDigest || facts.CurrentDiffDigest != state.CurrentDiffDigest {
+		return escalate(CodeFactsInvalid)
 	}
-	if !validIdentity(facts.TaskAgentID) || !shaPresent(facts.BaseSHA) ||
-		!shaPresent(facts.PreviousCandidateSHA) ||
-		!digestPresent(facts.FrozenPlanDigest) || !digestPresent(facts.CurrentPlanDigest) ||
-		!digestPresent(facts.FrozenSkillSetDigest) || !digestPresent(facts.CurrentSkillSetDigest) ||
-		!digestPresent(facts.CurrentDecisionDigest) || !digestPresent(facts.CurrentDiffDigest) ||
-		facts.CorrectionAttemptLimit == 0 || facts.CorrectionAttempts > facts.CorrectionAttemptLimit {
-		return escalate("correction_facts_invalid")
+	if facts.CurrentPlanDigest != state.FrozenPlanDigest || facts.CurrentSkillSetDigest != state.FrozenSkillSetDigest {
+		return escalate(CodeFrozenContextChanged)
 	}
-	if facts.FrozenPlanDigest != facts.CurrentPlanDigest ||
-		facts.FrozenSkillSetDigest != facts.CurrentSkillSetDigest {
-		return escalate("correction_frozen_context_changed")
+	if facts.CurrentTaskAgentUUID != state.OriginalTaskAgentUUID {
+		return escalate(CodeOriginalAgentChanged)
 	}
-	batch, valid := findingBatch(facts.Findings)
-	if !valid {
-		return escalate("correction_finding_batch_invalid")
+	switch facts.ProviderState {
+	case ProviderUnavailable:
+		return escalate(CodeProviderUnavailable)
+	case ProviderAmbiguous:
+		return escalate(CodeProviderAmbiguous)
+	case ProviderCurrent:
+	default:
+		return escalate(CodeFactsInvalid)
 	}
-	context := Decision{
-		SchemaVersion:         SchemaVersion,
-		BatchedFindingIDs:     batch,
-		ReusePlanDigest:       facts.FrozenPlanDigest,
-		ReuseSkillSetDigest:   facts.FrozenSkillSetDigest,
-		RefreshDecisionDigest: facts.CurrentDecisionDigest,
-		RefreshDiffDigest:     facts.CurrentDiffDigest,
-	}
-	if facts.Output == nil {
-		if facts.CorrectionAttempts >= facts.CorrectionAttemptLimit {
-			return escalate("correction_attempt_limit_exhausted")
+	if batch.RequiresHumanDecision {
+		for _, finding := range batch.Findings {
+			if finding.RequiresHumanDecision && finding.Severity == domaincorrection.SeverityP2 {
+				return escalate(CodeP2DecisionRequired)
+			}
 		}
-		context.Kind = DecisionDispatchCorrection
-		return context
+		return escalate(CodeHumanDecisionRequired)
+	}
+	if hasSource(batch, domaincorrection.SourceReview) || hasSource(batch, domaincorrection.SourceHuman) {
+		if !state.Policy.AutoFixReviewFeedback {
+			return escalate(CodeAutomaticFixDisabled)
+		}
+	}
+	if hasSource(batch, domaincorrection.SourceValidation) || hasSource(batch, domaincorrection.SourceCI) {
+		if !state.Policy.AutoFixCIFailures {
+			return escalate(CodeAutomaticFixDisabled)
+		}
+	}
+	if facts.BudgetDisposition != runtimebudget.DispositionAllow {
+		if facts.BudgetReason == "" {
+			return escalate(CodeFactsInvalid)
+		}
+		return escalate(string(facts.BudgetReason))
+	}
+	if !facts.CIBudgetAvailable {
+		return escalate(string(runtimebudget.ReasonCIHard))
+	}
+	decision := contextDecision(state, batch)
+	if facts.Output == nil {
+		if len(state.Attempts) >= int(domaincorrection.AttemptLimit) {
+			if len(facts.NewBlockingClasses) > 0 {
+				return escalate(CodeNewBlockingClassAfterCap)
+			}
+			return escalate(CodeAttemptLimitExhausted)
+		}
+		if facts.RepeatingRootCause {
+			return escalate(CodeRootCauseRepeated)
+		}
+		decision.Kind = DecisionDispatchCorrection
+		decision.AttemptReason = attemptReason(state)
+		return decision
+	}
+	attempt := state.Attempts[len(state.Attempts)-1]
+	if !domaincorrection.ValidOutput(*facts.Output, state, attempt) || attempt.Output != nil {
+		return escalate(CodeOutputBindingInvalid)
 	}
 	output := facts.Output
-	if output.AgentID != facts.TaskAgentID ||
-		!slices.Equal(output.BatchedFindingIDs, batch) {
-		return escalate("correction_output_binding_invalid")
-	}
-	if output.AcknowledgementOnly {
-		if output.CandidateSHA != "" {
-			return escalate("correction_output_binding_invalid")
+	unchanged := output.CandidateSHA == state.CurrentCandidateSHA
+	if output.AcknowledgementOnly || unchanged {
+		if state.AcknowledgementRejections > 0 {
+			return escalate(CodeAcknowledgementRepeated)
 		}
-		if facts.AcknowledgementRejections > 0 {
-			return escalate("correction_acknowledgement_repeated")
-		}
-		context.Kind = DecisionRejectAcknowledgementOnce
-		context.AcknowledgementRejections = 1
-		return context
+		decision.Kind = DecisionRejectAcknowledgementOnce
+		decision.Code = CodeUnchangedCandidate
+		decision.AcknowledgementRejections = 1
+		return decision
 	}
-	if facts.CorrectionAttempts >= facts.CorrectionAttemptLimit ||
-		!shaPresent(output.CandidateSHA) || output.CandidateSHA == facts.PreviousCandidateSHA {
-		return escalate("corrected_candidate_invalid")
-	}
-	context.Kind = DecisionAdmitCorrectedCandidate
-	context.CandidateSHA = output.CandidateSHA
-	return context
+	decision.Kind = DecisionObserveCorrectedCandidate
+	decision.CandidateSHA = output.CandidateSHA
+	return decision
 }

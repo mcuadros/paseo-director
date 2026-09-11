@@ -98,6 +98,7 @@ const (
 	CodeConfigurationChanged       Code = "CANDIDATE_CONFIGURATION_CHANGED"
 	CodeDecisionsChanged           Code = "CANDIDATE_DECISIONS_CHANGED"
 	CodeFindingsChanged            Code = "CANDIDATE_FINDINGS_CHANGED"
+	CodeCandidateChanged           Code = "CANDIDATE_CHANGED"
 )
 
 var codes = []Code{
@@ -108,7 +109,7 @@ var codes = []Code{
 	CodeWorktreeDirty, CodeIndexDirty, CodeUntracked, CodeIgnored, CodeSubmodule,
 	CodeConflict, CodeIntentToAdd, CodeSparseCheckout, CodeUnsafePath, CodeTOCTOU,
 	CodeGitUnavailable,
-	CodeTaskVersionChanged, CodeConfigurationChanged, CodeDecisionsChanged, CodeFindingsChanged,
+	CodeTaskVersionChanged, CodeConfigurationChanged, CodeDecisionsChanged, CodeFindingsChanged, CodeCandidateChanged,
 }
 
 // Observation is one bounded Git/filesystem fact. It deliberately contains no
@@ -248,6 +249,24 @@ type AuthorityContext struct {
 	ConfigurationSHA256 string
 	DecisionsSHA256     string
 	FindingsSHA256      string
+}
+
+// HistoricalAuthority retains the complete prior downstream binding snapshot
+// when a changed correction commit atomically replaces current authority.
+// The snapshot remains immutable; invalidation metadata is carried beside it.
+type HistoricalAuthority struct {
+	Authority                 Authority `json:"authority"`
+	InvalidationCode          Code      `json:"invalidationCode"`
+	InvalidatedByCandidateID  string    `json:"invalidatedByCandidateId"`
+	InvalidatedByCandidateSHA string    `json:"invalidatedByCandidateSha"`
+	InvalidatedAtMillis       int64     `json:"invalidatedAtMillis"`
+}
+
+func ValidHistoricalAuthority(value HistoricalAuthority) bool {
+	return ValidAuthority(value.Authority) && !value.Authority.Invalidated && value.InvalidationCode == CodeCandidateChanged &&
+		identifierPattern.MatchString(value.InvalidatedByCandidateID) && validOID(value.InvalidatedByCandidateSHA) &&
+		value.InvalidatedByCandidateID != value.Authority.CandidateID && value.InvalidatedByCandidateSHA != value.Authority.CandidateSHA &&
+		len(value.InvalidatedByCandidateSHA) == len(value.Authority.CandidateSHA) && value.InvalidatedAtMillis >= 0
 }
 
 func digest(value any) string {

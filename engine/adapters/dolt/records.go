@@ -18,6 +18,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
@@ -448,6 +449,26 @@ func validateRun(run domain.Run) error {
 		} else if run.CurrentCandidateID != "" {
 			return fmt.Errorf("%w: current Candidate lacks authority", storeport.ErrInvalidRecord)
 		}
+		if len(state.CandidateAuthorityHistory) > 64 {
+			return fmt.Errorf("%w: too many historical Candidate authorities", storeport.ErrInvalidRecord)
+		}
+		seenAuthorityGenerations := make(map[uint64]struct{}, len(state.CandidateAuthorityHistory))
+		seenAuthorityCandidates := make(map[string]struct{}, len(state.CandidateAuthorityHistory))
+		for _, historical := range state.CandidateAuthorityHistory {
+			if !candidatedomain.ValidHistoricalAuthority(historical) ||
+				(state.CandidateAuthority != nil && (historical.Authority.Generation >= state.CandidateAuthority.Generation ||
+					historical.Authority.CandidateID == state.CandidateAuthority.CandidateID)) {
+				return fmt.Errorf("%w: invalid historical Candidate authority", storeport.ErrInvalidRecord)
+			}
+			if _, duplicate := seenAuthorityGenerations[historical.Authority.Generation]; duplicate {
+				return fmt.Errorf("%w: duplicate historical Candidate generation", storeport.ErrInvalidRecord)
+			}
+			if _, duplicate := seenAuthorityCandidates[historical.Authority.CandidateID]; duplicate {
+				return fmt.Errorf("%w: duplicate historical Candidate identity", storeport.ErrInvalidRecord)
+			}
+			seenAuthorityGenerations[historical.Authority.Generation] = struct{}{}
+			seenAuthorityCandidates[historical.Authority.CandidateID] = struct{}{}
+		}
 		if state.Review != nil {
 			review := *state.Review
 			if !reviewdomain.ValidState(review) {
@@ -490,6 +511,9 @@ func validateRun(run domain.Run) error {
 				return fmt.Errorf("%w: duplicate Review key", storeport.ErrInvalidRecord)
 			}
 			seenReviews[review.ReviewKey] = struct{}{}
+		}
+		if state.Correction != nil && !correctiondomain.ValidState(*state.Correction) {
+			return fmt.Errorf("%w: invalid correction state", storeport.ErrInvalidRecord)
 		}
 	}
 	return nil
@@ -1457,7 +1481,21 @@ func (store *DoltTaskStore) AppendCandidate(
 		}
 		generation := uint64(0)
 		if current.Execution.CandidateAuthority != nil {
-			generation = current.Execution.CandidateAuthority.Generation
+			prior := *current.Execution.CandidateAuthority
+			if !candidatedomain.ValidAuthority(prior) || prior.Invalidated || prior.CandidateID == candidate.ID ||
+				prior.CandidateSHA == candidate.CommitSHA || len(current.Execution.CandidateAuthorityHistory) >= 64 {
+				return mutationResult{}, storeport.ErrReferentialIntegrity
+			}
+			generation = prior.Generation
+			historical := candidatedomain.HistoricalAuthority{
+				Authority: prior, InvalidationCode: candidatedomain.CodeCandidateChanged,
+				InvalidatedByCandidateID: candidate.ID, InvalidatedByCandidateSHA: candidate.CommitSHA,
+				InvalidatedAtMillis: candidate.AdmittedAtMillis,
+			}
+			if !candidatedomain.ValidHistoricalAuthority(historical) {
+				return mutationResult{}, storeport.ErrReferentialIntegrity
+			}
+			current.Execution.CandidateAuthorityHistory = append(current.Execution.CandidateAuthorityHistory, historical)
 		}
 		if current.Execution.Review != nil {
 			historical := *current.Execution.Review
@@ -1469,6 +1507,7 @@ func (store *DoltTaskStore) AppendCandidate(
 		}
 		authority := candidatedomain.NewAuthority(generation, candidate.ID, candidate.Claim.Branch, candidate.Claim.TaskVersion, candidate.Manifest)
 		current.Execution.CandidateAuthority = &authority
+		current.Execution.FindingContextSHA256 = candidate.Manifest.FindingsSHA256
 		current.CurrentCandidateID = candidate.ID
 		data, err := marshalRecord(current)
 		if err != nil {
