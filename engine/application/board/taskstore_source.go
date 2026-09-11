@@ -111,6 +111,7 @@ func normalizedHumanInput(task domain.Task, run *domain.Run) projection.HumanInp
 	}
 	result.State = projection.HumanInputPending
 	result.Code = attentionForNeed(first.Code)
+	result.ReasonCode = string(first.Code)
 	result.WakeCondition = first.WakeCondition
 	return result
 }

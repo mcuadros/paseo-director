@@ -166,6 +166,24 @@ func TestAuthorityInvalidatesEveryDownstreamGateOnEveryRelevantChange(t *testing
 	}
 }
 
+func TestHistoricalAuthorityRetainsPriorDownstreamBindingsForChangedCandidate(t *testing.T) {
+	claim := testClaim()
+	manifest := *Evaluate(claim, testObservation(claim), strings.Repeat("9", 64), 1_001).Manifest
+	authority := NewAuthority(0, RecordID(claim.RunID, 1, claim.CandidateSHA), claim.Branch, claim.TaskVersion, manifest)
+	authority.Downstream.CI = &EvidenceBinding{ID: "ci-old", CandidateID: authority.CandidateID,
+		CandidateSHA: authority.CandidateSHA, BaseSHA: authority.BaseSHA, Generation: authority.Generation,
+		BindingSHA256: authority.BindingSHA256}
+	historical := HistoricalAuthority{Authority: authority, InvalidationCode: CodeCandidateChanged,
+		InvalidatedByCandidateID: "candidate-new", InvalidatedByCandidateSHA: strings.Repeat("8", 40), InvalidatedAtMillis: 1_002}
+	if !ValidHistoricalAuthority(historical) || historical.Authority.Downstream.CI == nil {
+		t.Fatalf("historical authority = %#v", historical)
+	}
+	historical.InvalidatedByCandidateSHA = authority.CandidateSHA
+	if ValidHistoricalAuthority(historical) {
+		t.Fatal("unchanged Candidate recorded as replacement history")
+	}
+}
+
 func TestFullObjectIDsRejectPrefixesAndMixedFormats(t *testing.T) {
 	claim := testClaim()
 	for _, candidate := range []string{claim.CandidateSHA[:39], strings.Repeat("A", 40), strings.Repeat("1", 64)} {

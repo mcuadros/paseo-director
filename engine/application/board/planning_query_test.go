@@ -98,6 +98,34 @@ func TestPlanningReaderProjectsRuntimeBudgetForOrganizerVisibility(t *testing.T)
 	}
 }
 
+func TestPlanningReaderProjectsExactCorrectionReasonAndWakeAction(t *testing.T) {
+	store := planningScaleStore()
+	taskID := store.tasks["project-scale"][0].ID
+	store.tasks["project-scale"][0].Attention = nil
+	store.runs[taskID] = []domain.Run{{
+		ID: "run-correction", TaskID: taskID, Number: 1,
+		Execution: execution.State{NeedsYou: &execution.NeedsYou{
+			Code: "correction_root_cause_repeated", WakeCondition: "human_review_or_new_root_cause_evidence",
+		}},
+	}}
+	input := planningQueryInput()
+	search := "Open task 00001"
+	input.Search = &search
+	result, err := NewPlanningReader(store).Query(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Page.Tasks) != 1 || len(result.Page.Tasks[0].NeedsYou) != 1 {
+		t.Fatalf("correction attention = %#v", result.Page.Tasks)
+	}
+	reason := result.Page.Tasks[0].NeedsYou[0]
+	if reason.Code != "correction_root_cause_repeated" || reason.WakeCondition == nil ||
+		*reason.WakeCondition != "human_review_or_new_root_cause_evidence" || !reason.HumanActionRequired ||
+		reason.Message != "The same correction root cause repeated without acceptance-coverage progress" {
+		t.Fatalf("correction reason/action = %#v", reason)
+	}
+}
+
 func planningScaleStore() *planningFactStore {
 	project := domain.Project{ID: "project-scale", Name: "Scale project", State: "active", Version: 3}
 	workspaces := make([]domain.Workspace, 25)

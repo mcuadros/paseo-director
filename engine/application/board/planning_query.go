@@ -346,6 +346,22 @@ func explanationMessage(code string) string {
 		return "Control is waiting for a fresh authoritative external observation"
 	case "emergency_stop_confirmation_required":
 		return "Emergency stop requires a fresh confirmation from this authenticated human session"
+	case "correction_attempt_limit_exhausted":
+		return "Three automatic correction attempts are exhausted; review the complete correction lineage"
+	case "correction_new_blocking_class_after_cap":
+		return "A new blocking finding class appeared after the three-attempt correction cap"
+	case "correction_root_cause_repeated":
+		return "The same correction root cause repeated without acceptance-coverage progress"
+	case "correction_acknowledgement_repeated":
+		return "The Task Agent repeated an acknowledgement without producing a changed Candidate"
+	case "correction_p2_decision_required":
+		return "A P2 correction finding requires an explicit human decision"
+	case "correction_human_decision_required":
+		return "Current correction feedback requires an explicit human decision"
+	case "correction_provider_unavailable":
+		return "The original Task Agent provider is unavailable; no hidden replacement was started"
+	case "correction_prompt_result_ambiguous":
+		return "The correction prompt result is ambiguous and cannot be resent automatically"
 	}
 	message := strings.ReplaceAll(code, "_", " ")
 	if message == "" {
@@ -367,13 +383,17 @@ func projectionExplanations(codes []projection.BlockerCode, human bool) []planni
 func attentionExplanations(row projection.TaskProjectionRow, input projection.TaskProjectionInput) []planningport.Explanation {
 	result := make([]planningport.Explanation, 0, len(row.Projection.Attention))
 	for _, code := range row.Projection.Attention {
+		reasonCode := string(code)
+		if input.Facts.HumanInput.ReasonCode != "" {
+			reasonCode = input.Facts.HumanInput.ReasonCode
+		}
 		var wake *string
 		if input.Facts.HumanInput.WakeCondition != "" {
 			value := input.Facts.HumanInput.WakeCondition
 			wake = &value
 		}
 		result = append(result, planningport.Explanation{
-			Code: string(code), Message: explanationMessage(string(code)), WakeCondition: wake,
+			Code: reasonCode, Message: explanationMessage(reasonCode), WakeCondition: wake,
 			HumanActionRequired: true,
 		})
 	}

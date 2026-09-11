@@ -187,6 +187,7 @@ type HumanInputFact struct {
 	TaskVersion   uint64
 	State         HumanInputState
 	Code          AttentionCode
+	ReasonCode    string
 	WakeCondition string
 }
 
@@ -452,14 +453,15 @@ func assessHumanInput(facts TaskStateFacts, assessment *projectionAssessment) bo
 	}
 	switch human.State {
 	case HumanInputNone, HumanInputResolved:
-		if human.Code != "" || human.WakeCondition != "" {
+		if human.Code != "" || human.ReasonCode != "" || human.WakeCondition != "" {
 			assessment.block(BlockerHumanInputContradictory)
 			return false
 		}
 		return true
 	case HumanInputPending:
 		if !validAttention(human.Code) || strings.TrimSpace(human.WakeCondition) == "" ||
-			len(human.WakeCondition) > 256 {
+			len(human.WakeCondition) > 256 || human.ReasonCode != "" &&
+			(strings.TrimSpace(human.ReasonCode) == "" || len(human.ReasonCode) > 128) {
 			assessment.block(BlockerHumanInputContradictory)
 			return false
 		}

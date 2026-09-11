@@ -344,6 +344,26 @@ test("public connector creates one host view and one parentless primary then sen
   const ambiguousCost = await host.invoke(command("agent.observe", promptArguments, noEstimatedCost.cursor));
   assert.equal(ambiguousCost.result.usage?.state, "ambiguous");
 
+  const correctionArguments: HostCommandArguments = {
+    ...promptArguments,
+    effectId: "correction-prompt-exact-batch",
+    initialPrompt: JSON.stringify({
+      schemaVersion: "director.correction-prompt/v1",
+      originalTaskAgentUuid: agent.id,
+      batchSha256: "6".repeat(64),
+    }),
+    clientMessageId: "message-correction-exact-batch",
+  };
+  const correctionPrompt = command("send_agent_prompt", correctionArguments, ambiguousCost.cursor);
+  const corrected = await host.invoke(correctionPrompt);
+  const correctionReplay = await host.invoke(correctionPrompt);
+  assert.equal(corrected.result.status, "owned_present");
+  assert.equal(correctionReplay.result.status, "owned_present");
+  assert.equal(world.calls.sends, 2, "correction must use the same primary exactly once");
+  assert.equal(world.calls.agentCreates, 1, "connector must not create a replacement correction agent");
+  assert.equal(agent.timelineEntries.at(-1)?.item.clientMessageId, undefined);
+  assert.equal(agent.timelineEntries.at(-1)?.item.messageId, correctionArguments.clientMessageId);
+
   world.agents.push({
     ...agent,
     id: "agent-duplicate",
