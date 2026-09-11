@@ -247,6 +247,7 @@
       "properties": {
         "launchPolicy": { "enum": ["manual", "automatic"] },
         "deliveryMode": { "enum": ["pull_request", "direct"] },
+        "integrationMode": { "enum": ["manual", "automatic"], "default": "manual" },
         "limits": { "$ref": "#/$defs/limits" },
         "runBudget": { "$ref": "#/$defs/runBudget" },
         "autoFixCiFailures": { "type": "boolean" },
@@ -264,6 +265,7 @@
         "workspaceId": { "$ref": "#/$defs/identifier" },
         "launchPolicy": { "enum": ["inherit", "manual", "automatic"] },
         "deliveryMode": { "enum": ["inherit", "pull_request", "direct"] },
+        "integrationMode": { "enum": ["inherit", "manual", "automatic"] },
         "maxActiveTasks": { "type": "integer", "minimum": 1 },
         "maxActiveTasksPerWorkspace": { "type": "integer", "minimum": 1 },
         "maxConcurrentAgents": { "type": "integer", "minimum": 1 },

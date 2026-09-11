@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
+	domainintegration "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	githubport "github.com/mcuadros/director-engine/ports/github"
@@ -18,38 +19,149 @@ import (
 // GitHub is a deterministic in-memory implementation of the thin forge port.
 // It intentionally performs no adoption or retry decision.
 type GitHub struct {
-	mu               sync.Mutex
-	RepositoryID     int64
-	RepositoryNodeID string
-	Owner            string
-	Name             string
-	Viewer           string
-	RepositoryCode   publicationdomain.ExternalCode
-	ChecksCode       domainvalidation.Code
-	Pulls            []publicationdomain.PullRequest
-	WorkflowRuns     []domainvalidation.WorkflowRun
-	CheckRuns        []domainvalidation.CheckRun
-	CommitStatuses   []domainvalidation.CommitStatus
-	CombinedStatus   string
-	CreateDispatches uint64
-	UpdateDispatches uint64
-	DraftDispatches  uint64
-	Feedback         map[feedbackdomain.Source][]feedbackdomain.Item
-	FeedbackCode     string
-	FeedbackReads    map[feedbackdomain.Source]uint64
-	nextNumber       int64
+	mu                 sync.Mutex
+	RepositoryID       int64
+	RepositoryNodeID   string
+	Owner              string
+	Name               string
+	Viewer             string
+	RepositoryCode     publicationdomain.ExternalCode
+	ChecksCode         domainvalidation.Code
+	Pulls              []publicationdomain.PullRequest
+	WorkflowRuns       []domainvalidation.WorkflowRun
+	CheckRuns          []domainvalidation.CheckRun
+	CommitStatuses     []domainvalidation.CommitStatus
+	CombinedStatus     string
+	CreateDispatches   uint64
+	UpdateDispatches   uint64
+	DraftDispatches    uint64
+	MergeDispatches    uint64
+	IntegrationCode    domainintegration.Code
+	Mergeable          bool
+	MergeableState     string
+	AtomicExpectedHead bool
+	DefaultBranch      string
+	NextMergeCommitSHA string
+	MergedPulls        map[int64]domainintegration.ForgeObservation
+	LoseMergeResponse  bool
+	Feedback           map[feedbackdomain.Source][]feedbackdomain.Item
+	FeedbackCode       string
+	FeedbackReads      map[feedbackdomain.Source]uint64
+	nextNumber         int64
 }
 
 var _ githubport.Port = (*GitHub)(nil)
 var _ githubport.ChecksPort = (*GitHub)(nil)
 var _ githubport.FeedbackPort = (*GitHub)(nil)
 var _ githubport.FeedbackObservationPort = (*GitHub)(nil)
+var _ githubport.IntegrationPort = (*GitHub)(nil)
 
 func NewGitHub(repositoryID int64, nodeID, owner, name, viewer string) *GitHub {
 	return &GitHub{RepositoryID: repositoryID, RepositoryNodeID: nodeID, Owner: owner, Name: name,
 		Viewer: viewer, RepositoryCode: publicationdomain.CodeOK, ChecksCode: domainvalidation.CodeOK,
 		CombinedStatus: "checks_only_no_statuses", Feedback: map[feedbackdomain.Source][]feedbackdomain.Item{},
-		FeedbackCode: "ok", FeedbackReads: map[feedbackdomain.Source]uint64{}, nextNumber: 1}
+		FeedbackCode: "ok", FeedbackReads: map[feedbackdomain.Source]uint64{}, nextNumber: 1,
+		IntegrationCode: domainintegration.CodeOK, Mergeable: true, MergeableState: "clean", AtomicExpectedHead: true,
+		DefaultBranch: "main", MergedPulls: map[int64]domainintegration.ForgeObservation{}}
+}
+
+func fakeIntegrationObservation(request githubport.IntegrationRequest, status domainintegration.ForgeStatus, code domainintegration.Code) domainintegration.ForgeObservation {
+	binding := request.Binding
+	return domainintegration.SealForgeObservation(domainintegration.ForgeObservation{ID: fmt.Sprintf("fake-integration-%d", request.TaskStoreNowMillis),
+		Status: status, Code: code, RepositoryID: binding.GitHubRepositoryID, RepositoryNodeID: binding.GitHubRepositoryNodeID,
+		Owner: binding.RepositoryOwner, Name: binding.RepositoryName, ViewerLogin: binding.ViewerLogin,
+		APIVersion: "2022-11-28", PullRequestNumber: binding.PullRequestNumber, PullRequestNodeID: binding.PullRequestNodeID,
+		HeadSHA: binding.CandidateSHA, HeadRef: binding.Branch, BaseRef: strings.TrimPrefix(binding.BaseRef, "refs/heads/"),
+		HeadRepositoryID: binding.GitHubRepositoryID, BaseRepositoryID: binding.GitHubRepositoryID,
+		HeadOwner: binding.ViewerLogin, AuthorLogin: binding.ViewerLogin, MarkerSHA256: binding.MarkerSHA256, MarkerCount: 1,
+		ObservedAtMillis: request.TaskStoreNowMillis, MaximumAgeMillis: domainintegration.MaximumObservationAgeMS})
+}
+
+func (forge *GitHub) ObserveIntegration(_ context.Context, request githubport.IntegrationRequest) (domainintegration.ForgeObservation, error) {
+	forge.mu.Lock()
+	defer forge.mu.Unlock()
+	code := forge.IntegrationCode
+	if code == "" {
+		code = domainintegration.CodeOK
+	}
+	if code != domainintegration.CodeOK {
+		status := domainintegration.ForgeInvalid
+		if domainintegration.WaitingCode(code) {
+			status = domainintegration.ForgeUnavailable
+		}
+		return fakeIntegrationObservation(request, status, code), nil
+	}
+	if merged, ok := forge.MergedPulls[request.Binding.PullRequestNumber]; ok {
+		merged.ObservedAtMillis = request.TaskStoreNowMillis
+		merged.MaximumAgeMillis = domainintegration.MaximumObservationAgeMS
+		return domainintegration.SealForgeObservation(merged), nil
+	}
+	for _, pull := range forge.Pulls {
+		if pull.Number != request.Binding.PullRequestNumber {
+			continue
+		}
+		value := fakeIntegrationObservation(request, domainintegration.ForgeReady, domainintegration.CodeOK)
+		value.RepositoryID, value.RepositoryNodeID, value.Owner, value.Name, value.ViewerLogin = forge.RepositoryID, forge.RepositoryNodeID, forge.Owner, forge.Name, forge.Viewer
+		value.Authenticated, value.CanMerge, value.TLSVerified, value.RateRemaining = true, true, true, 5_000
+		value.AtomicExpectedHead, value.DefaultBranch = forge.AtomicExpectedHead, forge.DefaultBranch
+		value.PullRequestNodeID, value.PullRequestState, value.Draft = pull.NodeID, pull.State, pull.Draft
+		value.HeadSHA, value.HeadRef, value.BaseRef = pull.HeadSHA, pull.HeadRef, pull.BaseRef
+		value.HeadRepositoryID, value.BaseRepositoryID, value.HeadOwner, value.AuthorLogin = pull.HeadRepositoryID, pull.BaseRepositoryID, pull.HeadOwner, pull.AuthorLogin
+		value.MarkerSHA256, value.MarkerCount = pull.MarkerSHA256, pull.MarkerCount
+		value.Mergeable, value.MergeableState = forge.Mergeable, forge.MergeableState
+		sealed := domainintegration.SealForgeObservation(value)
+		if !domainintegration.CurrentForgeObservation(sealed, request.Binding, request.TaskStoreNowMillis) {
+			if !forge.AtomicExpectedHead {
+				return fakeIntegrationObservation(request, domainintegration.ForgeInvalid, domainintegration.CodeAtomicHeadUnavailable), nil
+			}
+			return fakeIntegrationObservation(request, domainintegration.ForgeInvalid, domainintegration.CodePullRequestMismatch), nil
+		}
+		return sealed, nil
+	}
+	return fakeIntegrationObservation(request, domainintegration.ForgeInvalid, domainintegration.CodeNotFound), nil
+}
+
+func (forge *GitHub) MergeExpectedHead(_ context.Context, request githubport.MergeRequest) (githubport.MergeResult, error) {
+	forge.mu.Lock()
+	defer forge.mu.Unlock()
+	if !domainintegration.CurrentForgeObservation(request.ExpectedObservation, request.Binding, request.TaskStoreNowMillis) ||
+		request.ExpectedObservation.Status != domainintegration.ForgeReady || !forge.AtomicExpectedHead {
+		return githubport.MergeResult{Code: domainintegration.CodeConflict}, nil
+	}
+	if _, merged := forge.MergedPulls[request.Binding.PullRequestNumber]; merged {
+		return githubport.MergeResult{Handoff: true, Code: domainintegration.CodeConflict}, nil
+	}
+	for index := range forge.Pulls {
+		pull := &forge.Pulls[index]
+		if pull.Number != request.Binding.PullRequestNumber {
+			continue
+		}
+		if pull.State != "open" || pull.Draft || pull.HeadSHA != request.Binding.CandidateSHA ||
+			pull.BaseRef != strings.TrimPrefix(request.Binding.BaseRef, "refs/heads/") {
+			return githubport.MergeResult{Code: domainintegration.CodeConflict}, nil
+		}
+		forge.MergeDispatches++
+		mergeSHA := forge.NextMergeCommitSHA
+		if mergeSHA == "" {
+			mergeSHA = strings.Repeat("d", len(request.Binding.CandidateSHA))
+		}
+		pull.State = "closed"
+		value := fakeIntegrationObservation(githubport.IntegrationRequest{Binding: request.Binding, TaskStoreNowMillis: request.TaskStoreNowMillis}, domainintegration.ForgeIntegrated, domainintegration.CodeOK)
+		value.RepositoryID, value.RepositoryNodeID, value.Owner, value.Name, value.ViewerLogin = forge.RepositoryID, forge.RepositoryNodeID, forge.Owner, forge.Name, forge.Viewer
+		value.Authenticated, value.CanMerge, value.TLSVerified, value.RateRemaining = true, true, true, 5_000
+		value.AtomicExpectedHead, value.DefaultBranch = true, forge.DefaultBranch
+		value.PullRequestState, value.Draft, value.HeadSHA, value.HeadRef, value.BaseRef = "closed", false, pull.HeadSHA, pull.HeadRef, pull.BaseRef
+		value.HeadRepositoryID, value.BaseRepositoryID, value.HeadOwner, value.AuthorLogin = pull.HeadRepositoryID, pull.BaseRepositoryID, pull.HeadOwner, pull.AuthorLogin
+		value.MarkerSHA256, value.MarkerCount = pull.MarkerSHA256, pull.MarkerCount
+		value.Merged, value.MergedAtMillis, value.MergeCommitSHA = true, request.TaskStoreNowMillis+1, mergeSHA
+		forge.MergedPulls[pull.Number] = domainintegration.SealForgeObservation(value)
+		if forge.LoseMergeResponse {
+			forge.LoseMergeResponse = false
+			return githubport.MergeResult{Handoff: true, Code: domainintegration.CodeResponseUnknown}, nil
+		}
+		return githubport.MergeResult{Handoff: true, Code: domainintegration.CodeOK}, nil
+	}
+	return githubport.MergeResult{Code: domainintegration.CodeNotFound}, nil
 }
 
 func (forge *GitHub) ObserveFeedbackPage(_ context.Context, request githubport.FeedbackRequest) (githubport.FeedbackPage, error) {

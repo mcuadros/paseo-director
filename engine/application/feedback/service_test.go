@@ -18,6 +18,7 @@ import (
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	"github.com/mcuadros/director-engine/domain/execution"
 	domainfeedback "github.com/mcuadros/director-engine/domain/feedback"
+	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	correctionport "github.com/mcuadros/director-engine/ports/correction"
@@ -322,6 +323,20 @@ func TestCurrentFeedbackAtomicallyInvalidatesPRAndDirectDeliveryAuthority(t *tes
 			t.Fatalf("direct feedback invalidation = %#v, %v", result, err)
 		}
 	})
+
+	t.Run("pull-request integration", func(t *testing.T) {
+		fixture := newFixture(t)
+		installPublication(t, fixture)
+		installIntegration(t, fixture, integrationdomain.ModeManual, false)
+		result, err := fixture.service.IngestDirect(context.Background(), DirectCommand{RoutingContext: fixture.routing,
+			Item: directItem(domaincorrection.SeverityP3)})
+		if err != nil || !result.CorrectionRouted || result.Run.Execution.Integration != nil ||
+			len(result.Run.Execution.IntegrationHistory) != 1 ||
+			result.Run.Execution.IntegrationHistory[0].Phase != integrationdomain.PhaseInvalidated ||
+			result.Run.Execution.IntegrationHistory[0].InvalidationCode != "human_feedback" {
+			t.Fatalf("integration feedback invalidation = %#v, %v", result, err)
+		}
+	})
 }
 
 func TestFeedbackWaitsForInFlightPRAndDirectDispatchObservation(t *testing.T) {
@@ -364,6 +379,19 @@ func TestFeedbackWaitsForInFlightPRAndDirectDispatchObservation(t *testing.T) {
 		if !errors.Is(err, ErrFeedbackAmbiguous) || fixture.store.run.Version != before.Version ||
 			fixture.store.run.Execution.Feedback != nil || len(fixture.correction.commands) != 0 {
 			t.Fatalf("in-flight direct feedback = %v / %#v", err, fixture.store.run)
+		}
+	})
+
+	t.Run("pull-request integration", func(t *testing.T) {
+		fixture := newFixture(t)
+		installPublication(t, fixture)
+		installIntegration(t, fixture, integrationdomain.ModeAutomatic, true)
+		before := fixture.store.run
+		_, err := fixture.service.IngestDirect(context.Background(), DirectCommand{RoutingContext: fixture.routing,
+			Item: directItem(domaincorrection.SeverityP3)})
+		if !errors.Is(err, ErrFeedbackAmbiguous) || fixture.store.run.Version != before.Version ||
+			fixture.store.run.Execution.Feedback != nil || len(fixture.correction.commands) != 0 {
+			t.Fatalf("in-flight integration feedback = %v / %#v", err, fixture.store.run)
 		}
 	})
 }
@@ -649,6 +677,46 @@ func installDirectDelivery(t *testing.T, fixture *fixture, mode directdomain.Int
 	fixture.store.run.Execution.RepositoryBinding.RepositoryID = binding.RepositoryID
 	fixture.store.run.Execution.RepositoryBindingHash = binding.RepositoryBindingSHA256
 	fixture.store.run.Execution.DirectDelivery = &state
+	return state
+}
+
+func installIntegration(t *testing.T, fixture *fixture, mode integrationdomain.Mode, dispatching bool) integrationdomain.State {
+	t.Helper()
+	run := fixture.store.run
+	publication := run.Execution.Publication
+	policy, ok := integrationdomain.NewPolicy(mode, fixture.store.candidate.Manifest.ConfigurationSHA256)
+	if !ok {
+		t.Fatal("integration policy")
+	}
+	binding := integrationdomain.SealBinding(integrationdomain.Binding{TaskID: run.TaskID, RunID: run.ID, CandidateID: run.CurrentCandidateID,
+		CandidateSHA: run.Execution.CandidateAuthority.CandidateSHA, BaseSHA: run.Execution.CandidateAuthority.BaseSHA,
+		TreeSHA: fixture.store.candidate.Manifest.TreeSHA, ManifestSHA256: run.Execution.CandidateAuthority.BindingSHA256,
+		CandidateGeneration: run.Execution.CandidateAuthority.Generation, TaskVersion: run.Execution.CandidateAuthority.TaskVersion,
+		ConfigurationSHA256: fixture.store.candidate.Manifest.ConfigurationSHA256, RepositoryID: "repository-1",
+		RepositoryBindingSHA256: strings.Repeat("8", 64), CanonicalRemote: publication.Binding.CanonicalRemote,
+		GitHubRepositoryID: 123, GitHubRepositoryNodeID: "R_node", RepositoryOwner: "example", RepositoryName: "product", ViewerLogin: "example",
+		Branch: publication.Binding.Branch, BaseRef: publication.Binding.BaseRef, PullRequestNumber: publication.OwnedPullRequest.Number,
+		PullRequestNodeID: publication.OwnedPullRequest.NodeID, PublicationEvidenceID: publication.Evidence.ID,
+		OwnershipSHA256: publication.Binding.OwnershipSHA256, MarkerSHA256: publication.OwnedPullRequest.MarkerSHA256,
+		ValidationPolicySHA256: strings.Repeat("1", 64), ValidationEvidenceID: "validation-1", ValidationEvidenceSHA256: strings.Repeat("2", 64),
+		ReviewEvidenceID: "review-1", ReviewerUUID: "22222222-2222-4222-8222-222222222222",
+		CIObservationID: "ci-1", CIObservationSHA256: strings.Repeat("3", 64), FeedbackStateSHA256: strings.Repeat("4", 64),
+		ReadyEvidenceID: "ready-1", PolicySHA256: policy.SHA256, LeaseEpoch: 1})
+	state, ok := integrationdomain.NewState(binding, policy)
+	if !ok {
+		t.Fatal("integration state")
+	}
+	if dispatching {
+		state.Integration.Attempt = 1
+		state.Integration.ConsumedObservationID = "integration-observation-1"
+		state.Integration.Phase = integrationdomain.EffectDispatching
+		state.Phase = integrationdomain.PhaseDispatching
+	}
+	if !integrationdomain.ValidState(state) {
+		t.Fatal("invalid integration fixture")
+	}
+	fixture.store.run.Execution.IntegrationPolicy = &policy
+	fixture.store.run.Execution.Integration = &state
 	return state
 }
 

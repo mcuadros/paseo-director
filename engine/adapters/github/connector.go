@@ -22,6 +22,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain/correction"
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
+	domainintegration "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	githubport "github.com/mcuadros/director-engine/ports/github"
@@ -53,6 +54,7 @@ var _ githubport.Port = (*Connector)(nil)
 var _ githubport.ChecksPort = (*Connector)(nil)
 var _ githubport.FeedbackPort = (*Connector)(nil)
 var _ githubport.FeedbackObservationPort = (*Connector)(nil)
+var _ githubport.IntegrationPort = (*Connector)(nil)
 
 func New() *Connector { return &Connector{runner: commandRunner{}} }
 
@@ -436,12 +438,13 @@ func observationID(prefix string, values ...string) string {
 }
 
 type repositoryResponse struct {
-	ID       int64  `json:"id"`
-	NodeID   string `json:"node_id"`
-	Name     string `json:"name"`
-	Archived bool   `json:"archived"`
-	Disabled bool   `json:"disabled"`
-	Owner    struct {
+	ID            int64  `json:"id"`
+	NodeID        string `json:"node_id"`
+	Name          string `json:"name"`
+	Archived      bool   `json:"archived"`
+	Disabled      bool   `json:"disabled"`
+	DefaultBranch string `json:"default_branch"`
+	Owner         struct {
 		Login string `json:"login"`
 	} `json:"owner"`
 	Permissions struct {
@@ -489,15 +492,20 @@ func (connector *Connector) ObserveRepository(ctx context.Context, request githu
 }
 
 type pullResponse struct {
-	Number    int64  `json:"number"`
-	NodeID    string `json:"node_id"`
-	State     string `json:"state"`
-	Draft     bool   `json:"draft"`
-	Title     string `json:"title"`
-	Body      string `json:"body"`
-	HTMLURL   string `json:"html_url"`
-	UpdatedAt string `json:"updated_at"`
-	User      struct {
+	Number         int64  `json:"number"`
+	NodeID         string `json:"node_id"`
+	State          string `json:"state"`
+	Draft          bool   `json:"draft"`
+	Title          string `json:"title"`
+	Body           string `json:"body"`
+	HTMLURL        string `json:"html_url"`
+	UpdatedAt      string `json:"updated_at"`
+	Merged         bool   `json:"merged"`
+	MergedAt       string `json:"merged_at"`
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	Mergeable      *bool  `json:"mergeable"`
+	MergeableState string `json:"mergeable_state"`
+	User           struct {
 		Login string `json:"login"`
 	} `json:"user"`
 	Head struct {
@@ -641,6 +649,164 @@ func (connector *Connector) SetPullRequestDraft(ctx context.Context, request git
 		return githubport.DispatchResult{Handoff: true, Code: responseCode(result)}, nil
 	}
 	return githubport.DispatchResult{Handoff: true, Code: publicationdomain.CodeOK}, nil
+}
+
+func integrationCode(code publicationdomain.ExternalCode) domainintegration.Code {
+	switch code {
+	case publicationdomain.CodeOK:
+		return domainintegration.CodeOK
+	case publicationdomain.CodeTLS:
+		return domainintegration.CodeTLS
+	case publicationdomain.CodeRateLimited:
+		return domainintegration.CodeRateLimited
+	case publicationdomain.CodeUnauthorized:
+		return domainintegration.CodeUnauthorized
+	case publicationdomain.CodeForbidden:
+		return domainintegration.CodeForbidden
+	case publicationdomain.CodeNotFound:
+		return domainintegration.CodeNotFound
+	case publicationdomain.CodeConflict:
+		return domainintegration.CodeConflict
+	case publicationdomain.CodeUnprocessable:
+		return domainintegration.CodeUnprocessable
+	case publicationdomain.CodeServer:
+		return domainintegration.CodeServer
+	default:
+		return domainintegration.CodeUnavailable
+	}
+}
+
+func integrationObservation(request githubport.IntegrationRequest, status domainintegration.ForgeStatus, code domainintegration.Code) domainintegration.ForgeObservation {
+	binding := request.Binding
+	return domainintegration.SealForgeObservation(domainintegration.ForgeObservation{
+		ID: "github-integration-" + domainintegration.DigestText(strings.Join([]string{binding.SHA256,
+			strconv.FormatInt(request.TaskStoreNowMillis, 10), string(status), string(code)}, "\x1f"))[:32],
+		Status: status, Code: code, RepositoryID: binding.GitHubRepositoryID,
+		RepositoryNodeID: binding.GitHubRepositoryNodeID, Owner: binding.RepositoryOwner, Name: binding.RepositoryName,
+		ViewerLogin: binding.ViewerLogin, APIVersion: apiVersion, PullRequestNumber: binding.PullRequestNumber,
+		PullRequestNodeID: binding.PullRequestNodeID, HeadSHA: binding.CandidateSHA, HeadRef: binding.Branch,
+		BaseRef: strings.TrimPrefix(binding.BaseRef, "refs/heads/"), HeadRepositoryID: binding.GitHubRepositoryID,
+		BaseRepositoryID: binding.GitHubRepositoryID, HeadOwner: binding.ViewerLogin, AuthorLogin: binding.ViewerLogin,
+		MarkerSHA256: binding.MarkerSHA256, MarkerCount: 1,
+		ObservedAtMillis: request.TaskStoreNowMillis, MaximumAgeMillis: domainintegration.MaximumObservationAgeMS,
+	})
+}
+
+func mergeCapability(result Result) (bool, domainintegration.Code) {
+	if !result.Started {
+		return false, domainintegration.CodeUnavailable
+	}
+	if result.ExitCode != 0 || !utf8.Valid(result.Stdout) {
+		return false, integrationCode(responseCode(result))
+	}
+	if !strings.Contains(string(result.Stdout), "--match-head-commit") {
+		return false, domainintegration.CodeAtomicHeadUnavailable
+	}
+	return true, domainintegration.CodeOK
+}
+
+// ObserveIntegration reads the authenticated repository and exact pull
+// request and independently verifies that the installed forge primitive can
+// atomically reject a changed head.
+func (connector *Connector) ObserveIntegration(ctx context.Context, request githubport.IntegrationRequest) (domainintegration.ForgeObservation, error) {
+	if !domainintegration.ValidBinding(request.Binding) || request.TaskStoreNowMillis < 0 {
+		return integrationObservation(request, domainintegration.ForgeInvalid, domainintegration.CodePullRequestMismatch), nil
+	}
+	binding := request.Binding
+	user := connector.api(ctx, "GET", "user", nil)
+	if user.code != publicationdomain.CodeOK {
+		return integrationObservation(request, domainintegration.ForgeUnavailable, integrationCode(user.code)), nil
+	}
+	repository := connector.api(ctx, "GET", "repos/"+binding.RepositoryOwner+"/"+binding.RepositoryName, nil)
+	if repository.code != publicationdomain.CodeOK {
+		return integrationObservation(request, domainintegration.ForgeUnavailable, integrationCode(repository.code)), nil
+	}
+	pull := connector.api(ctx, "GET", fmt.Sprintf("repos/%s/%s/pulls/%d", binding.RepositoryOwner, binding.RepositoryName, binding.PullRequestNumber), nil)
+	if pull.code != publicationdomain.CodeOK {
+		return integrationObservation(request, domainintegration.ForgeUnavailable, integrationCode(pull.code)), nil
+	}
+	var viewer userResponse
+	var repositoryValue repositoryResponse
+	var pullValue pullResponse
+	if json.Unmarshal(user.body, &viewer) != nil || json.Unmarshal(repository.body, &repositoryValue) != nil || json.Unmarshal(pull.body, &pullValue) != nil {
+		return integrationObservation(request, domainintegration.ForgeInvalid, domainintegration.CodeResponseUnknown), nil
+	}
+	capable, capabilityCode := mergeCapability(connector.runner.Run(ctx, []string{"pr", "merge", "--help"}, nil))
+	if !capable {
+		status := domainintegration.ForgeInvalid
+		if domainintegration.WaitingCode(capabilityCode) {
+			status = domainintegration.ForgeUnavailable
+		}
+		return integrationObservation(request, status, capabilityCode), nil
+	}
+	value := integrationObservation(request, domainintegration.ForgeReady, domainintegration.CodeOK)
+	value.RepositoryID, value.RepositoryNodeID = repositoryValue.ID, repositoryValue.NodeID
+	value.Owner, value.Name, value.ViewerLogin = repositoryValue.Owner.Login, repositoryValue.Name, viewer.Login
+	value.Authenticated, value.CanMerge, value.TLSVerified = viewer.Login != "", repositoryValue.Permissions.Pull && repositoryValue.Permissions.Push, true
+	value.RateRemaining = min(user.rateRemaining, repository.rateRemaining, pull.rateRemaining)
+	value.AtomicExpectedHead, value.DefaultBranch = true, repositoryValue.DefaultBranch
+	value.PullRequestNumber, value.PullRequestNodeID, value.PullRequestState = pullValue.Number, pullValue.NodeID, pullValue.State
+	value.Draft, value.HeadSHA, value.HeadRef, value.BaseRef = pullValue.Draft, pullValue.Head.SHA, pullValue.Head.Ref, pullValue.Base.Ref
+	value.HeadRepositoryID, value.BaseRepositoryID = pullValue.Head.Repo.ID, pullValue.Base.Repo.ID
+	value.HeadOwner, value.AuthorLogin = pullValue.Head.User.Login, pullValue.User.Login
+	marker := fmt.Sprintf("<!-- director-publication/v1 task=%s run=%s branch=%s owner-sha256=%s -->", binding.TaskID, binding.RunID, binding.Branch, binding.OwnershipSHA256)
+	value.MarkerCount = uint32(strings.Count(pullValue.Body, marker))
+	if value.MarkerCount > 0 {
+		value.MarkerSHA256 = publicationdomain.DigestText(marker)
+	} else {
+		value.MarkerSHA256 = ""
+	}
+	value.Mergeable = pullValue.Mergeable != nil && *pullValue.Mergeable
+	value.MergeableState, value.Merged, value.MergeCommitSHA = pullValue.MergeableState, pullValue.Merged, pullValue.MergeCommitSHA
+	if pullValue.Merged {
+		mergedAt, err := timeParse(pullValue.MergedAt)
+		if err != nil {
+			return integrationObservation(request, domainintegration.ForgeInvalid, domainintegration.CodeResponseUnknown), nil
+		}
+		value.Status, value.PullRequestState, value.MergedAtMillis = domainintegration.ForgeIntegrated, "closed", mergedAt
+	}
+	sealed := domainintegration.SealForgeObservation(value)
+	if !domainintegration.CurrentForgeObservation(sealed, binding, request.TaskStoreNowMillis) {
+		code := domainintegration.CodePullRequestMismatch
+		switch {
+		case value.RepositoryID != binding.GitHubRepositoryID || value.RepositoryNodeID != binding.GitHubRepositoryNodeID:
+			code = domainintegration.CodeRepositoryMismatch
+		case value.HeadSHA != binding.CandidateSHA:
+			code = domainintegration.CodeHeadChanged
+		case value.BaseRef != strings.TrimPrefix(binding.BaseRef, "refs/heads/") || value.DefaultBranch != strings.TrimPrefix(binding.BaseRef, "refs/heads/"):
+			code = domainintegration.CodeBaseChanged
+		case !value.Mergeable || value.MergeableState != "clean":
+			code = domainintegration.CodeMergeability
+		}
+		return integrationObservation(request, domainintegration.ForgeInvalid, code), nil
+	}
+	return sealed, nil
+}
+
+// MergeExpectedHead uses the exact GitHub CLI expected-head primitive. The
+// adapter repeats the complete forge observation immediately before handoff.
+func (connector *Connector) MergeExpectedHead(ctx context.Context, request githubport.MergeRequest) (githubport.MergeResult, error) {
+	if request.Attempt == 0 || request.Attempt > domainintegration.MaximumAttempts ||
+		!domainintegration.ValidBinding(request.Binding) || request.TaskStoreNowMillis < 0 ||
+		!domainintegration.CurrentForgeObservation(request.ExpectedObservation, request.Binding, request.TaskStoreNowMillis) ||
+		request.ExpectedObservation.Status != domainintegration.ForgeReady {
+		return githubport.MergeResult{Code: domainintegration.CodeConflict}, nil
+	}
+	current, err := connector.ObserveIntegration(ctx, githubport.IntegrationRequest{Binding: request.Binding, TaskStoreNowMillis: request.TaskStoreNowMillis})
+	if err != nil || current.FactSHA256 != request.ExpectedObservation.FactSHA256 {
+		return githubport.MergeResult{Code: domainintegration.CodeConflict}, nil
+	}
+	arguments := []string{"pr", "merge", strconv.FormatInt(request.Binding.PullRequestNumber, 10), "--repo",
+		"github.com/" + request.Binding.RepositoryOwner + "/" + request.Binding.RepositoryName, "--merge",
+		"--match-head-commit", request.Binding.CandidateSHA}
+	result := connector.runner.Run(ctx, arguments, nil)
+	if !result.Started {
+		return githubport.MergeResult{Code: domainintegration.CodeUnavailable}, nil
+	}
+	if result.ExitCode != 0 {
+		return githubport.MergeResult{Handoff: true, Code: integrationCode(responseCode(result))}, nil
+	}
+	return githubport.MergeResult{Handoff: true, Code: domainintegration.CodeOK}, nil
 }
 
 func validationCode(code publicationdomain.ExternalCode) domainvalidation.Code {

@@ -10,6 +10,7 @@ import (
 	"reflect"
 
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
+	domainintegration "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
 	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
@@ -35,6 +36,7 @@ const (
 type TaskOverride struct {
 	LaunchPolicy                  domainconfig.LaunchPolicy
 	DeliveryMode                  domainconfig.DeliveryMode
+	IntegrationMode               domainconfig.IntegrationMode
 	MaxActiveTasks                *int
 	MaxActiveTasksPerWorkspace    *int
 	MaxConcurrentAgents           *int
@@ -54,6 +56,7 @@ type TaskOverride struct {
 type EffectiveSources struct {
 	LaunchPolicy                  Scope `json:"launchPolicy"`
 	DeliveryMode                  Scope `json:"deliveryMode"`
+	IntegrationMode               Scope `json:"integrationMode"`
 	MaxActiveTasks                Scope `json:"maxActiveTasks"`
 	MaxActiveTasksPerWorkspace    Scope `json:"maxActiveTasksPerWorkspace"`
 	MaxConcurrentAgents           Scope `json:"maxConcurrentAgents"`
@@ -72,16 +75,33 @@ type EffectiveSources struct {
 // EffectiveConfiguration is the complete frozen Project -> Workspace -> Task
 // result consumed by a future Run. It contains no fallback or host decision.
 type EffectiveConfiguration struct {
-	LaunchPolicy                  domainconfig.LaunchPolicy `json:"launchPolicy"`
-	DeliveryMode                  domainconfig.DeliveryMode `json:"deliveryMode"`
-	Limits                        domainconfig.Limits       `json:"limits"`
-	RunBudget                     domainconfig.RunBudget    `json:"runBudget"`
-	AutoFixCIFailures             bool                      `json:"autoFixCiFailures"`
-	AutoFixReviewFeedback         bool                      `json:"autoFixReviewFeedback"`
-	RequireDifferentReviewerModel bool                      `json:"requireDifferentReviewerModel"`
-	PublishBeforeReview           bool                      `json:"publishBeforeReview"`
-	GitHubCI                      *domainconfig.GitHubCI    `json:"githubCi,omitempty"`
-	Sources                       EffectiveSources          `json:"sources"`
+	LaunchPolicy                  domainconfig.LaunchPolicy    `json:"launchPolicy"`
+	DeliveryMode                  domainconfig.DeliveryMode    `json:"deliveryMode"`
+	IntegrationMode               domainconfig.IntegrationMode `json:"integrationMode"`
+	Limits                        domainconfig.Limits          `json:"limits"`
+	RunBudget                     domainconfig.RunBudget       `json:"runBudget"`
+	AutoFixCIFailures             bool                         `json:"autoFixCiFailures"`
+	AutoFixReviewFeedback         bool                         `json:"autoFixReviewFeedback"`
+	RequireDifferentReviewerModel bool                         `json:"requireDifferentReviewerModel"`
+	PublishBeforeReview           bool                         `json:"publishBeforeReview"`
+	GitHubCI                      *domainconfig.GitHubCI       `json:"githubCi,omitempty"`
+	Sources                       EffectiveSources             `json:"sources"`
+}
+
+func effectiveIntegrationMode(value domainconfig.IntegrationMode) domainconfig.IntegrationMode {
+	if value == "" || value == domainconfig.IntegrationInherit {
+		return domainconfig.IntegrationManual
+	}
+	return value
+}
+
+// IntegrationPolicy freezes the Project -> Workspace -> Task decision into a
+// pull-request Run. Direct delivery retains its exact-ref integration policy.
+func (configuration EffectiveConfiguration) IntegrationPolicy(configurationSHA256 string) (domainintegration.Policy, bool) {
+	if configuration.DeliveryMode != domainconfig.DeliveryPullRequest {
+		return domainintegration.Policy{}, false
+	}
+	return domainintegration.NewPolicy(domainintegration.Mode(configuration.IntegrationMode), configurationSHA256)
 }
 
 // ReviewPolicy returns the frozen engine policy consumed by a Run. Connectors
@@ -128,6 +148,7 @@ func projectEffective(configuration domainconfig.Configuration) EffectiveConfigu
 	return EffectiveConfiguration{
 		LaunchPolicy:                  configuration.Defaults.LaunchPolicy,
 		DeliveryMode:                  configuration.Defaults.DeliveryMode,
+		IntegrationMode:               effectiveIntegrationMode(configuration.Defaults.IntegrationMode),
 		Limits:                        configuration.Defaults.Limits,
 		RunBudget:                     configuration.Defaults.RunBudget,
 		AutoFixCIFailures:             configuration.Defaults.AutoFixCIFailures,
@@ -136,7 +157,7 @@ func projectEffective(configuration domainconfig.Configuration) EffectiveConfigu
 		PublishBeforeReview:           configuration.Defaults.PublishBeforeReview,
 		GitHubCI:                      cloneGitHubCI(configuration.Defaults.GitHubCI),
 		Sources: EffectiveSources{
-			LaunchPolicy: ScopeProject, DeliveryMode: ScopeProject,
+			LaunchPolicy: ScopeProject, DeliveryMode: ScopeProject, IntegrationMode: ScopeProject,
 			MaxActiveTasks: ScopeProject, MaxActiveTasksPerWorkspace: ScopeProject,
 			MaxConcurrentAgents: ScopeProject, MaxSubagentsPerTask: ScopeProject,
 			ElapsedSeconds: ScopeProject, Tokens: ScopeProject, Turns: ScopeProject,
@@ -177,6 +198,10 @@ func applyWorkspace(result *EffectiveConfiguration, override domainconfig.Worksp
 		result.DeliveryMode = override.DeliveryMode
 		result.Sources.DeliveryMode = ScopeWorkspace
 	}
+	if override.IntegrationMode != "" && override.IntegrationMode != domainconfig.IntegrationInherit {
+		result.IntegrationMode = override.IntegrationMode
+		result.Sources.IntegrationMode = ScopeWorkspace
+	}
 	applyInt(override.MaxActiveTasks, &result.Limits.MaxActiveTasks, &result.Sources.MaxActiveTasks, ScopeWorkspace)
 	applyInt(override.MaxActiveTasksPerWorkspace, &result.Limits.MaxActiveTasksPerWorkspace, &result.Sources.MaxActiveTasksPerWorkspace, ScopeWorkspace)
 	applyInt(override.MaxConcurrentAgents, &result.Limits.MaxConcurrentAgents, &result.Sources.MaxConcurrentAgents, ScopeWorkspace)
@@ -201,6 +226,10 @@ func applyTask(result *EffectiveConfiguration, override TaskOverride) {
 		result.DeliveryMode = override.DeliveryMode
 		result.Sources.DeliveryMode = ScopeTask
 	}
+	if override.IntegrationMode != "" && override.IntegrationMode != domainconfig.IntegrationInherit {
+		result.IntegrationMode = override.IntegrationMode
+		result.Sources.IntegrationMode = ScopeTask
+	}
 	applyInt(override.MaxActiveTasks, &result.Limits.MaxActiveTasks, &result.Sources.MaxActiveTasks, ScopeTask)
 	applyInt(override.MaxActiveTasksPerWorkspace, &result.Limits.MaxActiveTasksPerWorkspace, &result.Sources.MaxActiveTasksPerWorkspace, ScopeTask)
 	applyInt(override.MaxConcurrentAgents, &result.Limits.MaxConcurrentAgents, &result.Sources.MaxConcurrentAgents, ScopeTask)
@@ -223,6 +252,10 @@ func taskOverrideValid(override TaskOverride) bool {
 	}
 	if override.DeliveryMode != "" && override.DeliveryMode != domainconfig.DeliveryInherit &&
 		override.DeliveryMode != domainconfig.DeliveryPullRequest && override.DeliveryMode != domainconfig.DeliveryDirect {
+		return false
+	}
+	if override.IntegrationMode != "" && override.IntegrationMode != domainconfig.IntegrationInherit &&
+		override.IntegrationMode != domainconfig.IntegrationManual && override.IntegrationMode != domainconfig.IntegrationAutomatic {
 		return false
 	}
 	for _, value := range []*int{override.MaxActiveTasks, override.MaxActiveTasksPerWorkspace, override.MaxConcurrentAgents} {
@@ -251,7 +284,8 @@ func taskOverrideValid(override TaskOverride) bool {
 }
 
 func effectiveConsistent(value EffectiveConfiguration) bool {
-	return value.Limits.MaxActiveTasks >= 1 && value.Limits.MaxActiveTasksPerWorkspace >= 1 &&
+	return (value.IntegrationMode == domainconfig.IntegrationManual || value.IntegrationMode == domainconfig.IntegrationAutomatic) &&
+		value.Limits.MaxActiveTasks >= 1 && value.Limits.MaxActiveTasksPerWorkspace >= 1 &&
 		value.Limits.MaxConcurrentAgents >= 1 && value.Limits.MaxSubagentsPerTask >= 0 &&
 		value.Limits.MaxActiveTasksPerWorkspace <= value.Limits.MaxActiveTasks &&
 		value.Limits.MaxActiveTasks <= value.Limits.MaxConcurrentAgents &&
@@ -338,9 +372,14 @@ func deliveryWithin(boundary, proposed domainconfig.DeliveryMode) bool {
 	return boundary == domainconfig.DeliveryDirect || proposed == domainconfig.DeliveryPullRequest
 }
 
+func integrationWithin(boundary, proposed domainconfig.IntegrationMode) bool {
+	return boundary == domainconfig.IntegrationAutomatic || proposed == domainconfig.IntegrationManual
+}
+
 func effectiveWithin(boundary, proposed EffectiveConfiguration) bool {
 	return launchWithin(boundary.LaunchPolicy, proposed.LaunchPolicy) &&
 		deliveryWithin(boundary.DeliveryMode, proposed.DeliveryMode) &&
+		integrationWithin(boundary.IntegrationMode, proposed.IntegrationMode) &&
 		proposed.Limits.MaxActiveTasks <= boundary.Limits.MaxActiveTasks &&
 		proposed.Limits.MaxActiveTasksPerWorkspace <= boundary.Limits.MaxActiveTasksPerWorkspace &&
 		proposed.Limits.MaxConcurrentAgents <= boundary.Limits.MaxConcurrentAgents &&

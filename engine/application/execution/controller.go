@@ -24,6 +24,7 @@ import (
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
+	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
@@ -95,6 +96,7 @@ type StartCommand struct {
 	PublicationPolicy publicationdomain.Policy
 	DeliveryMode      domainconfig.DeliveryMode
 	ValidationPolicy  validationdomain.Policy
+	IntegrationPolicy integrationdomain.Policy
 	BudgetPolicy      runtimebudget.Policy
 	TurnBudgetDemand  runtimebudget.Demand
 	HelperPolicy      domainexecution.HelperPolicy
@@ -140,6 +142,21 @@ func validationPoliciesEqual(left, right *validationdomain.Policy) bool {
 		return left == nil && right == nil
 	}
 	return left.SHA256 == right.SHA256 && validationdomain.ValidPolicy(*left) && validationdomain.ValidPolicy(*right)
+}
+
+func effectiveIntegrationPolicy(policy integrationdomain.Policy) *integrationdomain.Policy {
+	if policy.SchemaVersion == "" {
+		return nil
+	}
+	copy := policy
+	return &copy
+}
+
+func integrationPoliciesEqual(left, right *integrationdomain.Policy) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.SHA256 == right.SHA256 && integrationdomain.ValidPolicy(*left) && integrationdomain.ValidPolicy(*right)
 }
 
 // StartResult reports the pure eligibility result and the Run identity, if an
@@ -351,7 +368,10 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 		(command.DeliveryMode != domainconfig.DeliveryDirect || command.ValidationPolicy.SchemaVersion == "") &&
 		(command.ValidationPolicy.SchemaVersion == "" || validationdomain.ValidPolicy(command.ValidationPolicy) &&
 			command.DeliveryMode == domainconfig.DeliveryPullRequest && command.PublicationPolicy.DeliveryMode == "pull_request" &&
-			command.BudgetPolicy.CICycleLimit <= validationdomain.MaximumCICycles)
+			command.BudgetPolicy.CICycleLimit <= validationdomain.MaximumCICycles) &&
+		(command.IntegrationPolicy.SchemaVersion == "" || integrationdomain.ValidPolicy(command.IntegrationPolicy) &&
+			command.DeliveryMode == domainconfig.DeliveryPullRequest &&
+			command.IntegrationPolicy.ConfigurationSHA256 == command.EffectiveProfiles.ConfigurationSHA256())
 }
 
 func eventPayload(value any) json.RawMessage {
@@ -446,6 +466,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			!publicationPoliciesEqual(existing.Execution.PublicationPolicy, effectivePublicationPolicy(command.PublicationPolicy)) ||
 			existing.Execution.DeliveryMode != command.DeliveryMode ||
 			!validationPoliciesEqual(existing.Execution.ValidationPolicy, effectiveValidationPolicy(command.ValidationPolicy)) ||
+			!integrationPoliciesEqual(existing.Execution.IntegrationPolicy, effectiveIntegrationPolicy(command.IntegrationPolicy)) ||
 			existing.Execution.RepositoryBinding != repositoryBinding(workspace, command.WorktreePath, command.Branch, command.BaseSHA) ||
 			existing.Execution.BaseRef != "refs/heads/"+workspace.DefaultBaseBranch ||
 			existing.Execution.AcceptanceSHA256 != candidatedomain.AcceptanceSHA256(
@@ -498,6 +519,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 	}
 	publicationPolicy := effectivePublicationPolicy(command.PublicationPolicy)
 	validationPolicy := effectiveValidationPolicy(command.ValidationPolicy)
+	integrationPolicy := effectiveIntegrationPolicy(command.IntegrationPolicy)
 	publicationPolicySHA256 := ""
 	if publicationPolicy != nil {
 		publicationPolicySHA256 = publicationPolicy.SHA256
@@ -522,6 +544,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		PublicationPolicy:       publicationPolicy,
 		DeliveryMode:            command.DeliveryMode,
 		ValidationPolicy:        validationPolicy,
+		IntegrationPolicy:       integrationPolicy,
 		LifecycleApproval:       command.EligibilityFacts.LifecycleApproval,
 		Isolation:               command.EligibilityFacts.Isolation,
 		OperationalPolicy:       command.EligibilityFacts.OperationalPolicy,

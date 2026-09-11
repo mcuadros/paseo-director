@@ -18,6 +18,7 @@ import (
 	domaincorrection "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
+	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
@@ -573,6 +574,36 @@ func TestBaseInvalidationWaitsForInFlightPublicationAndFeedbackDispatch(t *testi
 			state := correctionReadyFeedback(t, fixture.store.run, fixture.store.candidate, fixture.now)
 			fixture.store.run.Execution.Feedback = &state
 		}},
+		{"integration", func(fixture *fixture) {
+			publication := fixture.store.run.Execution.Publication
+			policy, _ := integrationdomain.NewPolicy(integrationdomain.ModeAutomatic, fixture.store.candidate.Manifest.ConfigurationSHA256)
+			authority := fixture.store.run.Execution.CandidateAuthority
+			binding := integrationdomain.SealBinding(integrationdomain.Binding{TaskID: fixture.store.task.ID, RunID: fixture.store.run.ID,
+				CandidateID: fixture.store.candidate.ID, CandidateSHA: fixture.store.candidate.CommitSHA,
+				BaseSHA: fixture.store.candidate.Manifest.BaseSHA, TreeSHA: fixture.store.candidate.Manifest.TreeSHA,
+				ManifestSHA256: fixture.store.candidate.Manifest.BindingSHA256, CandidateGeneration: authority.Generation,
+				TaskVersion: authority.TaskVersion, ConfigurationSHA256: fixture.store.candidate.Manifest.ConfigurationSHA256,
+				RepositoryID:            fixture.store.run.Execution.RepositoryBinding.RepositoryID,
+				RepositoryBindingSHA256: fixture.store.run.Execution.RepositoryBindingHash, CanonicalRemote: publication.Binding.CanonicalRemote,
+				GitHubRepositoryID: 123, GitHubRepositoryNodeID: "R_node", RepositoryOwner: "example", RepositoryName: "product",
+				ViewerLogin: "example", Branch: publication.Binding.Branch, BaseRef: publication.Binding.BaseRef,
+				PullRequestNumber: publication.OwnedPullRequest.Number, PullRequestNodeID: publication.OwnedPullRequest.NodeID,
+				OwnershipSHA256: publication.Binding.OwnershipSHA256, MarkerSHA256: publication.OwnedPullRequest.MarkerSHA256,
+				PublicationEvidenceID: publication.Evidence.ID, ValidationPolicySHA256: fixture.store.run.Execution.ValidationPolicy.SHA256,
+				ValidationEvidenceID: "validation-1", ValidationEvidenceSHA256: strings.Repeat("1", 64), ReviewEvidenceID: "review-1",
+				ReviewerUUID: testReviewer, CIObservationID: "ci-1", CIObservationSHA256: strings.Repeat("2", 64),
+				FeedbackStateSHA256: strings.Repeat("3", 64), ReadyEvidenceID: "ready-1", PolicySHA256: policy.SHA256, LeaseEpoch: 1})
+			state, ok := integrationdomain.NewState(binding, policy)
+			if !ok {
+				t.Fatal("integration state")
+			}
+			state.Integration.Attempt, state.Integration.ConsumedObservationID = 1, "integration-observation-1"
+			state.Integration.Phase, state.Phase = integrationdomain.EffectDispatching, integrationdomain.PhaseDispatching
+			if !integrationdomain.ValidState(state) {
+				t.Fatal("in-flight integration fixture")
+			}
+			fixture.store.run.Execution.IntegrationPolicy, fixture.store.run.Execution.Integration = &policy, &state
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newFixture(t)
@@ -590,7 +621,8 @@ func TestBaseInvalidationWaitsForInFlightPublicationAndFeedbackDispatch(t *testi
 				t.Fatalf("in-flight %s invalidation = %#v, %v", test.name, result, err)
 			}
 			if test.name == "publication" && (result.Run.Execution.Publication == nil || len(result.Run.Execution.PublicationHistory) != 0) ||
-				test.name == "feedback" && (result.Run.Execution.Feedback == nil || len(result.Run.Execution.FeedbackHistory) != 0) {
+				test.name == "feedback" && (result.Run.Execution.Feedback == nil || len(result.Run.Execution.FeedbackHistory) != 0) ||
+				test.name == "integration" && (result.Run.Execution.Integration == nil || len(result.Run.Execution.IntegrationHistory) != 0) {
 				t.Fatalf("in-flight %s state was discarded before observation", test.name)
 			}
 		})

@@ -21,6 +21,7 @@ import (
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	"github.com/mcuadros/director-engine/domain/execution"
 	domainfeedback "github.com/mcuadros/director-engine/domain/feedback"
+	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
@@ -461,6 +462,10 @@ func invalidateDelivery(run *domain.Run, nowMillis int64) bool {
 		run.Execution.Review != nil && len(run.Execution.ReviewHistory) >= 64 {
 		return false
 	}
+	if run.Execution.Integration != nil && (integrationdomain.DispatchInFlight(*run.Execution.Integration) ||
+		len(run.Execution.IntegrationHistory) >= integrationdomain.MaximumHistoricalStates) {
+		return false
+	}
 	if run.Execution.Publication != nil {
 		if publicationdomain.DispatchInFlight(*run.Execution.Publication) || len(run.Execution.PublicationHistory) >= publicationdomain.MaximumHistoricalStates {
 			return false
@@ -485,6 +490,14 @@ func invalidateDelivery(run *domain.Run, nowMillis int64) bool {
 		}
 		run.Execution.DirectDeliveryHistory = append(slices.Clone(run.Execution.DirectDeliveryHistory), historical)
 		run.Execution.DirectDelivery = nil
+	}
+	if run.Execution.Integration != nil {
+		historical := integrationdomain.Invalidate(*run.Execution.Integration, "human_feedback", "fresh_candidate_validation_review_feedback_and_publication")
+		if !integrationdomain.ValidState(historical) || historical.Phase != integrationdomain.PhaseInvalidated {
+			return false
+		}
+		run.Execution.IntegrationHistory = append(slices.Clone(run.Execution.IntegrationHistory), historical)
+		run.Execution.Integration = nil
 	}
 	if run.Execution.Validation != nil && !run.Execution.Validation.Invalidated {
 		historical := domainvalidation.CloneState(*run.Execution.Validation)

@@ -11,6 +11,7 @@ import (
 	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
+	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
@@ -55,6 +56,7 @@ const (
 	EffectHostViewArchive        EffectKind = "host_view.archive"
 	EffectWorktreeRemove         EffectKind = "worktree.remove"
 	EffectDirectIntegration      EffectKind = "direct.integration"
+	EffectPullRequestIntegration EffectKind = "pull_request.integration"
 )
 
 // EffectPhase records intent before any adapter handoff and keeps a possible
@@ -257,6 +259,7 @@ type State struct {
 	DeliveryMode                     domainconfig.DeliveryMode             `json:"deliveryMode,omitempty"`
 	PublicationPolicy                *publicationdomain.Policy             `json:"publicationPolicy,omitempty"`
 	ValidationPolicy                 *validationdomain.Policy              `json:"validationPolicy,omitempty"`
+	IntegrationPolicy                *integrationdomain.Policy             `json:"integrationPolicy,omitempty"`
 	Isolation                        IsolationObservation                  `json:"isolation,omitempty"`
 	OperationalPolicy                OperationalPolicy                     `json:"operationalPolicy,omitempty"`
 	LifecycleSurfaces                LifecycleSurfaces                     `json:"lifecycleSurfaces,omitempty"`
@@ -306,6 +309,8 @@ type State struct {
 	PublicationHistory               []publicationdomain.State             `json:"publicationHistory,omitempty"`
 	DirectDelivery                   *directdomain.State                   `json:"directDelivery,omitempty"`
 	DirectDeliveryHistory            []directdomain.State                  `json:"directDeliveryHistory,omitempty"`
+	Integration                      *integrationdomain.State              `json:"integration,omitempty"`
+	IntegrationHistory               []integrationdomain.State             `json:"integrationHistory,omitempty"`
 	OperationalObservation           *OperationalObservation               `json:"operationalObservation,omitempty"`
 	OperationalObservationRunVersion uint64                                `json:"operationalObservationRunVersion,omitempty"`
 	OperationalObservationConsumed   bool                                  `json:"operationalObservationConsumed,omitempty"`

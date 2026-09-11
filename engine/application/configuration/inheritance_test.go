@@ -216,6 +216,27 @@ func TestPublishBeforeReviewRequiresExplicitConfigurationAndCannotExpandEnvelope
 	}
 }
 
+func TestAutomaticIntegrationRequiresExplicitAuthorityAndFreezesPolicy(t *testing.T) {
+	manual := configurationDocument(t, func(configuration *domainconfig.Configuration) {
+		configuration.Defaults.IntegrationMode = domainconfig.IntegrationManual
+	})
+	effective, err := approvedEnvelope(t, manual).ResolveEffective(manual, "product", TaskOverride{})
+	policy, ok := effective.IntegrationPolicy(strings.Repeat("a", 64))
+	if err != nil || !ok || effective.IntegrationMode != domainconfig.IntegrationManual || policy.Mode != "manual" {
+		t.Fatalf("manual integration = %#v %#v %v", effective, policy, err)
+	}
+	automatic := configurationDocument(t, func(configuration *domainconfig.Configuration) {
+		configuration.Defaults.IntegrationMode = domainconfig.IntegrationAutomatic
+	})
+	if _, err := approvedEnvelope(t, manual).ResolveEffective(automatic, "product", TaskOverride{}); !errors.Is(err, ErrOutsideSecurityEnvelope) {
+		t.Fatalf("automatic integration expanded a manual envelope: %v", err)
+	}
+	effective, err = approvedEnvelope(t, automatic).ResolveEffective(automatic, "product", TaskOverride{IntegrationMode: domainconfig.IntegrationManual})
+	if err != nil || effective.IntegrationMode != domainconfig.IntegrationManual || effective.Sources.IntegrationMode != ScopeTask {
+		t.Fatalf("manual Task tightening = %#v %v", effective, err)
+	}
+}
+
 func TestValidationPolicyUsesOnlyFrozenGitHubProviderIdentities(t *testing.T) {
 	effective := EffectiveConfiguration{DeliveryMode: domainconfig.DeliveryPullRequest, GitHubCI: &domainconfig.GitHubCI{
 		WorkflowID: 99, WorkflowName: "maintained-linux-ci", CycleRuntimeSeconds: 1_800,

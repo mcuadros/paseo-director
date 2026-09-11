@@ -10,6 +10,7 @@ import (
 	"time"
 
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
+	domainintegration "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	githubport "github.com/mcuadros/director-engine/ports/github"
@@ -19,6 +20,115 @@ type queuedRunner struct {
 	results   []Result
 	arguments [][]string
 	inputs    [][]byte
+}
+
+func integrationBinding(t *testing.T) domainintegration.Binding {
+	t.Helper()
+	policy, ok := domainintegration.NewPolicy(domainintegration.ModeAutomatic, strings.Repeat("1", 64))
+	if !ok {
+		t.Fatal("integration policy")
+	}
+	binding := domainintegration.SealBinding(domainintegration.Binding{TaskID: "dir-m4.9", RunID: "run-1", CandidateID: "candidate-1",
+		CandidateSHA: strings.Repeat("b", 40), BaseSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("c", 40),
+		ManifestSHA256: strings.Repeat("2", 64), CandidateGeneration: 1, TaskVersion: 3, ConfigurationSHA256: policy.ConfigurationSHA256,
+		RepositoryID: "repository-1", RepositoryBindingSHA256: strings.Repeat("3", 64), CanonicalRemote: "https://github.com/example/product",
+		GitHubRepositoryID: 123, GitHubRepositoryNodeID: "R_node", RepositoryOwner: "example", RepositoryName: "product", ViewerLogin: "example",
+		Branch: "task/dir-m4.9-final-integration", BaseRef: "refs/heads/main", PullRequestNumber: 7, PullRequestNodeID: "PR_node_7",
+		OwnershipSHA256: strings.Repeat("8", 64), MarkerSHA256: publicationdomain.DigestText("<!-- director-publication/v1 task=dir-m4.9 run=run-1 branch=task/dir-m4.9-final-integration owner-sha256=" + strings.Repeat("8", 64) + " -->"),
+		PublicationEvidenceID: "publication-1", ValidationPolicySHA256: strings.Repeat("4", 64), ValidationEvidenceID: "validation-1",
+		ValidationEvidenceSHA256: strings.Repeat("5", 64), ReviewEvidenceID: "review-1", ReviewerUUID: "11111111-1111-4111-8111-111111111111",
+		CIObservationID: "ci-1", CIObservationSHA256: strings.Repeat("6", 64), FeedbackStateSHA256: strings.Repeat("7", 64),
+		ReadyEvidenceID: "ready-1", PolicySHA256: policy.SHA256, LeaseEpoch: 1})
+	if !domainintegration.ValidBinding(binding) {
+		t.Fatal("integration binding")
+	}
+	return binding
+}
+
+func integrationReadyResults(binding domainintegration.Binding) []Result {
+	marker := fmt.Sprintf("<!-- director-publication/v1 task=%s run=%s branch=%s owner-sha256=%s -->", binding.TaskID, binding.RunID, binding.Branch, binding.OwnershipSHA256)
+	pull := fmt.Sprintf(`{"number":7,"node_id":"PR_node_7","state":"open","draft":false,"body":"%s","merged":false,"mergeable":true,"mergeable_state":"clean","updated_at":"2026-09-11T00:00:00Z","user":{"login":"example"},"head":{"sha":"%s","ref":"%s","user":{"login":"example"},"repo":{"id":123}},"base":{"ref":"main","repo":{"id":123}}}`, marker, binding.CandidateSHA, binding.Branch)
+	return []Result{
+		{Started: true, Stdout: includedJSON(`{"login":"example"}`, 5_000)},
+		{Started: true, Stdout: includedJSON(`{"id":123,"node_id":"R_node","name":"product","default_branch":"main","owner":{"login":"example"},"archived":false,"disabled":false,"permissions":{"pull":true,"push":true}}`, 4_999)},
+		{Started: true, Stdout: includedJSON(pull, 4_998)},
+		{Started: true, Stdout: []byte("--match-head-commit SHA\n")},
+	}
+}
+
+func TestIntegrationConnectorUsesAtomicExpectedHeadAndExactRepository(t *testing.T) {
+	binding := integrationBinding(t)
+	results := append(integrationReadyResults(binding), integrationReadyResults(binding)...)
+	results = append(results, Result{Started: true})
+	runner := &queuedRunner{results: results}
+	connector := NewWithRunner(runner)
+	request := githubport.IntegrationRequest{Binding: binding, TaskStoreNowMillis: 2_000}
+	observation, err := connector.ObserveIntegration(context.Background(), request)
+	if err != nil || observation.Status != domainintegration.ForgeReady || !domainintegration.CurrentForgeObservation(observation, binding, 2_000) {
+		t.Fatalf("observation = %#v %v", observation, err)
+	}
+	result, err := connector.MergeExpectedHead(context.Background(), githubport.MergeRequest{Binding: binding, Attempt: 1,
+		ExpectedObservation: observation, TaskStoreNowMillis: 2_000})
+	if err != nil || !result.Handoff || result.Code != domainintegration.CodeOK {
+		t.Fatalf("merge = %#v %v", result, err)
+	}
+	arguments := strings.Join(runner.arguments[len(runner.arguments)-1], " ")
+	if !strings.Contains(arguments, "pr merge 7") || !strings.Contains(arguments, "--repo github.com/example/product") ||
+		!strings.Contains(arguments, "--merge") || !strings.Contains(arguments, "--match-head-commit "+binding.CandidateSHA) ||
+		strings.Contains(arguments, "--admin") || strings.Contains(arguments, "--delete-branch") {
+		t.Fatalf("merge argv = %s", arguments)
+	}
+}
+
+func TestIntegrationConnectorRefusesMissingAtomicPrimitiveAndClassifiesTLS(t *testing.T) {
+	binding := integrationBinding(t)
+	missing := integrationReadyResults(binding)
+	missing[len(missing)-1].Stdout = []byte("--merge\n")
+	observation, _ := NewWithRunner(&queuedRunner{results: missing}).ObserveIntegration(context.Background(), githubport.IntegrationRequest{Binding: binding, TaskStoreNowMillis: 2_000})
+	if observation.Status != domainintegration.ForgeInvalid || observation.Code != domainintegration.CodeAtomicHeadUnavailable {
+		t.Fatalf("missing primitive = %#v", observation)
+	}
+	results := append(integrationReadyResults(binding), integrationReadyResults(binding)...)
+	results = append(results, Result{Started: true, ExitCode: 1, Stderr: []byte("x509: certificate failure")})
+	connector := NewWithRunner(&queuedRunner{results: results})
+	ready, _ := connector.ObserveIntegration(context.Background(), githubport.IntegrationRequest{Binding: binding, TaskStoreNowMillis: 2_000})
+	merge, _ := connector.MergeExpectedHead(context.Background(), githubport.MergeRequest{Binding: binding, Attempt: 1, ExpectedObservation: ready, TaskStoreNowMillis: 2_000})
+	if !merge.Handoff || merge.Code != domainintegration.CodeTLS {
+		t.Fatalf("TLS merge = %#v", merge)
+	}
+}
+
+func TestIntegrationConnectorRefusesMissingOwnedMarker(t *testing.T) {
+	binding := integrationBinding(t)
+	results := integrationReadyResults(binding)
+	results[2].Stdout = []byte(strings.Replace(string(results[2].Stdout), "<!-- director-publication/v1", "<!-- foreign-publication/v1", 1))
+	observation, err := NewWithRunner(&queuedRunner{results: results}).ObserveIntegration(context.Background(), githubport.IntegrationRequest{Binding: binding, TaskStoreNowMillis: 2_000})
+	if err != nil || observation.Status != domainintegration.ForgeInvalid || observation.Code != domainintegration.CodePullRequestMismatch {
+		t.Fatalf("marker observation = %#v, %v", observation, err)
+	}
+}
+
+func TestIntegrationConnectorObservesMergedStateWithoutTrustingMergeSHAAlone(t *testing.T) {
+	binding := integrationBinding(t)
+	merge := strings.Repeat("d", 40)
+	marker := fmt.Sprintf("<!-- director-publication/v1 task=%s run=%s branch=%s owner-sha256=%s -->", binding.TaskID, binding.RunID, binding.Branch, binding.OwnershipSHA256)
+	pull := fmt.Sprintf(`{"number":7,"node_id":"PR_node_7","state":"closed","draft":false,"body":"%s","merged":true,"merged_at":"2026-09-11T00:01:00Z","merge_commit_sha":"%s","mergeable":null,"mergeable_state":"unknown","user":{"login":"example"},"head":{"sha":"%s","ref":"%s","user":{"login":"example"},"repo":{"id":123}},"base":{"ref":"main","repo":{"id":123}}}`, marker, merge, binding.CandidateSHA, binding.Branch)
+	runner := &queuedRunner{results: []Result{{Started: true, Stdout: includedJSON(`{"login":"example"}`, 5_000)},
+		{Started: true, Stdout: includedJSON(`{"id":123,"node_id":"R_node","name":"product","default_branch":"main","owner":{"login":"example"},"permissions":{"pull":true,"push":true}}`, 4_999)},
+		{Started: true, Stdout: includedJSON(pull, 4_998)}, {Started: true, Stdout: []byte("--match-head-commit SHA\n")}}}
+	observation, err := NewWithRunner(runner).ObserveIntegration(context.Background(), githubport.IntegrationRequest{Binding: binding, TaskStoreNowMillis: 2_000})
+	if err != nil || observation.Status != domainintegration.ForgeIntegrated || observation.MergeCommitSHA != merge || observation.MergedAtMillis <= 0 {
+		t.Fatalf("merged = %#v %v", observation, err)
+	}
+	// A non-null merge SHA without merged=true remains an invalid open PR, not integration evidence.
+	notMerged := strings.Replace(pull, `"merged":true`, `"merged":false`, 1)
+	runner = &queuedRunner{results: []Result{{Started: true, Stdout: includedJSON(`{"login":"example"}`, 5_000)},
+		{Started: true, Stdout: includedJSON(`{"id":123,"node_id":"R_node","name":"product","default_branch":"main","owner":{"login":"example"},"permissions":{"pull":true,"push":true}}`, 4_999)},
+		{Started: true, Stdout: includedJSON(notMerged, 4_998)}, {Started: true, Stdout: []byte("--match-head-commit SHA\n")}}}
+	observation, _ = NewWithRunner(runner).ObserveIntegration(context.Background(), githubport.IntegrationRequest{Binding: binding, TaskStoreNowMillis: 2_000})
+	if observation.Status == domainintegration.ForgeIntegrated {
+		t.Fatal("merge_commit_sha alone proved integration")
+	}
 }
 
 func TestFeedbackConnectorPaginatesAndAttestsHumanBotAndAppWithoutMutation(t *testing.T) {
