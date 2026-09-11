@@ -20,6 +20,7 @@ import (
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
+	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
@@ -514,6 +515,52 @@ func validateRun(run domain.Run) error {
 		}
 		if state.Correction != nil && !correctiondomain.ValidState(*state.Correction) {
 			return fmt.Errorf("%w: invalid correction state", storeport.ErrInvalidRecord)
+		}
+		if state.PublicationPolicy != nil && !publicationdomain.ValidPolicy(*state.PublicationPolicy) {
+			return fmt.Errorf("%w: invalid publication policy", storeport.ErrInvalidRecord)
+		}
+		if state.Publication != nil {
+			publication := *state.Publication
+			if !publicationdomain.ValidState(publication) {
+				return fmt.Errorf("%w: invalid publication state", storeport.ErrInvalidRecord)
+			}
+			if publication.Invalidated {
+				if state.CandidateAuthority != nil && state.CandidateAuthority.Downstream.Publication != nil {
+					return fmt.Errorf("%w: invalidated publication retained downstream authority", storeport.ErrInvalidRecord)
+				}
+			} else if state.CandidateAuthority == nil || publication.Binding.CandidateID != state.CandidateAuthority.CandidateID ||
+				publication.Binding.CandidateSHA != state.CandidateAuthority.CandidateSHA || publication.Binding.BaseSHA != state.CandidateAuthority.BaseSHA ||
+				publication.Binding.ManifestSHA256 != state.CandidateAuthority.BindingSHA256 ||
+				publication.Binding.CandidateGeneration != state.CandidateAuthority.Generation {
+				return fmt.Errorf("%w: current publication does not match Candidate authority", storeport.ErrInvalidRecord)
+			} else if publication.Evidence == nil {
+				if state.CandidateAuthority.Downstream.Publication != nil {
+					return fmt.Errorf("%w: publication authority lacks evidence", storeport.ErrInvalidRecord)
+				}
+			} else {
+				evidence := state.CandidateAuthority.Downstream.Publication
+				if evidence == nil || evidence.ID != publication.Evidence.ID || evidence.CandidateID != state.CandidateAuthority.CandidateID ||
+					evidence.CandidateSHA != state.CandidateAuthority.CandidateSHA || evidence.BaseSHA != state.CandidateAuthority.BaseSHA ||
+					evidence.Generation != state.CandidateAuthority.Generation || evidence.BindingSHA256 != state.CandidateAuthority.BindingSHA256 {
+					return fmt.Errorf("%w: publication evidence is not authoritative", storeport.ErrInvalidRecord)
+				}
+			}
+		}
+		if len(state.PublicationHistory) > publicationdomain.MaximumHistoricalStates {
+			return fmt.Errorf("%w: too many historical publication states", storeport.ErrInvalidRecord)
+		}
+		seenPublications := make(map[string]struct{}, len(state.PublicationHistory)+1)
+		if state.Publication != nil {
+			seenPublications[state.Publication.Binding.BindingSHA256] = struct{}{}
+		}
+		for _, publication := range state.PublicationHistory {
+			if !publicationdomain.ValidState(publication) || !publication.Invalidated {
+				return fmt.Errorf("%w: invalid historical publication state", storeport.ErrInvalidRecord)
+			}
+			if _, duplicate := seenPublications[publication.Binding.BindingSHA256]; duplicate {
+				return fmt.Errorf("%w: duplicate publication binding", storeport.ErrInvalidRecord)
+			}
+			seenPublications[publication.Binding.BindingSHA256] = struct{}{}
 		}
 	}
 	return nil
@@ -1497,6 +1544,9 @@ func (store *DoltTaskStore) AppendCandidate(
 			}
 			current.Execution.CandidateAuthorityHistory = append(current.Execution.CandidateAuthorityHistory, historical)
 		}
+		if current.Execution.Publication != nil && publicationdomain.DispatchInFlight(*current.Execution.Publication) {
+			return mutationResult{}, storeport.ErrReferentialIntegrity
+		}
 		if current.Execution.Review != nil {
 			historical := *current.Execution.Review
 			if !historical.Invalidated {
@@ -1504,6 +1554,14 @@ func (store *DoltTaskStore) AppendCandidate(
 			}
 			current.Execution.ReviewHistory = append(current.Execution.ReviewHistory, historical)
 			current.Execution.Review = nil
+		}
+		if current.Execution.Publication != nil {
+			historical := *current.Execution.Publication
+			if !historical.Invalidated {
+				historical = publicationdomain.Invalidate(historical, "candidate_changed")
+			}
+			current.Execution.PublicationHistory = append(current.Execution.PublicationHistory, historical)
+			current.Execution.Publication = nil
 		}
 		authority := candidatedomain.NewAuthority(generation, candidate.ID, candidate.Claim.Branch, candidate.Claim.TaskVersion, candidate.Manifest)
 		current.Execution.CandidateAuthority = &authority

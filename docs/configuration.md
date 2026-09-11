@@ -94,7 +94,8 @@ This is a complete minimal document:
     },
     "autoFixCiFailures": true,
     "autoFixReviewFeedback": true,
-    "requireDifferentReviewerModel": false
+    "requireDifferentReviewerModel": false,
+    "publishBeforeReview": false
   },
   "workspaceOverrides": [],
   "skills": [
@@ -154,6 +155,17 @@ retain the Project value. Task overrides live with the Task rather than in
 Organizer Git and use the same field-by-field representation. The engine
 resolves every field in the fixed order `Project → Workspace → Task` and
 reports the supplying scope with the effective value.
+
+`publishBeforeReview` is optional and defaults to `false`. The default keeps
+both the owned branch push and PR creation behind an exact approved Review.
+Setting it to `true` is an explicit publication policy: Director may publish
+one owned draft before Review, but the draft has no merge authority and cannot
+be marked ready until the current Candidate's exact Review evidence exists.
+A corrected Candidate first returns the same owned PR to draft, pushes only
+with the exact previous-head lease, replaces its deterministic Candidate-bound
+body, and invalidates all prior readiness evidence. Enabling early draft
+publication outside a frozen human-approved envelope is refused; disabling it
+is a tightening override.
 
 ## Preview and Apply
 

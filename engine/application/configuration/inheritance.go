@@ -10,6 +10,7 @@ import (
 	"reflect"
 
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
+	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
 )
 
@@ -45,6 +46,7 @@ type TaskOverride struct {
 	AutoFixCIFailures             *bool
 	AutoFixReviewFeedback         *bool
 	RequireDifferentReviewerModel *bool
+	PublishBeforeReview           *bool
 }
 
 // EffectiveSources reports exactly which layer supplied each value.
@@ -63,6 +65,7 @@ type EffectiveSources struct {
 	AutoFixCIFailures             Scope `json:"autoFixCiFailures"`
 	AutoFixReviewFeedback         Scope `json:"autoFixReviewFeedback"`
 	RequireDifferentReviewerModel Scope `json:"requireDifferentReviewerModel"`
+	PublishBeforeReview           Scope `json:"publishBeforeReview"`
 }
 
 // EffectiveConfiguration is the complete frozen Project -> Workspace -> Task
@@ -75,6 +78,7 @@ type EffectiveConfiguration struct {
 	AutoFixCIFailures             bool                      `json:"autoFixCiFailures"`
 	AutoFixReviewFeedback         bool                      `json:"autoFixReviewFeedback"`
 	RequireDifferentReviewerModel bool                      `json:"requireDifferentReviewerModel"`
+	PublishBeforeReview           bool                      `json:"publishBeforeReview"`
 	Sources                       EffectiveSources          `json:"sources"`
 }
 
@@ -82,6 +86,15 @@ type EffectiveConfiguration struct {
 // and provider adapters never infer or relax this configured choice.
 func (configuration EffectiveConfiguration) ReviewPolicy() domainreview.ProfilePolicy {
 	return domainreview.ProfilePolicy{RequireDifferentReviewerModel: configuration.RequireDifferentReviewerModel}
+}
+
+// PublicationPolicy returns the frozen engine-owned PR publication choice.
+// A false PublishBeforeReview value is the review-before-PR default.
+func (configuration EffectiveConfiguration) PublicationPolicy() publicationdomain.Policy {
+	if configuration.DeliveryMode != domainconfig.DeliveryPullRequest {
+		return publicationdomain.Policy{}
+	}
+	return publicationdomain.NewPolicy(string(configuration.DeliveryMode), configuration.PublishBeforeReview, nil)
 }
 
 func projectEffective(configuration domainconfig.Configuration) EffectiveConfiguration {
@@ -93,6 +106,7 @@ func projectEffective(configuration domainconfig.Configuration) EffectiveConfigu
 		AutoFixCIFailures:             configuration.Defaults.AutoFixCIFailures,
 		AutoFixReviewFeedback:         configuration.Defaults.AutoFixReviewFeedback,
 		RequireDifferentReviewerModel: configuration.Defaults.RequireDifferentReviewerModel,
+		PublishBeforeReview:           configuration.Defaults.PublishBeforeReview,
 		Sources: EffectiveSources{
 			LaunchPolicy: ScopeProject, DeliveryMode: ScopeProject,
 			MaxActiveTasks: ScopeProject, MaxActiveTasksPerWorkspace: ScopeProject,
@@ -100,6 +114,7 @@ func projectEffective(configuration domainconfig.Configuration) EffectiveConfigu
 			ElapsedSeconds: ScopeProject, Tokens: ScopeProject, Turns: ScopeProject,
 			CICycles: ScopeProject, CostMicrousd: ScopeProject, AutoFixCIFailures: ScopeProject,
 			AutoFixReviewFeedback: ScopeProject, RequireDifferentReviewerModel: ScopeProject,
+			PublishBeforeReview: ScopeProject,
 		},
 	}
 }
@@ -146,6 +161,7 @@ func applyWorkspace(result *EffectiveConfiguration, override domainconfig.Worksp
 	applyBool(override.AutoFixCIFailures, &result.AutoFixCIFailures, &result.Sources.AutoFixCIFailures, ScopeWorkspace)
 	applyBool(override.AutoFixReviewFeedback, &result.AutoFixReviewFeedback, &result.Sources.AutoFixReviewFeedback, ScopeWorkspace)
 	applyBool(override.RequireDifferentReviewerModel, &result.RequireDifferentReviewerModel, &result.Sources.RequireDifferentReviewerModel, ScopeWorkspace)
+	applyBool(override.PublishBeforeReview, &result.PublishBeforeReview, &result.Sources.PublishBeforeReview, ScopeWorkspace)
 }
 
 func applyTask(result *EffectiveConfiguration, override TaskOverride) {
@@ -169,6 +185,7 @@ func applyTask(result *EffectiveConfiguration, override TaskOverride) {
 	applyBool(override.AutoFixCIFailures, &result.AutoFixCIFailures, &result.Sources.AutoFixCIFailures, ScopeTask)
 	applyBool(override.AutoFixReviewFeedback, &result.AutoFixReviewFeedback, &result.Sources.AutoFixReviewFeedback, ScopeTask)
 	applyBool(override.RequireDifferentReviewerModel, &result.RequireDifferentReviewerModel, &result.Sources.RequireDifferentReviewerModel, ScopeTask)
+	applyBool(override.PublishBeforeReview, &result.PublishBeforeReview, &result.Sources.PublishBeforeReview, ScopeTask)
 }
 
 func taskOverrideValid(override TaskOverride) bool {
@@ -307,7 +324,8 @@ func effectiveWithin(boundary, proposed EffectiveConfiguration) bool {
 		costWithin(boundary.RunBudget.CostMicrousd, proposed.RunBudget.CostMicrousd) &&
 		(!proposed.AutoFixCIFailures || boundary.AutoFixCIFailures) &&
 		(!proposed.AutoFixReviewFeedback || boundary.AutoFixReviewFeedback) &&
-		(!boundary.RequireDifferentReviewerModel || proposed.RequireDifferentReviewerModel)
+		(!boundary.RequireDifferentReviewerModel || proposed.RequireDifferentReviewerModel) &&
+		(!proposed.PublishBeforeReview || boundary.PublishBeforeReview)
 }
 
 func envelopeIssue(path, message string) domainconfig.Issue {

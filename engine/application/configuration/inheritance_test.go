@@ -196,6 +196,26 @@ func TestDifferentReviewerModelPolicyMayTightenButNotLoosenTheEnvelope(t *testin
 	}
 }
 
+func TestPublishBeforeReviewRequiresExplicitConfigurationAndCannotExpandEnvelope(t *testing.T) {
+	reviewFirst := configurationDocument(t, func(configuration *domainconfig.Configuration) {
+		configuration.Defaults.PublishBeforeReview = false
+	})
+	effective, err := approvedEnvelope(t, reviewFirst).ResolveEffective(reviewFirst, "product", TaskOverride{})
+	if err != nil || effective.PublishBeforeReview || effective.PublicationPolicy().Timing != "review_before_pr" {
+		t.Fatalf("default publication = %#v, %v", effective, err)
+	}
+	draftFirst := configurationDocument(t, func(configuration *domainconfig.Configuration) {
+		configuration.Defaults.PublishBeforeReview = true
+	})
+	if _, err := approvedEnvelope(t, reviewFirst).ResolveEffective(draftFirst, "product", TaskOverride{}); !errors.Is(err, ErrOutsideSecurityEnvelope) {
+		t.Fatalf("publish-before-review expanded a review-first envelope: %v", err)
+	}
+	effective, err = approvedEnvelope(t, draftFirst).ResolveEffective(draftFirst, "product", TaskOverride{PublishBeforeReview: boolPointer(false)})
+	if err != nil || effective.PublishBeforeReview || effective.Sources.PublishBeforeReview != ScopeTask {
+		t.Fatalf("Task review-first tightening = %#v, %v", effective, err)
+	}
+}
+
 func TestOptionalCostLimitMayTightenButNotBeRemovedOrRaised(t *testing.T) {
 	unlimited := configurationDocument(t, func(*domainconfig.Configuration) {})
 	finite := configurationDocument(t, func(configuration *domainconfig.Configuration) {

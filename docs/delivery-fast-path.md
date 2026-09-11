@@ -3,6 +3,12 @@
 ADR-0019 defines the deterministic M2 delivery contract. This page is the
 operator-facing map of its order, evidence, and diagnostics.
 
+The repository coordinator uses the explicitly configured publish-before-
+review path below. The product engine also supports the safer
+`publishBeforeReview: false` default described in
+[GitHub pull-request publication](github-pr-publication.md); both paths retain
+the same exact-SHA, no-merge-authority, and recovery gates.
+
 ## Order and authority
 
 ```text

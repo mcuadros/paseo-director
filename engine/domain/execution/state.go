@@ -8,6 +8,7 @@ import (
 	"github.com/mcuadros/director-engine/domain/agentprofile"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
+	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
 )
@@ -248,6 +249,7 @@ type State struct {
 	EffectiveProfiles                *agentprofile.FrozenSet               `json:"effectiveProfiles,omitempty"`
 	EffectiveProfilesSHA256          string                                `json:"effectiveProfilesSha256,omitempty"`
 	ReviewPolicy                     reviewdomain.ProfilePolicy            `json:"reviewPolicy"`
+	PublicationPolicy                *publicationdomain.Policy             `json:"publicationPolicy,omitempty"`
 	Isolation                        IsolationObservation                  `json:"isolation,omitempty"`
 	OperationalPolicy                OperationalPolicy                     `json:"operationalPolicy,omitempty"`
 	LifecycleSurfaces                LifecycleSurfaces                     `json:"lifecycleSurfaces,omitempty"`
@@ -289,6 +291,8 @@ type State struct {
 	Review                           *reviewdomain.State                   `json:"review,omitempty"`
 	ReviewHistory                    []reviewdomain.State                  `json:"reviewHistory,omitempty"`
 	Correction                       *correctiondomain.State               `json:"correction,omitempty"`
+	Publication                      *publicationdomain.State              `json:"publication,omitempty"`
+	PublicationHistory               []publicationdomain.State             `json:"publicationHistory,omitempty"`
 	OperationalObservation           *OperationalObservation               `json:"operationalObservation,omitempty"`
 	OperationalObservationRunVersion uint64                                `json:"operationalObservationRunVersion,omitempty"`
 	OperationalObservationConsumed   bool                                  `json:"operationalObservationConsumed,omitempty"`
