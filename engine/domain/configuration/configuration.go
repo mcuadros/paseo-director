@@ -83,6 +83,17 @@ const (
 	IntegrationInherit   IntegrationMode = "inherit"
 )
 
+// CancellationCleanupMode controls failed/cancelled Run recovery. The empty
+// Project value applies the PLAN snapshot_then_delete default; overrides use
+// inherit explicitly.
+type CancellationCleanupMode string
+
+const (
+	CancellationCleanupSnapshotThenDelete CancellationCleanupMode = "snapshot_then_delete"
+	CancellationCleanupRetain             CancellationCleanupMode = "retain"
+	CancellationCleanupInherit            CancellationCleanupMode = "inherit"
+)
+
 // Provider is an admitted provider-family identity. Exact provider tuples are
 // reconciled outside this schema before launch.
 type Provider string
@@ -218,39 +229,47 @@ type GitHubCI struct {
 // Defaults is the Project-level configuration inherited by Workspaces and
 // Tasks. The application configuration package resolves the effective values.
 type Defaults struct {
-	LaunchPolicy                  LaunchPolicy    `json:"launchPolicy"`
-	DeliveryMode                  DeliveryMode    `json:"deliveryMode"`
-	IntegrationMode               IntegrationMode `json:"integrationMode,omitempty"`
-	Limits                        Limits          `json:"limits"`
-	RunBudget                     RunBudget       `json:"runBudget"`
-	AutoFixCIFailures             bool            `json:"autoFixCiFailures"`
-	AutoFixReviewFeedback         bool            `json:"autoFixReviewFeedback"`
-	RequireDifferentReviewerModel bool            `json:"requireDifferentReviewerModel,omitempty"`
-	PublishBeforeReview           bool            `json:"publishBeforeReview,omitempty"`
-	GitHubCI                      *GitHubCI       `json:"githubCi,omitempty"`
+	LaunchPolicy                  LaunchPolicy            `json:"launchPolicy"`
+	DeliveryMode                  DeliveryMode            `json:"deliveryMode"`
+	IntegrationMode               IntegrationMode         `json:"integrationMode,omitempty"`
+	Limits                        Limits                  `json:"limits"`
+	RunBudget                     RunBudget               `json:"runBudget"`
+	AutoFixCIFailures             bool                    `json:"autoFixCiFailures"`
+	AutoFixReviewFeedback         bool                    `json:"autoFixReviewFeedback"`
+	RequireDifferentReviewerModel bool                    `json:"requireDifferentReviewerModel,omitempty"`
+	PublishBeforeReview           bool                    `json:"publishBeforeReview,omitempty"`
+	TerminateOnCompletion         *bool                   `json:"terminateOnCompletion,omitempty"`
+	CancellationCleanup           CancellationCleanupMode `json:"cancellationCleanup,omitempty"`
+	DeleteRemoteTaskBranch        *bool                   `json:"deleteRemoteTaskBranch,omitempty"`
+	RecoveryRetentionDays         int64                   `json:"recoveryRetentionDays,omitempty"`
+	GitHubCI                      *GitHubCI               `json:"githubCi,omitempty"`
 }
 
 // WorkspaceOverride records explicit Inherit/concrete selections. Pointer
 // fields distinguish an inherited value from an explicit zero or false value.
 // Effective reduction remains in the engine application boundary.
 type WorkspaceOverride struct {
-	WorkspaceID                   string          `json:"workspaceId"`
-	LaunchPolicy                  LaunchPolicy    `json:"launchPolicy"`
-	DeliveryMode                  DeliveryMode    `json:"deliveryMode"`
-	IntegrationMode               IntegrationMode `json:"integrationMode,omitempty"`
-	MaxActiveTasks                *int            `json:"maxActiveTasks,omitempty"`
-	MaxActiveTasksPerWorkspace    *int            `json:"maxActiveTasksPerWorkspace,omitempty"`
-	MaxConcurrentAgents           *int            `json:"maxConcurrentAgents,omitempty"`
-	MaxSubagentsPerTask           *int            `json:"maxSubagentsPerTask,omitempty"`
-	ElapsedSeconds                *int64          `json:"elapsedSeconds,omitempty"`
-	Tokens                        *int64          `json:"tokens,omitempty"`
-	Turns                         *int64          `json:"turns,omitempty"`
-	CICycles                      *int64          `json:"ciCycles,omitempty"`
-	CostMicrousd                  *int64          `json:"costMicrousd,omitempty"`
-	AutoFixCIFailures             *bool           `json:"autoFixCiFailures,omitempty"`
-	AutoFixReviewFeedback         *bool           `json:"autoFixReviewFeedback,omitempty"`
-	RequireDifferentReviewerModel *bool           `json:"requireDifferentReviewerModel,omitempty"`
-	PublishBeforeReview           *bool           `json:"publishBeforeReview,omitempty"`
+	WorkspaceID                   string                  `json:"workspaceId"`
+	LaunchPolicy                  LaunchPolicy            `json:"launchPolicy"`
+	DeliveryMode                  DeliveryMode            `json:"deliveryMode"`
+	IntegrationMode               IntegrationMode         `json:"integrationMode,omitempty"`
+	MaxActiveTasks                *int                    `json:"maxActiveTasks,omitempty"`
+	MaxActiveTasksPerWorkspace    *int                    `json:"maxActiveTasksPerWorkspace,omitempty"`
+	MaxConcurrentAgents           *int                    `json:"maxConcurrentAgents,omitempty"`
+	MaxSubagentsPerTask           *int                    `json:"maxSubagentsPerTask,omitempty"`
+	ElapsedSeconds                *int64                  `json:"elapsedSeconds,omitempty"`
+	Tokens                        *int64                  `json:"tokens,omitempty"`
+	Turns                         *int64                  `json:"turns,omitempty"`
+	CICycles                      *int64                  `json:"ciCycles,omitempty"`
+	CostMicrousd                  *int64                  `json:"costMicrousd,omitempty"`
+	AutoFixCIFailures             *bool                   `json:"autoFixCiFailures,omitempty"`
+	AutoFixReviewFeedback         *bool                   `json:"autoFixReviewFeedback,omitempty"`
+	RequireDifferentReviewerModel *bool                   `json:"requireDifferentReviewerModel,omitempty"`
+	PublishBeforeReview           *bool                   `json:"publishBeforeReview,omitempty"`
+	TerminateOnCompletion         *bool                   `json:"terminateOnCompletion,omitempty"`
+	CancellationCleanup           CancellationCleanupMode `json:"cancellationCleanup,omitempty"`
+	DeleteRemoteTaskBranch        *bool                   `json:"deleteRemoteTaskBranch,omitempty"`
+	RecoveryRetentionDays         *int64                  `json:"recoveryRetentionDays,omitempty"`
 }
 
 // FileReference identifies one explicitly included Organizer file. Directory
@@ -346,6 +365,8 @@ func cloneConfiguration(value Configuration) Configuration {
 	value.AgentProfiles.Organizer = cloneAgentProfile(value.AgentProfiles.Organizer)
 	value.AgentProfiles.Worker = cloneAgentProfile(value.AgentProfiles.Worker)
 	value.AgentProfiles.Reviewer = cloneAgentProfile(value.AgentProfiles.Reviewer)
+	value.Defaults.TerminateOnCompletion = clonePointer(value.Defaults.TerminateOnCompletion)
+	value.Defaults.DeleteRemoteTaskBranch = clonePointer(value.Defaults.DeleteRemoteTaskBranch)
 	if value.Defaults.GitHubCI != nil {
 		githubCI := *value.Defaults.GitHubCI
 		githubCI.RequiredChecks = slices.Clone(githubCI.RequiredChecks)
@@ -395,6 +416,9 @@ func cloneWorkspaceOverrides(values []WorkspaceOverride) []WorkspaceOverride {
 		cloned[index].AutoFixReviewFeedback = clonePointer(cloned[index].AutoFixReviewFeedback)
 		cloned[index].RequireDifferentReviewerModel = clonePointer(cloned[index].RequireDifferentReviewerModel)
 		cloned[index].PublishBeforeReview = clonePointer(cloned[index].PublishBeforeReview)
+		cloned[index].TerminateOnCompletion = clonePointer(cloned[index].TerminateOnCompletion)
+		cloned[index].DeleteRemoteTaskBranch = clonePointer(cloned[index].DeleteRemoteTaskBranch)
+		cloned[index].RecoveryRetentionDays = clonePointer(cloned[index].RecoveryRetentionDays)
 	}
 	return cloned
 }
@@ -741,7 +765,10 @@ func workspaceOverrideEmpty(override WorkspaceOverride) bool {
 		override.MaxConcurrentAgents == nil && override.MaxSubagentsPerTask == nil &&
 		override.ElapsedSeconds == nil && override.Tokens == nil && override.Turns == nil &&
 		override.CICycles == nil && override.CostMicrousd == nil && override.AutoFixCIFailures == nil &&
-		override.AutoFixReviewFeedback == nil && override.RequireDifferentReviewerModel == nil && override.PublishBeforeReview == nil
+		override.AutoFixReviewFeedback == nil && override.RequireDifferentReviewerModel == nil && override.PublishBeforeReview == nil &&
+		override.TerminateOnCompletion == nil &&
+		(override.CancellationCleanup == "" || override.CancellationCleanup == CancellationCleanupInherit) &&
+		override.DeleteRemoteTaskBranch == nil && override.RecoveryRetentionDays == nil
 }
 
 func effectiveWorkspaceLimits(project Limits, override WorkspaceOverride) Limits {
@@ -938,6 +965,13 @@ func validate(value Configuration) error {
 	if value.Defaults.IntegrationMode != "" && value.Defaults.IntegrationMode != IntegrationManual && value.Defaults.IntegrationMode != IntegrationAutomatic {
 		issues = append(issues, issue("integration_mode_invalid", "$.defaults.integrationMode", "Project integration mode must be manual or automatic"))
 	}
+	if value.Defaults.CancellationCleanup != "" && value.Defaults.CancellationCleanup != CancellationCleanupRetain &&
+		value.Defaults.CancellationCleanup != CancellationCleanupSnapshotThenDelete {
+		issues = append(issues, issue("cancellation_cleanup_invalid", "$.defaults.cancellationCleanup", "cancellation cleanup must be retain or snapshot_then_delete"))
+	}
+	if value.Defaults.RecoveryRetentionDays < 0 || value.Defaults.RecoveryRetentionDays > 7 {
+		issues = append(issues, issue("recovery_retention_invalid", "$.defaults.recoveryRetentionDays", "recovery retention must be between one and seven days when set"))
+	}
 	validateLimits("$.defaults.limits", value.Defaults.Limits, &issues)
 	validateRunBudget("$.defaults.runBudget", value.Defaults.RunBudget, &issues)
 	validateGitHubCI("$.defaults.githubCi", value.Defaults.GitHubCI, value.Defaults.RunBudget, value.Defaults.DeliveryMode, &issues)
@@ -964,6 +998,13 @@ func validate(value Configuration) error {
 		}
 		if override.IntegrationMode != "" && override.IntegrationMode != IntegrationInherit && override.IntegrationMode != IntegrationManual && override.IntegrationMode != IntegrationAutomatic {
 			issues = append(issues, issue("integration_mode_invalid", base+".integrationMode", "override integration mode must be inherit, manual, or automatic"))
+		}
+		if override.CancellationCleanup != "" && override.CancellationCleanup != CancellationCleanupInherit &&
+			override.CancellationCleanup != CancellationCleanupRetain && override.CancellationCleanup != CancellationCleanupSnapshotThenDelete {
+			issues = append(issues, issue("cancellation_cleanup_invalid", base+".cancellationCleanup", "override cancellation cleanup must be inherit, retain, or snapshot_then_delete"))
+		}
+		if override.RecoveryRetentionDays != nil && (*override.RecoveryRetentionDays < 1 || *override.RecoveryRetentionDays > 7) {
+			issues = append(issues, issue("recovery_retention_invalid", base+".recoveryRetentionDays", "override recovery retention must be between one and seven days"))
 		}
 		if workspaceOverrideEmpty(override) {
 			issues = append(issues, issue("override_empty", base, "an override must contain at least one concrete value"))
@@ -1022,9 +1063,24 @@ func Parse(input []byte) (Document, error) {
 		presence.Defaults.AutoFixReviewFeedback == nil {
 		return Document{}, invalidDocument("schema_mismatch", "configuration does not match the closed version 1 schema")
 	}
+	var cleanupPresence struct {
+		Defaults map[string]json.RawMessage `json:"defaults"`
+	}
+	if err := json.Unmarshal(canonical, &cleanupPresence); err != nil {
+		return Document{}, invalidDocument("schema_mismatch", "configuration does not match the closed version 1 schema")
+	}
+	for _, field := range []string{"terminateOnCompletion", "cancellationCleanup", "deleteRemoteTaskBranch", "recoveryRetentionDays"} {
+		if raw, exists := cleanupPresence.Defaults[field]; exists && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return Document{}, invalidDocument("schema_mismatch", "configuration does not match the closed version 1 schema")
+		}
+	}
+	if _, exists := cleanupPresence.Defaults["recoveryRetentionDays"]; exists && value.Defaults.RecoveryRetentionDays < 1 {
+		return Document{}, invalidDocument("schema_mismatch", "configuration does not match the closed version 1 schema")
+	}
 	optionalOverrideFields := []string{
 		"maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask",
-		"elapsedSeconds", "tokens", "turns", "ciCycles", "autoFixCiFailures", "autoFixReviewFeedback", "requireDifferentReviewerModel",
+		"elapsedSeconds", "tokens", "turns", "ciCycles", "costMicrousd", "autoFixCiFailures", "autoFixReviewFeedback", "requireDifferentReviewerModel",
+		"publishBeforeReview", "terminateOnCompletion", "cancellationCleanup", "deleteRemoteTaskBranch", "recoveryRetentionDays",
 	}
 	for _, override := range presence.WorkspaceOverrides {
 		for _, field := range optionalOverrideFields {

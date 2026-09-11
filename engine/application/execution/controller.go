@@ -22,6 +22,7 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/agentprofile"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	cleanupdomain "github.com/mcuadros/director-engine/domain/cleanup"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
 	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
@@ -97,6 +98,7 @@ type StartCommand struct {
 	DeliveryMode      domainconfig.DeliveryMode
 	ValidationPolicy  validationdomain.Policy
 	IntegrationPolicy integrationdomain.Policy
+	CleanupPolicy     cleanupdomain.Policy
 	BudgetPolicy      runtimebudget.Policy
 	TurnBudgetDemand  runtimebudget.Demand
 	HelperPolicy      domainexecution.HelperPolicy
@@ -150,6 +152,25 @@ func effectiveIntegrationPolicy(policy integrationdomain.Policy) *integrationdom
 	}
 	copy := policy
 	return &copy
+}
+
+func effectiveCleanupPolicy(policy cleanupdomain.Policy, configurationSHA256 string) *cleanupdomain.Policy {
+	if policy.SchemaVersion == "" {
+		value, ok := cleanupdomain.NewPolicy(configurationSHA256)
+		if !ok {
+			return nil
+		}
+		return &value
+	}
+	copy := policy
+	return &copy
+}
+
+func cleanupPoliciesEqual(left, right *cleanupdomain.Policy) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.SHA256 == right.SHA256 && cleanupdomain.ValidPolicy(*left) && cleanupdomain.ValidPolicy(*right)
 }
 
 func integrationPoliciesEqual(left, right *integrationdomain.Policy) bool {
@@ -336,6 +357,7 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 		controlPolicy = domainexecution.DefaultControlPolicy()
 	}
 	recoveryPolicy := effectiveRecoveryPolicy(command.RecoveryPolicy)
+	cleanupPolicy := effectiveCleanupPolicy(command.CleanupPolicy, command.EffectiveProfiles.ConfigurationSHA256())
 	return project.State == "active" && !project.Control.ResumeRequired &&
 		project.Organizer != nil && project.Organizer.Phase == domain.OrganizerPhaseActive &&
 		project.Lease != nil && project.Lease.DispatchAllowed &&
@@ -361,7 +383,7 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 		command.TurnBudgetDemand.Turns == 1 &&
 		(command.BudgetPolicy.CostLimitMicrousd == 0 || command.TurnBudgetDemand.CostMicrousd > 0) &&
 		domainexecution.ValidHelperPolicy(command.HelperPolicy) && domainexecution.ValidControlPolicy(controlPolicy) &&
-		domainexecution.ValidPrimaryRecoveryPolicy(recoveryPolicy) &&
+		domainexecution.ValidPrimaryRecoveryPolicy(recoveryPolicy) && cleanupPolicy != nil && cleanupdomain.ValidPolicy(*cleanupPolicy) &&
 		(command.DeliveryMode == domainconfig.DeliveryPullRequest || command.DeliveryMode == domainconfig.DeliveryDirect) &&
 		(command.PublicationPolicy.SchemaVersion == "" || publicationdomain.ValidPolicy(command.PublicationPolicy)) &&
 		(command.DeliveryMode != domainconfig.DeliveryDirect || command.PublicationPolicy.SchemaVersion == "") &&
@@ -453,6 +475,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			controlPolicy = domainexecution.DefaultControlPolicy()
 		}
 		recoveryPolicy := effectiveRecoveryPolicy(command.RecoveryPolicy)
+		cleanupPolicy := effectiveCleanupPolicy(command.CleanupPolicy, command.EffectiveProfiles.ConfigurationSHA256())
 		expectedSession, sessionErr := domainexecution.NewPrimarySession(
 			command.Scope, stableID("effect", command.Scope.RunID, string(domainexecution.EffectAgentCreate)),
 			command.EffectiveProfiles, command.MCPServer,
@@ -467,6 +490,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			existing.Execution.DeliveryMode != command.DeliveryMode ||
 			!validationPoliciesEqual(existing.Execution.ValidationPolicy, effectiveValidationPolicy(command.ValidationPolicy)) ||
 			!integrationPoliciesEqual(existing.Execution.IntegrationPolicy, effectiveIntegrationPolicy(command.IntegrationPolicy)) ||
+			!cleanupPoliciesEqual(existing.Execution.CleanupPolicy, cleanupPolicy) ||
 			existing.Execution.RepositoryBinding != repositoryBinding(workspace, command.WorktreePath, command.Branch, command.BaseSHA) ||
 			existing.Execution.BaseRef != "refs/heads/"+workspace.DefaultBaseBranch ||
 			existing.Execution.AcceptanceSHA256 != candidatedomain.AcceptanceSHA256(
@@ -520,6 +544,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 	publicationPolicy := effectivePublicationPolicy(command.PublicationPolicy)
 	validationPolicy := effectiveValidationPolicy(command.ValidationPolicy)
 	integrationPolicy := effectiveIntegrationPolicy(command.IntegrationPolicy)
+	cleanupPolicy := effectiveCleanupPolicy(command.CleanupPolicy, command.EffectiveProfiles.ConfigurationSHA256())
 	publicationPolicySHA256 := ""
 	if publicationPolicy != nil {
 		publicationPolicySHA256 = publicationPolicy.SHA256
@@ -545,6 +570,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		DeliveryMode:            command.DeliveryMode,
 		ValidationPolicy:        validationPolicy,
 		IntegrationPolicy:       integrationPolicy,
+		CleanupPolicy:           cleanupPolicy,
 		LifecycleApproval:       command.EligibilityFacts.LifecycleApproval,
 		Isolation:               command.EligibilityFacts.Isolation,
 		OperationalPolicy:       command.EligibilityFacts.OperationalPolicy,

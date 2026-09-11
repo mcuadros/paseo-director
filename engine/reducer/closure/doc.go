@@ -4,7 +4,10 @@
 // decision reducer.
 package closure
 
-import "github.com/mcuadros/director-engine/domain/execution"
+import (
+	domaincleanup "github.com/mcuadros/director-engine/domain/cleanup"
+	"github.com/mcuadros/director-engine/domain/execution"
+)
 
 const SchemaVersion = "director.reducer.closure/v1"
 
@@ -12,18 +15,21 @@ const SchemaVersion = "director.reducer.closure/v1"
 // FakeTerminalRung explicitly prevents this skeleton from being mistaken for
 // the full Validation/Review/delivery Task closure owned by M4.
 type Facts struct {
-	SchemaVersion             string             `json:"schemaVersion"`
-	FakeTerminalRung          bool               `json:"fakeTerminalRung"`
-	CandidateCurrent          bool               `json:"candidateCurrent"`
-	CriteriaClaimsSatisfied   bool               `json:"criteriaClaimsSatisfied"`
-	ExactOwnership            bool               `json:"exactOwnership"`
-	OperationalLimitsAdmitted bool               `json:"operationalLimitsAdmitted"`
-	OperationalObservationID  string             `json:"operationalObservationId"`
-	TaskStoreNowMillis        int64              `json:"taskStoreNowMillis"`
-	OperationalNeedCode       execution.NeedCode `json:"operationalNeedCode,omitempty"`
-	AgentArchive              execution.Effect   `json:"agentArchive"`
-	HostViewArchive           execution.Effect   `json:"hostViewArchive"`
-	WorktreeRemove            execution.Effect   `json:"worktreeRemove"`
+	SchemaVersion             string               `json:"schemaVersion"`
+	FakeTerminalRung          bool                 `json:"fakeTerminalRung"`
+	DeliveryTerminalRung      bool                 `json:"deliveryTerminalRung"`
+	CleanupBindingCurrent     bool                 `json:"cleanupBindingCurrent"`
+	Cleanup                   *domaincleanup.State `json:"cleanup,omitempty"`
+	CandidateCurrent          bool                 `json:"candidateCurrent"`
+	CriteriaClaimsSatisfied   bool                 `json:"criteriaClaimsSatisfied"`
+	ExactOwnership            bool                 `json:"exactOwnership"`
+	OperationalLimitsAdmitted bool                 `json:"operationalLimitsAdmitted"`
+	OperationalObservationID  string               `json:"operationalObservationId"`
+	TaskStoreNowMillis        int64                `json:"taskStoreNowMillis"`
+	OperationalNeedCode       execution.NeedCode   `json:"operationalNeedCode,omitempty"`
+	AgentArchive              execution.Effect     `json:"agentArchive"`
+	HostViewArchive           execution.Effect     `json:"hostViewArchive"`
+	WorktreeRemove            execution.Effect     `json:"worktreeRemove"`
 }
 
 // DecisionKind is the closed cleanup action vocabulary.
@@ -105,6 +111,14 @@ func Reduce(facts Facts) Decision {
 			code = "operational_limit_fact_missing"
 		}
 		return needs(code)
+	}
+	if facts.DeliveryTerminalRung {
+		if !facts.CandidateCurrent || !facts.CriteriaClaimsSatisfied || !facts.ExactOwnership || !facts.CleanupBindingCurrent ||
+			facts.Cleanup == nil || !domaincleanup.ValidState(*facts.Cleanup) ||
+			(facts.Cleanup.Phase != domaincleanup.PhaseComplete && facts.Cleanup.Phase != domaincleanup.PhaseRetained) {
+			return needs("delivery_cleanup_facts_missing")
+		}
+		return Decision{SchemaVersion: SchemaVersion, Kind: DecisionTerminal}
 	}
 	if !facts.FakeTerminalRung || !facts.CandidateCurrent || !facts.CriteriaClaimsSatisfied || !facts.ExactOwnership {
 		return needs("terminal_cleanup_facts_missing")

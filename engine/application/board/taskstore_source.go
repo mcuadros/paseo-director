@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mcuadros/director-engine/domain"
+	domaincleanup "github.com/mcuadros/director-engine/domain/cleanup"
 	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	"github.com/mcuadros/director-engine/domain/execution"
 	domainfeedback "github.com/mcuadros/director-engine/domain/feedback"
@@ -23,8 +24,7 @@ var ErrDerivedPlanningInvalid = errors.New("derived Task source planning graph i
 
 // PlanningFactReader is the read-only typed TaskStore surface required to
 // normalize currently persisted M1/M2 facts for the complete projection
-// reducer. Validation, Review, delivery, and cleanup facts remain explicitly
-// missing until their owning later-milestone records exist; they are never
+// reducer. Missing later-lifecycle records remain explicit and are never
 // guessed from claims or connector state.
 type PlanningFactReader interface {
 	Projects(context.Context) ([]domain.Project, error)
@@ -231,6 +231,24 @@ func normalizedDelivery(run *domain.Run, candidateID string) projection.Delivery
 	return result
 }
 
+func normalizedCleanup(run *domain.Run, candidateID string) projection.CleanupFact {
+	if run == nil || run.Execution.Cleanup == nil {
+		return projection.CleanupFact{Status: projection.FactMissing}
+	}
+	state := run.Execution.Cleanup
+	result := projection.CleanupFact{Status: projection.FactCurrent, RunID: run.ID, State: projection.CleanupPending}
+	if run.Execution.CleanupPolicy == nil || !domaincleanup.ValidPolicy(*run.Execution.CleanupPolicy) ||
+		!domaincleanup.ValidState(*state) || state.Policy.SHA256 != run.Execution.CleanupPolicy.SHA256 ||
+		state.Binding.RunID != run.ID || state.Binding.CandidateID != candidateID {
+		result.Status = projection.FactContradictory
+		return result
+	}
+	if state.Phase == domaincleanup.PhaseComplete || state.Phase == domaincleanup.PhaseRetained {
+		result.State = projection.CleanupComplete
+	}
+	return result
+}
+
 func taskStateFacts(
 	project domain.Project,
 	task domain.Task,
@@ -285,6 +303,7 @@ func taskStateFacts(
 		facts.Validation = normalizedValidation(run, candidate.ID)
 		facts.Review = normalizedReview(run, candidate.ID)
 		facts.Delivery = normalizedDelivery(run, candidate.ID)
+		facts.Cleanup = normalizedCleanup(run, candidate.ID)
 		if run.Execution.Feedback == nil {
 			facts.Feedback = projection.FeedbackFact{Status: projection.FactCurrent, CandidateID: candidate.ID, State: projection.FeedbackNone}
 		} else {

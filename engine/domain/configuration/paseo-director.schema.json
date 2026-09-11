@@ -254,6 +254,10 @@
         "autoFixReviewFeedback": { "type": "boolean" },
         "requireDifferentReviewerModel": { "type": "boolean", "default": false },
         "publishBeforeReview": { "type": "boolean", "default": false },
+        "terminateOnCompletion": { "type": "boolean", "default": true },
+        "cancellationCleanup": { "enum": ["retain", "snapshot_then_delete"], "default": "snapshot_then_delete" },
+        "deleteRemoteTaskBranch": { "type": "boolean", "default": true },
+        "recoveryRetentionDays": { "type": "integer", "minimum": 1, "maximum": 7, "default": 7 },
         "githubCi": { "$ref": "#/$defs/githubCi" }
       }
     },
@@ -278,7 +282,11 @@
         "autoFixCiFailures": { "type": "boolean" },
         "autoFixReviewFeedback": { "type": "boolean" },
         "requireDifferentReviewerModel": { "type": "boolean" },
-        "publishBeforeReview": { "type": "boolean" }
+        "publishBeforeReview": { "type": "boolean" },
+        "terminateOnCompletion": { "type": "boolean" },
+        "cancellationCleanup": { "enum": ["inherit", "retain", "snapshot_then_delete"] },
+        "deleteRemoteTaskBranch": { "type": "boolean" },
+        "recoveryRetentionDays": { "type": "integer", "minimum": 1, "maximum": 7 }
       }
     },
     "fileReference": {

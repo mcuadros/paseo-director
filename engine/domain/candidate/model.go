@@ -217,6 +217,7 @@ type Downstream struct {
 	Feedback    *EvidenceBinding `json:"feedback,omitempty"`
 	Ready       *EvidenceBinding `json:"ready,omitempty"`
 	Integration *EvidenceBinding `json:"integration,omitempty"`
+	Cleanup     *EvidenceBinding `json:"cleanup,omitempty"`
 }
 
 // Authority is the current Run-level authorization generation. Replacing a
@@ -526,7 +527,7 @@ func NewAuthority(previousGeneration uint64, candidateID, branch string, taskVer
 
 func DownstreamEmpty(value Downstream) bool {
 	return value.Validation == nil && value.Review == nil && value.CI == nil && value.Publication == nil &&
-		value.Feedback == nil && value.Ready == nil && value.Integration == nil
+		value.Feedback == nil && value.Ready == nil && value.Integration == nil && value.Cleanup == nil
 }
 
 func ValidAuthority(value Authority) bool {
@@ -541,7 +542,7 @@ func ValidAuthority(value Authority) bool {
 	}
 	for _, evidence := range []*EvidenceBinding{
 		value.Downstream.Validation, value.Downstream.Review, value.Downstream.CI, value.Downstream.Publication,
-		value.Downstream.Feedback, value.Downstream.Ready, value.Downstream.Integration,
+		value.Downstream.Feedback, value.Downstream.Ready, value.Downstream.Integration, value.Downstream.Cleanup,
 	} {
 		if evidence != nil && (!identifierPattern.MatchString(evidence.ID) || evidence.CandidateID != value.CandidateID ||
 			evidence.CandidateSHA != value.CandidateSHA || evidence.BaseSHA != value.BaseSHA ||

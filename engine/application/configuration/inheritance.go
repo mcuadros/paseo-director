@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 
+	domaincleanup "github.com/mcuadros/director-engine/domain/cleanup"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	domainintegration "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
@@ -50,6 +51,10 @@ type TaskOverride struct {
 	AutoFixReviewFeedback         *bool
 	RequireDifferentReviewerModel *bool
 	PublishBeforeReview           *bool
+	TerminateOnCompletion         *bool
+	CancellationCleanup           domainconfig.CancellationCleanupMode
+	DeleteRemoteTaskBranch        *bool
+	RecoveryRetentionDays         *int64
 }
 
 // EffectiveSources reports exactly which layer supplied each value.
@@ -70,22 +75,30 @@ type EffectiveSources struct {
 	AutoFixReviewFeedback         Scope `json:"autoFixReviewFeedback"`
 	RequireDifferentReviewerModel Scope `json:"requireDifferentReviewerModel"`
 	PublishBeforeReview           Scope `json:"publishBeforeReview"`
+	TerminateOnCompletion         Scope `json:"terminateOnCompletion"`
+	CancellationCleanup           Scope `json:"cancellationCleanup"`
+	DeleteRemoteTaskBranch        Scope `json:"deleteRemoteTaskBranch"`
+	RecoveryRetentionDays         Scope `json:"recoveryRetentionDays"`
 }
 
 // EffectiveConfiguration is the complete frozen Project -> Workspace -> Task
 // result consumed by a future Run. It contains no fallback or host decision.
 type EffectiveConfiguration struct {
-	LaunchPolicy                  domainconfig.LaunchPolicy    `json:"launchPolicy"`
-	DeliveryMode                  domainconfig.DeliveryMode    `json:"deliveryMode"`
-	IntegrationMode               domainconfig.IntegrationMode `json:"integrationMode"`
-	Limits                        domainconfig.Limits          `json:"limits"`
-	RunBudget                     domainconfig.RunBudget       `json:"runBudget"`
-	AutoFixCIFailures             bool                         `json:"autoFixCiFailures"`
-	AutoFixReviewFeedback         bool                         `json:"autoFixReviewFeedback"`
-	RequireDifferentReviewerModel bool                         `json:"requireDifferentReviewerModel"`
-	PublishBeforeReview           bool                         `json:"publishBeforeReview"`
-	GitHubCI                      *domainconfig.GitHubCI       `json:"githubCi,omitempty"`
-	Sources                       EffectiveSources             `json:"sources"`
+	LaunchPolicy                  domainconfig.LaunchPolicy            `json:"launchPolicy"`
+	DeliveryMode                  domainconfig.DeliveryMode            `json:"deliveryMode"`
+	IntegrationMode               domainconfig.IntegrationMode         `json:"integrationMode"`
+	Limits                        domainconfig.Limits                  `json:"limits"`
+	RunBudget                     domainconfig.RunBudget               `json:"runBudget"`
+	AutoFixCIFailures             bool                                 `json:"autoFixCiFailures"`
+	AutoFixReviewFeedback         bool                                 `json:"autoFixReviewFeedback"`
+	RequireDifferentReviewerModel bool                                 `json:"requireDifferentReviewerModel"`
+	PublishBeforeReview           bool                                 `json:"publishBeforeReview"`
+	TerminateOnCompletion         bool                                 `json:"terminateOnCompletion"`
+	CancellationCleanup           domainconfig.CancellationCleanupMode `json:"cancellationCleanup"`
+	DeleteRemoteTaskBranch        bool                                 `json:"deleteRemoteTaskBranch"`
+	RecoveryRetentionDays         int64                                `json:"recoveryRetentionDays"`
+	GitHubCI                      *domainconfig.GitHubCI               `json:"githubCi,omitempty"`
+	Sources                       EffectiveSources                     `json:"sources"`
 }
 
 func effectiveIntegrationMode(value domainconfig.IntegrationMode) domainconfig.IntegrationMode {
@@ -93,6 +106,42 @@ func effectiveIntegrationMode(value domainconfig.IntegrationMode) domainconfig.I
 		return domainconfig.IntegrationManual
 	}
 	return value
+}
+
+func effectiveBool(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func effectiveCancellation(value domainconfig.CancellationCleanupMode) domainconfig.CancellationCleanupMode {
+	if value == "" || value == domainconfig.CancellationCleanupInherit {
+		return domainconfig.CancellationCleanupSnapshotThenDelete
+	}
+	return value
+}
+
+func effectiveRetentionDays(value int64) int64 {
+	if value == 0 {
+		return 7
+	}
+	return value
+}
+
+// CleanupPolicy freezes termination, cancellation, remote-ref, retention, and
+// ADR-0013 resource bounds into the Run.
+func (configuration EffectiveConfiguration) CleanupPolicy(configurationSHA256 string) (domaincleanup.Policy, bool) {
+	policy, ok := domaincleanup.NewPolicy(configurationSHA256)
+	if !ok {
+		return domaincleanup.Policy{}, false
+	}
+	policy.TerminateOnCompletion = configuration.TerminateOnCompletion
+	policy.CancellationMode = domaincleanup.CancellationMode(configuration.CancellationCleanup)
+	policy.DeleteRemoteTaskBranch = configuration.DeleteRemoteTaskBranch
+	policy.RetentionMillis = configuration.RecoveryRetentionDays * 24 * 60 * 60 * 1_000
+	policy = domaincleanup.SealPolicy(policy)
+	return policy, domaincleanup.ValidPolicy(policy)
 }
 
 // IntegrationPolicy freezes the Project -> Workspace -> Task decision into a
@@ -155,6 +204,10 @@ func projectEffective(configuration domainconfig.Configuration) EffectiveConfigu
 		AutoFixReviewFeedback:         configuration.Defaults.AutoFixReviewFeedback,
 		RequireDifferentReviewerModel: configuration.Defaults.RequireDifferentReviewerModel,
 		PublishBeforeReview:           configuration.Defaults.PublishBeforeReview,
+		TerminateOnCompletion:         effectiveBool(configuration.Defaults.TerminateOnCompletion, true),
+		CancellationCleanup:           effectiveCancellation(configuration.Defaults.CancellationCleanup),
+		DeleteRemoteTaskBranch:        effectiveBool(configuration.Defaults.DeleteRemoteTaskBranch, true),
+		RecoveryRetentionDays:         effectiveRetentionDays(configuration.Defaults.RecoveryRetentionDays),
 		GitHubCI:                      cloneGitHubCI(configuration.Defaults.GitHubCI),
 		Sources: EffectiveSources{
 			LaunchPolicy: ScopeProject, DeliveryMode: ScopeProject, IntegrationMode: ScopeProject,
@@ -163,7 +216,9 @@ func projectEffective(configuration domainconfig.Configuration) EffectiveConfigu
 			ElapsedSeconds: ScopeProject, Tokens: ScopeProject, Turns: ScopeProject,
 			CICycles: ScopeProject, CostMicrousd: ScopeProject, AutoFixCIFailures: ScopeProject,
 			AutoFixReviewFeedback: ScopeProject, RequireDifferentReviewerModel: ScopeProject,
-			PublishBeforeReview: ScopeProject,
+			PublishBeforeReview:   ScopeProject,
+			TerminateOnCompletion: ScopeProject, CancellationCleanup: ScopeProject,
+			DeleteRemoteTaskBranch: ScopeProject, RecoveryRetentionDays: ScopeProject,
 		},
 	}
 }
@@ -215,6 +270,12 @@ func applyWorkspace(result *EffectiveConfiguration, override domainconfig.Worksp
 	applyBool(override.AutoFixReviewFeedback, &result.AutoFixReviewFeedback, &result.Sources.AutoFixReviewFeedback, ScopeWorkspace)
 	applyBool(override.RequireDifferentReviewerModel, &result.RequireDifferentReviewerModel, &result.Sources.RequireDifferentReviewerModel, ScopeWorkspace)
 	applyBool(override.PublishBeforeReview, &result.PublishBeforeReview, &result.Sources.PublishBeforeReview, ScopeWorkspace)
+	applyBool(override.TerminateOnCompletion, &result.TerminateOnCompletion, &result.Sources.TerminateOnCompletion, ScopeWorkspace)
+	if override.CancellationCleanup != "" && override.CancellationCleanup != domainconfig.CancellationCleanupInherit {
+		result.CancellationCleanup, result.Sources.CancellationCleanup = override.CancellationCleanup, ScopeWorkspace
+	}
+	applyBool(override.DeleteRemoteTaskBranch, &result.DeleteRemoteTaskBranch, &result.Sources.DeleteRemoteTaskBranch, ScopeWorkspace)
+	applyInt64(override.RecoveryRetentionDays, &result.RecoveryRetentionDays, &result.Sources.RecoveryRetentionDays, ScopeWorkspace)
 }
 
 func applyTask(result *EffectiveConfiguration, override TaskOverride) {
@@ -243,6 +304,12 @@ func applyTask(result *EffectiveConfiguration, override TaskOverride) {
 	applyBool(override.AutoFixReviewFeedback, &result.AutoFixReviewFeedback, &result.Sources.AutoFixReviewFeedback, ScopeTask)
 	applyBool(override.RequireDifferentReviewerModel, &result.RequireDifferentReviewerModel, &result.Sources.RequireDifferentReviewerModel, ScopeTask)
 	applyBool(override.PublishBeforeReview, &result.PublishBeforeReview, &result.Sources.PublishBeforeReview, ScopeTask)
+	applyBool(override.TerminateOnCompletion, &result.TerminateOnCompletion, &result.Sources.TerminateOnCompletion, ScopeTask)
+	if override.CancellationCleanup != "" && override.CancellationCleanup != domainconfig.CancellationCleanupInherit {
+		result.CancellationCleanup, result.Sources.CancellationCleanup = override.CancellationCleanup, ScopeTask
+	}
+	applyBool(override.DeleteRemoteTaskBranch, &result.DeleteRemoteTaskBranch, &result.Sources.DeleteRemoteTaskBranch, ScopeTask)
+	applyInt64(override.RecoveryRetentionDays, &result.RecoveryRetentionDays, &result.Sources.RecoveryRetentionDays, ScopeTask)
 }
 
 func taskOverrideValid(override TaskOverride) bool {
@@ -256,6 +323,11 @@ func taskOverrideValid(override TaskOverride) bool {
 	}
 	if override.IntegrationMode != "" && override.IntegrationMode != domainconfig.IntegrationInherit &&
 		override.IntegrationMode != domainconfig.IntegrationManual && override.IntegrationMode != domainconfig.IntegrationAutomatic {
+		return false
+	}
+	if override.CancellationCleanup != "" && override.CancellationCleanup != domainconfig.CancellationCleanupInherit &&
+		override.CancellationCleanup != domainconfig.CancellationCleanupRetain &&
+		override.CancellationCleanup != domainconfig.CancellationCleanupSnapshotThenDelete {
 		return false
 	}
 	for _, value := range []*int{override.MaxActiveTasks, override.MaxActiveTasksPerWorkspace, override.MaxConcurrentAgents} {
@@ -280,11 +352,16 @@ func taskOverrideValid(override TaskOverride) bool {
 	if override.CostMicrousd != nil && *override.CostMicrousd < 0 {
 		return false
 	}
+	if override.RecoveryRetentionDays != nil && (*override.RecoveryRetentionDays < 1 || *override.RecoveryRetentionDays > 7) {
+		return false
+	}
 	return true
 }
 
 func effectiveConsistent(value EffectiveConfiguration) bool {
 	return (value.IntegrationMode == domainconfig.IntegrationManual || value.IntegrationMode == domainconfig.IntegrationAutomatic) &&
+		(value.CancellationCleanup == domainconfig.CancellationCleanupRetain || value.CancellationCleanup == domainconfig.CancellationCleanupSnapshotThenDelete) &&
+		value.RecoveryRetentionDays >= 1 && value.RecoveryRetentionDays <= 7 &&
 		value.Limits.MaxActiveTasks >= 1 && value.Limits.MaxActiveTasksPerWorkspace >= 1 &&
 		value.Limits.MaxConcurrentAgents >= 1 && value.Limits.MaxSubagentsPerTask >= 0 &&
 		value.Limits.MaxActiveTasksPerWorkspace <= value.Limits.MaxActiveTasks &&
@@ -376,6 +453,10 @@ func integrationWithin(boundary, proposed domainconfig.IntegrationMode) bool {
 	return boundary == domainconfig.IntegrationAutomatic || proposed == domainconfig.IntegrationManual
 }
 
+func cleanupWithin(boundary, proposed domainconfig.CancellationCleanupMode) bool {
+	return boundary == domainconfig.CancellationCleanupSnapshotThenDelete || proposed == domainconfig.CancellationCleanupRetain
+}
+
 func effectiveWithin(boundary, proposed EffectiveConfiguration) bool {
 	return launchWithin(boundary.LaunchPolicy, proposed.LaunchPolicy) &&
 		deliveryWithin(boundary.DeliveryMode, proposed.DeliveryMode) &&
@@ -393,6 +474,10 @@ func effectiveWithin(boundary, proposed EffectiveConfiguration) bool {
 		(!proposed.AutoFixReviewFeedback || boundary.AutoFixReviewFeedback) &&
 		(!boundary.RequireDifferentReviewerModel || proposed.RequireDifferentReviewerModel) &&
 		(!proposed.PublishBeforeReview || boundary.PublishBeforeReview) &&
+		(!proposed.TerminateOnCompletion || boundary.TerminateOnCompletion) &&
+		cleanupWithin(boundary.CancellationCleanup, proposed.CancellationCleanup) &&
+		(!proposed.DeleteRemoteTaskBranch || boundary.DeleteRemoteTaskBranch) &&
+		proposed.RecoveryRetentionDays <= boundary.RecoveryRetentionDays &&
 		reflect.DeepEqual(proposed.GitHubCI, boundary.GitHubCI)
 }
 
