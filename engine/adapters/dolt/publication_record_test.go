@@ -8,6 +8,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/candidate"
+	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	"github.com/mcuadros/director-engine/domain/execution"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 )
@@ -42,7 +43,8 @@ func TestPublicationIntentRoundTripsTheDurableRunRecord(t *testing.T) {
 	run := domain.Run{ID: "run-1", TaskID: "dir-m4.5", Number: 1, BaseSHA: manifest.BaseSHA,
 		CurrentCandidateID: "candidate-1", Version: 4, Execution: execution.State{SchemaVersion: execution.SchemaVersion,
 			Scope:              execution.Scope{ProjectID: "project-1", WorkspaceID: "workspace-1", TaskID: "dir-m4.5", RunID: "run-1"},
-			CandidateAuthority: &authority, PublicationPolicy: &policy, Publication: &publication}}
+			CandidateAuthority: &authority, DeliveryMode: domainconfig.DeliveryPullRequest,
+			PublicationPolicy: &policy, Publication: &publication}}
 	if err := validateRun(run); err != nil {
 		t.Fatalf("validateRun() = %v", err)
 	}

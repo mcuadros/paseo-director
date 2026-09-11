@@ -10,6 +10,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
@@ -30,8 +31,10 @@ func TestCorrectionStateAndPriorAuthorityHistorySurviveDoltReopen(t *testing.T) 
 	result, err = store.CreateTask(ctx, command("correction-task", "task.create", task.ID, 0, `{}`), task,
 		event("correction-task-event", "", 1, task.ID, 0, "task.created"))
 	requireApplied(t, result, err)
+	publicationPolicy := publicationdomain.NewPolicy("pull_request", true, []string{"release"})
 	run := domain.Run{ID: "run-correction", TaskID: task.ID, Number: 1, BaseSHA: strings.Repeat("0", 40), Execution: execution.State{
 		SchemaVersion: execution.SchemaVersion, Scope: execution.Scope{ProjectID: project.ID, WorkspaceID: workspace.ID, TaskID: task.ID, RunID: "run-correction"},
+		DeliveryMode: domainconfig.DeliveryPullRequest, PublicationPolicy: &publicationPolicy,
 	}}
 	result, err = store.CreateRun(ctx, command("correction-run", "run.create", run.ID, 0, `{}`), run,
 		event("correction-run-event", run.ID, 1, run.ID, 0, "run.created"))
@@ -49,7 +52,6 @@ func TestCorrectionStateAndPriorAuthorityHistorySurviveDoltReopen(t *testing.T) 
 			CandidateSHA: first.CommitSHA, BaseSHA: first.Manifest.BaseSHA, Generation: run.Execution.CandidateAuthority.Generation,
 			BindingSHA256: first.Manifest.BindingSHA256}
 	}
-	publicationPolicy := publicationdomain.NewPolicy("pull_request", true, []string{"release"})
 	publicationBinding := publicationdomain.SealBinding(publicationdomain.Binding{TaskID: task.ID, RunID: run.ID,
 		CandidateID: first.ID, CandidateSHA: first.CommitSHA, BaseSHA: first.Manifest.BaseSHA, TreeSHA: first.Manifest.TreeSHA,
 		ManifestSHA256: first.Manifest.BindingSHA256, CandidateGeneration: run.Execution.CandidateAuthority.Generation,

@@ -8,6 +8,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	gitport "github.com/mcuadros/director-engine/ports/git"
@@ -108,8 +109,9 @@ func (controller *Controller) ReconcileCandidateAuthority(
 	if code == candidatedomain.CodeOK {
 		code = updated.InvalidationCode
 	}
-	if run.Execution.Publication != nil && publicationdomain.DispatchInFlight(*run.Execution.Publication) {
-		return CandidateAuthorityResult{Run: run}, errors.New("publication dispatch must reconcile before Candidate invalidation")
+	if run.Execution.Publication != nil && publicationdomain.DispatchInFlight(*run.Execution.Publication) ||
+		run.Execution.DirectDelivery != nil && directdomain.DispatchInFlight(*run.Execution.DirectDelivery) {
+		return CandidateAuthorityResult{Run: run}, errors.New("delivery dispatch must reconcile before Candidate invalidation")
 	}
 	next := run
 	next.Execution.CandidateAuthority = &updated
@@ -120,6 +122,10 @@ func (controller *Controller) ReconcileCandidateAuthority(
 	if next.Execution.Publication != nil {
 		invalidated := publicationdomain.Invalidate(*next.Execution.Publication, string(code))
 		next.Execution.Publication = &invalidated
+	}
+	if next.Execution.DirectDelivery != nil {
+		invalidated := directdomain.Invalidate(*next.Execution.DirectDelivery, string(code), "fresh_candidate_validation_and_review")
+		next.Execution.DirectDelivery = &invalidated
 	}
 	if err := controller.persistRun(ctx, run, next, "candidate.authority_invalidated"); err != nil {
 		return CandidateAuthorityResult{Run: run}, err

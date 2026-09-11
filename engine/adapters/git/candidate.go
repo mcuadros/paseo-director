@@ -35,7 +35,9 @@ const (
 
 // Adapter uses only local read-only Git and filesystem observations.
 type Adapter struct {
-	afterFirstSnapshot func()
+	afterFirstSnapshot     func()
+	deliveryRemoteOverride string
+	beforeDirectPush       func()
 }
 
 var _ gitport.CandidateObserver = (*Adapter)(nil)

@@ -21,6 +21,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/candidate"
+	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	domaincorrection "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
@@ -233,6 +234,8 @@ func desiredTemplate(task domain.Task, run domain.Run, record domain.Candidate, 
 func currentBinding(task domain.Task, run domain.Run, record domain.Candidate, state publicationdomain.State) bool {
 	authority := run.Execution.CandidateAuthority
 	return authority != nil && candidate.ValidAuthority(*authority) && !authority.Invalidated &&
+		run.Execution.DeliveryMode == domainconfig.DeliveryPullRequest && run.Execution.DirectDelivery == nil &&
+		len(run.Execution.DirectDeliveryHistory) == 0 &&
 		run.CurrentCandidateID == record.ID && record.RunID == run.ID && task.Version == authority.TaskVersion &&
 		authority.CandidateID == state.Binding.CandidateID && authority.CandidateSHA == state.Binding.CandidateSHA &&
 		authority.BaseSHA == state.Binding.BaseSHA && authority.Generation == state.Binding.CandidateGeneration &&
@@ -269,6 +272,8 @@ func (service *Service) Admit(ctx context.Context, command AdmitCommand) (Result
 	if run.Version != command.ExpectedRunVersion || command.NowMillis < 0 || run.CurrentCandidateID == "" ||
 		run.Execution.CandidateAuthority == nil || run.Execution.CandidateAuthority.Invalidated ||
 		!candidate.ValidAuthority(*run.Execution.CandidateAuthority) || run.Execution.PublicationPolicy == nil ||
+		run.Execution.DeliveryMode != domainconfig.DeliveryPullRequest || run.Execution.DirectDelivery != nil ||
+		len(run.Execution.DirectDeliveryHistory) != 0 ||
 		!publicationdomain.ValidPolicy(*run.Execution.PublicationPolicy) || command.GitHubRepositoryID <= 0 ||
 		command.GitHubRepositoryNodeID == "" || command.HeadOwner == "" || command.OwnershipSHA256 == "" {
 		return Result{Run: run}, ErrInvalidCommand
@@ -370,7 +375,9 @@ func (service *Service) load(ctx context.Context, runID string, nowMillis int64)
 	if err != nil {
 		return domain.Project{}, domain.Task{}, domain.Run{}, domain.Candidate{}, publicationdomain.State{}, err
 	}
-	if run.Execution.Publication == nil || !publicationdomain.ValidState(*run.Execution.Publication) || run.CurrentCandidateID == "" {
+	if run.Execution.Publication == nil || !publicationdomain.ValidState(*run.Execution.Publication) || run.CurrentCandidateID == "" ||
+		run.Execution.DeliveryMode != domainconfig.DeliveryPullRequest || run.Execution.DirectDelivery != nil ||
+		len(run.Execution.DirectDeliveryHistory) != 0 {
 		return domain.Project{}, domain.Task{}, run, domain.Candidate{}, publicationdomain.State{}, ErrInvalidCommand
 	}
 	task, err := service.store.Task(ctx, run.TaskID)

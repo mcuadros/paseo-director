@@ -22,6 +22,7 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/agentprofile"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
@@ -91,6 +92,7 @@ type StartCommand struct {
 	EffectiveProfiles agentprofile.FrozenSet
 	ReviewPolicy      reviewdomain.ProfilePolicy
 	PublicationPolicy publicationdomain.Policy
+	DeliveryMode      domainconfig.DeliveryMode
 	BudgetPolicy      runtimebudget.Policy
 	TurnBudgetDemand  runtimebudget.Demand
 	HelperPolicy      domainexecution.HelperPolicy
@@ -325,7 +327,9 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 		(command.BudgetPolicy.CostLimitMicrousd == 0 || command.TurnBudgetDemand.CostMicrousd > 0) &&
 		domainexecution.ValidHelperPolicy(command.HelperPolicy) && domainexecution.ValidControlPolicy(controlPolicy) &&
 		domainexecution.ValidPrimaryRecoveryPolicy(recoveryPolicy) &&
-		(command.PublicationPolicy.SchemaVersion == "" || publicationdomain.ValidPolicy(command.PublicationPolicy))
+		(command.DeliveryMode == domainconfig.DeliveryPullRequest || command.DeliveryMode == domainconfig.DeliveryDirect) &&
+		(command.PublicationPolicy.SchemaVersion == "" || publicationdomain.ValidPolicy(command.PublicationPolicy)) &&
+		(command.DeliveryMode != domainconfig.DeliveryDirect || command.PublicationPolicy.SchemaVersion == "")
 }
 
 func eventPayload(value any) json.RawMessage {
@@ -418,6 +422,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			existing.Execution.EffectiveProfilesSHA256 != command.EffectiveProfiles.SHA256() ||
 			existing.Execution.ReviewPolicy != command.ReviewPolicy ||
 			!publicationPoliciesEqual(existing.Execution.PublicationPolicy, effectivePublicationPolicy(command.PublicationPolicy)) ||
+			existing.Execution.DeliveryMode != command.DeliveryMode ||
 			existing.Execution.RepositoryBinding != repositoryBinding(workspace, command.WorktreePath, command.Branch, command.BaseSHA) ||
 			existing.Execution.BaseRef != "refs/heads/"+workspace.DefaultBaseBranch ||
 			existing.Execution.AcceptanceSHA256 != candidatedomain.AcceptanceSHA256(
@@ -487,6 +492,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		EffectiveProfilesSHA256: command.EffectiveProfiles.SHA256(),
 		ReviewPolicy:            command.ReviewPolicy,
 		PublicationPolicy:       publicationPolicy,
+		DeliveryMode:            command.DeliveryMode,
 		LifecycleApproval:       command.EligibilityFacts.LifecycleApproval,
 		Isolation:               command.EligibilityFacts.Isolation,
 		OperationalPolicy:       command.EligibilityFacts.OperationalPolicy,
@@ -532,6 +538,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			hashText(string(eventPayload(state.ControlPolicy))),
 			hashText(string(eventPayload(state.RecoveryPolicy))),
 			publicationPolicySHA256,
+			string(state.DeliveryMode),
 			strings.Join(state.CriterionIDs, "\x1e"),
 		}, "\x1f")),
 	)

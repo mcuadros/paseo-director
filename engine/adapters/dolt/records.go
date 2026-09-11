@@ -18,7 +18,9 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
+	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	"github.com/mcuadros/director-engine/domain/execution"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
@@ -382,6 +384,9 @@ func validateRun(run domain.Run) error {
 			!safeIdentifier(state.Scope.WorkspaceID, 128) {
 			return fmt.Errorf("%w: invalid Run execution identity", storeport.ErrInvalidRecord)
 		}
+		if state.DeliveryMode != "" && state.DeliveryMode != domainconfig.DeliveryPullRequest && state.DeliveryMode != domainconfig.DeliveryDirect {
+			return fmt.Errorf("%w: invalid frozen delivery mode", storeport.ErrInvalidRecord)
+		}
 		if state.NeedsYou != nil && (state.NeedsYou.Code == "" || state.NeedsYou.WakeCondition == "" || state.NeedsYou.CleanupAuthorized) {
 			return fmt.Errorf("%w: invalid Run execution attention", storeport.ErrInvalidRecord)
 		}
@@ -516,10 +521,17 @@ func validateRun(run domain.Run) error {
 		if state.Correction != nil && !correctiondomain.ValidState(*state.Correction) {
 			return fmt.Errorf("%w: invalid correction state", storeport.ErrInvalidRecord)
 		}
-		if state.PublicationPolicy != nil && !publicationdomain.ValidPolicy(*state.PublicationPolicy) {
+		if state.PublicationPolicy != nil && (state.DeliveryMode != domainconfig.DeliveryPullRequest ||
+			!publicationdomain.ValidPolicy(*state.PublicationPolicy)) {
 			return fmt.Errorf("%w: invalid publication policy", storeport.ErrInvalidRecord)
 		}
+		if state.Publication != nil && state.DirectDelivery != nil {
+			return fmt.Errorf("%w: pull-request and direct delivery cannot both be active", storeport.ErrInvalidRecord)
+		}
 		if state.Publication != nil {
+			if state.DeliveryMode != domainconfig.DeliveryPullRequest {
+				return fmt.Errorf("%w: publication conflicts with frozen delivery mode", storeport.ErrInvalidRecord)
+			}
 			publication := *state.Publication
 			if !publicationdomain.ValidState(publication) {
 				return fmt.Errorf("%w: invalid publication state", storeport.ErrInvalidRecord)
@@ -549,6 +561,9 @@ func validateRun(run domain.Run) error {
 		if len(state.PublicationHistory) > publicationdomain.MaximumHistoricalStates {
 			return fmt.Errorf("%w: too many historical publication states", storeport.ErrInvalidRecord)
 		}
+		if len(state.PublicationHistory) > 0 && state.DeliveryMode != domainconfig.DeliveryPullRequest {
+			return fmt.Errorf("%w: publication history conflicts with frozen delivery mode", storeport.ErrInvalidRecord)
+		}
 		seenPublications := make(map[string]struct{}, len(state.PublicationHistory)+1)
 		if state.Publication != nil {
 			seenPublications[state.Publication.Binding.BindingSHA256] = struct{}{}
@@ -561,6 +576,52 @@ func validateRun(run domain.Run) error {
 				return fmt.Errorf("%w: duplicate publication binding", storeport.ErrInvalidRecord)
 			}
 			seenPublications[publication.Binding.BindingSHA256] = struct{}{}
+		}
+		if len(state.DirectDeliveryHistory) > directdomain.MaximumHistoricalStates {
+			return fmt.Errorf("%w: too many historical direct-delivery states", storeport.ErrInvalidRecord)
+		}
+		if len(state.DirectDeliveryHistory) > 0 && state.DeliveryMode != domainconfig.DeliveryDirect {
+			return fmt.Errorf("%w: direct-delivery history conflicts with frozen delivery mode", storeport.ErrInvalidRecord)
+		}
+		seenDirectDeliveries := make(map[string]struct{}, len(state.DirectDeliveryHistory)+1)
+		if state.DirectDelivery != nil {
+			direct := *state.DirectDelivery
+			if state.DeliveryMode != domainconfig.DeliveryDirect || !directdomain.ValidState(direct) {
+				return fmt.Errorf("%w: invalid direct-delivery state", storeport.ErrInvalidRecord)
+			}
+			seenDirectDeliveries[direct.ID] = struct{}{}
+			if direct.Phase != directdomain.PhaseInvalidated {
+				authority := state.CandidateAuthority
+				if authority == nil || authority.Invalidated || direct.Binding.CandidateID != authority.CandidateID ||
+					direct.Binding.CandidateSHA != authority.CandidateSHA || direct.Binding.BaseSHA != authority.BaseSHA ||
+					direct.Binding.ManifestSHA256 != authority.BindingSHA256 || direct.Binding.CandidateGeneration != authority.Generation ||
+					direct.Binding.TaskVersion != authority.TaskVersion || direct.Binding.ConfigurationSHA256 != authority.ConfigurationSHA256 ||
+					direct.Binding.RepositoryID != state.RepositoryBinding.RepositoryID ||
+					direct.Binding.RepositoryBindingSHA256 != state.RepositoryBindingHash || authority.Downstream.Publication != nil ||
+					state.Review == nil || state.Review.Evidence == nil || state.Review.CIObservation == nil ||
+					direct.Binding.ReviewEvidenceID != state.Review.Evidence.ID ||
+					direct.Binding.ReviewerUUID != state.Review.Evidence.ReviewerUUID ||
+					direct.Binding.CIObservationID != state.Review.CIObservation.ID ||
+					direct.Binding.CIObservationSHA256 != state.Review.CIObservation.SHA256 ||
+					authority.Downstream.CI == nil || authority.Downstream.CI.CandidateID != authority.CandidateID ||
+					(direct.Phase != directdomain.PhaseNeedsYou && (authority.Downstream.Ready == nil ||
+						authority.Downstream.Ready.CandidateID != authority.CandidateID)) {
+					return fmt.Errorf("%w: direct delivery is not bound to current Candidate authority", storeport.ErrInvalidRecord)
+				}
+				if direct.Phase == directdomain.PhaseComplete && (direct.Evidence == nil || authority.Downstream.Integration == nil ||
+					authority.Downstream.Integration.ID != direct.Evidence.ID) {
+					return fmt.Errorf("%w: direct integration evidence is not authoritative", storeport.ErrInvalidRecord)
+				}
+			}
+		}
+		for _, direct := range state.DirectDeliveryHistory {
+			if !directdomain.ValidState(direct) || direct.Phase != directdomain.PhaseInvalidated {
+				return fmt.Errorf("%w: invalid historical direct-delivery state", storeport.ErrInvalidRecord)
+			}
+			if _, duplicate := seenDirectDeliveries[direct.ID]; duplicate {
+				return fmt.Errorf("%w: duplicate direct-delivery identity", storeport.ErrInvalidRecord)
+			}
+			seenDirectDeliveries[direct.ID] = struct{}{}
 		}
 	}
 	return nil
@@ -1459,6 +1520,10 @@ func (store *DoltTaskStore) UpdateRun(
 		if current.Number != run.Number {
 			return mutationResult{}, fmt.Errorf("%w: Run number is immutable", storeport.ErrInvalidRecord)
 		}
+		if current.Execution.DeliveryMode != run.Execution.DeliveryMode ||
+			!reflect.DeepEqual(current.Execution.PublicationPolicy, run.Execution.PublicationPolicy) {
+			return mutationResult{}, fmt.Errorf("%w: frozen Run delivery policy is immutable", storeport.ErrInvalidRecord)
+		}
 		if run.CurrentCandidateID != "" {
 			var candidateRunID string
 			if err := tx.QueryRowContext(ctx,
@@ -1544,7 +1609,8 @@ func (store *DoltTaskStore) AppendCandidate(
 			}
 			current.Execution.CandidateAuthorityHistory = append(current.Execution.CandidateAuthorityHistory, historical)
 		}
-		if current.Execution.Publication != nil && publicationdomain.DispatchInFlight(*current.Execution.Publication) {
+		if current.Execution.Publication != nil && publicationdomain.DispatchInFlight(*current.Execution.Publication) ||
+			current.Execution.DirectDelivery != nil && directdomain.DispatchInFlight(*current.Execution.DirectDelivery) {
 			return mutationResult{}, storeport.ErrReferentialIntegrity
 		}
 		if current.Execution.Review != nil {
@@ -1562,6 +1628,17 @@ func (store *DoltTaskStore) AppendCandidate(
 			}
 			current.Execution.PublicationHistory = append(current.Execution.PublicationHistory, historical)
 			current.Execution.Publication = nil
+		}
+		if current.Execution.DirectDelivery != nil {
+			if len(current.Execution.DirectDeliveryHistory) >= directdomain.MaximumHistoricalStates {
+				return mutationResult{}, storeport.ErrReferentialIntegrity
+			}
+			historical := directdomain.Invalidate(*current.Execution.DirectDelivery, "candidate_changed", "fresh_candidate_validation_and_review")
+			if !directdomain.ValidState(historical) || historical.Phase != directdomain.PhaseInvalidated {
+				return mutationResult{}, storeport.ErrReferentialIntegrity
+			}
+			current.Execution.DirectDeliveryHistory = append(current.Execution.DirectDeliveryHistory, historical)
+			current.Execution.DirectDelivery = nil
 		}
 		authority := candidatedomain.NewAuthority(generation, candidate.ID, candidate.Claim.Branch, candidate.Claim.TaskVersion, candidate.Manifest)
 		current.Execution.CandidateAuthority = &authority

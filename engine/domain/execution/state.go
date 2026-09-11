@@ -7,7 +7,9 @@ import (
 
 	"github.com/mcuadros/director-engine/domain/agentprofile"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
+	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
@@ -50,6 +52,7 @@ const (
 	EffectReviewerAgentArchive   EffectKind = "reviewer_agent.archive"
 	EffectHostViewArchive        EffectKind = "host_view.archive"
 	EffectWorktreeRemove         EffectKind = "worktree.remove"
+	EffectDirectIntegration      EffectKind = "direct.integration"
 )
 
 // EffectPhase records intent before any adapter handoff and keeps a possible
@@ -249,6 +252,7 @@ type State struct {
 	EffectiveProfiles                *agentprofile.FrozenSet               `json:"effectiveProfiles,omitempty"`
 	EffectiveProfilesSHA256          string                                `json:"effectiveProfilesSha256,omitempty"`
 	ReviewPolicy                     reviewdomain.ProfilePolicy            `json:"reviewPolicy"`
+	DeliveryMode                     domainconfig.DeliveryMode             `json:"deliveryMode,omitempty"`
 	PublicationPolicy                *publicationdomain.Policy             `json:"publicationPolicy,omitempty"`
 	Isolation                        IsolationObservation                  `json:"isolation,omitempty"`
 	OperationalPolicy                OperationalPolicy                     `json:"operationalPolicy,omitempty"`
@@ -293,6 +297,8 @@ type State struct {
 	Correction                       *correctiondomain.State               `json:"correction,omitempty"`
 	Publication                      *publicationdomain.State              `json:"publication,omitempty"`
 	PublicationHistory               []publicationdomain.State             `json:"publicationHistory,omitempty"`
+	DirectDelivery                   *directdomain.State                   `json:"directDelivery,omitempty"`
+	DirectDeliveryHistory            []directdomain.State                  `json:"directDeliveryHistory,omitempty"`
 	OperationalObservation           *OperationalObservation               `json:"operationalObservation,omitempty"`
 	OperationalObservationRunVersion uint64                                `json:"operationalObservationRunVersion,omitempty"`
 	OperationalObservationConsumed   bool                                  `json:"operationalObservationConsumed,omitempty"`
