@@ -191,6 +191,7 @@ type Defaults struct {
 	AutoFixCIFailures             bool         `json:"autoFixCiFailures"`
 	AutoFixReviewFeedback         bool         `json:"autoFixReviewFeedback"`
 	RequireDifferentReviewerModel bool         `json:"requireDifferentReviewerModel,omitempty"`
+	PublishBeforeReview           bool         `json:"publishBeforeReview,omitempty"`
 }
 
 // WorkspaceOverride records explicit Inherit/concrete selections. Pointer
@@ -212,6 +213,7 @@ type WorkspaceOverride struct {
 	AutoFixCIFailures             *bool        `json:"autoFixCiFailures,omitempty"`
 	AutoFixReviewFeedback         *bool        `json:"autoFixReviewFeedback,omitempty"`
 	RequireDifferentReviewerModel *bool        `json:"requireDifferentReviewerModel,omitempty"`
+	PublishBeforeReview           *bool        `json:"publishBeforeReview,omitempty"`
 }
 
 // FileReference identifies one explicitly included Organizer file. Directory
@@ -350,6 +352,7 @@ func cloneWorkspaceOverrides(values []WorkspaceOverride) []WorkspaceOverride {
 		cloned[index].AutoFixCIFailures = clonePointer(cloned[index].AutoFixCIFailures)
 		cloned[index].AutoFixReviewFeedback = clonePointer(cloned[index].AutoFixReviewFeedback)
 		cloned[index].RequireDifferentReviewerModel = clonePointer(cloned[index].RequireDifferentReviewerModel)
+		cloned[index].PublishBeforeReview = clonePointer(cloned[index].PublishBeforeReview)
 	}
 	return cloned
 }
@@ -695,7 +698,7 @@ func workspaceOverrideEmpty(override WorkspaceOverride) bool {
 		override.MaxConcurrentAgents == nil && override.MaxSubagentsPerTask == nil &&
 		override.ElapsedSeconds == nil && override.Tokens == nil && override.Turns == nil &&
 		override.CICycles == nil && override.CostMicrousd == nil && override.AutoFixCIFailures == nil &&
-		override.AutoFixReviewFeedback == nil && override.RequireDifferentReviewerModel == nil
+		override.AutoFixReviewFeedback == nil && override.RequireDifferentReviewerModel == nil && override.PublishBeforeReview == nil
 }
 
 func effectiveWorkspaceLimits(project Limits, override WorkspaceOverride) Limits {

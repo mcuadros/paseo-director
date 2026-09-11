@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package dolt
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/mcuadros/director-engine/domain"
+	"github.com/mcuadros/director-engine/domain/candidate"
+	"github.com/mcuadros/director-engine/domain/execution"
+	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
+)
+
+func TestPublicationIntentRoundTripsTheDurableRunRecord(t *testing.T) {
+	manifest := candidate.Manifest{SchemaVersion: candidate.ManifestSchemaVersion, CandidateSHA: strings.Repeat("b", 40),
+		BaseSHA: strings.Repeat("a", 40), ParentSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("c", 40),
+		DiffSHA256: strings.Repeat("1", 64), ChangedPathsSHA256: strings.Repeat("2", 64),
+		RepositoryBindingSHA256: strings.Repeat("3", 64), ClaimSHA256: strings.Repeat("4", 64),
+		ObservationSHA256: strings.Repeat("5", 64), AcceptanceSHA256: strings.Repeat("6", 64),
+		ConfigurationSHA256: strings.Repeat("7", 64), ProfileSHA256: strings.Repeat("8", 64),
+		ContextSHA256: strings.Repeat("9", 64), DecisionsSHA256: strings.Repeat("d", 64),
+		FindingsSHA256: strings.Repeat("e", 64), GraphPolicySHA256: strings.Repeat("f", 64)}
+	manifest.BindingSHA256 = candidate.ManifestSHA256(manifest)
+	authority := candidate.NewAuthority(0, "candidate-1", "task/dir-m4.5", 3, manifest)
+	policy := publicationdomain.NewPolicy("pull_request", true, []string{"release"})
+	binding := publicationdomain.SealBinding(publicationdomain.Binding{TaskID: "dir-m4.5", RunID: "run-1", CandidateID: "candidate-1",
+		CandidateSHA: manifest.CandidateSHA, BaseSHA: manifest.BaseSHA, TreeSHA: manifest.TreeSHA,
+		ManifestSHA256: manifest.BindingSHA256, CandidateGeneration: authority.Generation, TaskVersion: authority.TaskVersion,
+		Branch: authority.Branch, BaseRef: "refs/heads/main", RepositoryBindingSHA256: manifest.RepositoryBindingSHA256,
+		CanonicalRemote: "https://github.com/example/product", GitHubRepositoryID: 123, GitHubRepositoryNodeID: "R_node",
+		RepositoryOwner: "example", RepositoryName: "product", HeadOwner: "example",
+		OwnershipSHA256: strings.Repeat("0", 64), PolicySHA256: policy.SHA256})
+	template, ok := publicationdomain.RenderTemplate(binding, policy, "Implement publication", "pending", "", "pending", "", []string{})
+	if !ok {
+		t.Fatal("render publication template")
+	}
+	publication, ok := publicationdomain.NewState(binding, policy, template, "", nil)
+	if !ok {
+		t.Fatal("create publication state")
+	}
+	run := domain.Run{ID: "run-1", TaskID: "dir-m4.5", Number: 1, BaseSHA: manifest.BaseSHA,
+		CurrentCandidateID: "candidate-1", Version: 4, Execution: execution.State{SchemaVersion: execution.SchemaVersion,
+			Scope:              execution.Scope{ProjectID: "project-1", WorkspaceID: "workspace-1", TaskID: "dir-m4.5", RunID: "run-1"},
+			CandidateAuthority: &authority, PublicationPolicy: &policy, Publication: &publication}}
+	if err := validateRun(run); err != nil {
+		t.Fatalf("validateRun() = %v", err)
+	}
+	encoded, err := marshalRecord(runData{Number: run.Number, BaseSHA: run.BaseSHA, CurrentCandidateID: run.CurrentCandidateID, Execution: run.Execution})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded runData
+	if err := decodeRecord(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := domain.Run{ID: run.ID, TaskID: run.TaskID, Number: decoded.Number, BaseSHA: decoded.BaseSHA,
+		CurrentCandidateID: decoded.CurrentCandidateID, Execution: decoded.Execution, Version: run.Version}
+	if err := validateRun(reloaded); err != nil || reloaded.Execution.Publication == nil ||
+		reloaded.Execution.Publication.Binding.BindingSHA256 != publication.Binding.BindingSHA256 {
+		t.Fatalf("reloaded publication = %#v, %v", reloaded.Execution.Publication, err)
+	}
+}

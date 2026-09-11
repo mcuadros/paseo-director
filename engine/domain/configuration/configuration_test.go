@@ -188,6 +188,19 @@ func TestOptionalCostBudgetUsesExactMicrousd(t *testing.T) {
 	}
 }
 
+func TestPublishBeforeReviewIsOptionalAndExplicit(t *testing.T) {
+	document, err := Parse(validConfigurationJSON())
+	if err != nil || document.Configuration().Defaults.PublishBeforeReview {
+		t.Fatalf("default publishBeforeReview = %#v, %v", document.Configuration().Defaults, err)
+	}
+	explicit := bytes.Replace(validConfigurationJSON(), []byte(`"autoFixReviewFeedback": true`),
+		[]byte(`"autoFixReviewFeedback": true, "publishBeforeReview": true`), 1)
+	document, err = Parse(explicit)
+	if err != nil || !document.Configuration().Defaults.PublishBeforeReview {
+		t.Fatalf("explicit publishBeforeReview = %#v, %v", document.Configuration().Defaults, err)
+	}
+}
+
 func containsIssue(issues []Issue, code string) bool {
 	return slices.ContainsFunc(issues, func(current Issue) bool { return current.Code == code })
 }
@@ -263,7 +276,7 @@ func TestParseValidConfigurationIsCanonicalAndDefensive(t *testing.T) {
 
 func TestSchemaIsPublishedClosedAndVersioned(t *testing.T) {
 	hash, err := SchemaSHA256()
-	if err != nil || hash != "0f9fdf7607f7985e83dc591c900bf884053f57a2a3c016db333bad05eeb5b9c3" {
+	if err != nil || hash != "ccedd52bc3739e4f6830db163c959ec685f5b33b6a649d204748dad6d0a546d9" {
 		t.Fatalf("configuration schema hash = %q: %v", hash, err)
 	}
 	var schema struct {

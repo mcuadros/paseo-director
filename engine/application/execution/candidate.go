@@ -8,6 +8,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
+	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	gitport "github.com/mcuadros/director-engine/ports/git"
 )
@@ -107,11 +108,18 @@ func (controller *Controller) ReconcileCandidateAuthority(
 	if code == candidatedomain.CodeOK {
 		code = updated.InvalidationCode
 	}
+	if run.Execution.Publication != nil && publicationdomain.DispatchInFlight(*run.Execution.Publication) {
+		return CandidateAuthorityResult{Run: run}, errors.New("publication dispatch must reconcile before Candidate invalidation")
+	}
 	next := run
 	next.Execution.CandidateAuthority = &updated
 	if next.Execution.Review != nil {
 		invalidated := reviewdomain.Invalidate(*next.Execution.Review, string(code))
 		next.Execution.Review = &invalidated
+	}
+	if next.Execution.Publication != nil {
+		invalidated := publicationdomain.Invalidate(*next.Execution.Publication, string(code))
+		next.Execution.Publication = &invalidated
 	}
 	if err := controller.persistRun(ctx, run, next, "candidate.authority_invalidated"); err != nil {
 		return CandidateAuthorityResult{Run: run}, err

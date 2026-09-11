@@ -12,6 +12,7 @@ import (
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	correctiondomain "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
+	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 )
 
 func TestCorrectionStateAndPriorAuthorityHistorySurviveDoltReopen(t *testing.T) {
@@ -48,8 +49,36 @@ func TestCorrectionStateAndPriorAuthorityHistorySurviveDoltReopen(t *testing.T) 
 			CandidateSHA: first.CommitSHA, BaseSHA: first.Manifest.BaseSHA, Generation: run.Execution.CandidateAuthority.Generation,
 			BindingSHA256: first.Manifest.BindingSHA256}
 	}
+	publicationPolicy := publicationdomain.NewPolicy("pull_request", true, []string{"release"})
+	publicationBinding := publicationdomain.SealBinding(publicationdomain.Binding{TaskID: task.ID, RunID: run.ID,
+		CandidateID: first.ID, CandidateSHA: first.CommitSHA, BaseSHA: first.Manifest.BaseSHA, TreeSHA: first.Manifest.TreeSHA,
+		ManifestSHA256: first.Manifest.BindingSHA256, CandidateGeneration: run.Execution.CandidateAuthority.Generation,
+		TaskVersion: run.Execution.CandidateAuthority.TaskVersion, Branch: first.Claim.Branch, BaseRef: first.Claim.BaseRef,
+		RepositoryBindingSHA256: first.Manifest.RepositoryBindingSHA256, CanonicalRemote: "https://github.com/example/correction",
+		GitHubRepositoryID: 123, GitHubRepositoryNodeID: "R_correction", RepositoryOwner: "example",
+		RepositoryName: "correction", HeadOwner: "example", OwnershipSHA256: strings.Repeat("a", 64),
+		PolicySHA256: publicationPolicy.SHA256})
+	publicationTemplate, ok := publicationdomain.RenderTemplate(publicationBinding, publicationPolicy, task.Title,
+		"pending", "", "pending", "", []string{})
+	if !ok {
+		t.Fatal("publication template rejected")
+	}
+	publication, ok := publicationdomain.NewState(publicationBinding, publicationPolicy, publicationTemplate, "", nil)
+	if !ok {
+		t.Fatal("publication state rejected")
+	}
+	publication.Push.Phase, publication.PullRequest.Phase, publication.Metadata.Phase =
+		publicationdomain.EffectComplete, publicationdomain.EffectComplete, publicationdomain.EffectComplete
+	publication.OwnedPullRequest = &publicationdomain.OwnedPullRequest{Number: 7, NodeID: "PR_correction",
+		URL: "https://github.com/example/correction/pull/7", MarkerSHA256: publicationdomain.DigestText(publicationdomain.Marker(publicationBinding)),
+		HeadSHA: first.CommitSHA, Draft: true}
+	publication.Evidence = publicationdomain.EvidenceFor(publication, false, 1_001)
+	if publication.Evidence == nil || !publicationdomain.ValidState(publication) {
+		t.Fatal("publication draft evidence rejected")
+	}
+	run.Execution.PublicationPolicy, run.Execution.Publication = &publicationPolicy, &publication
 	run.Execution.CandidateAuthority.Downstream = candidatedomain.Downstream{Validation: bound("validation-1"), Review: bound("review-1"),
-		CI: bound("ci-1"), Publication: bound("publication-1"), Feedback: bound("feedback-1"), Ready: bound("ready-1"), Integration: bound("integration-1")}
+		CI: bound("ci-1"), Publication: bound(publication.Evidence.ID), Feedback: bound("feedback-1"), Ready: bound("ready-1"), Integration: bound("integration-1")}
 	snapshots := []correctiondomain.SourceSnapshot{{Source: correctiondomain.SourceReview, Revision: strings.Repeat("1", 64), Count: 1},
 		{Source: correctiondomain.SourceValidation, Revision: strings.Repeat("2", 64), Count: 0},
 		{Source: correctiondomain.SourceCI, Revision: strings.Repeat("3", 64), Count: 0},
@@ -91,7 +120,11 @@ func TestCorrectionStateAndPriorAuthorityHistorySurviveDoltReopen(t *testing.T) 
 		stored.Execution.CandidateAuthority.Generation != 2 || !candidatedomain.DownstreamEmpty(stored.Execution.CandidateAuthority.Downstream) ||
 		len(stored.Execution.CandidateAuthorityHistory) != 1 || !reflect.DeepEqual(stored.Execution.CandidateAuthorityHistory[0].Authority.Downstream, run.Execution.CandidateAuthority.Downstream) ||
 		!candidatedomain.ValidHistoricalAuthority(stored.Execution.CandidateAuthorityHistory[0]) || stored.Execution.Correction == nil ||
-		!correctiondomain.ValidState(*stored.Execution.Correction) || stored.Execution.FindingContextSHA256 != second.Manifest.FindingsSHA256 {
+		!correctiondomain.ValidState(*stored.Execution.Correction) || stored.Execution.FindingContextSHA256 != second.Manifest.FindingsSHA256 ||
+		stored.Execution.Publication != nil || len(stored.Execution.PublicationHistory) != 1 ||
+		!stored.Execution.PublicationHistory[0].Invalidated || stored.Execution.PublicationHistory[0].Evidence != nil ||
+		stored.Execution.PublicationHistory[0].OwnedPullRequest == nil ||
+		stored.Execution.PublicationHistory[0].OwnedPullRequest.Number != publication.OwnedPullRequest.Number {
 		t.Fatalf("reopened correction Run = %#v", stored)
 	}
 }

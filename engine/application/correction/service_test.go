@@ -21,6 +21,7 @@ import (
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	domaincorrection "github.com/mcuadros/director-engine/domain/correction"
 	"github.com/mcuadros/director-engine/domain/execution"
+	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	gitport "github.com/mcuadros/director-engine/ports/git"
 	"github.com/mcuadros/director-engine/ports/host"
@@ -125,6 +126,9 @@ func (store *memoryStore) AppendCandidate(_ context.Context, command domain.Comm
 	}
 	if record.Sequence != uint64(len(store.candidates)+1) || !candidate.ValidManifest(record.Manifest) || record.RunID != store.run.ID {
 		return domain.CommandResult{}, errors.New("invalid corrected Candidate")
+	}
+	if store.run.Execution.Publication != nil && publicationdomain.DispatchInFlight(*store.run.Execution.Publication) {
+		return domain.CommandResult{}, errors.New("publication dispatch must reconcile before Candidate replacement")
 	}
 	if store.run.Execution.CandidateAuthority != nil {
 		prior := *store.run.Execution.CandidateAuthority
@@ -392,6 +396,32 @@ func newFixture(t *testing.T) *fixture {
 	return &fixture{store: store, host: hostPort, git: git, service: service, ingest: ingest}
 }
 
+func dispatchingPublication(t *testing.T, run domain.Run, record domain.Candidate) publicationdomain.State {
+	t.Helper()
+	policy := publicationdomain.NewPolicy("pull_request", true, nil)
+	binding := publicationdomain.SealBinding(publicationdomain.Binding{TaskID: run.TaskID, RunID: run.ID,
+		CandidateID: record.ID, CandidateSHA: record.CommitSHA, BaseSHA: record.Manifest.BaseSHA, TreeSHA: record.Manifest.TreeSHA,
+		ManifestSHA256: record.Manifest.BindingSHA256, CandidateGeneration: run.Execution.CandidateAuthority.Generation,
+		TaskVersion: run.Execution.CandidateAuthority.TaskVersion, Branch: record.Claim.Branch, BaseRef: record.Claim.BaseRef,
+		RepositoryBindingSHA256: record.Manifest.RepositoryBindingSHA256, CanonicalRemote: "https://github.com/example/correction",
+		GitHubRepositoryID: 123, GitHubRepositoryNodeID: "R_correction", RepositoryOwner: "example",
+		RepositoryName: "correction", HeadOwner: "example", OwnershipSHA256: strings.Repeat("a", 64), PolicySHA256: policy.SHA256})
+	template, ok := publicationdomain.RenderTemplate(binding, policy, "Correction publication", "pending", "", "pending", "", []string{})
+	if !ok {
+		t.Fatal("render publication fixture")
+	}
+	publication, ok := publicationdomain.NewState(binding, policy, template, "", nil)
+	if !ok {
+		t.Fatal("create publication fixture")
+	}
+	publication.Push.Phase = publicationdomain.EffectDispatching
+	publication.Push.Attempts = 1
+	if !publicationdomain.ValidState(publication) {
+		t.Fatal("dispatching publication fixture is invalid")
+	}
+	return publication
+}
+
 func transition(run domain.Run) TransitionCommand {
 	return TransitionCommand{RunID: run.ID, ExpectedRunVersion: run.Version, LeaseEpoch: 1, NowMillis: 1_001}
 }
@@ -469,6 +499,27 @@ func TestCompleteBatchChangedCandidateInvalidatesAllAuthorityAndRequiresFreshGat
 		!state.Gates[0].FreshReviewRequired || !state.Gates[0].PriorAuthorityInvalidated ||
 		state.Gates[0].CandidateSHA != strings.Repeat("2", 40) || state.Gates[0].CIKey == "" || state.Gates[0].ReviewBindingKey == "" {
 		t.Fatalf("historical authority or gates = %#v / %#v", history, state.Gates[0])
+	}
+}
+
+func TestCorrectedCandidateWaitsForInFlightPublicationObservation(t *testing.T) {
+	fixture := newFixture(t)
+	publication := dispatchingPublication(t, fixture.store.run, fixture.store.candidates[0])
+	fixture.store.run.Execution.PublicationPolicy, fixture.store.run.Execution.Publication = &publication.Policy, &publication
+	run := ingestAndPrompt(t, fixture)
+	result, err := fixture.service.SubmitOutput(context.Background(), OutputCommand{TransitionCommand: transition(run),
+		Output: changedOutput(*run.Execution.Correction, strings.Repeat("2", 40), true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = fixture.service.ObserveCandidate(context.Background(), transition(result.Run))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fixture.service.AdmitCandidate(context.Background(), transition(result.Run))
+	if err == nil || len(fixture.store.candidates) != 1 || fixture.store.run.CurrentCandidateID != fixture.store.candidates[0].ID ||
+		len(fixture.store.run.Execution.CandidateAuthorityHistory) != 0 {
+		t.Fatalf("in-flight publication replacement = %#v, %v", fixture.store.run, err)
 	}
 }
 

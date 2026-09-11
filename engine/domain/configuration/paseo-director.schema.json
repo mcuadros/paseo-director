@@ -218,7 +218,8 @@
         "runBudget": { "$ref": "#/$defs/runBudget" },
         "autoFixCiFailures": { "type": "boolean" },
         "autoFixReviewFeedback": { "type": "boolean" },
-        "requireDifferentReviewerModel": { "type": "boolean", "default": false }
+        "requireDifferentReviewerModel": { "type": "boolean", "default": false },
+        "publishBeforeReview": { "type": "boolean", "default": false }
       }
     },
     "workspaceOverride": {
@@ -240,7 +241,8 @@
         "costMicrousd": { "type": "integer", "minimum": 0 },
         "autoFixCiFailures": { "type": "boolean" },
         "autoFixReviewFeedback": { "type": "boolean" },
-        "requireDifferentReviewerModel": { "type": "boolean" }
+        "requireDifferentReviewerModel": { "type": "boolean" },
+        "publishBeforeReview": { "type": "boolean" }
       }
     },
     "fileReference": {
