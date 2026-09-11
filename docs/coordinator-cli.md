@@ -159,8 +159,13 @@ response content.
   explicit reclaimed binding. If Paseo workspace archival leaves an exact
   clean owned Git worktree registered, the CLI performs the separately recorded
   non-force Git removal step before touching refs. A
-  present target after possible handoff is preserved and routed to a refusal,
-  even if it reappears at the same SHA.
+  present worktree after possible handoff is preserved and routed to a
+  refusal. A nonterminal `dispatching` or `unknown` local/remote Task-ref
+  deletion may retry only after authoritative observation proves the ref still
+  equals the exact Candidate, and only through the same explicit expected-OID
+  `force-with-lease`/`update-ref` guard. Absence adopts completion; a changed,
+  unavailable, or ambiguous ref fails closed. Completion remains terminal on
+  later reappearance.
 
 `publish` and `integrate` additionally consume these closed evidence files:
 

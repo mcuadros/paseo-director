@@ -80,11 +80,17 @@ recreated, or unprovable artifact/ref is preserved.
 
 Every mutation persists intent before handoff and reobserves immediately after
 success, error, timeout, or response loss. Exact absence completes an unknown
-destructive effect. A present target after possible handoff—including the same
-SHA recreated under the same ref name—parks with `cleanupAuthorized=false` and
-is never deleted again automatically. Project lease, Run compare-and-swap, and
-per-repository serialization ensure competing coordinators have one durable
-winner without claiming exactly-once external execution.
+destructive effect. Under ADR-0021, local and remote Task refs are the narrow
+recovery exception: a `dispatching` or `unknown` deletion may create a new
+attempt only after authoritative observation proves the ref still equals the
+exact Candidate, followed by the same expected-OID `update-ref` or
+`force-with-lease` compare-delete guard. A changed, unavailable, or ambiguous
+ref parks without mutation. A completed ref deletion remains terminal on any
+later reappearance. Present worktrees and every other destructive target after
+possible handoff retain the stricter refusal. Project lease, Run
+compare-and-swap, and per-repository serialization ensure competing
+coordinators have one durable winner without claiming exactly-once external
+execution.
 
 ## Projection and closure
 

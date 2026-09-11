@@ -661,6 +661,24 @@ async function publishReadyFixture(fixture, fake, changes = {}, dependencies = {
   );
 }
 
+async function prepareIntegratedCleanup(fixture, fake) {
+  await publishReadyFixture(fixture, fake);
+  const integratedOptions = {
+    ...gateOptions(fixture),
+    "state-file": fixture.stateFile,
+  };
+  await execute("integrate", integratedOptions, { run: fake.runner });
+  const plan = await execute("cleanup-plan", integratedOptions, {
+    run: fake.runner,
+  });
+  writeFileSync(fixture.planFile, `${canonicalJson(plan)}\n`, { mode: 0o600 });
+  return {
+    applyOptions: { ...integratedOptions, "plan-file": fixture.planFile },
+    integratedOptions,
+    plan,
+  };
+}
+
 function rebindReviewRouting(fixture, ownershipChanges) {
   const manifest = JSON.parse(readFileSync(fixture.manifestFile, "utf8"));
   delete manifest.manifestHash;
@@ -1972,6 +1990,410 @@ test("cleanup plan/apply removes only exact owned disposable resources and retri
   }
 });
 
+test("cleanup retries the preserved M5.14 schema-v2 frontier after immediate TLS observation failure", async () => {
+  const ownershipCanary = `ownership-${randomBytes(32).toString("hex")}`;
+  const fixture = createRepositoryFixture({ ownership: ownershipCanary });
+  const fake = fakeExternalCommands(fixture);
+  try {
+    const { applyOptions, plan } = await prepareIntegratedCleanup(fixture, fake);
+    const ref = `refs/heads/${BRANCH}`;
+    let injectedFailure = false;
+    let observedError;
+    const failImmediateRemoteObservation = (executable, args, options = {}) => {
+      if (
+        !injectedFailure &&
+        executable === "git" &&
+        args.includes("ls-remote") &&
+        args.at(-1) === ref &&
+        existsSync(fixture.stateFile) &&
+        JSON.parse(readFileSync(fixture.stateFile, "utf8")).effects[
+          "cleanup.remote-branch"
+        ]?.phase === "dispatching"
+      ) {
+        injectedFailure = true;
+        return {
+          error: undefined,
+          status: 128,
+          stdout: "",
+          stderr: `fatal: unable to access remote: GnuTLS recv error (-110): ${"connection ended ".repeat(100)}\n`,
+        };
+      }
+      return fake.runner(executable, args, options);
+    };
+
+    try {
+      await execute("cleanup-apply", applyOptions, {
+        run: failImmediateRemoteObservation,
+      });
+    } catch (error) {
+      observedError = error;
+    }
+    assert.equal(injectedFailure, true);
+    assert.equal(observedError instanceof CoordinatorError, true);
+    assert.equal(observedError.code, "REMOTE_OBSERVATION_UNAVAILABLE");
+    assert.ok(observedError.details.diagnostic.length <= 800);
+    const bounded = errorOutput(
+      "cleanup-apply",
+      observedError,
+      ownershipCanary,
+    );
+    assert.equal(JSON.stringify(bounded).includes(ownershipCanary), false);
+    assert.ok(JSON.stringify(bounded).length < 1_200);
+
+    const frontier = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(frontier.schemaVersion, 2);
+    assert.equal(frontier.effects["cleanup.worktree"].phase, "complete");
+    assert.equal(frontier.effects["cleanup.remote-branch"].phase, "dispatching");
+    assert.equal(frontier.effects["cleanup.remote-branch"].attempts, 1);
+    assert.equal(JSON.stringify(frontier).includes(ownershipCanary), false);
+    assert.equal(plan.result.schemaVersion, 2);
+    assert.equal(JSON.stringify(plan).includes(ownershipCanary), false);
+    assert.equal(
+      git(fixture.control, ["ls-remote", "--heads", "origin", ref]).split("\t")[0],
+      fixture.candidate,
+    );
+    assert.equal(
+      git(fixture.control, ["rev-parse", "--verify", ref]),
+      fixture.candidate,
+    );
+
+    const recovered = await execute("cleanup-apply", applyOptions, {
+      run: fake.runner,
+    });
+    assert.equal(recovered.result.resources, "complete");
+    const completed = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(completed.effects["cleanup.remote-branch"].phase, "complete");
+    assert.equal(completed.effects["cleanup.remote-branch"].attempts, 2);
+    assert.equal(completed.effects["cleanup.local-branch"].phase, "complete");
+    assert.equal(JSON.stringify(completed).includes(ownershipCanary), false);
+    const remoteDeletes = fake.state.calls.filter(
+      (call) =>
+        call.executable === "git" &&
+        call.args.includes("push") &&
+        call.args.includes(`--force-with-lease=${ref}:${fixture.candidate}`) &&
+        call.args.includes(`:${ref}`),
+    );
+    const localDeletes = fake.state.calls.filter(
+      (call) =>
+        call.executable === "git" &&
+        call.args.includes("update-ref") &&
+        call.args.includes("-d") &&
+        call.args.includes(ref) &&
+        call.args.includes(fixture.candidate),
+    );
+    assert.equal(remoteDeletes.length, 1);
+    assert.equal(localDeletes.length, 1);
+    assert.equal(
+      fake.state.calls.some((call) => JSON.stringify(call).includes(ownershipCanary)),
+      false,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("cleanup observation failure before a ref intent performs no mutation and remains retryable", async () => {
+  const fixture = createRepositoryFixture();
+  const fake = fakeExternalCommands(fixture);
+  try {
+    const { applyOptions } = await prepareIntegratedCleanup(fixture, fake);
+    const ref = `refs/heads/${BRANCH}`;
+    let failed = false;
+    const unavailableBeforeIntent = (executable, args, options = {}) => {
+      if (
+        !failed &&
+        executable === "git" &&
+        args.includes("ls-remote") &&
+        args.at(-1) === ref
+      ) {
+        failed = true;
+        return {
+          error: undefined,
+          status: 128,
+          stdout: "",
+          stderr: "fatal: GnuTLS remote observation unavailable\n",
+        };
+      }
+      return fake.runner(executable, args, options);
+    };
+    await assert.rejects(
+      execute("cleanup-apply", applyOptions, { run: unavailableBeforeIntent }),
+      (error) =>
+        error instanceof CoordinatorError &&
+        error.code === "REMOTE_OBSERVATION_UNAVAILABLE",
+    );
+    const state = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(state.effects["cleanup.remote-branch"], undefined);
+    assert.equal(existsSync(fixture.checkout), true);
+    assert.equal(
+      fake.state.calls.some(
+        (call) => call.executable === "git" && call.args.includes(`:${ref}`),
+      ),
+      false,
+    );
+    const recovered = await execute("cleanup-apply", applyOptions, {
+      run: fake.runner,
+    });
+    assert.equal(recovered.result.resources, "complete");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("exact-leased remote and local ref cleanup retries after interruption before mutation", async (context) => {
+  for (const kind of ["remote", "local"]) {
+    await context.test(kind, async () => {
+      const fixture = createRepositoryFixture();
+      const fake = fakeExternalCommands(fixture);
+      try {
+        const { applyOptions } = await prepareIntegratedCleanup(fixture, fake);
+        const effect = `cleanup.${kind}-branch`;
+        const ref = `refs/heads/${BRANCH}`;
+        await assert.rejects(
+          execute("cleanup-apply", applyOptions, {
+            run: fake.runner,
+            hook(phase, currentEffect) {
+              if (phase === "before" && currentEffect === effect) {
+                throw new CoordinatorInterruption(effect);
+              }
+            },
+          }),
+          (error) => error instanceof CoordinatorInterruption,
+        );
+        const interrupted = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+        assert.equal(interrupted.effects[effect].phase, "dispatching");
+        const present =
+          kind === "remote"
+            ? git(fixture.control, ["ls-remote", "--heads", "origin", ref]).split("\t")[0]
+            : git(fixture.control, ["rev-parse", "--verify", ref]);
+        assert.equal(present, fixture.candidate);
+
+        const recovered = await execute("cleanup-apply", applyOptions, {
+          run: fake.runner,
+        });
+        assert.equal(recovered.result.resources, "complete");
+        const completed = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+        assert.equal(completed.effects[effect].phase, "complete");
+        assert.equal(completed.effects[effect].attempts, 2);
+        const guardedCalls = fake.state.calls.filter((call) => {
+          if (call.executable !== "git") return false;
+          return kind === "remote"
+            ? call.args.includes(`--force-with-lease=${ref}:${fixture.candidate}`) &&
+                call.args.includes(`:${ref}`)
+            : call.args.includes("update-ref") &&
+                call.args.includes("-d") &&
+                call.args.includes(ref) &&
+                call.args.includes(fixture.candidate);
+        });
+        assert.equal(guardedCalls.length, 1);
+      } finally {
+        fixture.cleanup();
+      }
+    });
+  }
+});
+
+test("unknown remote and local ref deletion retries only through the exact guard", async (context) => {
+  for (const kind of ["remote", "local"]) {
+    await context.test(kind, async () => {
+      const fixture = createRepositoryFixture();
+      const fake = fakeExternalCommands(fixture);
+      try {
+        const { applyOptions } = await prepareIntegratedCleanup(fixture, fake);
+        const ref = `refs/heads/${BRANCH}`;
+        let withheldMutation = false;
+        const unknownResultRunner = (executable, args, options = {}) => {
+          const isRemoteDelete =
+            kind === "remote" &&
+            executable === "git" &&
+            args.includes(`--force-with-lease=${ref}:${fixture.candidate}`) &&
+            args.includes(`:${ref}`);
+          const isLocalDelete =
+            kind === "local" &&
+            executable === "git" &&
+            args.includes("update-ref") &&
+            args.includes("-d") &&
+            args.includes(ref) &&
+            args.includes(fixture.candidate);
+          if (!withheldMutation && (isRemoteDelete || isLocalDelete)) {
+            withheldMutation = true;
+            return { error: undefined, status: 0, stdout: "", stderr: "" };
+          }
+          return fake.runner(executable, args, options);
+        };
+        await assert.rejects(
+          execute("cleanup-apply", applyOptions, {
+            run: unknownResultRunner,
+          }),
+          (error) =>
+            error instanceof CoordinatorError &&
+            error.code === "DESTRUCTIVE_RESULT_UNKNOWN",
+        );
+        assert.equal(withheldMutation, true);
+        const unknown = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+        assert.equal(unknown.effects[`cleanup.${kind}-branch`].phase, "unknown");
+
+        const recovered = await execute("cleanup-apply", applyOptions, {
+          run: fake.runner,
+        });
+        assert.equal(recovered.result.resources, "complete");
+        const completed = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+        assert.equal(completed.effects[`cleanup.${kind}-branch`].phase, "complete");
+        assert.equal(completed.effects[`cleanup.${kind}-branch`].attempts, 2);
+        const guardedCalls = fake.state.calls.filter((call) => {
+          if (call.executable !== "git") return false;
+          return kind === "remote"
+            ? call.args.includes(`--force-with-lease=${ref}:${fixture.candidate}`) &&
+                call.args.includes(`:${ref}`)
+            : call.args.includes("update-ref") &&
+                call.args.includes("-d") &&
+                call.args.includes(ref) &&
+                call.args.includes(fixture.candidate);
+        });
+        assert.equal(guardedCalls.length, 1);
+      } finally {
+        fixture.cleanup();
+      }
+    });
+  }
+});
+
+test("local ref observation failure preserves the dispatching frontier for restart", async () => {
+  const fixture = createRepositoryFixture();
+  const fake = fakeExternalCommands(fixture);
+  try {
+    const { applyOptions } = await prepareIntegratedCleanup(fixture, fake);
+    const ref = `refs/heads/${BRANCH}`;
+    let failed = false;
+    const failImmediateLocalObservation = (executable, args, options = {}) => {
+      if (
+        !failed &&
+        executable === "git" &&
+        args.includes("rev-parse") &&
+        args.includes("--quiet") &&
+        args.at(-1) === ref &&
+        JSON.parse(readFileSync(fixture.stateFile, "utf8")).effects[
+          "cleanup.local-branch"
+        ]?.phase === "dispatching"
+      ) {
+        failed = true;
+        return {
+          error: undefined,
+          status: 128,
+          stdout: "",
+          stderr: "fatal: local ref observation unavailable\n",
+        };
+      }
+      return fake.runner(executable, args, options);
+    };
+    await assert.rejects(
+      execute("cleanup-apply", applyOptions, {
+        run: failImmediateLocalObservation,
+      }),
+      (error) =>
+        error instanceof CoordinatorError && error.code === "LOCAL_REF_UNAVAILABLE",
+    );
+    const frontier = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(frontier.effects["cleanup.local-branch"].phase, "dispatching");
+    assert.equal(git(fixture.control, ["rev-parse", "--verify", ref]), fixture.candidate);
+    const recovered = await execute("cleanup-apply", applyOptions, {
+      run: fake.runner,
+    });
+    assert.equal(recovered.result.resources, "complete");
+    const completed = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(completed.effects["cleanup.local-branch"].attempts, 2);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("remote and local ref cleanup adopts absence after mutation response loss", async (context) => {
+  for (const kind of ["remote", "local"]) {
+    await context.test(kind, async () => {
+      const fixture = createRepositoryFixture();
+      const fake = fakeExternalCommands(fixture);
+      try {
+        const { applyOptions } = await prepareIntegratedCleanup(fixture, fake);
+        const effect = `cleanup.${kind}-branch`;
+        const ref = `refs/heads/${BRANCH}`;
+        await assert.rejects(
+          execute("cleanup-apply", applyOptions, {
+            run: fake.runner,
+            hook(phase, currentEffect) {
+              if (phase === "after" && currentEffect === effect) {
+                throw new CoordinatorInterruption(effect);
+              }
+            },
+          }),
+          (error) => error instanceof CoordinatorInterruption,
+        );
+        const interrupted = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+        assert.equal(interrupted.effects[effect].phase, "dispatching");
+
+        const recovered = await execute("cleanup-apply", applyOptions, {
+          run: fake.runner,
+        });
+        assert.equal(recovered.result.resources, "complete");
+        const guardedCalls = fake.state.calls.filter((call) => {
+          if (call.executable !== "git") return false;
+          return kind === "remote"
+            ? call.args.includes(`--force-with-lease=${ref}:${fixture.candidate}`) &&
+                call.args.includes(`:${ref}`)
+            : call.args.includes("update-ref") &&
+                call.args.includes("-d") &&
+                call.args.includes(ref) &&
+                call.args.includes(fixture.candidate);
+        });
+        assert.equal(guardedCalls.length, 1);
+      } finally {
+        fixture.cleanup();
+      }
+    });
+  }
+});
+
+test("completed remote and local ref deletion remains terminal after reappearance", async (context) => {
+  for (const kind of ["remote", "local"]) {
+    await context.test(kind, async () => {
+      const fixture = createRepositoryFixture();
+      const fake = fakeExternalCommands(fixture);
+      try {
+        const { applyOptions } = await prepareIntegratedCleanup(fixture, fake);
+        await execute("cleanup-apply", applyOptions, { run: fake.runner });
+        const ref = `refs/heads/${BRANCH}`;
+        if (kind === "remote") {
+          git(fixture.control, [
+            "push",
+            "--quiet",
+            "origin",
+            `${fixture.candidate}:${ref}`,
+          ]);
+        } else {
+          git(fixture.control, [
+            "update-ref",
+            ref,
+            fixture.candidate,
+            "0000000000000000000000000000000000000000",
+          ]);
+        }
+        await assert.rejects(
+          execute("cleanup-apply", applyOptions, { run: fake.runner }),
+          (error) =>
+            error instanceof CoordinatorError &&
+            error.code === "DESTRUCTIVE_TARGET_PRESENT_AFTER_HANDOFF",
+        );
+        const current =
+          kind === "remote"
+            ? git(fixture.control, ["ls-remote", "--heads", "origin", ref]).split("\t")[0]
+            : git(fixture.control, ["rev-parse", "--verify", ref]);
+        assert.equal(current, fixture.candidate);
+      } finally {
+        fixture.cleanup();
+      }
+    });
+  }
+});
+
 test("post-handoff commands operate from exact refs after the Task checkout is reclaimed", async () => {
   const fixture = createRepositoryFixture();
   try {
@@ -2042,7 +2464,7 @@ test("post-handoff commands operate from exact refs after the Task checkout is r
   }
 });
 
-test("interrupted destructive cleanup preserves a same-SHA recreation", async () => {
+test("interrupted ref cleanup safely compare-deletes a same-Candidate recreation", async () => {
   const fixture = createRepositoryFixture();
   try {
     const fake = fakeExternalCommands(fixture);
@@ -2072,15 +2494,199 @@ test("interrupted destructive cleanup preserves a same-SHA recreation", async ()
       }),
       (error) => error instanceof CoordinatorInterruption,
     );
+    const recovered = await execute("cleanup-apply", applyOptions, {
+      run: fake.runner,
+    });
+    assert.equal(recovered.result.resources, "complete");
+    assert.equal(
+      git(fixture.control, ["ls-remote", "--heads", "origin", `refs/heads/${BRANCH}`]),
+      "",
+    );
+    const ref = `refs/heads/${BRANCH}`;
+    assert.equal(
+      fake.state.calls.filter(
+        (call) =>
+          call.executable === "git" &&
+          call.args.includes(`--force-with-lease=${ref}:${fixture.candidate}`) &&
+          call.args.includes(`:${ref}`),
+      ).length,
+      2,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("changed remote and local refs win races against cleanup exact guards", async (context) => {
+  for (const kind of ["remote", "local"]) {
+    await context.test(kind, async () => {
+      const fixture = createRepositoryFixture();
+      const fake = fakeExternalCommands(fixture);
+      try {
+        const { applyOptions } = await prepareIntegratedCleanup(fixture, fake);
+        const ref = `refs/heads/${BRANCH}`;
+        let raced = false;
+        const raceRunner = (executable, args, options = {}) => {
+          const isRemoteDelete =
+            kind === "remote" &&
+            executable === "git" &&
+            args.includes(`--force-with-lease=${ref}:${fixture.candidate}`) &&
+            args.includes(`:${ref}`);
+          const isLocalDelete =
+            kind === "local" &&
+            executable === "git" &&
+            args.includes("update-ref") &&
+            args.includes("-d") &&
+            args.includes(ref) &&
+            args.includes(fixture.candidate);
+          if (!raced && (isRemoteDelete || isLocalDelete)) {
+            raced = true;
+            if (kind === "remote") {
+              git(fixture.control, [
+                "push",
+                "--quiet",
+                "--force",
+                "origin",
+                `${fixture.base}:${ref}`,
+              ]);
+            } else {
+              git(fixture.control, [
+                "update-ref",
+                ref,
+                fixture.base,
+                fixture.candidate,
+              ]);
+            }
+          }
+          return fake.runner(executable, args, options);
+        };
+
+        const expectedCode = kind === "remote" ? "REMOTE_REF_CHANGED" : "LOCAL_REF_CHANGED";
+        await assert.rejects(
+          execute("cleanup-apply", applyOptions, { run: raceRunner }),
+          (error) =>
+            error instanceof CoordinatorError && error.code === expectedCode,
+        );
+        assert.equal(raced, true);
+        await assert.rejects(
+          execute("cleanup-apply", applyOptions, { run: fake.runner }),
+          (error) =>
+            error instanceof CoordinatorError && error.code === expectedCode,
+        );
+        const current =
+          kind === "remote"
+            ? git(fixture.control, ["ls-remote", "--heads", "origin", ref]).split("\t")[0]
+            : git(fixture.control, ["rev-parse", "--verify", ref]);
+        assert.equal(current, fixture.base);
+        const guardedCalls = fake.state.calls.filter((call) => {
+          if (call.executable !== "git") return false;
+          return kind === "remote"
+            ? call.args.includes(`--force-with-lease=${ref}:${fixture.candidate}`) &&
+                call.args.includes(`:${ref}`)
+            : call.args.includes("update-ref") &&
+                call.args.includes("-d") &&
+                call.args.includes(ref) &&
+                call.args.includes(fixture.candidate);
+        });
+        assert.equal(guardedCalls.length, 1);
+      } finally {
+        fixture.cleanup();
+      }
+    });
+  }
+});
+
+test("ambiguous remote observation blocks a dispatching cleanup retry", async () => {
+  const fixture = createRepositoryFixture();
+  const fake = fakeExternalCommands(fixture);
+  try {
+    const { applyOptions } = await prepareIntegratedCleanup(fixture, fake);
+    const effect = "cleanup.remote-branch";
+    const ref = `refs/heads/${BRANCH}`;
+    await assert.rejects(
+      execute("cleanup-apply", applyOptions, {
+        run: fake.runner,
+        hook(phase, currentEffect) {
+          if (phase === "before" && currentEffect === effect) {
+            throw new CoordinatorInterruption(effect);
+          }
+        },
+      }),
+      (error) => error instanceof CoordinatorInterruption,
+    );
+    let ambiguous = false;
+    const ambiguousRunner = (executable, args, options = {}) => {
+      if (
+        !ambiguous &&
+        executable === "git" &&
+        args.includes("ls-remote") &&
+        args.at(-1) === ref
+      ) {
+        ambiguous = true;
+        return {
+          error: undefined,
+          status: 0,
+          stdout: `${fixture.candidate}\t${ref}\n${fixture.candidate}\t${ref}\n`,
+          stderr: "",
+        };
+      }
+      return fake.runner(executable, args, options);
+    };
+    await assert.rejects(
+      execute("cleanup-apply", applyOptions, { run: ambiguousRunner }),
+      (error) =>
+        error instanceof CoordinatorError &&
+        error.code === "REMOTE_OBSERVATION_AMBIGUOUS",
+    );
+    assert.equal(ambiguous, true);
+    assert.equal(
+      git(fixture.control, ["ls-remote", "--heads", "origin", ref]).split("\t")[0],
+      fixture.candidate,
+    );
+    assert.equal(
+      fake.state.calls.filter(
+        (call) =>
+          call.executable === "git" &&
+          call.args.includes(`--force-with-lease=${ref}:${fixture.candidate}`),
+      ).length,
+      0,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the exact-ref retry exception does not broaden worktree removal", async () => {
+  const fixture = createRepositoryFixture();
+  const fake = fakeExternalCommands(fixture);
+  try {
+    const { applyOptions } = await prepareIntegratedCleanup(fixture, fake);
+    await assert.rejects(
+      execute("cleanup-apply", applyOptions, {
+        run: fake.runner,
+        hook(phase, effect) {
+          if (phase === "before" && effect === "cleanup.worktree") {
+            throw new CoordinatorInterruption(effect);
+          }
+        },
+      }),
+      (error) => error instanceof CoordinatorInterruption,
+    );
     await assert.rejects(
       execute("cleanup-apply", applyOptions, { run: fake.runner }),
       (error) =>
         error instanceof CoordinatorError &&
         error.code === "DESTRUCTIVE_TARGET_PRESENT_AFTER_HANDOFF",
     );
+    assert.equal(existsSync(fixture.checkout), true);
     assert.equal(
-      git(fixture.control, ["ls-remote", "--heads", "origin", `refs/heads/${BRANCH}`]).split("\t")[0],
-      fixture.candidate,
+      fake.state.calls.filter(
+        (call) =>
+          call.executable === "git" &&
+          call.args.includes("worktree") &&
+          call.args.includes("remove"),
+      ).length,
+      0,
     );
   } finally {
     fixture.cleanup();

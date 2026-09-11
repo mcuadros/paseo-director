@@ -2891,10 +2891,20 @@ async function cleanupApply(run, options, deps) {
       markEffect(options, state, effect, "destructive_terminal", "complete", { absent: true });
       return;
     }
+    // Ref deletion is the narrow destructive-terminal recovery case with an
+    // atomic exact-value guard. cleanupFacts authoritatively proved this live
+    // ref is still the Candidate; the dispatcher below observes once more and
+    // compare-deletes only that value. Worktree cleanup has no such retry.
     refuse(
-      record?.phase === "dispatching" || record?.phase === "unknown" || record?.phase === "complete",
+      record?.phase === "complete",
       "DESTRUCTIVE_TARGET_PRESENT_AFTER_HANDOFF",
-      `${kind} ref is present after a possible or completed deletion`,
+      `${kind} ref is present after a completed deletion`,
+    );
+    refuse(
+      record !== undefined &&
+        !["intent_recorded", "dispatching", "unknown"].includes(record.phase),
+      "STATE_INVALID",
+      `${kind} ref deletion effect has an invalid phase`,
     );
     markDispatch(options, state, effect, "destructive_terminal");
     await dispatchHook(deps, "before", effect, { options, state });

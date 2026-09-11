@@ -46,9 +46,15 @@ func facts(state domaincleanup.State) Facts {
 func observed(state domaincleanup.State, kind domaincleanup.ResourceKind, status domaincleanup.Status) domaincleanup.State {
 	index := domaincleanup.EffectIndex(state, kind)
 	effect := state.Effects[index]
+	currentOID := ""
+	if status == domaincleanup.StatusExactPresent &&
+		(kind == domaincleanup.ResourceRemoteRef || kind == domaincleanup.ResourceLocalRef) {
+		currentOID = state.Binding.CandidateSHA
+	}
 	observation := domaincleanup.SealObservation(domaincleanup.Observation{EffectID: effect.ID, BindingSHA256: state.Binding.SHA256,
 		Kind: kind, Attempt: effect.Attempt, Status: status, Code: domaincleanup.CodeOK,
-		Archived: status == domaincleanup.StatusTerminated, ProcessAbsent: status == domaincleanup.StatusTerminated,
+		CurrentOID: currentOID,
+		Archived:   status == domaincleanup.StatusTerminated, ProcessAbsent: status == domaincleanup.StatusTerminated,
 		ObservedAtMillis: 2_000, MaximumAgeMillis: domaincleanup.MaximumObservationAgeMillis})
 	next, ok := domaincleanup.RecordObservation(state, kind, observation, 2_000)
 	if !ok {
@@ -131,7 +137,7 @@ func TestCancellationAndDiskPressureNeverDeleteUnintegratedWork(t *testing.T) {
 	}
 }
 
-func TestDestructiveResponseLossPreservesSameSHATarget(t *testing.T) {
+func TestExactRefResponseLossRetriesButWorktreeRemainsStrict(t *testing.T) {
 	policy := policy(t)
 	state, _ := domaincleanup.NewState(binding(t, policy, true), policy, domaincleanup.TriggerIntegrated, domaincleanup.LifecycleActive)
 	// Advance prior effects with exact absence/clean observations.
@@ -153,8 +159,29 @@ func TestDestructiveResponseLossPreservesSameSHATarget(t *testing.T) {
 	}
 	dispatching = observed(dispatching, domaincleanup.ResourceRemoteRef, domaincleanup.StatusExactPresent)
 	decision := Reduce(facts(dispatching))
+	if decision.Kind != DecisionDispatch || !decision.CleanupAuthorized {
+		t.Fatalf("exact remote retry = %#v", decision)
+	}
+
+	worktreeState, _ := domaincleanup.NewState(binding(t, policy, true), policy, domaincleanup.TriggerIntegrated, domaincleanup.LifecycleActive)
+	worktreeState = completeEffect(worktreeState, domaincleanup.ResourceTaskAgent)
+	worktreeState = observed(worktreeState, domaincleanup.ResourceSnapshot, domaincleanup.StatusClean)
+	worktreeState, _ = domaincleanup.CompleteEffect(worktreeState, domaincleanup.ResourceSnapshot, nil)
+	worktreeState = observed(worktreeState, domaincleanup.ResourceTaskWorkspace, domaincleanup.StatusAbsent)
+	worktreeState, _ = domaincleanup.CompleteEffect(worktreeState, domaincleanup.ResourceTaskWorkspace, nil)
+	worktreeState = observed(worktreeState, domaincleanup.ResourceWorktree, domaincleanup.StatusExactPresent)
+	worktreeState, ok = domaincleanup.BeginDispatch(worktreeState, domaincleanup.ResourceWorktree)
+	if !ok {
+		t.Fatal("worktree dispatch")
+	}
+	worktreeState, ok = domaincleanup.RequireObservation(worktreeState, domaincleanup.ResourceWorktree)
+	if !ok {
+		t.Fatal("worktree observation required")
+	}
+	worktreeState = observed(worktreeState, domaincleanup.ResourceWorktree, domaincleanup.StatusExactPresent)
+	decision = Reduce(facts(worktreeState))
 	if decision.Kind != DecisionEscalate || decision.Code != domaincleanup.CodeResponseUnknown || decision.CleanupAuthorized {
-		t.Fatalf("same-SHA recreation = %#v", decision)
+		t.Fatalf("worktree retry = %#v", decision)
 	}
 }
 

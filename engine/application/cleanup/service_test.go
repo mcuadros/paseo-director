@@ -188,16 +188,28 @@ type fakeCleanupGit struct {
 	dispatches      map[domaincleanup.ResourceKind]uint64
 	lose            map[domaincleanup.ResourceKind]bool
 	recreateRemote  bool
+	recreateLocal   bool
+	observeFailures map[domaincleanup.ResourceKind]uint64
 }
 
 func newFakeCleanupGit() *fakeCleanupGit {
 	return &fakeCleanupGit{status: map[domaincleanup.ResourceKind]domaincleanup.Status{
 		domaincleanup.ResourceWorktree: domaincleanup.StatusExactPresent, domaincleanup.ResourceRemoteRef: domaincleanup.StatusExactPresent,
 		domaincleanup.ResourceLocalRef: domaincleanup.StatusExactPresent, domaincleanup.ResourcePrivateArtifact: domaincleanup.StatusExactPresent,
-		domaincleanup.ResourceRecoveryRef: domaincleanup.StatusExactPresent}, dispatches: map[domaincleanup.ResourceKind]uint64{}, lose: map[domaincleanup.ResourceKind]bool{}}
+		domaincleanup.ResourceRecoveryRef: domaincleanup.StatusExactPresent}, dispatches: map[domaincleanup.ResourceKind]uint64{},
+		lose: map[domaincleanup.ResourceKind]bool{}, observeFailures: map[domaincleanup.ResourceKind]uint64{}}
 }
 func (adapter *fakeCleanupGit) observation(target cleanuport.Target) domaincleanup.Observation {
 	status := adapter.status[target.EffectKind]
+	code := domaincleanup.CodeOK
+	switch status {
+	case domaincleanup.StatusDifferent:
+		code = domaincleanup.CodeRefChanged
+	case domaincleanup.StatusAmbiguous:
+		code = domaincleanup.CodeResponseUnknown
+	case domaincleanup.StatusUnavailable:
+		code = domaincleanup.CodeExternalUnavailable
+	}
 	if target.EffectKind == domaincleanup.ResourceSnapshot {
 		if adapter.snapshot != nil {
 			status = domaincleanup.StatusVerified
@@ -208,7 +220,7 @@ func (adapter *fakeCleanupGit) observation(target cleanuport.Target) domainclean
 		}
 	}
 	value := domaincleanup.Observation{EffectID: target.EffectID, BindingSHA256: target.Binding.SHA256, Kind: target.EffectKind,
-		Attempt: target.Attempt, Status: status, Code: domaincleanup.CodeOK, CandidateTreeSHA: target.Binding.TreeSHA,
+		Attempt: target.Attempt, Status: status, Code: code, CandidateTreeSHA: target.Binding.TreeSHA,
 		ProspectiveTreeSHA: target.Binding.TreeSHA, IndexTreeSHA: target.Binding.TreeSHA,
 		Dirty: adapter.snapshotDirty, CurrentOID: func() string {
 			if status == domaincleanup.StatusExactPresent && (target.EffectKind == domaincleanup.ResourceRemoteRef || target.EffectKind == domaincleanup.ResourceLocalRef) {
@@ -226,6 +238,10 @@ func (adapter *fakeCleanupGit) observation(target cleanuport.Target) domainclean
 func (adapter *fakeCleanupGit) Observe(_ context.Context, target cleanuport.Target) (domaincleanup.Observation, error) {
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
+	if adapter.observeFailures[target.EffectKind] > 0 {
+		adapter.observeFailures[target.EffectKind]--
+		return domaincleanup.Observation{}, errors.New("observation unavailable")
+	}
 	return adapter.observation(target), nil
 }
 func (adapter *fakeCleanupGit) dispatch(command cleanuport.DispatchCommand, kind domaincleanup.ResourceKind) (cleanuport.DispatchResult, error) {
@@ -244,7 +260,8 @@ func (adapter *fakeCleanupGit) dispatch(command cleanuport.DispatchCommand, kind
 			value = domaincleanup.SealSnapshot(value)
 		}
 		adapter.snapshot = &value
-	} else if kind == domaincleanup.ResourceRemoteRef && adapter.recreateRemote {
+	} else if kind == domaincleanup.ResourceRemoteRef && adapter.recreateRemote ||
+		kind == domaincleanup.ResourceLocalRef && adapter.recreateLocal {
 		adapter.status[kind] = domaincleanup.StatusExactPresent
 	} else {
 		adapter.status[kind] = domaincleanup.StatusAbsent
@@ -414,6 +431,20 @@ func (fixture *fixture) drive(t *testing.T) Result {
 	return Result{}
 }
 
+func (fixture *fixture) driveToObservedIntent(t *testing.T, kind domaincleanup.ResourceKind) {
+	t.Helper()
+	for range 40 {
+		effect := fixture.store.run.Execution.Cleanup.Effects[domaincleanup.EffectIndex(*fixture.store.run.Execution.Cleanup, kind)]
+		if effect.Phase == domaincleanup.EffectIntent && effect.Observation != nil {
+			return
+		}
+		if _, err := fixture.step(t); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Fatalf("%s did not reach an observed intent", kind)
+}
+
 func TestIntegratedCleanupUsesExactM49EvidenceAndDeterministicOrder(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.admit(t, domaincleanup.TriggerIntegrated, domaincleanup.LifecycleActive)
@@ -546,31 +577,86 @@ func TestResponseLossRestartAdoptsAbsenceWithoutSecondDelete(t *testing.T) {
 	}
 }
 
-func TestSameSHARemoteRecreationParksWithBoardReasonAndNoAuthority(t *testing.T) {
-	fixture := newFixture(t)
-	fixture.admit(t, domaincleanup.TriggerIntegrated, domaincleanup.LifecycleActive)
-	for {
-		effect := fixture.store.run.Execution.Cleanup.Effects[domaincleanup.EffectIndex(*fixture.store.run.Execution.Cleanup, domaincleanup.ResourceRemoteRef)]
-		if effect.Phase == domaincleanup.EffectIntent && effect.Observation != nil {
-			break
-		}
-		if _, err := fixture.step(t); err != nil {
-			t.Fatal(err)
-		}
+func TestSameCandidateRefRecreationRetriesWithExactGuard(t *testing.T) {
+	for _, kind := range []domaincleanup.ResourceKind{domaincleanup.ResourceRemoteRef, domaincleanup.ResourceLocalRef} {
+		t.Run(string(kind), func(t *testing.T) {
+			fixture := newFixture(t)
+			fixture.admit(t, domaincleanup.TriggerIntegrated, domaincleanup.LifecycleActive)
+			fixture.driveToObservedIntent(t, kind)
+			if kind == domaincleanup.ResourceRemoteRef {
+				fixture.git.recreateRemote = true
+			} else {
+				fixture.git.recreateLocal = true
+			}
+			if _, err := fixture.step(t); err != nil {
+				t.Fatal(err)
+			}
+			if kind == domaincleanup.ResourceRemoteRef {
+				fixture.git.recreateRemote = false
+			} else {
+				fixture.git.recreateLocal = false
+			}
+			restarted, err := NewService(fixture.store, fixture.host,
+				&fakeCandidate{observation: *fixture.store.run.Execution.CandidateObservation},
+				&fakeIntegrationGit{}, fixture.forge, fixture.git, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.service = restarted
+			result := fixture.drive(t)
+			if !result.Complete || fixture.git.dispatches[kind] != 2 || result.Run.Execution.NeedsYou != nil {
+				t.Fatalf("retry = %#v %#v", result, fixture.git.dispatches)
+			}
+		})
 	}
-	fixture.git.recreateRemote = true
-	if _, err := fixture.step(t); err != nil {
-		t.Fatal(err)
-	}
-	result, err := fixture.step(t)
-	if err == nil || result.Run.Execution.Cleanup.Phase != domaincleanup.PhaseNeedsYou || result.CleanupAuthorized ||
-		result.Run.Execution.NeedsYou == nil || result.Run.Execution.NeedsYou.CleanupAuthorized ||
-		result.Run.Execution.NeedsYou.Code != execution.NeedCode(strings.ToLower(string(domaincleanup.CodeResponseUnknown))) {
-		t.Fatalf("ambiguous recreation = %#v %v", result, err)
-	}
-	encoded, _ := json.Marshal(result.Run.Execution.NeedsYou)
-	if strings.Contains(string(encoded), "/srv/") {
-		t.Fatalf("Board/Organizer reason leaked a path: %s", encoded)
+}
+
+func TestUnavailableRefObservationRefreshesAfterRestart(t *testing.T) {
+	for _, kind := range []domaincleanup.ResourceKind{domaincleanup.ResourceRemoteRef, domaincleanup.ResourceLocalRef} {
+		t.Run(string(kind), func(t *testing.T) {
+			fixture := newFixture(t)
+			fixture.admit(t, domaincleanup.TriggerIntegrated, domaincleanup.LifecycleActive)
+			fixture.driveToObservedIntent(t, kind)
+			if kind == domaincleanup.ResourceRemoteRef {
+				fixture.git.recreateRemote = true
+			} else {
+				fixture.git.recreateLocal = true
+			}
+			fixture.git.observeFailures[kind] = 1
+			result, err := fixture.step(t)
+			if err != nil || !result.Progressed {
+				t.Fatalf("dispatch = %#v %v", result, err)
+			}
+			frontier := fixture.store.run.Execution.Cleanup.Effects[domaincleanup.EffectIndex(*fixture.store.run.Execution.Cleanup, kind)]
+			if frontier.Phase != domaincleanup.EffectObservationRequired || frontier.Observation == nil ||
+				frontier.Observation.Status != domaincleanup.StatusUnavailable {
+				t.Fatalf("frontier = %#v", frontier)
+			}
+			restarted, newErr := NewService(fixture.store, fixture.host,
+				&fakeCandidate{observation: *fixture.store.run.Execution.CandidateObservation},
+				&fakeIntegrationGit{}, fixture.forge, fixture.git, t.TempDir())
+			if newErr != nil {
+				t.Fatal(newErr)
+			}
+			fixture.service = restarted
+			refreshed, refreshErr := fixture.step(t)
+			if refreshErr != nil || !refreshed.Progressed || refreshed.WaitingExternal {
+				t.Fatalf("refresh = %#v %v", refreshed, refreshErr)
+			}
+			current := fixture.store.run.Execution.Cleanup.Effects[domaincleanup.EffectIndex(*fixture.store.run.Execution.Cleanup, kind)]
+			if current.Observation == nil || current.Observation.Status != domaincleanup.StatusExactPresent {
+				t.Fatalf("refreshed observation = %#v", current)
+			}
+			if kind == domaincleanup.ResourceRemoteRef {
+				fixture.git.recreateRemote = false
+			} else {
+				fixture.git.recreateLocal = false
+			}
+			result = fixture.drive(t)
+			if !result.Complete || fixture.git.dispatches[kind] != 2 {
+				t.Fatalf("recovery = %#v %#v", result, fixture.git.dispatches)
+			}
+		})
 	}
 }
 
