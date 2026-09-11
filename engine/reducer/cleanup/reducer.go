@@ -54,7 +54,9 @@ func effectDecision(state domaincleanup.State, effect domaincleanup.Effect) Deci
 		return decision(DecisionObserve, effect.Kind, "", state.CleanupAuthorized)
 	}
 	if observation.Status == domaincleanup.StatusUnavailable {
-		return decision(DecisionWaitExternal, effect.Kind, domaincleanup.CodeExternalUnavailable, false)
+		// A later reconciler refreshes an unavailable observation. The caller
+		// owns backoff; retaining this fact forever would strand the effect.
+		return decision(DecisionObserve, effect.Kind, domaincleanup.CodeExternalUnavailable, false)
 	}
 	if observation.Status == domaincleanup.StatusDifferent || observation.Status == domaincleanup.StatusAmbiguous {
 		return escalate(effect.Kind, observation.Code)
@@ -100,8 +102,35 @@ func effectDecision(state domaincleanup.State, effect domaincleanup.Effect) Deci
 		}
 		return escalate(effect.Kind, domaincleanup.CodeResponseUnknown)
 
-	case domaincleanup.ResourceWorktree, domaincleanup.ResourceRemoteRef, domaincleanup.ResourceLocalRef,
-		domaincleanup.ResourcePrivateArtifact, domaincleanup.ResourceRecoveryRef:
+	case domaincleanup.ResourceRemoteRef, domaincleanup.ResourceLocalRef:
+		if observation.Status == domaincleanup.StatusAbsent {
+			return decision(DecisionAdopt, effect.Kind, "", state.CleanupAuthorized)
+		}
+		if observation.Status != domaincleanup.StatusExactPresent {
+			return escalate(effect.Kind, observation.Code)
+		}
+		if observation.CurrentOID != state.Binding.CandidateSHA {
+			return escalate(effect.Kind, domaincleanup.CodeRefChanged)
+		}
+		if !state.CleanupAuthorized {
+			return escalate(effect.Kind, domaincleanup.CodeSnapshotUnverified)
+		}
+		if effect.Phase == domaincleanup.EffectIntent {
+			return decision(DecisionDispatch, effect.Kind, "", true)
+		}
+		if (effect.Phase == domaincleanup.EffectDispatching || effect.Phase == domaincleanup.EffectObservationRequired) &&
+			effect.Attempt < effect.AttemptLimit {
+			// Exact Task refs are the narrow destructive recovery case with an
+			// atomic expected-OID delete. The adapter re-observes the same fact
+			// immediately before applying that unchanged compare guard.
+			return decision(DecisionDispatch, effect.Kind, "", true)
+		}
+		if effect.Attempt >= effect.AttemptLimit {
+			return escalate(effect.Kind, domaincleanup.CodeAttemptsExhausted)
+		}
+		return escalate(effect.Kind, domaincleanup.CodeResponseUnknown)
+
+	case domaincleanup.ResourceWorktree, domaincleanup.ResourcePrivateArtifact, domaincleanup.ResourceRecoveryRef:
 		if observation.Status == domaincleanup.StatusAbsent {
 			return decision(DecisionAdopt, effect.Kind, "", state.CleanupAuthorized)
 		}
@@ -111,8 +140,8 @@ func effectDecision(state domaincleanup.State, effect domaincleanup.Effect) Deci
 		if !state.CleanupAuthorized {
 			return escalate(effect.Kind, domaincleanup.CodeSnapshotUnverified)
 		}
-		// A destructive target which remains after any possible handoff is
-		// explicitly ambiguous, even when it has the same Candidate OID.
+		// Targets without an atomic exact-value delete remain ambiguous after
+		// any possible handoff, even when their identity appears unchanged.
 		if effect.Phase != domaincleanup.EffectIntent {
 			return escalate(effect.Kind, domaincleanup.CodeResponseUnknown)
 		}

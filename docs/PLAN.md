@@ -2,9 +2,9 @@
 
 - **Status:** Approved
 - **Plan version:** 0.6
-- **Last updated:** 2026-09-09
+- **Last updated:** 2026-09-12
 - **Approved:** 2026-09-06
-- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope; [ADR-0014](adr/0014-practical-linux-agent-boundary.md) for the human-approved practical trusted-provider Linux boundary; [ADR-0016](adr/0016-defer-taskstore-scale-proof-to-m5.md) for deferring TaskStore agreed-scale proof to `dir-m5.10`; [ADR-0017](adr/0017-standalone-engine-connector-authority-boundary.md) for the standalone Go engine and accepted exact-0.7.2 connector authority; [ADR-0018](adr/0018-deterministic-coordination-boundary.md) for deterministic coordination decisions and structured agent outcome claims; [ADR-0019](adr/0019-event-driven-delivery-fast-path.md) for the event-driven single-CI delivery fast path, launch visibility, and adaptive delivery capacity; [ADR-0020](adr/0020-zero-work-bootstrap-and-terminal-event-dispatch.md) for zero-work top-level bootstrap, separately notified real work, and synchronous terminal-event reconciliation
+- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope; [ADR-0014](adr/0014-practical-linux-agent-boundary.md) for the human-approved practical trusted-provider Linux boundary; [ADR-0016](adr/0016-defer-taskstore-scale-proof-to-m5.md) for deferring TaskStore agreed-scale proof to `dir-m5.10`; [ADR-0017](adr/0017-standalone-engine-connector-authority-boundary.md) for the standalone Go engine and accepted exact-0.7.2 connector authority; [ADR-0018](adr/0018-deterministic-coordination-boundary.md) for deterministic coordination decisions and structured agent outcome claims; [ADR-0019](adr/0019-event-driven-delivery-fast-path.md) for the event-driven single-CI delivery fast path, launch visibility, and adaptive delivery capacity; [ADR-0020](adr/0020-zero-work-bootstrap-and-terminal-event-dispatch.md) for zero-work top-level bootstrap, separately notified real work, and synchronous terminal-event reconciliation; [ADR-0021](adr/0021-recover-exact-leased-ref-cleanup.md) for exact-guarded recovery of nonterminal local and remote Task-ref deletion
 - **Human consolidation record:** Beads Task `dir-m1.14`, comment `01a07a8a-65f2-7755-a7af-bf5239fffffc`, for current worktree ownership, host-view, Organizer, UI, and repository-process rules
 - **Plugin repository:** <https://github.com/mcuadros/paseo-director>
 - **Public name:** Director for Paseo
@@ -864,6 +864,15 @@ If the replacement fails or recovery is ambiguous, the Task enters `Needs you`.
 - Recovery retention defaults to seven days.
 - Failure/cancellation cleanup is configurable by Project/Task.
 - Only material proven by the Director Engine to be Director-owned is deleted.
+
+Under ADR-0021, a nonterminal `dispatching` or `unknown` local or remote
+Task-ref deletion may make a new attempt only after a fresh authoritative
+observation proves that the exact ref still equals the immutable Candidate.
+The retry repeats the same explicit expected-OID `force-with-lease` or
+`update-ref` compare-delete guard. Absence completes the recorded intent;
+changed, unavailable, or ambiguous facts preserve the ref. This narrow rule
+does not apply to worktrees or other destructive targets, and `complete`
+remains terminal on later reappearance.
 
 Automatic ignored-tree recovery uses ADR-0013's measured Linux release envelope, which replaces ADR-0007's provisional ceilings:
 

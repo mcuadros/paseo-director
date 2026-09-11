@@ -16,7 +16,7 @@
   [ADR-0012](0012-direct-dolt-operational-readiness.md), and
   [ADR-0013](0013-scalable-ignored-tree-recovery-policy.md), and
   [ADR-0014](0014-practical-linux-agent-boundary.md)
-- **Amended by:** [ADR-0020](0020-zero-work-bootstrap-and-terminal-event-dispatch.md)
+- **Amended by:** [ADR-0020](0020-zero-work-bootstrap-and-terminal-event-dispatch.md); [ADR-0021](0021-recover-exact-leased-ref-cleanup.md), which permits a fresh exact-guarded retry for nonterminal local and remote Task-ref deletion only
 
 ## Context
 

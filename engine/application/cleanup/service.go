@@ -697,7 +697,13 @@ func (service *Service) Step(ctx context.Context, command StepCommand) (Result, 
 		next := value.run
 		next.Execution.Cleanup = &observed
 		next, err := service.persist(ctx, value.run, next, "cleanup.observed")
-		return Result{Run: next, Progressed: err == nil, CleanupAuthorized: observed.CleanupAuthorized}, err
+		progressed := err == nil
+		waitingExternal := observation.Status == domaincleanup.StatusUnavailable
+		if waitingExternal {
+			err = errors.Join(err, ErrExternalUnavailable)
+		}
+		return Result{Run: next, Progressed: progressed, WaitingExternal: waitingExternal,
+			CleanupAuthorized: observed.CleanupAuthorized}, err
 	}
 	if decision.Kind == cleanupreducer.DecisionAdopt {
 		effect := state.Effects[index]

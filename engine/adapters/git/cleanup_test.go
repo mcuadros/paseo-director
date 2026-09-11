@@ -346,6 +346,15 @@ func TestCleanupAdapterRemoteRaceAndSameSHARecreationRemainRecoverable(t *testin
 	if after.Status != domaincleanup.StatusExactPresent || after.CurrentOID != fixture.candidate {
 		t.Fatalf("same-SHA recreation was not preserved: %#v", after)
 	}
+	fixture.adapter.afterCleanupRemoteDelete = nil
+	if _, err := fixture.adapter.DeleteRemoteRef(context.Background(), cleanuport.DispatchCommand{Target: target, Attempt: 2, ExpectedObservation: after}); err != nil {
+		t.Fatal(err)
+	}
+	target.Attempt = 2
+	completed, _ := fixture.adapter.Observe(context.Background(), target)
+	if completed.Status != domaincleanup.StatusAbsent {
+		t.Fatalf("exact-leased retry did not delete the Candidate: %#v", completed)
+	}
 }
 
 func TestCleanupAdapterLocalRefRequiresAbsentWorktreeAndNoConsumer(t *testing.T) {
@@ -371,6 +380,19 @@ func TestCleanupAdapterLocalRefRequiresAbsentWorktreeAndNoConsumer(t *testing.T)
 	after, _ := fixture.adapter.Observe(context.Background(), target)
 	if after.Status != domaincleanup.StatusAbsent {
 		t.Fatalf("local after = %#v", after)
+	}
+	fixtureGit(t, fixture.source, "update-ref", "refs/heads/"+fixture.binding.Branch, fixture.candidate)
+	recreated, _ := fixture.adapter.Observe(context.Background(), target)
+	if recreated.Status != domaincleanup.StatusExactPresent || recreated.CurrentOID != fixture.candidate {
+		t.Fatalf("local recreation = %#v", recreated)
+	}
+	if _, err := fixture.adapter.DeleteLocalRef(context.Background(), cleanuport.DispatchCommand{Target: target, Attempt: 2, ExpectedObservation: recreated}); err != nil {
+		t.Fatal(err)
+	}
+	target.Attempt = 2
+	completed, _ := fixture.adapter.Observe(context.Background(), target)
+	if completed.Status != domaincleanup.StatusAbsent {
+		t.Fatalf("local retry = %#v", completed)
 	}
 }
 

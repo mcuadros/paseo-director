@@ -5,7 +5,7 @@
 - **Beads Task:** `dir-m0.6`
 - **Plan gate:** M0 Git worktree ownership and Linux cleanup
 - **Decision owner:** `dir-m0.6` Task Agent; platform reduction requires the human project owner
-- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform; [ADR-0013](0013-scalable-ignored-tree-recovery-policy.md), which replaces the provisional recovery ceilings with the measured supported Linux policy
+- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform; [ADR-0013](0013-scalable-ignored-tree-recovery-policy.md), which replaces the provisional recovery ceilings with the measured supported Linux policy; [ADR-0021](0021-recover-exact-leased-ref-cleanup.md), which permits a fresh exact-guarded retry for nonterminal local and remote Task-ref deletion only
 
 All clauses in this ADR apply to the recorded Linux scope only. ADR-0011 does
 not weaken the cleanup contract or any unrelated M0 gate.
