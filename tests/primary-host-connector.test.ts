@@ -205,6 +205,34 @@ function primaryArguments(): HostCommandArguments {
   };
 }
 
+function reviewerArguments(): HostCommandArguments {
+  const value = primaryArguments();
+  const effectId = "effect-reviewer-create";
+  const profile = {
+    provider: "claude-code", model: "claude-sonnet", effort: "high", mode: "default",
+    permissionMode: "read-only", providerOptions: [], sha256: "7".repeat(64),
+  } as const;
+  const session = {
+    contractVersion: AGENT_MCP_CONTRACT_VERSION, contractHash: AGENT_MCP_CONTRACT_SHA256,
+    sessionSha256: "8".repeat(64), role: "reviewer", provider: profile.provider, model: profile.model,
+    tools: ["director_candidate_read", "director_review_verdict_submit"],
+    server: { name: "director-review-mcp", command: "/usr/bin/director-agent-runtime", args: ["serve"], env: {} },
+  } as const;
+  return {
+    ...value, effectKind: "reviewer_agent.create_with_bootstrap", effectId,
+    worktreeId: "review-candidate-1", worktreePath: "/srv/reviewers/candidate-1",
+    title: "Independent review: Implement exact Task", profile, session,
+    clientMessageId: "message-reviewer-bootstrap",
+    labels: {
+      ...value.labels,
+      [WORKER_LABEL.executionWorkspace]: "workspace-reviewer-1",
+      [WORKER_LABEL.role]: "reviewer", [WORKER_LABEL.phase]: "reviewing",
+      [WORKER_LABEL.candidate]: "2".repeat(40), [WORKER_LABEL.effect]: effectId,
+      [WORKER_LABEL.profile]: profile.sha256, [WORKER_LABEL.session]: session.sessionSha256,
+    },
+  };
+}
+
 function command(capability: HostCommand["capability"], argumentsValue: HostCommandArguments, afterCursor = 0): HostCommand {
   return {
     requestId: `request-${argumentsValue.effectId}`, idempotencyKey: argumentsValue.effectId,
@@ -327,6 +355,66 @@ test("public connector creates one host view and one parentless primary then sen
     agentId: agent.id,
   }, ambiguousCost.cursor));
   assert.equal(duplicate.result.status, "ambiguous");
+});
+
+test("public connector creates one parentless read-only Reviewer with only Candidate/verdict MCP", async () => {
+  const world = fakePaseo();
+  const host = connector(world.client);
+  const base = reviewerArguments();
+  const workspace = await host.invoke(command("executionWorkspace.createManaged", {
+    ...base, effectKind: "host_view.create", effectId: "effect-review-host-view", workspaceId: undefined,
+  }));
+  const workspaceId = workspace.result.externalId!;
+  const labels = { ...base.labels!, [WORKER_LABEL.executionWorkspace]: workspaceId };
+  const createArguments = { ...base, workspaceId, labels };
+  const created = await host.invoke(command("reviewerAgent.createWithBootstrap", createArguments));
+  assert.equal(created.result.status, "owned_present");
+  assert.equal(world.calls.agentCreates, 1);
+  const reviewer = world.agents[0]!;
+  assert.equal(reviewer.labels["paseo.parent-agent-id"], undefined);
+  assert.equal(reviewer.cwd, createArguments.worktreePath);
+  const input = world.createdInputs[0] as { config: { featureValues: { permissionMode: string }; toolPolicy: { preapproved: { tool: string }[] } } };
+  assert.equal(input.config.featureValues.permissionMode, "read-only");
+  assert.deepEqual(input.config.toolPolicy.preapproved.map(({ tool }) => tool), [
+    "director_candidate_read", "director_review_verdict_submit",
+  ]);
+
+  reviewer.status = "idle";
+  reviewer.activeTurn = null;
+  const bootstrap = await host.invoke(command("agent.observe", createArguments, created.cursor));
+  assert.equal(bootstrap.result.status, "desired");
+  const promptArguments: HostCommandArguments = {
+    ...createArguments, effectKind: "agent.send_prompt", effectId: "effect-review-prompt",
+    agentId: reviewer.id, labels: undefined, initialPrompt: "Review the frozen exact Candidate.",
+    notifyOnFinish: true, clientMessageId: "message-review-prompt", sessionBindingSha256: "9".repeat(64),
+  };
+  const prompted = await host.invoke(command("send_agent_prompt", promptArguments, bootstrap.cursor));
+  assert.equal(prompted.result.status, "owned_present");
+  assert.equal(world.calls.sends, 1);
+
+  reviewer.status = "idle";
+  reviewer.activeTurn = null;
+  const completed = await host.invoke(command("agent.observe", promptArguments, prompted.cursor));
+  assert.equal(completed.result.status, "desired");
+  const archived = await host.invoke(command("agent.archive", {
+    ...promptArguments, effectKind: "reviewer_agent.archive", effectId: "effect-reviewer-archive",
+    initialPrompt: undefined, clientMessageId: undefined, profile: undefined, session: undefined,
+    sessionBindingSha256: undefined,
+  }, completed.cursor));
+  assert.equal(archived.result.status, "desired");
+  assert.equal(world.calls.agentArchives, 1);
+
+  for (const changed of [
+    { ...createArguments, profile: { ...createArguments.profile!, permissionMode: "workspace-write" } },
+    { ...createArguments, parentAgentId: "task-agent-1" },
+    { ...createArguments, session: { ...createArguments.session!, tools: [...createArguments.session!.tools, "director_task_read"] } },
+  ]) {
+    await assert.rejects(
+      host.invoke(command("reviewerAgent.createWithBootstrap", changed)),
+      (error: unknown) => error instanceof PaseoHostEffectError && error.code === "HOST_REVIEWER_CREATE_INVALID",
+    );
+  }
+  assert.equal(world.calls.agentCreates, 1, "permission or scope escape must fail before Paseo");
 });
 
 test("primary recovery inventory is complete, bounded, and redacts provider failure text", async () => {

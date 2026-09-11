@@ -129,18 +129,21 @@ func TestProductionInheritanceMatchesIndependentOracle(t *testing.T) {
 func TestAllEffectiveFieldsReportTheirSupplyingScope(t *testing.T) {
 	document := configurationDocument(t, func(configuration *domainconfig.Configuration) {
 		configuration.Defaults.RunBudget.CostMicrousd = 5_000_000
+		configuration.Defaults.RequireDifferentReviewerModel = true
 		configuration.WorkspaceOverrides = []domainconfig.WorkspaceOverride{{
 			WorkspaceID: "product", LaunchPolicy: domainconfig.LaunchAutomatic,
 			DeliveryMode:   domainconfig.DeliveryInherit,
 			MaxActiveTasks: intPointer(3), ElapsedSeconds: int64Pointer(3600),
-			CostMicrousd:      int64Pointer(2_000_000),
-			AutoFixCIFailures: boolPointer(false),
+			CostMicrousd:                  int64Pointer(2_000_000),
+			AutoFixCIFailures:             boolPointer(false),
+			RequireDifferentReviewerModel: boolPointer(true),
 		}}
 	})
 	envelopeDocument := configurationDocument(t, func(configuration *domainconfig.Configuration) {
 		configuration.Defaults.LaunchPolicy = domainconfig.LaunchAutomatic
 		configuration.Defaults.DeliveryMode = domainconfig.DeliveryDirect
 		configuration.Defaults.RunBudget.CostMicrousd = 5_000_000
+		configuration.Defaults.RequireDifferentReviewerModel = true
 	})
 	effective, err := approvedEnvelope(t, envelopeDocument).ResolveEffective(document, "product", TaskOverride{
 		DeliveryMode:               domainconfig.DeliveryPullRequest,
@@ -158,7 +161,8 @@ func TestAllEffectiveFieldsReportTheirSupplyingScope(t *testing.T) {
 		effective.Sources.MaxActiveTasks != ScopeWorkspace || effective.Sources.ElapsedSeconds != ScopeWorkspace ||
 		effective.Sources.MaxActiveTasksPerWorkspace != ScopeTask || effective.Sources.Tokens != ScopeTask ||
 		effective.Sources.CostMicrousd != ScopeTask ||
-		effective.Sources.AutoFixCIFailures != ScopeWorkspace || effective.Sources.AutoFixReviewFeedback != ScopeTask {
+		effective.Sources.AutoFixCIFailures != ScopeWorkspace || effective.Sources.AutoFixReviewFeedback != ScopeTask ||
+		effective.Sources.RequireDifferentReviewerModel != ScopeWorkspace {
 		t.Fatalf("effective sources = %#v", effective.Sources)
 	}
 	if effective.Limits.MaxActiveTasks != 3 || effective.Limits.MaxActiveTasksPerWorkspace != 1 ||
@@ -166,8 +170,29 @@ func TestAllEffectiveFieldsReportTheirSupplyingScope(t *testing.T) {
 		effective.RunBudget.ElapsedSeconds != 3600 || effective.RunBudget.Tokens != 100000 ||
 		effective.RunBudget.Turns != 16 || effective.RunBudget.CICycles != 2 ||
 		effective.RunBudget.CostMicrousd != 1_000_000 ||
-		effective.AutoFixCIFailures || effective.AutoFixReviewFeedback {
+		effective.AutoFixCIFailures || effective.AutoFixReviewFeedback || !effective.RequireDifferentReviewerModel {
 		t.Fatalf("effective values = %#v", effective)
+	}
+	if !effective.ReviewPolicy().RequireDifferentReviewerModel {
+		t.Fatal("effective Reviewer policy did not freeze the inherited requirement")
+	}
+}
+
+func TestDifferentReviewerModelPolicyMayTightenButNotLoosenTheEnvelope(t *testing.T) {
+	optional := configurationDocument(t, func(configuration *domainconfig.Configuration) {
+		configuration.Defaults.RequireDifferentReviewerModel = false
+	})
+	required := configurationDocument(t, func(configuration *domainconfig.Configuration) {
+		configuration.Defaults.RequireDifferentReviewerModel = true
+	})
+	if _, err := approvedEnvelope(t, optional).ResolveEffective(required, "product", TaskOverride{}); err != nil {
+		t.Fatalf("requiring a different Reviewer model did not tighten the envelope: %v", err)
+	}
+	if _, err := approvedEnvelope(t, required).ResolveEffective(optional, "product", TaskOverride{}); !errors.Is(err, ErrOutsideSecurityEnvelope) {
+		t.Fatalf("loosening the different-Reviewer requirement error = %v", err)
+	}
+	if _, err := approvedEnvelope(t, required).ResolveEffective(required, "product", TaskOverride{RequireDifferentReviewerModel: boolPointer(false)}); !errors.Is(err, ErrOutsideSecurityEnvelope) {
+		t.Fatalf("Task override loosened the different-Reviewer requirement: %v", err)
 	}
 }
 

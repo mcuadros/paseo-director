@@ -181,7 +181,11 @@ func RegistrationDigest(registration WorkerRegistration) (string, error) {
 // exactly the frozen registry labels and claims no parent, so a worker that
 // would not appear in the root-workspace aggregate never starts.
 func AdmitAgentCreate(command Command, registration WorkerRegistration) error {
-	if command.Arguments.EffectKind != execution.EffectAgentCreate {
+	expectedKind := execution.EffectAgentCreate
+	if registration.Role == WorkerRoleReviewer {
+		expectedKind = execution.EffectReviewerAgentCreate
+	}
+	if command.Arguments.EffectKind != expectedKind {
 		return errors.New("worker launch admission requires an agent-create command")
 	}
 	if command.Arguments.ParentAgentID != nil {
@@ -194,6 +198,8 @@ func AdmitAgentCreate(command Command, registration WorkerRegistration) error {
 		if err := admitPrimaryContext(command.Arguments, registration, false); err != nil {
 			return err
 		}
+	} else if err := admitReviewerContext(command.Arguments, registration, false); err != nil {
+		return err
 	}
 	if command.Arguments.Scope != registration.Scope {
 		return errors.New("worker launch registration is bound to another Run")
@@ -250,9 +256,6 @@ func ParseWorkerLabels(labels map[string]string) (WorkerRegistration, error) {
 // a self-consistent published registration, so a connector refuses an
 // invisible worker without holding engine state.
 func AdmitAgentCreateLabels(command Command) (WorkerRegistration, error) {
-	if command.Arguments.EffectKind != execution.EffectAgentCreate {
-		return WorkerRegistration{}, errors.New("worker launch admission requires an agent-create command")
-	}
 	if command.Arguments.ParentAgentID != nil {
 		return WorkerRegistration{}, errors.New("Director-launched worker is parented")
 	}
@@ -269,6 +272,13 @@ func AdmitAgentCreateLabels(command Command) (WorkerRegistration, error) {
 	if registration.EffectID != command.Arguments.EffectID {
 		return WorkerRegistration{}, errors.New("worker launch registration is bound to another effect")
 	}
+	expectedKind := execution.EffectAgentCreate
+	if registration.Role == WorkerRoleReviewer {
+		expectedKind = execution.EffectReviewerAgentCreate
+	}
+	if command.Arguments.EffectKind != expectedKind {
+		return WorkerRegistration{}, errors.New("worker launch admission requires an agent-create command")
+	}
 	expectedCapability := CapabilityTaskAgentCreate
 	if registration.Role == WorkerRoleReviewer {
 		expectedCapability = CapabilityReviewerAgentCreate
@@ -280,6 +290,8 @@ func AdmitAgentCreateLabels(command Command) (WorkerRegistration, error) {
 		if err := admitPrimaryContext(command.Arguments, registration, false); err != nil {
 			return WorkerRegistration{}, err
 		}
+	} else if err := admitReviewerContext(command.Arguments, registration, false); err != nil {
+		return WorkerRegistration{}, err
 	}
 	return registration, nil
 }
@@ -313,6 +325,37 @@ func admitPrimaryContext(arguments Arguments, registration WorkerRegistration, b
 	return nil
 }
 
+func admitReviewerContext(arguments Arguments, registration WorkerRegistration, bound bool) error {
+	contractHash, contractErr := agentbridge.SchemaSHA256()
+	expectedTools := []string{"director_candidate_read", "director_review_verdict_submit"}
+	if arguments.ClientMessageID == "" || arguments.Profile == nil || arguments.Session == nil ||
+		arguments.Profile.SHA256 != registration.ProfileSHA256 || arguments.Profile.PermissionMode != "read-only" ||
+		arguments.Session.SessionSHA256 != registration.SessionSHA256 ||
+		arguments.Session.ContractVersion != agentbridge.ContractVersion || contractErr != nil ||
+		arguments.Session.ContractHash != contractHash || arguments.Session.Role != "reviewer" ||
+		arguments.Session.Provider != arguments.Profile.Provider || arguments.Session.Model != arguments.Profile.Model ||
+		!slices.Equal(arguments.Session.Tools, expectedTools) || arguments.Session.Server.Name == "" ||
+		arguments.Session.Server.Command == "" || len(arguments.Session.Server.Env) != 0 ||
+		arguments.Profile.Provider == "" || arguments.Profile.Model == "" || arguments.Profile.Effort == "" ||
+		arguments.Profile.Mode == "" {
+		return errors.New("reviewer profile or scoped MCP context is incomplete")
+	}
+	if bound {
+		if !workerDigestPattern.MatchString(arguments.SessionBindingSHA256) {
+			return errors.New("reviewer scoped MCP context is not bound to the native agent")
+		}
+	} else if arguments.SessionBindingSHA256 != "" {
+		return errors.New("reviewer bootstrap carries a premature native session binding")
+	} else if !arguments.PreparationReady || !workerDigestPattern.MatchString(arguments.PreparationBarrierHash) ||
+		!workerDigestPattern.MatchString(arguments.LifecycleDigest) || !workerDigestPattern.MatchString(arguments.IsolationDigest) ||
+		!workerIdentityPattern.MatchString(arguments.BoundaryID) ||
+		!workerIdentityPattern.MatchString(arguments.OperationalObservationID) ||
+		arguments.WorktreePath == "" || arguments.WorkspaceID != registration.ExecutionWorkspaceID {
+		return errors.New("reviewer bootstrap lacks the frozen execution boundary")
+	}
+	return nil
+}
+
 // AdmitAgentPrompt is the last engine-owned gate before real Task or Review
 // work starts. The persisted native agent identity is mandatory and the real
 // prompt can cross the host boundary only with terminal notification enabled.
@@ -331,6 +374,8 @@ func AdmitAgentPrompt(command Command, registration WorkerRegistration, agentID 
 		if err := admitPrimaryContext(command.Arguments, registration, true); err != nil {
 			return err
 		}
+	} else if err := admitReviewerContext(command.Arguments, registration, true); err != nil {
+		return err
 	}
 	return nil
 }

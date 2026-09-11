@@ -10,6 +10,7 @@ import (
 	"reflect"
 
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
+	domainreview "github.com/mcuadros/director-engine/domain/review"
 )
 
 var (
@@ -30,65 +31,75 @@ const (
 // TaskOverride is the mutable Task-owned configuration layer. Nil scalar
 // pointers mean Inherit; they preserve explicit zero and false values.
 type TaskOverride struct {
-	LaunchPolicy               domainconfig.LaunchPolicy
-	DeliveryMode               domainconfig.DeliveryMode
-	MaxActiveTasks             *int
-	MaxActiveTasksPerWorkspace *int
-	MaxConcurrentAgents        *int
-	MaxSubagentsPerTask        *int
-	ElapsedSeconds             *int64
-	Tokens                     *int64
-	Turns                      *int64
-	CICycles                   *int64
-	CostMicrousd               *int64
-	AutoFixCIFailures          *bool
-	AutoFixReviewFeedback      *bool
+	LaunchPolicy                  domainconfig.LaunchPolicy
+	DeliveryMode                  domainconfig.DeliveryMode
+	MaxActiveTasks                *int
+	MaxActiveTasksPerWorkspace    *int
+	MaxConcurrentAgents           *int
+	MaxSubagentsPerTask           *int
+	ElapsedSeconds                *int64
+	Tokens                        *int64
+	Turns                         *int64
+	CICycles                      *int64
+	CostMicrousd                  *int64
+	AutoFixCIFailures             *bool
+	AutoFixReviewFeedback         *bool
+	RequireDifferentReviewerModel *bool
 }
 
 // EffectiveSources reports exactly which layer supplied each value.
 type EffectiveSources struct {
-	LaunchPolicy               Scope `json:"launchPolicy"`
-	DeliveryMode               Scope `json:"deliveryMode"`
-	MaxActiveTasks             Scope `json:"maxActiveTasks"`
-	MaxActiveTasksPerWorkspace Scope `json:"maxActiveTasksPerWorkspace"`
-	MaxConcurrentAgents        Scope `json:"maxConcurrentAgents"`
-	MaxSubagentsPerTask        Scope `json:"maxSubagentsPerTask"`
-	ElapsedSeconds             Scope `json:"elapsedSeconds"`
-	Tokens                     Scope `json:"tokens"`
-	Turns                      Scope `json:"turns"`
-	CICycles                   Scope `json:"ciCycles"`
-	CostMicrousd               Scope `json:"costMicrousd"`
-	AutoFixCIFailures          Scope `json:"autoFixCiFailures"`
-	AutoFixReviewFeedback      Scope `json:"autoFixReviewFeedback"`
+	LaunchPolicy                  Scope `json:"launchPolicy"`
+	DeliveryMode                  Scope `json:"deliveryMode"`
+	MaxActiveTasks                Scope `json:"maxActiveTasks"`
+	MaxActiveTasksPerWorkspace    Scope `json:"maxActiveTasksPerWorkspace"`
+	MaxConcurrentAgents           Scope `json:"maxConcurrentAgents"`
+	MaxSubagentsPerTask           Scope `json:"maxSubagentsPerTask"`
+	ElapsedSeconds                Scope `json:"elapsedSeconds"`
+	Tokens                        Scope `json:"tokens"`
+	Turns                         Scope `json:"turns"`
+	CICycles                      Scope `json:"ciCycles"`
+	CostMicrousd                  Scope `json:"costMicrousd"`
+	AutoFixCIFailures             Scope `json:"autoFixCiFailures"`
+	AutoFixReviewFeedback         Scope `json:"autoFixReviewFeedback"`
+	RequireDifferentReviewerModel Scope `json:"requireDifferentReviewerModel"`
 }
 
 // EffectiveConfiguration is the complete frozen Project -> Workspace -> Task
 // result consumed by a future Run. It contains no fallback or host decision.
 type EffectiveConfiguration struct {
-	LaunchPolicy          domainconfig.LaunchPolicy `json:"launchPolicy"`
-	DeliveryMode          domainconfig.DeliveryMode `json:"deliveryMode"`
-	Limits                domainconfig.Limits       `json:"limits"`
-	RunBudget             domainconfig.RunBudget    `json:"runBudget"`
-	AutoFixCIFailures     bool                      `json:"autoFixCiFailures"`
-	AutoFixReviewFeedback bool                      `json:"autoFixReviewFeedback"`
-	Sources               EffectiveSources          `json:"sources"`
+	LaunchPolicy                  domainconfig.LaunchPolicy `json:"launchPolicy"`
+	DeliveryMode                  domainconfig.DeliveryMode `json:"deliveryMode"`
+	Limits                        domainconfig.Limits       `json:"limits"`
+	RunBudget                     domainconfig.RunBudget    `json:"runBudget"`
+	AutoFixCIFailures             bool                      `json:"autoFixCiFailures"`
+	AutoFixReviewFeedback         bool                      `json:"autoFixReviewFeedback"`
+	RequireDifferentReviewerModel bool                      `json:"requireDifferentReviewerModel"`
+	Sources                       EffectiveSources          `json:"sources"`
+}
+
+// ReviewPolicy returns the frozen engine policy consumed by a Run. Connectors
+// and provider adapters never infer or relax this configured choice.
+func (configuration EffectiveConfiguration) ReviewPolicy() domainreview.ProfilePolicy {
+	return domainreview.ProfilePolicy{RequireDifferentReviewerModel: configuration.RequireDifferentReviewerModel}
 }
 
 func projectEffective(configuration domainconfig.Configuration) EffectiveConfiguration {
 	return EffectiveConfiguration{
-		LaunchPolicy:          configuration.Defaults.LaunchPolicy,
-		DeliveryMode:          configuration.Defaults.DeliveryMode,
-		Limits:                configuration.Defaults.Limits,
-		RunBudget:             configuration.Defaults.RunBudget,
-		AutoFixCIFailures:     configuration.Defaults.AutoFixCIFailures,
-		AutoFixReviewFeedback: configuration.Defaults.AutoFixReviewFeedback,
+		LaunchPolicy:                  configuration.Defaults.LaunchPolicy,
+		DeliveryMode:                  configuration.Defaults.DeliveryMode,
+		Limits:                        configuration.Defaults.Limits,
+		RunBudget:                     configuration.Defaults.RunBudget,
+		AutoFixCIFailures:             configuration.Defaults.AutoFixCIFailures,
+		AutoFixReviewFeedback:         configuration.Defaults.AutoFixReviewFeedback,
+		RequireDifferentReviewerModel: configuration.Defaults.RequireDifferentReviewerModel,
 		Sources: EffectiveSources{
 			LaunchPolicy: ScopeProject, DeliveryMode: ScopeProject,
 			MaxActiveTasks: ScopeProject, MaxActiveTasksPerWorkspace: ScopeProject,
 			MaxConcurrentAgents: ScopeProject, MaxSubagentsPerTask: ScopeProject,
 			ElapsedSeconds: ScopeProject, Tokens: ScopeProject, Turns: ScopeProject,
 			CICycles: ScopeProject, CostMicrousd: ScopeProject, AutoFixCIFailures: ScopeProject,
-			AutoFixReviewFeedback: ScopeProject,
+			AutoFixReviewFeedback: ScopeProject, RequireDifferentReviewerModel: ScopeProject,
 		},
 	}
 }
@@ -134,6 +145,7 @@ func applyWorkspace(result *EffectiveConfiguration, override domainconfig.Worksp
 	applyInt64(override.CostMicrousd, &result.RunBudget.CostMicrousd, &result.Sources.CostMicrousd, ScopeWorkspace)
 	applyBool(override.AutoFixCIFailures, &result.AutoFixCIFailures, &result.Sources.AutoFixCIFailures, ScopeWorkspace)
 	applyBool(override.AutoFixReviewFeedback, &result.AutoFixReviewFeedback, &result.Sources.AutoFixReviewFeedback, ScopeWorkspace)
+	applyBool(override.RequireDifferentReviewerModel, &result.RequireDifferentReviewerModel, &result.Sources.RequireDifferentReviewerModel, ScopeWorkspace)
 }
 
 func applyTask(result *EffectiveConfiguration, override TaskOverride) {
@@ -156,6 +168,7 @@ func applyTask(result *EffectiveConfiguration, override TaskOverride) {
 	applyInt64(override.CostMicrousd, &result.RunBudget.CostMicrousd, &result.Sources.CostMicrousd, ScopeTask)
 	applyBool(override.AutoFixCIFailures, &result.AutoFixCIFailures, &result.Sources.AutoFixCIFailures, ScopeTask)
 	applyBool(override.AutoFixReviewFeedback, &result.AutoFixReviewFeedback, &result.Sources.AutoFixReviewFeedback, ScopeTask)
+	applyBool(override.RequireDifferentReviewerModel, &result.RequireDifferentReviewerModel, &result.Sources.RequireDifferentReviewerModel, ScopeTask)
 }
 
 func taskOverrideValid(override TaskOverride) bool {
@@ -293,7 +306,8 @@ func effectiveWithin(boundary, proposed EffectiveConfiguration) bool {
 		proposed.RunBudget.CICycles <= boundary.RunBudget.CICycles &&
 		costWithin(boundary.RunBudget.CostMicrousd, proposed.RunBudget.CostMicrousd) &&
 		(!proposed.AutoFixCIFailures || boundary.AutoFixCIFailures) &&
-		(!proposed.AutoFixReviewFeedback || boundary.AutoFixReviewFeedback)
+		(!proposed.AutoFixReviewFeedback || boundary.AutoFixReviewFeedback) &&
+		(!boundary.RequireDifferentReviewerModel || proposed.RequireDifferentReviewerModel)
 }
 
 func envelopeIssue(path, message string) domainconfig.Issue {

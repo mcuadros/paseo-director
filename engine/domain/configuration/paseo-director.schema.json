@@ -217,7 +217,8 @@
         "limits": { "$ref": "#/$defs/limits" },
         "runBudget": { "$ref": "#/$defs/runBudget" },
         "autoFixCiFailures": { "type": "boolean" },
-        "autoFixReviewFeedback": { "type": "boolean" }
+        "autoFixReviewFeedback": { "type": "boolean" },
+        "requireDifferentReviewerModel": { "type": "boolean", "default": false }
       }
     },
     "workspaceOverride": {
@@ -238,7 +239,8 @@
         "ciCycles": { "type": "integer", "minimum": 1, "maximum": 256 },
         "costMicrousd": { "type": "integer", "minimum": 0 },
         "autoFixCiFailures": { "type": "boolean" },
-        "autoFixReviewFeedback": { "type": "boolean" }
+        "autoFixReviewFeedback": { "type": "boolean" },
+        "requireDifferentReviewerModel": { "type": "boolean" }
       }
     },
     "fileReference": {

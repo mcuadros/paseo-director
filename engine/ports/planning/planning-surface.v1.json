@@ -82,7 +82,8 @@
     "maxConcurrentAgents",
     "maxSubagentsPerTask",
     "autoFixCiFailures",
-    "autoFixReviewFeedback"
+    "autoFixReviewFeedback",
+    "requireDifferentReviewerModel"
   ],
   "$defs": {
     "opaqueId": {
@@ -714,7 +715,7 @@
           "additionalProperties": false,
           "required": ["key", "mode"],
           "properties": {
-            "key": { "enum": ["launchPolicy", "maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask", "autoFixCiFailures", "autoFixReviewFeedback"] },
+            "key": { "enum": ["launchPolicy", "maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask", "autoFixCiFailures", "autoFixReviewFeedback", "requireDifferentReviewerModel"] },
             "mode": { "const": "inherit" }
           }
         },
@@ -723,7 +724,7 @@
           "additionalProperties": false,
           "required": ["key", "mode", "value"],
           "properties": {
-            "key": { "enum": ["launchPolicy", "maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask", "autoFixCiFailures", "autoFixReviewFeedback"] },
+            "key": { "enum": ["launchPolicy", "maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask", "autoFixCiFailures", "autoFixReviewFeedback", "requireDifferentReviewerModel"] },
             "mode": { "const": "value" },
             "value": { "$ref": "#/$defs/configurationValue" }
           }
@@ -735,7 +736,7 @@
       "additionalProperties": false,
       "required": ["key", "configured", "effectiveValue", "effectiveSource", "allowedValues"],
       "properties": {
-        "key": { "enum": ["launchPolicy", "maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask", "autoFixCiFailures", "autoFixReviewFeedback"] },
+        "key": { "enum": ["launchPolicy", "maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask", "autoFixCiFailures", "autoFixReviewFeedback", "requireDifferentReviewerModel"] },
         "configured": { "$ref": "#/$defs/configurationOverride" },
         "effectiveValue": { "$ref": "#/$defs/configurationValue" },
         "effectiveSource": { "enum": ["project", "workspace", "task"] },
@@ -777,7 +778,7 @@
             "additionalProperties": false,
             "required": ["key", "before", "after", "effectiveSource"],
             "properties": {
-              "key": { "enum": ["launchPolicy", "maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask", "autoFixCiFailures", "autoFixReviewFeedback"] },
+              "key": { "enum": ["launchPolicy", "maxActiveTasks", "maxActiveTasksPerWorkspace", "maxConcurrentAgents", "maxSubagentsPerTask", "autoFixCiFailures", "autoFixReviewFeedback", "requireDifferentReviewerModel"] },
               "before": { "$ref": "#/$defs/configurationValue" },
               "after": { "$ref": "#/$defs/configurationValue" },
               "effectiveSource": { "enum": ["project", "workspace", "task"] }

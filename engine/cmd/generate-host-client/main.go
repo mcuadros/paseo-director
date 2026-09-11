@@ -116,6 +116,7 @@ export interface HostScope {
 export type HostEffectKind =
   | "host_view.create"
   | "task_agent.create_with_bootstrap"
+  | "reviewer_agent.create_with_bootstrap"
   | "agent.send_prompt"
   | "primary_recovery.observe"
   | "helper_agent.observe"
@@ -123,6 +124,7 @@ export type HostEffectKind =
   | "control_agent.observe_safe_boundary"
   | "control_agent.archive"
   | "task_agent.archive"
+  | "reviewer_agent.archive"
   | "host_view.archive";
 
 export interface HostProviderOption {

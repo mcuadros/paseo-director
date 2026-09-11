@@ -372,33 +372,47 @@ type reviewFinding struct {
 }
 
 type reviewClaim struct {
-	Verdict           string          `json:"verdict"`
-	Coverage          []string        `json:"coverage"`
-	Findings          []reviewFinding `json:"findings"`
-	ResidualRiskCodes []string        `json:"residualRiskCodes"`
+	Verdict            string          `json:"verdict"`
+	AcceptanceCriteria []string        `json:"acceptanceCriteria"`
+	Coverage           []string        `json:"coverage"`
+	Findings           []reviewFinding `json:"findings"`
+	ResidualRiskCodes  []string        `json:"residualRiskCodes"`
 }
 
-func validateReview(raw []byte) error {
+func validateReview(raw []byte, criteria []string) error {
 	var claim reviewClaim
 	if err := strictDecode(raw, &claim); err != nil ||
 		!slices.Contains([]string{"approve_candidate", "changes_requested", "needs_human_decision"}, claim.Verdict) ||
+		!uniqueBounded(claim.AcceptanceCriteria, 128, 256, 1) || !exactCriterionSet(claim.AcceptanceCriteria, criteria) ||
 		!uniqueBounded(claim.Coverage, 8, 32, 8) || !exactCriterionSet(claim.Coverage, reviewDimensions) ||
 		len(claim.Findings) > 64 || !uniqueBounded(claim.ResidualRiskCodes, 32, 64, 0) {
 		return &InputError{Code: InputInvalid}
 	}
+	blocking := false
+	p2 := false
 	for _, finding := range claim.Findings {
-		if !commandTokenPattern.MatchString(finding.Code) ||
+		if !commandTokenPattern.MatchString(finding.Code) || finding.Code != strings.ToUpper(finding.Code) ||
 			!slices.Contains([]string{"P0", "P1", "P2", "P3"}, finding.Severity) ||
 			!slices.Contains(reviewDimensions, finding.Dimension) || !boundedText(finding.Summary, 1024, false) ||
-			!uniqueBounded(finding.References, 16, 256, 0) {
+			!uniqueBounded(finding.References, 16, 256, 1) {
 			return &InputError{Code: InputInvalid}
 		}
 		if claim.Verdict == "approve_candidate" && (finding.Severity == "P0" || finding.Severity == "P1") {
 			return &InputError{Code: InputInvalid}
 		}
+		blocking = blocking || finding.Severity == "P0" || finding.Severity == "P1"
+		p2 = p2 || finding.Severity == "P2"
 	}
 	if claim.Verdict == "changes_requested" && len(claim.Findings) == 0 {
 		return &InputError{Code: InputInvalid}
+	}
+	if claim.Verdict == "needs_human_decision" && (!p2 || blocking) {
+		return &InputError{Code: InputInvalid}
+	}
+	for _, code := range claim.ResidualRiskCodes {
+		if !commandTokenPattern.MatchString(code) || code != strings.ToUpper(code) {
+			return &InputError{Code: InputInvalid}
+		}
 	}
 	return nil
 }
@@ -423,7 +437,7 @@ func ValidateToolInput(toolName string, raw json.RawMessage, criteria []string, 
 	case "director_helper_contribution_submit":
 		err = validateHelperContribution(canonical, baseSHA)
 	case "director_review_verdict_submit":
-		err = validateReview(canonical)
+		err = validateReview(canonical, criteria)
 	default:
 		err = &InputError{Code: InputInvalid}
 	}

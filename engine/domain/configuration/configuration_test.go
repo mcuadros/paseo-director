@@ -263,7 +263,7 @@ func TestParseValidConfigurationIsCanonicalAndDefensive(t *testing.T) {
 
 func TestSchemaIsPublishedClosedAndVersioned(t *testing.T) {
 	hash, err := SchemaSHA256()
-	if err != nil || hash != "e3f1b86b158aa42104d9e9ea4fb645fbe6ec9cdbe8576e3cf16481508a972a0c" {
+	if err != nil || hash != "0f9fdf7607f7985e83dc591c900bf884053f57a2a3c016db333bad05eeb5b9c3" {
 		t.Fatalf("configuration schema hash = %q: %v", hash, err)
 	}
 	var schema struct {

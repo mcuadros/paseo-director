@@ -28,7 +28,7 @@ The canonical schema hashes for this contract revision are:
 
 - provider discovery: `b24f996491a706c9a1da957dc802bc971f0cdbbd3f0b3d8214546832b03eba6e`;
 - frozen effective profiles: `c961897556e407ca8b817522f671b61265574f8a6eabb2ca09d5039528f4b384`;
-- Organizer configuration version 1: `e3f1b86b158aa42104d9e9ea4fb645fbe6ec9cdbe8576e3cf16481508a972a0c`.
+- Organizer configuration version 1: `0f9fdf7607f7985e83dc591c900bf884053f57a2a3c016db333bad05eeb5b9c3`.
 
 Tests pin these canonical values. Any intentional schema change must update the
 version or its pinned hash and the corresponding contract documentation.
@@ -36,9 +36,10 @@ version or its pinned hash and the corresponding contract documentation.
 The M3.1 frozen-contract audit remains byte-identical except for the in-scope
 Run state contract. `engine/domain/execution/state.go` moves from
 `157589c5921dcae1bdee163457722ecdcc2c0e0063aa9fc8ff8303fc8f0a93fb` to
-`a4696dcd16ef7e51ea4351a85f2a7753232db55f5e1a6f3d254f0790e630566e`
+`502dbfd087e23481185d0249721a19b1ffea78801619f673eb6c9ec92f14710c`
 because it now persists the immutable effective-profile bytes, helper policy,
-durable controlled-helper graph, and integrated runtime-budget ledger. The
+durable controlled-helper graph, integrated runtime-budget ledger, and exact
+current/historical independent-Review state. The
 restart and mutation tests verify those fields structurally.
 
 For each role the engine evaluates the primary and then the configured
