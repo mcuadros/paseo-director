@@ -89,7 +89,12 @@ const findingCodes = new Set(corpus.divergenceFindings.map((finding) => finding.
 assert.equal(findingCodes.size, corpus.divergenceFindings.length);
 for (const finding of corpus.divergenceFindings) {
   assert.match(finding.code, /^DIR-M5\.13-F\d{3}$/u);
-  assert.equal(finding.behaviorChanged, false);
+  assert.equal(typeof finding.behaviorChanged, "boolean");
+  assert.equal(
+    finding.behaviorChanged,
+    finding.code === "DIR-M5.13-F001",
+    `${finding.code} behaviorChanged expected to be ${finding.code === "DIR-M5.13-F001"}`,
+  );
   assert.ok(finding.incidentIds.length > 0);
   for (const incidentID of finding.incidentIds) {
     assert.ok(fixtureIDs.has(incidentID), `${finding.code} cites unknown fixture ${incidentID}`);

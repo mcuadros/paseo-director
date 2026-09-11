@@ -36,9 +36,9 @@
         "lastError": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites",
         "pendingPermission": false,
         "expectedConnectorSignals": [
-          "policy_rejection"
+          "configuration_rejection"
         ],
-        "expectedEngineClass": "terminal_policy"
+        "expectedEngineClass": "terminal_configuration"
       },
       "recoveryScenarios": [
         {
@@ -47,19 +47,9 @@
           "archivedAtPresent": false,
           "originalAgentProcessAbsent": false,
           "controlBlocksDispatch": false,
-          "expectedDisposition": "archive_original",
-          "expectedFailureClass": "terminal_policy",
-          "expectedCode": ""
-        },
-        {
-          "name": "after_original_archival",
-          "agentStatus": "closed",
-          "archivedAtPresent": true,
-          "originalAgentProcessAbsent": true,
-          "controlBlocksDispatch": false,
-          "expectedDisposition": "authorize_replacement",
-          "expectedFailureClass": "terminal_policy",
-          "expectedCode": ""
+          "expectedDisposition": "needs_you",
+          "expectedFailureClass": "terminal_configuration",
+          "expectedCode": "primary_recovery_failure_requires_human"
         }
       ],
       "coordinator": {
@@ -98,9 +88,9 @@
         "lastError": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites",
         "pendingPermission": false,
         "expectedConnectorSignals": [
-          "policy_rejection"
+          "configuration_rejection"
         ],
-        "expectedEngineClass": "terminal_policy"
+        "expectedEngineClass": "terminal_configuration"
       },
       "recoveryScenarios": [
         {
@@ -109,9 +99,9 @@
           "archivedAtPresent": false,
           "originalAgentProcessAbsent": false,
           "controlBlocksDispatch": false,
-          "expectedDisposition": "archive_original",
-          "expectedFailureClass": "terminal_policy",
-          "expectedCode": ""
+          "expectedDisposition": "needs_you",
+          "expectedFailureClass": "terminal_configuration",
+          "expectedCode": "primary_recovery_failure_requires_human"
         }
       ],
       "coordinator": {
@@ -353,14 +343,14 @@
   "divergenceFindings": [
     {
       "code": "DIR-M5.13-F001",
-      "title": "Missing host dependency is classified as a policy rejection",
+      "title": "Missing host dependency is classified as a configuration rejection",
       "incidentIds": [
         "DIR-M5.13-INCIDENT-APP-SERVER-01",
         "DIR-M5.13-INCIDENT-APP-SERVER-02"
       ],
-      "engineDecision": "The connector emits policy_rejection because the bounded excerpt contains sandbox; ClassifyProviderFailure returns terminal_policy.",
+      "engineDecision": "The connector emits configuration_rejection; ClassifyProviderFailure returns terminal_configuration.",
       "observedCorrectDecision": "The failure was a missing host dependency, corresponding to configuration_rejection and terminal_configuration.",
-      "behaviorChanged": false
+      "behaviorChanged": true
     },
     {
       "code": "DIR-M5.13-F002",
@@ -369,7 +359,7 @@
         "DIR-M5.13-INCIDENT-APP-SERVER-01",
         "DIR-M5.13-INCIDENT-APP-SERVER-02"
       ],
-      "engineDecision": "For the produced terminal_policy class the reducer selects archive_original, then authorize_replacement after termination; it never selects adopt_existing.",
+      "engineDecision": "For the produced terminal_configuration class the reducer selects needs_you because configuration failures require human intervention; it never selects adopt_existing.",
       "observedCorrectDecision": "The coordinator preserved and adopted the existing agent/worktree; the immediate replacement-path retry failed before Task execution.",
       "behaviorChanged": false
     }

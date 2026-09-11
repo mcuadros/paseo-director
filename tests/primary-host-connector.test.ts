@@ -554,7 +554,7 @@ test("primary recovery inventory is complete, bounded, and redacts provider fail
   assert.equal(world.calls.agentArchives, 0, "read-only recovery inventory must not contain resources");
 });
 
-test("real incident corpus drives the unchanged connector failure classifier", async () => {
+test("real incident corpus drives connector failure classifier", async () => {
   const world = fakePaseo();
   const host = connector(world.client);
   const base = primaryArguments();
@@ -623,6 +623,166 @@ test("real incident corpus drives the unchanged connector failure classifier", a
   }
   assert.equal(exercised, 6);
   assert.equal(world.calls.agentArchives, 0);
+});
+
+test("connector failure classifier enforces deterministic precedence and fails closed", async () => {
+  const world = fakePaseo();
+  const host = connector(world.client);
+  const base = primaryArguments();
+  const workspace = await host.invoke(command("executionWorkspace.createManaged", {
+    ...base, effectKind: "host_view.create", effectId: "effect-classifier-workspace", workspaceId: undefined,
+  }));
+  const workspaceId = workspace.result.externalId!;
+  const labels = { ...base.labels!, [WORKER_LABEL.executionWorkspace]: workspaceId };
+  const createArguments = { ...base, workspaceId, labels };
+  const created = await host.invoke(command("taskAgent.createWithBootstrap", createArguments));
+  const agent = world.agents[0]!;
+  agent.timelineEntries.push({
+    item: {
+      type: "user_message", text: "bootstrap marker",
+      messageId: directorMessageId(createArguments.effectId),
+    },
+  });
+  agent.timelineEntries.push({
+    item: { type: "user_message", text: "work marker", messageId: "message-classifier-work" },
+  });
+  agent.status = "error";
+  agent.activeTurn = null;
+  agent.attentionReason = "error";
+  agent.persistence = {
+    provider: "codex", sessionId: "session-classifier", nativeHandle: "session-classifier", metadata: {},
+  };
+
+  const recoveryArguments: HostCommandArguments = {
+    ...createArguments,
+    effectKind: "primary_recovery.observe",
+    effectId: "effect-classifier-observe",
+    agentId: agent.id,
+    clientMessageId: "message-classifier-work",
+    labels: {
+      [WORKER_LABEL.project]: createArguments.scope.projectId,
+      [WORKER_LABEL.workspace]: createArguments.scope.workspaceId,
+      [WORKER_LABEL.task]: createArguments.scope.taskId,
+      [WORKER_LABEL.run]: createArguments.scope.runId,
+    },
+  };
+
+  let cursor = created.cursor;
+
+  // 1. Missing host prerequisite / dependency patterns classify as configuration_rejection
+  const configurationCases = [
+    "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the sandbox prerequisites",
+    "could not find bwrap on PATH",
+    "could not find git on PATH",
+    "install bubblewrap with your os package manager",
+    "install bwrap with your package manager",
+    "missing host dependency: bubblewrap",
+    "missing dependency: libseccomp",
+    "missing host prerequisite",
+    "missing prerequisite: bubblewrap required",
+    "sandbox prerequisites are missing on host",
+    "host prerequisites not met",
+    "unsupported model configuration",
+    "invalid option --unknown-flag",
+    "model not found: gpt-nonexistent",
+    "provider not configured",
+  ];
+  for (const [idx, errorText] of configurationCases.entries()) {
+    agent.lastError = errorText;
+    agent.pendingPermissions = [];
+    const observation = await host.invoke(command("agent.observe", {
+      ...recoveryArguments,
+      effectId: `effect-config-case-${idx}`,
+    }, cursor));
+    cursor = observation.cursor;
+    assert.deepEqual(
+      observation.result.inventory?.agents[0]?.failureSignals,
+      ["configuration_rejection"],
+      `failed configuration classification for: ${errorText}`,
+    );
+    assert.equal(JSON.stringify(observation).includes(errorText), false);
+  }
+
+  // 2. Policy rejection patterns classify as policy_rejection
+  const policyCases = [
+    "request denied by policy",
+    "sandbox policy violation: network access forbidden",
+    "sandbox restriction encountered",
+    "tool policy denied execution",
+    "tool denied by security settings",
+    "permission denied",
+    "operation not allowed",
+    "approval required before proceeding",
+  ];
+  for (const [idx, errorText] of policyCases.entries()) {
+    agent.lastError = errorText;
+    agent.pendingPermissions = [];
+    const observation = await host.invoke(command("agent.observe", {
+      ...recoveryArguments,
+      effectId: `effect-policy-case-${idx}`,
+    }, cursor));
+    cursor = observation.cursor;
+    assert.deepEqual(
+      observation.result.inventory?.agents[0]?.failureSignals,
+      ["policy_rejection"],
+      `failed policy classification for: ${errorText}`,
+    );
+  }
+
+  // 3. Contradictory error cases produce multiple distinct signals (which fail closed in engine)
+  const contradictoryCases: Array<[string, readonly string[]]> = [
+    ["401 unauthorized and could not find bubblewrap on PATH", ["authentication_rejection", "configuration_rejection"]],
+    ["request denied by policy and could not find bubblewrap on PATH", ["configuration_rejection", "policy_rejection"]],
+    ["503 temporarily unavailable and missing host prerequisite", ["configuration_rejection", "transient_service"]],
+    ["provider crashed with 401 unauthorized", ["authentication_rejection", "provider_terminal"]],
+  ];
+  for (const [idx, [errorText, expectedSignals]] of contradictoryCases.entries()) {
+    agent.lastError = errorText;
+    agent.pendingPermissions = [];
+    const observation = await host.invoke(command("agent.observe", {
+      ...recoveryArguments,
+      effectId: `effect-contradictory-case-${idx}`,
+    }, cursor));
+    cursor = observation.cursor;
+    assert.deepEqual(
+      observation.result.inventory?.agents[0]?.failureSignals,
+      expectedSignals,
+      `failed contradictory classification for: ${errorText}`,
+    );
+  }
+
+  // 4. Adversarial / boundary cases: casing, whitespace, prose, truncation
+  const adversarialCases: Array<[string, readonly string[]]> = [
+    ["CODEX COULD NOT FIND BUBBLEWRAP ON PATH", ["configuration_rejection"]],
+    ["  \n\t missing host dependency \t\n  ", ["configuration_rejection"]],
+    ["random unrecognized error text without known markers", ["unclassified"]],
+    ["I am an agent running in an unsandboxed environment without error", ["unclassified"]],
+  ];
+  for (const [idx, [errorText, expectedSignals]] of adversarialCases.entries()) {
+    agent.lastError = errorText;
+    agent.pendingPermissions = [];
+    const observation = await host.invoke(command("agent.observe", {
+      ...recoveryArguments,
+      effectId: `effect-adversarial-case-${idx}`,
+    }, cursor));
+    cursor = observation.cursor;
+    assert.deepEqual(
+      observation.result.inventory?.agents[0]?.failureSignals,
+      expectedSignals,
+      `failed adversarial classification for: ${errorText}`,
+    );
+  }
+
+  // 5. Truncation boundary test (bounded at 4096 characters, fails closed)
+  const prefix = "x".repeat(4100);
+  agent.lastError = `${prefix} could not find bubblewrap on PATH`;
+  const observationTruncated = await host.invoke(command("agent.observe", {
+    ...recoveryArguments,
+    effectId: "effect-truncation-case",
+  }, cursor));
+  cursor = observationTruncated.cursor;
+  // Keyword was beyond 4096 characters, so it should be unclassified
+  assert.deepEqual(observationTruncated.result.inventory?.agents[0]?.failureSignals, ["unclassified"]);
 });
 
 test("control observations wait at an active boundary and archive exactly once", async () => {
