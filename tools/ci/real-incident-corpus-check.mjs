@@ -87,13 +87,17 @@ assert.deepEqual(occurrenceTotals, {
 
 const findingCodes = new Set(corpus.divergenceFindings.map((finding) => finding.code));
 assert.equal(findingCodes.size, corpus.divergenceFindings.length);
+const expectedBehaviorChanges = new Map([
+  ["DIR-M5.13-F001", true],
+  ["DIR-M5.13-F002", true],
+]);
 for (const finding of corpus.divergenceFindings) {
   assert.match(finding.code, /^DIR-M5\.13-F\d{3}$/u);
   assert.equal(typeof finding.behaviorChanged, "boolean");
   assert.equal(
     finding.behaviorChanged,
-    finding.code === "DIR-M5.13-F001",
-    `${finding.code} behaviorChanged expected to be ${finding.code === "DIR-M5.13-F001"}`,
+    expectedBehaviorChanges.get(finding.code),
+    `${finding.code} behaviorChanged does not match the combined M5.15/M5.16 scope`,
   );
   assert.ok(finding.incidentIds.length > 0);
   for (const incidentID of finding.incidentIds) {

@@ -361,7 +361,7 @@
       ],
       "engineDecision": "For the produced terminal_configuration class the reducer selects needs_you because configuration failures require human intervention; it never selects adopt_existing.",
       "observedCorrectDecision": "The coordinator preserved and adopted the existing agent/worktree; the immediate replacement-path retry failed before Task execution.",
-      "behaviorChanged": false
+      "behaviorChanged": true
     }
   ]
 }

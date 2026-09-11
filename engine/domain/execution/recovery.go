@@ -581,11 +581,12 @@ func EvaluatePrimaryRecovery(facts PrimaryRecoveryFacts) PrimaryRecoveryDecision
 		}
 		return recoveryDecision(RecoveryDispositionContinueReplace, class, "", facts)
 	}
+	resumable := (original.Status == "idle" || original.Status == "running" || original.Status == "initializing") &&
+		original.BootstrapPresent && original.PromptPresent && original.PersistenceReferencePresent && !original.ArchivedAtPresent
+	if resumable {
+		return recoveryDecision(RecoveryDispositionAdoptExisting, class, "", facts)
+	}
 	if class == FailureClassNone {
-		if (original.Status == "idle" || original.Status == "running" || original.Status == "initializing") &&
-			original.BootstrapPresent && original.PromptPresent && original.PersistenceReferencePresent && !original.ArchivedAtPresent {
-			return recoveryDecision(RecoveryDispositionAdoptExisting, class, "", facts)
-		}
 		return recoveryDecision(RecoveryDispositionNeedsYou, FailureClassAmbiguous, NeedRecoveryPromptAmbiguous, facts)
 	}
 	if class == FailureClassTransient {

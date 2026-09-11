@@ -20,6 +20,7 @@ type RecoveryModelInput struct {
 	Signal              RecoverySignal
 	ExactInventory      bool
 	OriginalArchived    bool
+	OriginalResumable   bool
 	OriginalProcessGone bool
 	ReplacementConsumed bool
 	ReplacementFailed   bool
@@ -53,9 +54,12 @@ func ModelPrimaryRecovery(input RecoveryModelInput) RecoveryModelResult {
 	if input.ReplacementConsumed {
 		return RecoveryModelContinue
 	}
+	if input.OriginalResumable {
+		return RecoveryModelAdopt
+	}
 	switch input.Signal {
 	case RecoveryNone:
-		return RecoveryModelAdopt
+		return RecoveryModelNeedsYou
 	case RecoveryTransient:
 		return RecoveryModelWait
 	case RecoveryAuthentication, RecoveryConfiguration, RecoveryUnknown:

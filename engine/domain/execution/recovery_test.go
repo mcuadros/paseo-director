@@ -4,6 +4,7 @@ package execution
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -272,5 +273,301 @@ func TestPrimaryFallbackDecisionBindsSelectedExplicitChainResult(t *testing.T) {
 	}
 	if _, err := PrimaryFallbackDecisionSHA256(nil, 0, chain); err == nil {
 		t.Fatal("missing frozen profile bytes were accepted")
+	}
+}
+
+func TestPrimaryRecoveryEvidenceBackedTerminalAdoption(t *testing.T) {
+	terminalSignals := []ProviderFailureSignal{
+		ProviderFailureTerminal,
+		ProviderFailurePolicy,
+		ProviderFailureAuthentication,
+		ProviderFailureConfiguration,
+		ProviderFailureTransient,
+		ProviderFailureUnknown,
+		ProviderFailureNone,
+	}
+	for _, status := range []string{"idle", "running", "initializing"} {
+		for _, signal := range terminalSignals {
+			facts := recoveryFactsForTest(signal)
+			agent := &facts.Recovery.Observation.Host.Inventory.Agents[0]
+			agent.Status = status
+			agent.ArchivedAtPresent = false
+			agent.BootstrapPresent = true
+			agent.PromptPresent = true
+			agent.PersistenceReferencePresent = true
+			facts.Recovery.Observation.Host.FactHash = EffectObservationHash(facts.Recovery.Observation.Host)
+			facts.Recovery.Observation.FactHash = PrimaryRecoveryObservationHash(*facts.Recovery.Observation)
+
+			decision := EvaluatePrimaryRecovery(facts)
+			if decision.Disposition != RecoveryDispositionAdoptExisting {
+				t.Fatalf("status=%s signal=%s want adopt_existing, got %s (%s)", status, signal, decision.Disposition, decision.Code)
+			}
+		}
+	}
+}
+
+func TestPrimaryRecoveryTerminalFailureWithoutResumableSessionPreservesArchiveAndReplace(t *testing.T) {
+	// Errored agent unarchived -> must archive original.
+	for _, signal := range []ProviderFailureSignal{ProviderFailureTerminal, ProviderFailurePolicy} {
+		facts := recoveryFactsForTest(signal)
+		agent := &facts.Recovery.Observation.Host.Inventory.Agents[0]
+		agent.Status = "error"
+		agent.ArchivedAtPresent = false
+		facts.Recovery.Observation.Runtime.OriginalAgentProcessAbsent = false
+		facts.Recovery.Observation.Host.FactHash = EffectObservationHash(facts.Recovery.Observation.Host)
+		facts.Recovery.Observation.Runtime.FactHash = PrimaryRuntimeRecoveryObservationHash(facts.Recovery.Observation.Runtime)
+		facts.Recovery.Observation.FactHash = PrimaryRecoveryObservationHash(*facts.Recovery.Observation)
+
+		decision := EvaluatePrimaryRecovery(facts)
+		if decision.Disposition != RecoveryDispositionArchiveOriginal {
+			t.Fatalf("errored unarchived signal=%s want archive_original, got %s", signal, decision.Disposition)
+		}
+	}
+
+	// Archived agent with process gone -> must authorize replacement.
+	for _, signal := range []ProviderFailureSignal{ProviderFailureTerminal, ProviderFailurePolicy} {
+		facts := recoveryFactsForTest(signal)
+		agent := &facts.Recovery.Observation.Host.Inventory.Agents[0]
+		agent.Status = "closed"
+		agent.ArchivedAtPresent = true
+		facts.Recovery.Observation.Runtime.OriginalAgentProcessAbsent = true
+		facts.Recovery.Observation.Host.FactHash = EffectObservationHash(facts.Recovery.Observation.Host)
+		facts.Recovery.Observation.Runtime.FactHash = PrimaryRuntimeRecoveryObservationHash(facts.Recovery.Observation.Runtime)
+		facts.Recovery.Observation.FactHash = PrimaryRecoveryObservationHash(*facts.Recovery.Observation)
+
+		decision := EvaluatePrimaryRecovery(facts)
+		if decision.Disposition != RecoveryDispositionAuthorizeReplace {
+			t.Fatalf("archived signal=%s want authorize_replacement, got %s", signal, decision.Disposition)
+		}
+	}
+
+	// Archived agent but process NOT gone -> termination unproven.
+	for _, signal := range []ProviderFailureSignal{ProviderFailureTerminal, ProviderFailurePolicy} {
+		facts := recoveryFactsForTest(signal)
+		agent := &facts.Recovery.Observation.Host.Inventory.Agents[0]
+		agent.Status = "closed"
+		agent.ArchivedAtPresent = true
+		facts.Recovery.Observation.Runtime.OriginalAgentProcessAbsent = false
+		facts.Recovery.Observation.Host.FactHash = EffectObservationHash(facts.Recovery.Observation.Host)
+		facts.Recovery.Observation.Runtime.FactHash = PrimaryRuntimeRecoveryObservationHash(facts.Recovery.Observation.Runtime)
+		facts.Recovery.Observation.FactHash = PrimaryRecoveryObservationHash(*facts.Recovery.Observation)
+
+		decision := EvaluatePrimaryRecovery(facts)
+		if decision.Disposition != RecoveryDispositionNeedsYou || decision.Code != NeedRecoveryTerminationUnproven {
+			t.Fatalf("archived process-alive signal=%s want NeedsYou(termination_unproven), got %s (%s)", signal, decision.Disposition, decision.Code)
+		}
+	}
+}
+
+func TestPrimaryRecoveryAppServerBubblewrapIncidentDeterministicResolution(t *testing.T) {
+	// Incident Phase 1: host app-server failure occurs (bubblewrap missing on PATH).
+	// Agent is observed errored and unarchived.
+	incidentFacts := recoveryFactsForTest(ProviderFailurePolicy)
+	agent := &incidentFacts.Recovery.Observation.Host.Inventory.Agents[0]
+	agent.Status = "error"
+	agent.ArchivedAtPresent = false
+	incidentFacts.Recovery.Observation.Runtime.OriginalAgentProcessAbsent = false
+	incidentFacts.Recovery.Observation.Host.FactHash = EffectObservationHash(incidentFacts.Recovery.Observation.Host)
+	incidentFacts.Recovery.Observation.Runtime.FactHash = PrimaryRuntimeRecoveryObservationHash(incidentFacts.Recovery.Observation.Runtime)
+	incidentFacts.Recovery.Observation.FactHash = PrimaryRecoveryObservationHash(*incidentFacts.Recovery.Observation)
+
+	phase1 := EvaluatePrimaryRecovery(incidentFacts)
+	if phase1.Disposition != RecoveryDispositionArchiveOriginal {
+		t.Fatalf("phase 1 want archive_original, got %s", phase1.Disposition)
+	}
+
+	// Incident Phase 2: Host recovers before archival is dispatched (or host issue resolved).
+	// Agent is unarchived, live (idle), worktree is intact, prompt and persistence reference are present.
+	recoveredFacts := recoveryFactsForTest(ProviderFailurePolicy)
+	recoveredAgent := &recoveredFacts.Recovery.Observation.Host.Inventory.Agents[0]
+	recoveredAgent.Status = "idle"
+	recoveredAgent.ArchivedAtPresent = false
+	recoveredAgent.BootstrapPresent = true
+	recoveredAgent.PromptPresent = true
+	recoveredAgent.PersistenceReferencePresent = true
+	recoveredFacts.Recovery.Observation.Host.FactHash = EffectObservationHash(recoveredFacts.Recovery.Observation.Host)
+	recoveredFacts.Recovery.Observation.Runtime.FactHash = PrimaryRuntimeRecoveryObservationHash(recoveredFacts.Recovery.Observation.Runtime)
+	recoveredFacts.Recovery.Observation.FactHash = PrimaryRecoveryObservationHash(*recoveredFacts.Recovery.Observation)
+
+	phase2 := EvaluatePrimaryRecovery(recoveredFacts)
+	if phase2.Disposition != RecoveryDispositionAdoptExisting {
+		t.Fatalf("phase 2 want adopt_existing, got %s (%s)", phase2.Disposition, phase2.Code)
+	}
+}
+
+func TestPrimaryRecoveryDeterministicReplayAcrossIdenticalFacts(t *testing.T) {
+	facts := recoveryFactsForTest(ProviderFailurePolicy)
+	agent := &facts.Recovery.Observation.Host.Inventory.Agents[0]
+	agent.Status = "idle"
+	agent.ArchivedAtPresent = false
+	facts.Recovery.Observation.Host.FactHash = EffectObservationHash(facts.Recovery.Observation.Host)
+	facts.Recovery.Observation.FactHash = PrimaryRecoveryObservationHash(*facts.Recovery.Observation)
+
+	first := EvaluatePrimaryRecovery(facts)
+	for iteration := 0; iteration < 20; iteration++ {
+		replay := EvaluatePrimaryRecovery(facts)
+		if replay != first {
+			t.Fatalf("replay iteration %d diverged: got %#v, want %#v", iteration, replay, first)
+		}
+	}
+}
+
+func TestPrimaryRecoveryConcurrentEvaluation(t *testing.T) {
+	const goroutines = 32
+	const iterations = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for g := 0; g < goroutines; g++ {
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				resumable := (id+i)%2 == 0
+				facts := recoveryFactsForTest(ProviderFailurePolicy)
+				agent := &facts.Recovery.Observation.Host.Inventory.Agents[0]
+				if resumable {
+					agent.Status = "running"
+					agent.ArchivedAtPresent = false
+				} else {
+					agent.Status = "error"
+					agent.ArchivedAtPresent = true
+					facts.Recovery.Observation.Runtime.OriginalAgentProcessAbsent = true
+				}
+				facts.Recovery.Observation.Host.FactHash = EffectObservationHash(facts.Recovery.Observation.Host)
+				facts.Recovery.Observation.Runtime.FactHash = PrimaryRuntimeRecoveryObservationHash(facts.Recovery.Observation.Runtime)
+				facts.Recovery.Observation.FactHash = PrimaryRecoveryObservationHash(*facts.Recovery.Observation)
+
+				decision := EvaluatePrimaryRecovery(facts)
+				if resumable && decision.Disposition != RecoveryDispositionAdoptExisting {
+					t.Errorf("concurrent resumable want adopt_existing, got %s", decision.Disposition)
+				}
+				if !resumable && decision.Disposition != RecoveryDispositionAuthorizeReplace {
+					t.Errorf("concurrent non-resumable want authorize_replacement, got %s", decision.Disposition)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+}
+
+func TestPrimaryRecoveryPropertyAndMutationExhaustion(t *testing.T) {
+	// Any individual corruption of the resumable fact set must prevent adopt_existing.
+	cases := []struct {
+		name   string
+		mutate func(*PrimaryRecoveryFacts)
+	}{
+		{
+			name: "prompt missing",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Host.Inventory.Agents[0].PromptPresent = false
+			},
+		},
+		{
+			name: "bootstrap missing",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Host.Inventory.Agents[0].BootstrapPresent = false
+			},
+		},
+		{
+			name: "persistence reference missing",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Host.Inventory.Agents[0].PersistenceReferencePresent = false
+			},
+		},
+		{
+			name: "archived agent",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Host.Inventory.Agents[0].ArchivedAtPresent = true
+			},
+		},
+		{
+			name: "closed status",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Host.Inventory.Agents[0].Status = "closed"
+			},
+		},
+		{
+			name: "errored status",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Host.Inventory.Agents[0].Status = "error"
+			},
+		},
+		{
+			name: "parent present",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Host.Inventory.Agents[0].ParentPresent = true
+			},
+		},
+		{
+			name: "title not exact",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Host.Inventory.Agents[0].TitleExact = false
+			},
+		},
+		{
+			name: "worktree not exact",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Host.Inventory.Agents[0].WorktreeExact = false
+			},
+		},
+		{
+			name: "profile not exact",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Host.Inventory.Agents[0].ProfileExact = false
+			},
+		},
+		{
+			name: "session not exact",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Host.Inventory.Agents[0].SessionExact = false
+			},
+		},
+		{
+			name: "runtime repository not exact",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Runtime.RepositoryExact = false
+			},
+		},
+		{
+			name: "runtime worktree not exact",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Runtime.WorktreeExact = false
+			},
+		},
+		{
+			name: "runtime branch not exact",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Runtime.BranchExact = false
+			},
+		},
+		{
+			name: "runtime base not exact",
+			mutate: func(f *PrimaryRecoveryFacts) {
+				f.Recovery.Observation.Runtime.BaseExact = false
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := recoveryFactsForTest(ProviderFailurePolicy)
+			agent := &facts.Recovery.Observation.Host.Inventory.Agents[0]
+			agent.Status = "idle"
+			agent.ArchivedAtPresent = false
+			agent.BootstrapPresent = true
+			agent.PromptPresent = true
+			agent.PersistenceReferencePresent = true
+
+			tc.mutate(&facts)
+
+			facts.Recovery.Observation.Host.FactHash = EffectObservationHash(facts.Recovery.Observation.Host)
+			facts.Recovery.Observation.Runtime.FactHash = PrimaryRuntimeRecoveryObservationHash(facts.Recovery.Observation.Runtime)
+			facts.Recovery.Observation.FactHash = PrimaryRecoveryObservationHash(*facts.Recovery.Observation)
+
+			decision := EvaluatePrimaryRecovery(facts)
+			if decision.Disposition == RecoveryDispositionAdoptExisting {
+				t.Fatalf("case %s unexpectedly adopted existing", tc.name)
+			}
+		})
 	}
 }
