@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -12,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { CoordinatorError, digest } from "./coordinator.mjs";
 import { runReviewHarness } from "./review-harness.mjs";
@@ -117,6 +121,70 @@ test("review state inside the detached checkout is refused before remote observa
       }),
       (error) => error instanceof CoordinatorError && error.code === "REVIEW_STATE_INSIDE_CHECKOUT",
     );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("review handoff ownership rejects an adversarial raw-material field", async () => {
+  const fixture = harnessFixture();
+  const ownershipCanary = `ownership-${randomBytes(32).toString("hex")}`;
+  mkdirSync(fixture.checkout);
+  try {
+    const manifest = JSON.parse(readFileSync(fixture.manifestPath, "utf8"));
+    delete manifest.manifestHash;
+    manifest.ownership = { ownership: ownershipCanary };
+    manifest.manifestHash = digest(manifest);
+    writeFileSync(fixture.manifestPath, `${JSON.stringify(manifest)}\n`);
+    await assert.rejects(
+      runReviewHarness(fixture.options, harnessDependencies()),
+      (error) =>
+        error instanceof CoordinatorError &&
+        error.code === "HARNESS_SCHEMA_INVALID" &&
+        !String(error.message).includes(ownershipCanary),
+    );
+    assert.equal(existsSync(fixture.stateFile), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("unknown schema keys never echo a high-entropy canary", async () => {
+  const fixture = harnessFixture();
+  const unknownKey = `ownership-${randomBytes(32).toString("hex")}`;
+  mkdirSync(fixture.checkout);
+  try {
+    const manifest = JSON.parse(readFileSync(fixture.manifestPath, "utf8"));
+    delete manifest.manifestHash;
+    manifest[unknownKey] = "attacker-controlled";
+    manifest.manifestHash = digest(manifest);
+    writeFileSync(fixture.manifestPath, `${JSON.stringify(manifest)}\n`);
+
+    await assert.rejects(
+      runReviewHarness(fixture.options, harnessDependencies()),
+      (error) =>
+        error instanceof CoordinatorError &&
+        error.code === "HARNESS_SCHEMA_INVALID" &&
+        error.details?.unknownFieldCount === 1 &&
+        !JSON.stringify(error).includes(unknownKey),
+    );
+
+    const cli = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL("./review-harness.mjs", import.meta.url)),
+        "run",
+        ...Object.entries(fixture.options).flatMap(([key, value]) => [
+          `--${key}`,
+          String(value),
+        ]),
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(cli.status, 2, cli.stderr);
+    assert.equal(cli.stdout.includes(unknownKey), false);
+    assert.equal(cli.stderr.includes(unknownKey), false);
+    assert.equal(existsSync(fixture.stateFile), false);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

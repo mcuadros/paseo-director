@@ -26,7 +26,9 @@ Git common directory, Task record, and any available Paseo agent/workspace are
 re-read and matched. `--ownership-file` must be an absolute owner-only regular
 file with mode `0600`; raw `--ownership` is refused so the opaque token cannot
 enter argv or command logs. Only its SHA-256 is written to the non-secret
-manifest and public PR marker. Neither the token nor its path belongs in Beads.
+manifest and public PR marker. PR repository/base/head metadata, title, body,
+and every child argv are rejected when they contain the token or ownership-file
+path. Neither the token nor its path belongs in Beads.
 
 Use `--checkout-state present` while the exact owned Task worktree remains.
 Use `--checkout-state reclaimed` only when both its path and Git registration
@@ -47,6 +49,21 @@ It records immutable bindings and effect phases before dispatch. A Linux
 process-identity lock prevents concurrent PR creation; a stale lock is removed
 only after its exact process identity is absent. Preserve this state file
 through publication, integration, and cleanup.
+
+Coordinator state schema v2 stores `ownershipTokenHash` in its immutable
+binding; it never stores the raw ownership value or ownership-file path. A
+schema-v1 private state whose sole raw copy is the exact legacy
+`binding.ownership` value is atomically migrated under the state lock after the
+current mode-`0600` input proves the same ownership. Migration drops any
+legacy derived `cleanupPlanHash`; after restart or response loss, a new v2
+`cleanup-plan` must be generated and can then be admitted by `cleanup-apply`.
+A legacy lock is adopted only by its hash and only after its recorded process
+identity is absent. Raw
+ownership anywhere else in legacy state refuses with
+`STATE_LEGACY_OWNERSHIP_UNSAFE`; preserve all resources and the private file,
+restrict access to its owner, and have the authorized coordinator inspect and
+repair or replace that control state before retrying. A mismatched ownership
+input or binding refuses without disclosing either value.
 
 Output is one compact JSON document. Exit `0` means the requested result is
 proven. Exit `2` is a structured fail-closed refusal or interruption. Exit `1`
@@ -130,7 +147,11 @@ response content.
 - `cleanup-plan` requires the completed integration state and emits a hashed
   plan for only the exact agent, workspace/worktree, local Task ref, and remote
   Task ref. Dirty or ignored data, a running agent, ambiguous ownership, or a
-  changed ref refuses the plan.
+  changed ref refuses the plan. Cleanup-plan schema v2 binds only
+  `ownershipTokenHash`. Schema-v1 plans are not migrated because they are
+  derived artifacts. State migration also invalidates any legacy
+  `cleanupPlanHash`; after migration or response loss, rerun `cleanup-plan` and
+  use that newly emitted v2 document without editing private state.
 - `cleanup-apply` requires `--state-file` and `--plan-file`. The plan file may
   be the complete JSON emitted by `cleanup-plan`. Every resource is re-read
   before its effect. Agent/workspace archival is idempotent; destructive

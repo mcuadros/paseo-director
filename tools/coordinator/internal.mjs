@@ -76,7 +76,7 @@ export function assertExactKeys(
     unknown.length > 0,
     code,
     `${label} contains unknown fields`,
-    { fields: unknown.toSorted() },
+    { unknownFieldCount: unknown.length },
   );
 }
 
@@ -244,6 +244,7 @@ export async function withProcessIdentityLock(
   {
     lockPath,
     bindingHash,
+    acceptedBindingHashes = [],
     label,
     busyCode,
     invalidCode,
@@ -253,6 +254,10 @@ export async function withProcessIdentityLock(
   operation,
 ) {
   const parent = canonicalExistingDirectory(dirname(lockPath), `${label} parent`);
+  const recognizedBindingHashes = new Set([
+    bindingHash,
+    ...acceptedBindingHashes,
+  ]);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (existsSync(lockPath)) {
       const status = lstatSync(lockPath);
@@ -273,7 +278,7 @@ export async function withProcessIdentityLock(
       );
       refuse(
         existing.schemaVersion !== 1 ||
-          existing.bindingHash !== bindingHash ||
+          !recognizedBindingHashes.has(existing.bindingHash) ||
           !Number.isSafeInteger(existing.pid) ||
           typeof existing.processStartTime !== "string" ||
           !/^[0-9a-f]{32}$/u.test(existing.nonce ?? ""),

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -15,6 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   CoordinatorError,
@@ -22,6 +24,7 @@ import {
   canonicalJson,
   defaultCommandRunner,
   digest,
+  errorOutput,
   execute,
   parseCli,
 } from "./coordinator.mjs";
@@ -64,7 +67,7 @@ function git(cwd, args) {
   return command("git", args, { cwd });
 }
 
-function createRepositoryFixture() {
+function createRepositoryFixture({ ownership = OWNERSHIP } = {}) {
   const root = mkdtempSync(join(tmpdir(), "director-coordinator-test-"));
   const origin = join(root, "origin.git");
   const control = join(root, "control");
@@ -191,7 +194,7 @@ function createRepositoryFixture() {
       checkout,
       checkoutState: "present",
       headOwner: "acme",
-      ownershipTokenHash: digest(OWNERSHIP),
+      ownershipTokenHash: digest(ownership),
       remote: "origin",
       repository: REPOSITORY,
       repositoryId: REPOSITORY_ID,
@@ -275,7 +278,7 @@ function createRepositoryFixture() {
     branch: BRANCH,
     candidate,
     "head-owner": "acme",
-    ownership: OWNERSHIP,
+    ownership,
     checkout,
     "checkout-state": "present",
     "control-repo": control,
@@ -291,6 +294,7 @@ function createRepositoryFixture() {
     checkout,
     base,
     candidate,
+    ownership,
     reviewFile,
     validationFile,
     bodyFile,
@@ -309,7 +313,7 @@ function createRepositoryFixture() {
 }
 
 function marker(fixture) {
-  return `<!-- director-coordinator task=${TASK} branch=${BRANCH} owner-sha256=${digest(OWNERSHIP)} -->`;
+  return `<!-- director-coordinator task=${TASK} branch=${BRANCH} owner-sha256=${digest(fixture.ownership)} -->`;
 }
 
 function fakeExternalCommands(fixture, overrides = {}) {
@@ -1006,6 +1010,53 @@ test("argument arrays preserve hostile PR title text without shell execution", a
   }
 });
 
+test("PR title, head metadata, and ownership-file paths never reach child argv", async () => {
+  const ownershipCanary = `ownership-${randomBytes(32).toString("hex")}`;
+  const fixture = createRepositoryFixture({ ownership: ownershipCanary });
+  const fake = fakeExternalCommands(fixture);
+  const ownershipFile = join(
+    fixture.root,
+    `ownership-file-${randomBytes(32).toString("hex")}`,
+  );
+  writeFileSync(ownershipFile, ownershipCanary, { mode: 0o600 });
+  const cliArguments = ["snapshot"];
+  for (const [key, value] of Object.entries(fixture.options)) {
+    if (key !== "ownership") cliArguments.push(`--${key}`, String(value));
+  }
+  cliArguments.push("--ownership-file", ownershipFile);
+  try {
+    for (const changes of [
+      { title: ownershipCanary },
+      { title: ownershipFile },
+      { "head-owner": ownershipCanary },
+    ]) {
+      const parsed = parseCli(cliArguments);
+      const options = Object.assign(parsed.options, draftOptions(fixture, changes));
+      await assert.rejects(
+        execute("publish-draft", options, { run: fake.runner }),
+        (error) => {
+          assert.ok(error instanceof CoordinatorError);
+          assert.equal(error.code, "PROTECTED_MATERIAL_REDACTED");
+          const output = JSON.stringify(
+            errorOutput(
+              "publish-draft",
+              error,
+              options.ownership,
+              options.ownershipFile,
+            ),
+          );
+          assert.equal(output.includes(ownershipCanary), false);
+          assert.equal(output.includes(ownershipFile), false);
+          return true;
+        },
+      );
+    }
+    assert.equal(fake.state.calls.length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("selected Paseo credentials and ownership never enter output, commands, or PR bodies", async () => {
   const fixture = createRepositoryFixture();
   const fake = fakeExternalCommands(fixture);
@@ -1033,6 +1084,305 @@ test("selected Paseo credentials and ownership never enter output, commands, or 
   } finally {
     if (previous === undefined) delete process.env.PASEO_PASSWORD;
     else process.env.PASEO_PASSWORD = previous;
+    fixture.cleanup();
+  }
+});
+
+test("high-entropy ownership stays hash-only through migration and response-loss cleanup", async () => {
+  const ownershipCanary = `ownership-${randomBytes(32).toString("hex")}`;
+  const fixture = createRepositoryFixture({ ownership: ownershipCanary });
+  const fake = fakeExternalCommands(fixture);
+  const ownershipFile = join(fixture.root, "ownership-input");
+  const handoffFile = join(fixture.root, "handoff.json");
+  const stateLock = `${fixture.stateFile}.lock`;
+  try {
+    writeFileSync(ownershipFile, ownershipCanary, { mode: 0o600 });
+    const cliArguments = [
+      fileURLToPath(new URL("./cli.mjs", import.meta.url)),
+      "snapshot",
+    ];
+    for (const [key, value] of Object.entries(fixture.options)) {
+      if (key !== "ownership") cliArguments.push(`--${key}`, String(value));
+    }
+    cliArguments.push("--ownership-file", ownershipFile);
+    const cli = spawnSync(process.execPath, cliArguments, { encoding: "utf8" });
+    assert.equal(cli.status, 2);
+    assert.equal(cliArguments.includes(ownershipCanary), false);
+    assert.equal(cli.stdout.includes(ownershipCanary), false);
+    assert.equal(cli.stderr.includes(ownershipCanary), false);
+    assert.equal(cli.stdout.includes(ownershipFile), false);
+    assert.equal(cli.stderr.includes(ownershipFile), false);
+
+    const handoff = await execute(
+      "review-handoff",
+      {
+        ...fixture.options,
+        actor: TASK_ASSIGNEE,
+        "handoff-file": handoffFile,
+        "validation-file": fixture.validationFile,
+      },
+      { run: fake.runner },
+    );
+    assert.equal(JSON.stringify(handoff).includes(ownershipCanary), false);
+    assert.equal(readFileSync(handoffFile, "utf8").includes(ownershipCanary), false);
+    assert.equal(lstatSync(handoffFile).mode & 0o077, 0);
+
+    await publishReadyFixture(fixture, fake);
+    const integratedOptions = {
+      ...gateOptions(fixture),
+      "state-file": fixture.stateFile,
+    };
+    await execute("integrate", integratedOptions, { run: fake.runner });
+    let state = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(state.schemaVersion, 2);
+    assert.equal(state.binding.ownershipTokenHash, digest(ownershipCanary));
+    assert.equal(Object.hasOwn(state.binding, "ownership"), false);
+    assert.equal(JSON.stringify(state).includes(ownershipCanary), false);
+
+    const legacyBinding = {
+      ...state.binding,
+      ownership: ownershipCanary,
+    };
+    delete legacyBinding.ownershipTokenHash;
+    state = { ...state, schemaVersion: 1, binding: legacyBinding };
+    state.cleanupPlanHash = digest({ legacy: "schema-v1-cleanup-plan" });
+    writeFileSync(fixture.stateFile, `${canonicalJson(state)}\n`, { mode: 0o600 });
+    writeFileSync(
+      stateLock,
+      `${canonicalJson({
+        schemaVersion: 1,
+        pid: 2_147_483_647,
+        processStartTime: "0",
+        nonce: randomBytes(16).toString("hex"),
+        bindingHash: digest(legacyBinding),
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const plan = await execute("cleanup-plan", integratedOptions, {
+      run: fake.runner,
+    });
+    const migrated = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(migrated.schemaVersion, 2);
+    assert.equal(migrated.binding.ownershipTokenHash, digest(ownershipCanary));
+    assert.equal(Object.hasOwn(migrated.binding, "ownership"), false);
+    assert.equal(Object.hasOwn(migrated, "cleanupPlanHash"), false);
+    assert.equal(readFileSync(fixture.stateFile, "utf8").includes(ownershipCanary), false);
+    assert.equal(existsSync(stateLock), false);
+    assert.equal(plan.result.schemaVersion, 2);
+    assert.equal(plan.result.binding.ownershipTokenHash, digest(ownershipCanary));
+    assert.equal(Object.hasOwn(plan.result.binding, "ownership"), false);
+    assert.equal(JSON.stringify(plan).includes(ownershipCanary), false);
+
+    const mutatedPlan = structuredClone(plan);
+    delete mutatedPlan.result.planHash;
+    mutatedPlan.result.binding.ownership = ownershipCanary;
+    mutatedPlan.result.planHash = digest(mutatedPlan.result);
+    const mutatedPlanFile = join(fixture.root, "mutated-cleanup-plan.json");
+    writeFileSync(mutatedPlanFile, `${canonicalJson(mutatedPlan)}\n`, {
+      mode: 0o600,
+    });
+    await assert.rejects(
+      execute(
+        "cleanup-apply",
+        { ...integratedOptions, "plan-file": mutatedPlanFile },
+        { run: fake.runner },
+      ),
+      (error) =>
+        error instanceof CoordinatorError &&
+        error.code === "CLEANUP_PLAN_OWNERSHIP_MATERIAL_FORBIDDEN" &&
+        !JSON.stringify(errorOutput("cleanup-apply", error, ownershipCanary)).includes(
+          ownershipCanary,
+        ),
+    );
+
+    writeFileSync(fixture.planFile, `${canonicalJson(plan)}\n`, { mode: 0o600 });
+    let observedLock = "";
+    await assert.rejects(
+      execute(
+        "cleanup-apply",
+        { ...integratedOptions, "plan-file": fixture.planFile },
+        {
+          run: fake.runner,
+          hook(phase, effect) {
+            if (phase === "before" && effect === "cleanup.worktree") {
+              observedLock = readFileSync(stateLock, "utf8");
+            }
+            if (phase === "after" && effect === "cleanup.remote-branch") {
+              throw new CoordinatorInterruption(effect);
+            }
+          },
+        },
+      ),
+      (error) => error instanceof CoordinatorInterruption,
+    );
+    assert.notEqual(observedLock, "");
+    assert.equal(observedLock.includes(ownershipCanary), false);
+    assert.equal(existsSync(stateLock), false);
+    assert.equal(readFileSync(fixture.stateFile, "utf8").includes(ownershipCanary), false);
+
+    const applied = await execute(
+      "cleanup-apply",
+      { ...integratedOptions, "plan-file": fixture.planFile },
+      { run: fake.runner },
+    );
+    assert.equal(applied.result.resources, "complete");
+    const appliedState = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(appliedState.cleanupPlanHash, plan.result.planHash);
+    assert.equal(JSON.stringify(applied).includes(ownershipCanary), false);
+    assert.equal(fake.state.pull.body.includes(ownershipCanary), false);
+    assert.match(fake.state.pull.body, /owner-sha256=[0-9a-f]{64}/u);
+    assert.equal(
+      fake.state.calls.some((call) =>
+        JSON.stringify(call).includes(ownershipCanary)),
+      false,
+    );
+    assert.equal(
+      fake.state.calls
+        .filter((call) => call.executable === "bd")
+        .some((call) => JSON.stringify(call).includes(ownershipCanary)),
+      false,
+    );
+    for (const artifact of [
+      fixture.stateFile,
+      fixture.planFile,
+      fixture.manifestFile,
+      handoffFile,
+    ]) {
+      const contents = readFileSync(artifact, "utf8");
+      assert.equal(contents.includes(ownershipCanary), false);
+      assert.equal(contents.includes(ownershipFile), false);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("adversarial ownership copies are rejected with bounded redacted codes", async () => {
+  const ownershipCanary = `ownership-${randomBytes(32).toString("hex")}`;
+  const fixture = createRepositoryFixture({ ownership: ownershipCanary });
+  const fake = fakeExternalCommands(fixture);
+  try {
+    writeFileSync(fixture.bodyFile, `## Summary\n\n${ownershipCanary}\n`);
+    await assert.rejects(
+      execute("publish-draft", draftOptions(fixture), { run: fake.runner }),
+      (error) =>
+        error instanceof CoordinatorError &&
+        error.code === "PROTECTED_MATERIAL_REDACTED" &&
+        !JSON.stringify(errorOutput("publish-draft", error, ownershipCanary)).includes(
+          ownershipCanary,
+        ),
+    );
+    assert.equal(fake.state.calls.length, 0);
+    writeFileSync(fixture.bodyFile, "## Summary\n\nCoordinator fixture.\n");
+
+    const mutatedManifest = JSON.parse(
+      readFileSync(fixture.manifestFile, "utf8"),
+    );
+    delete mutatedManifest.manifestHash;
+    mutatedManifest.ownership.ownership = ownershipCanary;
+    mutatedManifest.manifestHash = digest(mutatedManifest);
+    const mutatedManifestFile = join(fixture.root, "mutated-manifest.json");
+    writeFileSync(mutatedManifestFile, `${canonicalJson(mutatedManifest)}\n`, {
+      mode: 0o600,
+    });
+    await assert.rejects(
+      execute(
+        "publish-draft",
+        draftOptions(fixture, { "manifest-file": mutatedManifestFile }),
+        { run: fake.runner },
+      ),
+      (error) =>
+        error instanceof CoordinatorError &&
+        error.code === "REVIEW_MANIFEST_OWNERSHIP_MATERIAL_FORBIDDEN" &&
+        !JSON.stringify(errorOutput("publish-draft", error, ownershipCanary)).includes(
+          ownershipCanary,
+        ),
+    );
+    assert.equal(fake.state.calls.length, 0);
+
+    await execute("publish-draft", draftOptions(fixture), {
+      run: fake.runner,
+    });
+    const validState = JSON.parse(
+      readFileSync(fixture.draftStateFile, "utf8"),
+    );
+    const mutatedState = structuredClone(validState);
+    mutatedState.binding.ownership = ownershipCanary;
+    writeFileSync(
+      fixture.draftStateFile,
+      `${canonicalJson(mutatedState)}\n`,
+      { mode: 0o600 },
+    );
+    await assert.rejects(
+      execute(
+        "publish-draft",
+        draftOptions(fixture, {
+          "expected-remote-head": fixture.candidate,
+        }),
+        { run: fake.runner },
+      ),
+      (error) =>
+        error instanceof CoordinatorError &&
+        error.code === "STATE_OWNERSHIP_MATERIAL_FORBIDDEN" &&
+        !JSON.stringify(errorOutput("publish-draft", error, ownershipCanary)).includes(
+          ownershipCanary,
+        ),
+    );
+
+    const unsafeLegacy = structuredClone(validState);
+    unsafeLegacy.schemaVersion = 1;
+    unsafeLegacy.binding.ownership = ownershipCanary;
+    delete unsafeLegacy.binding.ownershipTokenHash;
+    unsafeLegacy.effects["adversarial.copy"] = {
+      class: "store_only",
+      phase: "complete",
+      attempts: 0,
+      evidence: { value: ownershipCanary },
+    };
+    writeFileSync(
+      fixture.draftStateFile,
+      `${canonicalJson(unsafeLegacy)}\n`,
+      { mode: 0o600 },
+    );
+    await assert.rejects(
+      execute(
+        "publish-draft",
+        draftOptions(fixture, {
+          "expected-remote-head": fixture.candidate,
+        }),
+        { run: fake.runner },
+      ),
+      (error) =>
+        error instanceof CoordinatorError &&
+        error.code === "STATE_LEGACY_OWNERSHIP_UNSAFE" &&
+        !JSON.stringify(errorOutput("publish-draft", error, ownershipCanary)).includes(
+          ownershipCanary,
+        ),
+    );
+
+    const refusedDiagnostic = errorOutput(
+      "cleanup-apply",
+      new CoordinatorError(
+        "ADVERSARIAL_DIAGNOSTIC",
+        `protected ${ownershipCanary}`,
+        { value: ownershipCanary },
+      ),
+      ownershipCanary,
+    );
+    assert.equal(refusedDiagnostic.code, "PROTECTED_MATERIAL_REDACTED");
+    assert.equal(JSON.stringify(refusedDiagnostic).includes(ownershipCanary), false);
+    const interruptedDiagnostic = errorOutput(
+      "cleanup-apply",
+      new CoordinatorInterruption(ownershipCanary),
+      ownershipCanary,
+    );
+    assert.equal(interruptedDiagnostic.code, "PROTECTED_MATERIAL_REDACTED");
+    assert.equal(
+      JSON.stringify(interruptedDiagnostic).includes(ownershipCanary),
+      false,
+    );
+  } finally {
     fixture.cleanup();
   }
 });
