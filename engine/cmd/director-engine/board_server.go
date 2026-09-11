@@ -5,6 +5,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -14,13 +16,19 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mcuadros/director-engine/adapters/dolt"
+	"github.com/mcuadros/director-engine/adapters/organizergit"
 	"github.com/mcuadros/director-engine/application/board"
 	executionapp "github.com/mcuadros/director-engine/application/execution"
+	homeapp "github.com/mcuadros/director-engine/application/home"
+	organizerapp "github.com/mcuadros/director-engine/application/organizer"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 )
@@ -137,13 +145,21 @@ func loopbackListenAddress(value string) bool {
 	return address != nil && address.IsLoopback()
 }
 
+func validServerHostIdentity(id, label string) bool {
+	return len(id) > 0 && len(id) <= 128 && utf8.ValidString(id) && id == strings.TrimSpace(id) &&
+		strings.IndexFunc(id, unicode.IsControl) < 0 && len(label) > 0 && len(label) <= 512 &&
+		utf8.ValidString(label) && label == strings.TrimSpace(label) && strings.IndexFunc(label, unicode.IsControl) < 0
+}
+
 func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("serve-board", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	listenAddress := flags.String("listen", "", "explicit loopback listen address")
 	configPath := flags.String("taskstore-config", "", "absolute private TaskStore configuration path")
-	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 || !loopbackListenAddress(*listenAddress) || *configPath == "" {
-		fmt.Fprintln(stderr, "usage: director-engine serve-board --listen <loopback:port> --taskstore-config <absolute-path>")
+	hostID := flags.String("host-id", "", "exact public Paseo host identity")
+	hostLabel := flags.String("host-label", "", "public Paseo host label")
+	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 || !loopbackListenAddress(*listenAddress) || *configPath == "" || !validServerHostIdentity(*hostID, *hostLabel) {
+		fmt.Fprintln(stderr, "usage: director-engine serve-board --listen <loopback:port> --taskstore-config <absolute-path> --host-id <id> --host-label <label>")
 		return 2
 	}
 	config, err := readBoardServerConfig(*configPath)
@@ -186,6 +202,12 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 	handler := http.NewServeMux()
 	handler.Handle(boardQueryPath, newBoardHandler(board.NewReader(store)))
 	handler.Handle(planningport.QueryPath, newPlanningHandler(board.NewPlanningReader(store)))
+	startedAt := time.Now().UnixNano()
+	instanceDigest := sha256.Sum256([]byte(*hostID + "\x1f" + strconv.Itoa(os.Getpid()) + "\x1f" + strconv.FormatInt(startedAt, 10)))
+	now := func() int64 { return time.Now().UnixMilli() }
+	homeSource := homeapp.NewStaticSource(*hostID, *hostLabel, "engine-"+hex.EncodeToString(instanceDigest[:16]), now)
+	handler.Handle(planningport.HomeQueryPath, newHomeHandler(homeapp.NewReader(store, board.NewTaskStoreFactSource(store), homeSource, now)))
+	handler.Handle(planningport.OrganizerMutationPath, newOrganizerBootstrapHandler(organizerapp.New(store, organizergit.New(), nil), store, *hostID))
 	handler.Handle(planningport.MutationPath, newPlanningMutationHandler(
 		store, executionapp.NewController(store, nil, nil, nil),
 	))

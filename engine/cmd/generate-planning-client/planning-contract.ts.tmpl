@@ -16,7 +16,9 @@ export const PLANNING_QUERY_NAMES = [
 ] as const;
 export const PLANNING_MUTATION_NAME = {{quote .MutationName}} as const;
 export const PLANNING_QUERY_PATH = {{quote .QueryPath}} as const;
+export const PLANNING_HOME_QUERY_PATH = {{quote .HomeQueryPath}} as const;
 export const PLANNING_MUTATION_PATH = {{quote .MutationPath}} as const;
+export const PLANNING_ORGANIZER_MUTATION_PATH = {{quote .OrganizerMutationPath}} as const;
 export const PLANNING_MUTATION_ACTOR_HEADERS = {
   kind: {{quote .MutationActorHeaders.Kind}},
   id: {{quote .MutationActorHeaders.ID}},
@@ -28,6 +30,17 @@ export const PLANNING_MAXIMUM_PAGE_SIZE = {{.MaximumPageSize}} as const;
 export const PLANNING_MAXIMUM_PROJECTS = {{.MaximumProjects}} as const;
 export const PLANNING_MAXIMUM_WORKSPACES = {{.MaximumWorkspaces}} as const;
 export const PLANNING_MAXIMUM_EPICS = {{.MaximumEpics}} as const;
+export const PLANNING_MAXIMUM_HOME_PAGE_SIZE = {{.MaximumHomePageSize}} as const;
+export const PLANNING_HOME_HEALTH_STATES = [
+{{- range .HomeHealthStates}}
+  {{quote .}},
+{{- end}}
+] as const;
+export const PLANNING_HOME_ACTION_KINDS = [
+{{- range .HomeActionKinds}}
+  {{quote .}},
+{{- end}}
+] as const;
 export const PLANNING_DERIVED_STATES = [
 {{- range .DerivedStates}}
   {{quote .}},
@@ -77,6 +90,8 @@ export const prioritySchema = z.enum(PLANNING_PRIORITIES);
 export const stableSortSchema = z.enum(PLANNING_STABLE_SORTS);
 export const attentionCodeSchema = z.enum(PLANNING_ATTENTION_CODES);
 export const allowedActionKindSchema = z.enum(PLANNING_ALLOWED_ACTIONS);
+export const homeHealthStateSchema = z.enum(PLANNING_HOME_HEALTH_STATES);
+export const homeActionKindSchema = z.enum(PLANNING_HOME_ACTION_KINDS);
 export const configurationKeySchema = z.enum(PLANNING_CONFIGURATION_KEYS);
 
 export const explanationSchema = z.strictObject({
@@ -255,6 +270,196 @@ export const planningSnapshotSchema = z.strictObject({
   contractHash: z.literal(PLANNING_CONTRACT_SHA256),
   cursor: uint64DecimalSchema,
   page: planningPageSchema,
+});
+
+export const homeQueryInputSchema = z.strictObject({
+  hostId: opaquePlanningIdSchema,
+  cursor: planningPageCursorSchema.nullable(),
+  pageSize: z.number().int().min(1).max(PLANNING_MAXIMUM_HOME_PAGE_SIZE),
+});
+
+export const homeHostSchema = z.strictObject({
+  id: opaquePlanningIdSchema,
+  label: boundedPlanningTextSchema,
+  instanceId: opaquePlanningIdSchema,
+  state: z.enum(["current", "degraded", "disconnected", "stale"]),
+  observedAt: z.iso.datetime(),
+  maximumAgeMillis: uint64DecimalSchema,
+});
+
+export const homeWorkspaceSchema = z.strictObject({
+  id: opaquePlanningIdSchema,
+  key: opaquePlanningIdSchema,
+  name: boundedPlanningTextSchema,
+  health: homeHealthStateSchema,
+  paseoWorkspaceId: opaquePlanningIdSchema.nullable(),
+});
+
+export const homeOrganizerSchema = z.strictObject({
+  id: opaquePlanningIdSchema,
+  mode: z.enum(["create", "adopt"]),
+  phase: z.enum(["intent_recorded", "repository_prepared", "configuration_written", "readme_written", "references_written", "repository_initialized", "revision_committed", "active"]),
+  configurationState: z.enum(["current", "pending", "invalid", "unavailable"]),
+  organizerRevision: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
+  configurationSha256: sha256Schema.nullable(),
+  paseoWorkspaceId: opaquePlanningIdSchema.nullable(),
+});
+
+export const homeLeaseSchema = z.strictObject({
+  state: z.enum(["current", "observe_only", "expired", "absent", "invalid"]),
+  epoch: uint64DecimalSchema,
+  expiresAt: z.iso.datetime().nullable(),
+});
+
+export const homeSyncSchema = z.strictObject({
+  state: z.enum(["current", "partial", "failed", "not_configured", "unavailable", "stale"]),
+  git: z.enum(["current", "failed", "not_configured", "unavailable", "stale"]),
+  dynamicState: z.enum(["current", "failed", "not_configured", "unavailable", "stale"]),
+  observedAt: z.iso.datetime().nullable(),
+});
+
+export const homeActiveWorkSchema = z.strictObject({
+  building: uint64DecimalSchema,
+  validating: uint64DecimalSchema,
+  inReview: uint64DecimalSchema,
+  ready: uint64DecimalSchema,
+  total: uint64DecimalSchema,
+});
+
+export const homeAttentionReasonSchema = z.strictObject({
+  code: opaquePlanningIdSchema,
+  count: uint64DecimalSchema,
+});
+
+export const homeActionSchema = z.strictObject({
+  kind: homeActionKindSchema,
+  label: boundedPlanningTextSchema,
+  hostId: opaquePlanningIdSchema,
+  projectId: opaquePlanningIdSchema.nullable(),
+  enabled: z.boolean(),
+  unavailableReason: explanationSchema.nullable(),
+  paseoWorkspaceId: opaquePlanningIdSchema.nullable(),
+  command: allowedActionSchema.nullable(),
+  emphasis: z.enum(["primary", "secondary", "danger"]),
+}).superRefine((value, context) => {
+  if (value.enabled === (value.unavailableReason !== null)) {
+    context.addIssue({ code: "custom", message: "Home action availability must be explicit", path: ["unavailableReason"] });
+  }
+  const navigation = value.kind === "open_board" || value.kind === "open_organizer";
+  if ((navigation && value.enabled) !== (value.paseoWorkspaceId !== null)) {
+    context.addIssue({ code: "custom", message: "Home navigation requires one exact native Workspace", path: ["paseoWorkspaceId"] });
+  }
+  const commandKinds: Partial<Record<HomeActionKind, readonly AllowedActionKind[]>> = {
+    pause: ["project.pause"],
+    resume: ["project.resume"],
+    emergency_stop: ["project.emergency-stop.prepare", "project.emergency-stop.confirm"],
+  };
+  const commandKindsForAction = commandKinds[value.kind];
+  if ((commandKindsForAction === undefined) !== (value.command === null) || (value.command && !commandKindsForAction?.includes(value.command.kind))) {
+    context.addIssue({ code: "custom", message: "Home action command does not match its engine declaration", path: ["command"] });
+  }
+  if (value.command && (value.projectId === null || value.command.targetId !== value.projectId)) {
+    context.addIssue({ code: "custom", message: "Home command must bind the exact Project", path: ["command", "targetId"] });
+  }
+  if ((value.kind === "create_project" || value.kind === "adopt_organizer") !== (value.projectId === null)) {
+    context.addIssue({ code: "custom", message: "Home entry and Project action scopes do not match", path: ["projectId"] });
+  }
+});
+
+export const homeProjectSchema = z.strictObject({
+  id: opaquePlanningIdSchema,
+  version: uint64DecimalSchema,
+  name: boundedPlanningTextSchema,
+  state: z.enum(["active", "paused", "degraded", "archived"]),
+  health: homeHealthStateSchema,
+  healthReasons: z.array(explanationSchema).max(32).readonly(),
+  workspaces: z.array(homeWorkspaceSchema).max(128).readonly(),
+  organizer: homeOrganizerSchema,
+  lease: homeLeaseSchema,
+  sync: homeSyncSchema,
+  tasks: taskCountsSchema,
+  activeWork: homeActiveWorkSchema,
+  needsYouReasons: z.array(homeAttentionReasonSchema).max(32).readonly(),
+  actions: z.array(homeActionSchema).max(16).readonly(),
+});
+
+export const homeTotalsSchema = z.strictObject({
+  projects: uint64DecimalSchema,
+  healthy: uint64DecimalSchema,
+  degraded: uint64DecimalSchema,
+  paused: uint64DecimalSchema,
+  needsYou: uint64DecimalSchema,
+  activeWork: uint64DecimalSchema,
+});
+
+export const homePageSchema = z.strictObject({
+  host: homeHostSchema,
+  projects: z.array(homeProjectSchema).max(PLANNING_MAXIMUM_HOME_PAGE_SIZE).readonly(),
+  totals: homeTotalsSchema,
+  surfaceActions: z.array(homeActionSchema).max(4).readonly(),
+  totalProjects: uint64DecimalSchema,
+  nextCursor: planningPageCursorSchema.nullable(),
+});
+
+export const homeSnapshotSchema = z.strictObject({
+  schemaVersion: z.literal(PLANNING_SCHEMA_VERSION),
+  contractVersion: z.literal(PLANNING_CONTRACT_VERSION),
+  contractHash: z.literal(PLANNING_CONTRACT_SHA256),
+  cursor: uint64DecimalSchema,
+  page: homePageSchema,
+});
+
+export const organizerBootstrapKindSchema = z.enum(["create.preview", "create.apply", "adopt.preview", "adopt.apply"]);
+
+export const organizerBootstrapInputSchema = z.strictObject({
+  schemaVersion: z.literal(PLANNING_SCHEMA_VERSION),
+  contractVersion: z.literal(PLANNING_CONTRACT_VERSION),
+  contractHash: z.literal(PLANNING_CONTRACT_SHA256),
+  hostId: opaquePlanningIdSchema,
+  requestId: opaquePlanningIdSchema.refine((value) => value.length >= 16),
+  kind: organizerBootstrapKindSchema,
+  projectId: opaquePlanningIdSchema,
+  projectName: z.string().min(1).max(512),
+  repositoryPath: z.string().min(2).max(4096),
+  configurationJson: z.string().min(2).max(60000).nullable(),
+  previewId: sha256Schema.nullable(),
+}).superRefine((value, context) => {
+  const create = value.kind === "create.preview" || value.kind === "create.apply";
+  const apply = value.kind === "create.apply" || value.kind === "adopt.apply";
+  if (create !== (value.configurationJson !== null)) {
+    context.addIssue({ code: "custom", message: "Create requires exact configuration JSON; Adopt forbids it", path: ["configurationJson"] });
+  }
+  if (apply !== (value.previewId !== null)) {
+    context.addIssue({ code: "custom", message: "Apply requires the exact Preview and explicit confirmation", path: ["previewId"] });
+  }
+});
+
+export const organizerBootstrapPreviewSchema = z.strictObject({
+  id: sha256Schema,
+  kind: z.enum(["create", "adopt"]),
+  requestId: opaquePlanningIdSchema,
+  projectId: opaquePlanningIdSchema,
+  projectName: z.string().min(1).max(512),
+  repositoryPath: z.string().min(2).max(4096),
+  organizerRevision: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
+  configurationSha256: sha256Schema.nullable(),
+  files: z.array(z.strictObject({ path: z.string().min(1).max(1024), sha256: sha256Schema })).max(256).readonly(),
+  operations: z.array(boundedPlanningTextSchema).max(32).readonly(),
+  valid: z.boolean(),
+  issues: z.array(z.strictObject({ code: opaquePlanningIdSchema, field: z.string().min(1).max(1024), message: boundedPlanningTextSchema })).max(128).readonly(),
+});
+
+export const organizerBootstrapResultSchema = z.strictObject({
+  schemaVersion: z.literal(PLANNING_SCHEMA_VERSION),
+  contractVersion: z.literal(PLANNING_CONTRACT_VERSION),
+  contractHash: z.literal(PLANNING_CONTRACT_SHA256),
+  hostId: opaquePlanningIdSchema,
+  cursor: uint64DecimalSchema,
+  requestId: opaquePlanningIdSchema,
+  status: z.enum(["preview", "applied", "rejected"]),
+  message: boundedPlanningTextSchema,
+  preview: organizerBootstrapPreviewSchema.nullable(),
+  projectVersion: uint64DecimalSchema.nullable(),
 });
 
 export const configurationValueSchema = z.union([
@@ -514,6 +719,15 @@ export type TaskSummary = z.output<typeof taskSummarySchema>;
 export type PlanningQueryInput = z.output<typeof planningQueryInputSchema>;
 export type PlanningPage = z.output<typeof planningPageSchema>;
 export type PlanningSnapshot = z.output<typeof planningSnapshotSchema>;
+export type HomeHealthState = z.output<typeof homeHealthStateSchema>;
+export type HomeActionKind = z.output<typeof homeActionKindSchema>;
+export type HomeQueryInput = z.output<typeof homeQueryInputSchema>;
+export type HomeAction = z.output<typeof homeActionSchema>;
+export type HomeProject = z.output<typeof homeProjectSchema>;
+export type HomeSnapshot = z.output<typeof homeSnapshotSchema>;
+export type OrganizerBootstrapInput = z.output<typeof organizerBootstrapInputSchema>;
+export type OrganizerBootstrapPreview = z.output<typeof organizerBootstrapPreviewSchema>;
+export type OrganizerBootstrapResult = z.output<typeof organizerBootstrapResultSchema>;
 export type ConfigurationValue = z.output<typeof configurationValueSchema>;
 export type ConfigurationOverride = z.output<typeof configurationOverrideSchema>;
 export type ConfigurationEntry = z.output<typeof configurationEntrySchema>;
@@ -529,6 +743,11 @@ export interface PlanningClient {
   query(input: PlanningQueryInput): Promise<PlanningSnapshot>;
   taskDetail(input: TaskDetailQueryInput): Promise<TaskDetailSnapshot>;
   mutate(input: PlanningMutationInput): Promise<PlanningMutationResult>;
+}
+
+export interface HomeClient {
+  home(input: HomeQueryInput): Promise<HomeSnapshot>;
+  bootstrapOrganizer(input: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult>;
 }
 
 function actionTargetsIntent(

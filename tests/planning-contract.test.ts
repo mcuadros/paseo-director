@@ -20,12 +20,18 @@ import {
   planningQueryInputSchema,
   planningSnapshotSchema,
   taskDetailSnapshotSchema,
+  homeQueryInputSchema,
+  homeSnapshotSchema,
+  organizerBootstrapInputSchema,
+  organizerBootstrapResultSchema,
   type AllowedAction,
 } from "../generated/planning-contract.shared.ts";
 import {
   planningMutationRpc,
   planningQueryRpc,
   planningTaskDetailRpc,
+  homeQueryRpc,
+  organizerBootstrapRpc,
 } from "../rpc/planning.shared.ts";
 import { DeterministicPlanningFixture } from "./fixtures/planning-fixture.ts";
 
@@ -107,6 +113,33 @@ test("generated query, detail, and mutation RPC schemas reject drift", async () 
     }).success,
     false,
   );
+});
+
+test("generated Home and Organizer contracts reject cross-host and Preview/Apply drift", () => {
+  assert.equal(homeQueryInputSchema.safeParse({ hostId: "host-a", cursor: null, pageSize: 50 }).success, true);
+  assert.equal(homeQueryInputSchema.safeParse({ hostId: "host-a", cursor: null, pageSize: 51 }).success, false);
+  assert.equal(homeQueryRpc.input.safeParse({ hostId: "host-a", cursor: null, pageSize: 25 }).success, true);
+  assert.equal(homeSnapshotSchema.safeParse({}).success, false);
+
+  const base = {
+    schemaVersion: PLANNING_SCHEMA_VERSION,
+    contractVersion: PLANNING_CONTRACT_VERSION,
+    contractHash: PLANNING_CONTRACT_SHA256,
+    hostId: "host-a",
+    requestId: "request-organizer-0001",
+    projectId: "project-a",
+    projectName: "Project A",
+    repositoryPath: "/srv/director/project-a",
+  } as const;
+  const preview = { ...base, kind: "create.preview", configurationJson: "{}", previewId: null };
+  assert.equal(organizerBootstrapInputSchema.safeParse(preview).success, true);
+  assert.equal(organizerBootstrapRpc.input.safeParse(preview).success, true);
+  assert.equal(organizerBootstrapInputSchema.safeParse({ ...preview, confirmed: true }).success, false);
+  assert.equal(organizerBootstrapInputSchema.safeParse({ ...preview, configurationJson: null }).success, false);
+  assert.equal(organizerBootstrapInputSchema.safeParse({ ...preview, kind: "create.apply", previewId: "a".repeat(64) }).success, true);
+  assert.equal(organizerBootstrapInputSchema.safeParse({ ...preview, kind: "adopt.preview", configurationJson: null }).success, true);
+  assert.equal(organizerBootstrapResultSchema.safeParse({}).success, false);
+  assert.equal(organizerBootstrapRpc.output, organizerBootstrapResultSchema);
 });
 
 test("every mutation is bound to an engine-returned action ticket", async () => {
@@ -203,6 +236,13 @@ test("the engine schema closes every object and is the generated source", () => 
     "planningQueryInput",
     "planningMutationInput",
     "planningMutationResult",
+    "homeQueryInput",
+    "homeSnapshot",
+    "homeProject",
+    "homeAction",
+    "organizerBootstrapInput",
+    "organizerBootstrapPreview",
+    "organizerBootstrapResult",
   ]) {
     assert.ok((schema.$defs as Record<string, unknown>)[definition], definition);
   }
@@ -217,6 +257,8 @@ test("the stable v0.7 plugin registers strict planning RPCs without runtime fixt
     "plugin.handle(planningQueryRpc",
     "plugin.handle(planningTaskDetailRpc",
     "plugin.handle(planningMutationRpc",
+    "plugin.handle(homeQueryRpc",
+    "plugin.handle(organizerBootstrapRpc",
   ]) {
     assert.ok(entry.includes(registration), registration);
   }

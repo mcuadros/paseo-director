@@ -358,23 +358,55 @@ func (source *TaskStoreFactSource) TaskProjectionInputs(ctx context.Context) ([]
 		if !report.Valid {
 			return nil, ErrDerivedPlanningInvalid
 		}
+		runsByTask := make(map[string][]domain.Run)
+		candidatesByID := make(map[string]domain.Candidate)
+		bulk, bulkAvailable := source.store.(PlanningBulkFactReader)
+		if bulkAvailable {
+			runs, err := bulk.PlanningRuns(ctx, project.ID)
+			if err != nil {
+				return nil, fmt.Errorf("read projection Runs: %w", err)
+			}
+			for _, run := range runs {
+				runsByTask[run.TaskID] = append(runsByTask[run.TaskID], run)
+			}
+			candidates, err := bulk.PlanningCandidates(ctx, project.ID)
+			if err != nil {
+				return nil, fmt.Errorf("read projection Candidates: %w", err)
+			}
+			for _, candidate := range candidates {
+				if _, duplicate := candidatesByID[candidate.ID]; duplicate {
+					return nil, projection.ErrCandidateRunMismatch
+				}
+				candidatesByID[candidate.ID] = candidate
+			}
+		}
 		for _, task := range tasks {
 			dependency, ok := report.Result(task.ID)
 			if !ok {
 				return nil, ErrDerivedPlanningInvalid
 			}
-			runs, err := source.store.Runs(ctx, task.ID)
-			if err != nil {
-				return nil, fmt.Errorf("read projection Runs: %w", err)
+			runs := runsByTask[task.ID]
+			if !bulkAvailable {
+				runs, err = source.store.Runs(ctx, task.ID)
+				if err != nil {
+					return nil, fmt.Errorf("read projection Runs: %w", err)
+				}
 			}
 			var run *domain.Run
 			var candidate *domain.Candidate
 			if latest, exists := latestTaskRun(runs); exists {
 				run = &latest
 				if latest.CurrentCandidateID != "" {
-					current, err := source.store.Candidate(ctx, latest.CurrentCandidateID)
-					if err != nil {
-						return nil, fmt.Errorf("read projection Candidate: %w", err)
+					current, exists := candidatesByID[latest.CurrentCandidateID]
+					if !bulkAvailable {
+						current, err = source.store.Candidate(ctx, latest.CurrentCandidateID)
+						exists = err == nil
+						if err != nil {
+							return nil, fmt.Errorf("read projection Candidate: %w", err)
+						}
+					}
+					if !exists {
+						return nil, fmt.Errorf("read projection Candidate: %w", projection.ErrCandidateRunMismatch)
 					}
 					if current.RunID != latest.ID {
 						return nil, projection.ErrCandidateRunMismatch

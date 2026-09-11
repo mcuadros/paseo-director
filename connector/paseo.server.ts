@@ -36,6 +36,10 @@ import type {
   PlanningSnapshot,
   TaskDetailQueryInput,
   TaskDetailSnapshot,
+  HomeQueryInput,
+  HomeSnapshot,
+  OrganizerBootstrapInput,
+  OrganizerBootstrapResult,
 } from "../generated/planning-contract.shared.ts";
 import type { ConnectorStartupStatus } from "../rpc/startup.shared.ts";
 import { loadConnectorCredential } from "./credential.server.ts";
@@ -871,6 +875,20 @@ export class PaseoHostConnector implements DirectorHost {
 
   async queryPlanning(input: PlanningQueryInput): Promise<PlanningSnapshot> {
     return this.#planningTransport.query(input);
+  }
+
+  async queryHome(input: HomeQueryInput): Promise<HomeSnapshot> {
+    if (!this.#planningTransport.home) {
+      throw new Error("HOME_SURFACE_NOT_WIRED");
+    }
+    return this.#planningTransport.home(input);
+  }
+
+  async bootstrapOrganizer(input: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult> {
+    if (!this.#planningTransport.bootstrapOrganizer) {
+      throw new Error("ORGANIZER_BOOTSTRAP_NOT_WIRED");
+    }
+    return this.#planningTransport.bootstrapOrganizer(input);
   }
 
   async queryPlanningTask(

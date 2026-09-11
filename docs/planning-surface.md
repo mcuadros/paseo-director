@@ -18,7 +18,7 @@ duplicate-key-safe canonical SHA-256. The generated
 only planning type and validation source consumed by UI and RPC code. CI
 regenerates it and fails on drift.
 
-Every snapshot envelope binds:
+Every Board/List, Task-detail, and Director Home snapshot envelope binds:
 
 - schema version;
 - planning contract version and canonical hash;
@@ -93,11 +93,14 @@ The v0.7 RPCs validate generated input and output schemas on both sides. The
 planning query uses one strict request to the engine's loopback-only
 `POST /v1/planning/query` endpoint, verifies the exact response origin and
 contract headers, rejects redirects, and bounds requests at 64 KiB and
-responses at 4 MiB. It owns no
+responses at 4 MiB. Director Home uses the same boundary at
+`POST /v1/planning/home`, additionally binding its query and page cursor to the
+exact host and engine instance. Organizer Create/Adopt uses the authenticated
+`POST /v1/planning/organizer-bootstrap` Preview/Apply endpoint. It owns no
 retry, filter, state, sorting, pagination, or TaskStore policy. Task-detail and
-mutation methods remain explicitly unwired until their complete application
-command/read contracts are available; they never call a fixture or infer a
-fallback.
+non-control planning mutation methods remain explicitly unwired until their
+complete application command/read contracts are available; they never call a
+fixture or infer a fallback.
 
 The deterministic adapter under `tests/fixtures/` is compiled only by tests.
 It contains exactly 25 Workspaces, 500 open Tasks, and 10,000 historical Tasks,

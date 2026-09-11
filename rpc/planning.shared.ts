@@ -10,12 +10,28 @@ import {
   planningSnapshotSchema,
   taskDetailQueryInputSchema,
   taskDetailSnapshotSchema,
+  homeQueryInputSchema,
+  homeSnapshotSchema,
+  organizerBootstrapInputSchema,
+  organizerBootstrapResultSchema,
 } from "../generated/planning-contract.shared.ts";
 
 export const planningQueryRpc = defineRpc({
   name: "director.planning-query",
   input: planningQueryInputSchema,
   output: planningSnapshotSchema,
+});
+
+export const homeQueryRpc = defineRpc({
+  name: "director.home-query",
+  input: homeQueryInputSchema,
+  output: homeSnapshotSchema,
+});
+
+export const organizerBootstrapRpc = defineRpc({
+  name: "director.organizer-bootstrap",
+  input: organizerBootstrapInputSchema,
+  output: organizerBootstrapResultSchema,
 });
 
 export const planningTaskDetailRpc = defineRpc({

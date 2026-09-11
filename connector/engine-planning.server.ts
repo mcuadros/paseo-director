@@ -10,11 +10,21 @@ import {
   PLANNING_MAXIMUM_RESPONSE_BYTES,
   PLANNING_MUTATION_ACTOR_HEADERS,
   PLANNING_MUTATION_PATH,
+  PLANNING_HOME_QUERY_PATH,
+  PLANNING_ORGANIZER_MUTATION_PATH,
   PLANNING_QUERY_PATH,
   planningMutationInputSchema,
   planningMutationResultSchema,
   planningQueryInputSchema,
   planningSnapshotSchema,
+  homeQueryInputSchema,
+  homeSnapshotSchema,
+  organizerBootstrapInputSchema,
+  organizerBootstrapResultSchema,
+  type HomeQueryInput,
+  type HomeSnapshot,
+  type OrganizerBootstrapInput,
+  type OrganizerBootstrapResult,
   type PlanningQueryInput,
   type PlanningSnapshot,
   type PlanningMutationInput,
@@ -25,6 +35,8 @@ const requestTimeoutMilliseconds = 10_000;
 
 export type PlanningTransport = {
   query(input: PlanningQueryInput): Promise<PlanningSnapshot>;
+  home?(input: HomeQueryInput): Promise<HomeSnapshot>;
+  bootstrapOrganizer?(input: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult>;
   mutate(input: PlanningMutationInput): Promise<PlanningMutationResult>;
 };
 
@@ -134,8 +146,138 @@ export function createPlanningTransport(options: {
   const baseUrl = loopbackBaseUrl(options.baseUrl);
   const fetchPlanning = options.fetch ?? globalThis.fetch;
   const url = new URL(PLANNING_QUERY_PATH, baseUrl);
+  const homeUrl = new URL(PLANNING_HOME_QUERY_PATH, baseUrl);
+  const organizerUrl = new URL(PLANNING_ORGANIZER_MUTATION_PATH, baseUrl);
   const mutationUrl = new URL(PLANNING_MUTATION_PATH, baseUrl);
   return {
+    async bootstrapOrganizer(rawInput: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult> {
+      const actor = options.mutationActor;
+      const identityPattern = /^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/u;
+      if (!actor || actor.kind !== "human" || !identityPattern.test(actor.id) || !identityPattern.test(actor.sessionId)) {
+        throw new PlanningTransportError("ENGINE_ORGANIZER_ACTOR", "Organizer Preview/Apply requires a server-authenticated human session");
+      }
+      const input = organizerBootstrapInputSchema.parse(rawInput);
+      const body = JSON.stringify(input);
+      if (new TextEncoder().encode(body).byteLength > PLANNING_MAXIMUM_REQUEST_BYTES) {
+        throw new PlanningTransportError("ENGINE_ORGANIZER_INPUT", "Organizer Preview/Apply exceeds the contract bound");
+      }
+      let response: Response;
+      try {
+        response = await fetchPlanning(organizerUrl, {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            "content-type": "application/json",
+            "x-director-contract-version": PLANNING_CONTRACT_VERSION,
+            "x-director-contract-hash": PLANNING_CONTRACT_SHA256,
+            [PLANNING_MUTATION_ACTOR_HEADERS.kind]: actor.kind,
+            [PLANNING_MUTATION_ACTOR_HEADERS.id]: actor.id,
+            [PLANNING_MUTATION_ACTOR_HEADERS.session]: actor.sessionId,
+          },
+          body,
+          signal: AbortSignal.timeout(requestTimeoutMilliseconds),
+        });
+      } catch {
+        throw new PlanningTransportError("ENGINE_ORGANIZER_UNAVAILABLE", "Organizer Preview/Apply is unavailable on this exact host");
+      }
+      if (response.url !== organizerUrl.href) {
+        throw new PlanningTransportError("ENGINE_ORGANIZER_ORIGIN", "Organizer response origin does not match");
+      }
+      if (!response.ok) {
+        let responseCode: string | undefined;
+        try {
+          const value = await boundedResponseValue(response);
+          if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && typeof (value as { code?: unknown }).code === "string") {
+            responseCode = (value as { code: string }).code;
+          }
+        } catch {
+          responseCode = undefined;
+        }
+        throw new PlanningTransportError(
+          responseCode === "HOME_HOST_MISMATCH" ? "ENGINE_ORGANIZER_HOST_MISMATCH" : "ENGINE_ORGANIZER_RESPONSE",
+          responseCode === "HOME_HOST_MISMATCH" ? "Organizer request names a different host" : "Director Engine rejected Organizer Preview/Apply",
+        );
+      }
+      if (
+        response.headers.get("x-director-contract-version") !== PLANNING_CONTRACT_VERSION ||
+        response.headers.get("x-director-contract-hash") !== PLANNING_CONTRACT_SHA256
+      ) {
+        throw new PlanningTransportError("ENGINE_ORGANIZER_CONTRACT", "Organizer contract does not match");
+      }
+      try {
+        const result = organizerBootstrapResultSchema.parse(await boundedResponseValue(response));
+        if (result.hostId !== input.hostId || result.requestId !== input.requestId) {
+          throw new PlanningTransportError("ENGINE_ORGANIZER_BINDING", "Organizer response binding does not match");
+        }
+        return result;
+      } catch (error) {
+        if (error instanceof PlanningTransportError) throw error;
+        throw new PlanningTransportError("ENGINE_ORGANIZER_PAYLOAD", "Organizer response is invalid");
+      }
+    },
+    async home(rawInput: HomeQueryInput): Promise<HomeSnapshot> {
+      const input = homeQueryInputSchema.parse(rawInput);
+      const body = JSON.stringify(input);
+      if (new TextEncoder().encode(body).byteLength > PLANNING_MAXIMUM_REQUEST_BYTES) {
+        throw new PlanningTransportError("ENGINE_HOME_INPUT", "Director Engine Home query exceeds the contract bound");
+      }
+      let response: Response;
+      try {
+        response = await fetchPlanning(homeUrl, {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            "content-type": "application/json",
+            "x-director-contract-version": PLANNING_CONTRACT_VERSION,
+            "x-director-contract-hash": PLANNING_CONTRACT_SHA256,
+          },
+          body,
+          signal: AbortSignal.timeout(requestTimeoutMilliseconds),
+        });
+      } catch {
+        throw new PlanningTransportError("ENGINE_HOME_UNAVAILABLE", "The exact Director host is unavailable");
+      }
+      if (response.url !== homeUrl.href) {
+        throw new PlanningTransportError("ENGINE_HOME_ORIGIN", "Director Engine Home response origin does not match");
+      }
+      if (!response.ok) {
+        let responseCode: string | undefined;
+        try {
+          const value = await boundedResponseValue(response);
+          if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && typeof (value as { code?: unknown }).code === "string") {
+            responseCode = (value as { code: string }).code;
+          }
+        } catch {
+          responseCode = undefined;
+        }
+        const code = responseCode === "HOME_HOST_MISMATCH"
+          ? "ENGINE_HOME_HOST_MISMATCH"
+          : responseCode === "HOME_CURSOR_INVALIDATED"
+            ? "ENGINE_HOME_CURSOR_INVALIDATED"
+            : "ENGINE_HOME_RESPONSE";
+        throw new PlanningTransportError(code, code === "ENGINE_HOME_HOST_MISMATCH"
+          ? "Director Engine refused a different host identity"
+          : code === "ENGINE_HOME_CURSOR_INVALIDATED"
+            ? "Director Home changed; refresh from the first page"
+            : "Director Engine rejected the Home query");
+      }
+      if (
+        response.headers.get("x-director-contract-version") !== PLANNING_CONTRACT_VERSION ||
+        response.headers.get("x-director-contract-hash") !== PLANNING_CONTRACT_SHA256
+      ) {
+        throw new PlanningTransportError("ENGINE_HOME_CONTRACT", "Director Engine Home contract does not match");
+      }
+      try {
+        const snapshot = homeSnapshotSchema.parse(await boundedResponseValue(response));
+        if (snapshot.page.host.id !== input.hostId) {
+          throw new PlanningTransportError("ENGINE_HOME_HOST_MISMATCH", "Director Engine returned a different host identity");
+        }
+        return snapshot;
+      } catch (error) {
+        if (error instanceof PlanningTransportError) throw error;
+        throw new PlanningTransportError("ENGINE_HOME_PAYLOAD", "Director Engine Home response is invalid");
+      }
+    },
     async query(rawInput: PlanningQueryInput): Promise<PlanningSnapshot> {
       const input = planningQueryInputSchema.parse(rawInput);
       const body = JSON.stringify(input);
