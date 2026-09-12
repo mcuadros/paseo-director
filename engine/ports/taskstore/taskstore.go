@@ -139,7 +139,11 @@ func Invalid(code ValidationCode) error {
 // Task, and Run records use optimistic versions. DependencyOverride,
 // Candidate, Command, and Event records are append-only. Applied Event
 // sequence allocation is serialized through commit, making strict
-// AfterGlobalSequence resume safe across concurrent writers.
+// AfterGlobalSequence resume safe across concurrent writers. The adapter
+// structurally canonicalizes and bounds JSON, but this generic port cannot
+// infer a payload's schema version or secret semantics. Owning typed ingresses
+// must reject unsupported versions and secret-bearing values first; dir-m5.9
+// owns complete cross-ingress secret-safety hardening before release.
 type TaskStore interface {
 	SchemaVersion(context.Context) (int, error)
 

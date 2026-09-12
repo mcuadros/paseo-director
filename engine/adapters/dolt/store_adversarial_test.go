@@ -1447,6 +1447,36 @@ func TestFullCapNormalizedPayloadFailsWithinPortBudget(t *testing.T) {
 	}
 }
 
+func TestWellFormedNumericMagnitudeOverflowIsPayloadTooLarge(t *testing.T) {
+	fixture := startDoltFixture(t)
+	store := openContractStore(t, fixture, faultStoreID, true)
+	t.Cleanup(func() { _ = store.Close() })
+
+	_, err := store.CreateProject(
+		context.Background(),
+		domain.CommandRequest{
+			IdempotencyKey: "numeric-magnitude-overflow", Type: "project.create",
+			AggregateID: "numeric-magnitude-overflow", Payload: json.RawMessage(`1e99999999999999999999`),
+		},
+		faultProject("numeric-magnitude-overflow", "Numeric magnitude overflow"),
+		[]domain.Workspace{faultWorkspace(t, "numeric-magnitude-overflow")},
+		event("numeric-magnitude-overflow-event", "", 1, "numeric-magnitude-overflow", 0, "project.created"),
+	)
+	var validation *storeport.ValidationError
+	if !errors.As(err, &validation) || validation.Code != storeport.ValidationPayloadTooLarge {
+		t.Fatalf("well-formed numeric magnitude overflow has wrong classification: %T %v", err, err)
+	}
+	if len(err.Error()) > 96 {
+		t.Fatalf("numeric magnitude overflow returned unbounded error: %q", err)
+	}
+	if _, commandErr := store.Command(context.Background(), "numeric-magnitude-overflow"); !errors.Is(commandErr, storeport.ErrNotFound) {
+		t.Fatalf("numeric magnitude overflow persisted a Command: %v", commandErr)
+	}
+	if _, projectErr := store.Project(context.Background(), "numeric-magnitude-overflow"); !errors.Is(projectErr, storeport.ErrNotFound) {
+		t.Fatalf("numeric magnitude overflow persisted a Project: %v", projectErr)
+	}
+}
+
 func TestConcurrentStrictEventResumeObservesEveryCommit(t *testing.T) {
 	fixture := startDoltFixture(t)
 	store := openContractStore(t, fixture, faultStoreID, true)

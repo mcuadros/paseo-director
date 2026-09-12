@@ -15,6 +15,11 @@ surrogates and unsupported versions are rejected. Both the source document and
 its canonical form are limited to 1 MiB so accepted configuration can always be
 embedded in and restored from a bounded Run snapshot.
 
+Unsupported-version and credential-bearing-field rejection are properties of
+the typed configuration parser, not of shared JSON canonicalization. The shared
+helper enforces only structural, Unicode, duplicate-key, numeric, and canonical-
+size rules; semantic admission remains at this closed version 1 boundary.
+
 Validation against the published JSON Schema is necessary but insufficient for
 engine admission. JSON Schema establishes the portable closed shape and basic
 field constraints; the Go semantic validator is authoritative for byte-level

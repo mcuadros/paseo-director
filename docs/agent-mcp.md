@@ -65,6 +65,10 @@ rejected before persistence. Read projections omit repository and worktree
 paths and replace unsafe text with `[REDACTED]`. Transport and adapter errors
 are mapped to closed codes; raw errors are never returned.
 
+Secret rejection, the closed tool schema, and the exact session schema version
+are enforced by this typed MCP admission boundary. They are not properties of
+the shared structural JSON canonicalizer.
+
 ## Exact provider preflight
 
 Before a catalog is available, the Go engine rechecks the selected immutable

@@ -332,6 +332,16 @@ to the stable port sentinels and contain no raw driver, listener, credential,
 SQL, table, address, or server output. Every singular and collection reload
 validates Project, Task, Run, and Candidate values before returning them.
 
+Command and Event payloads are limited to 64 KiB before and after canonical
+JSON normalization. Structural or encoding failures return bounded
+`JSON_INVALID`; canonical expansion, including a well-formed numeric magnitude
+which cannot fit, returns bounded `PAYLOAD_TOO_LARGE`. This shared
+canonicalization is deliberately schema- and secret-agnostic. The owning typed
+ingress must reject unsupported schema versions and apply its own secret-safety
+contract before calling TaskStore; the generic M1 port does not re-infer either
+property from arbitrary JSON. Complete cross-ingress secret-safety hardening
+remains assigned to `dir-m5.9`.
+
 Project records now also carry the bounded Organizer repository projection.
 During a confirmed Create, the Project is paused and temporarily retains the
 canonical pending configuration needed to recover the approved effect saga;

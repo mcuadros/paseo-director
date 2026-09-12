@@ -1029,8 +1029,11 @@ func Parse(input []byte) (Document, error) {
 	if len(input) > MaximumDocumentBytes {
 		return Document{}, invalidDocument("document_too_large", "configuration document exceeds the 1 MiB limit")
 	}
-	canonical, err := jsondocument.Canonical(input)
+	canonical, err := jsondocument.CanonicalLimit(input, MaximumCanonicalDocumentBytes)
 	if err != nil {
+		if errors.Is(err, jsondocument.ErrCanonicalDocumentTooLarge) {
+			return Document{}, invalidDocument("canonical_document_too_large", "canonical configuration exceeds the 1 MiB activation limit")
+		}
 		if errors.Is(err, jsondocument.ErrInvalidUTF8) || errors.Is(err, jsondocument.ErrInvalidUnicodeSurrogate) {
 			return Document{}, invalidDocument("json_encoding_invalid", "configuration must contain exact valid UTF-8 and paired Unicode escapes")
 		}
