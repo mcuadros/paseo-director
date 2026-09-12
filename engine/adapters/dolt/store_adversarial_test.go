@@ -22,6 +22,7 @@ import (
 	"github.com/mcuadros/director-engine/adapters/dolt"
 	"github.com/mcuadros/director-engine/domain"
 	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
 
@@ -870,6 +871,28 @@ func TestProjectWorkspaceReloadsRejectCompleteSetTampering(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("credential-bearing Project name", func(t *testing.T) {
+		if _, err := inspection.ExecContext(ctx,
+			`UPDATE aggregates SET data = JSON_SET(data, '$.name', ?) WHERE id = ?`,
+			"token="+secretfixture.GitHubFineGrained(), project.ID,
+		); err != nil {
+			t.Fatalf("tamper Project: %v", err)
+		}
+		_, projectErr := store.Project(ctx, project.ID)
+		_, projectsErr := store.Projects(ctx)
+		for _, failure := range []error{projectErr, projectsErr} {
+			requireStoredRecordHealth(t, failure)
+		}
+		if _, err := inspection.ExecContext(ctx,
+			`UPDATE aggregates SET data = JSON_SET(data, '$.name', ?) WHERE id = ?`, project.Name, project.ID,
+		); err != nil {
+			t.Fatalf("restore Project: %v", err)
+		}
+	})
+	credentialWorkspace := second
+	credentialWorkspace.Name = "Authorization: Bearer abcdefghijklmnop"
+	tamperSecond("credential-bearing Workspace name", credentialWorkspace)
 
 	duplicateKey := second
 	duplicateKey.Key = first.Key

@@ -21,6 +21,7 @@ import (
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
 	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 	gitport "github.com/mcuadros/director-engine/ports/git"
 	githubport "github.com/mcuadros/director-engine/ports/github"
 )
@@ -823,7 +824,7 @@ func TestBranchDriftProtectedRefsAndSecretInputAreRefused(t *testing.T) {
 	}
 
 	secret := newFixture(t, true)
-	secret.store.task.Title = "publish token=github_pat_abcdefghijklmnop"
+	secret.store.task.Title = "publish token=" + secretfixture.GitHubFineGrainedLetters()
 	_, err = secret.service.Admit(context.Background(), secret.command)
 	if !errors.Is(err, ErrInvalidCommand) {
 		t.Fatalf("secret title error = %v", err)

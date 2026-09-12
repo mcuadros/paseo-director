@@ -450,6 +450,39 @@ test("execution oracle is an exact independent test-source-only boundary", () =>
   );
 });
 
+test("credential canaries are confined to the exact test-only fixture package", () => {
+  const fixture = `${modulePath}/internal/testkit/secretfixture`;
+  assert.deepEqual(
+    goDependencyErrors([
+      { importPath: fixture, imports: ["strings"] },
+      {
+        importPath: `${modulePath}/domain/safedata`,
+        imports: ["regexp", "strings"],
+        testImports: ["testing", fixture],
+      },
+    ]),
+    [],
+  );
+  assert.ok(
+    goDependencyErrors([
+      { importPath: `${modulePath}/domain/safedata`, imports: [fixture] },
+    ]).some((error) => error.includes("domain boundary cannot import testkit")),
+  );
+  assert.ok(
+    goDependencyErrors([
+      { importPath: fixture, imports: [`${modulePath}/domain/safedata`] },
+    ]).some((error) => error.includes("testkit boundary cannot import domain")),
+  );
+  assert.ok(
+    goDependencyErrors([
+      {
+        importPath: `${modulePath}/domain/safedata`,
+        testImports: [`${fixture}/runtime`],
+      },
+    ]).some((error) => error.includes("imports unclassified engine package")),
+  );
+});
+
 test("adapters and agent runtime cannot declare lifecycle policy", () => {
   assert.deepEqual(
     policyOwnershipErrors(

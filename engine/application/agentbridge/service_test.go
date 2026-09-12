@@ -19,6 +19,7 @@ import (
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
 
@@ -387,7 +388,7 @@ func TestWorkerRequestsHelperAndOnlyBoundHelperSubmitsContribution(t *testing.T)
 
 func TestFixedScopeReadsAreBoundedAndRedacted(t *testing.T) {
 	fixture := newServiceFixture(t)
-	fixture.store.project.Name = "token=github_pat_abcdefghijklmnop"
+	fixture.store.project.Name = "token=" + secretfixture.GitHubFineGrainedLetters()
 	session, err := fixture.service.OpenSession(context.Background(), fixture.binding(t, agentprofile.RoleWorker), 1_001)
 	if err != nil {
 		t.Fatal(err)
@@ -610,7 +611,7 @@ func TestForgedBindingsAndSecretShapedValuesFailBeforeMutation(t *testing.T) {
 	}
 	fixture := newServiceFixture(t)
 	session, _ := fixture.service.OpenSession(context.Background(), fixture.binding(t, agentprofile.RoleOrganizer), 1_001)
-	secret := json.RawMessage(`{"kind":"task_update_proposal","title":"token=github_pat_abcdefghijklmnop","objective":"objective","acceptanceCriteria":["criterion"],"priority":"normal","labels":[]}`)
+	secret := json.RawMessage(`{"kind":"task_update_proposal","title":"token=` + secretfixture.GitHubFineGrainedLetters() + `","objective":"objective","acceptanceCriteria":["criterion"],"priority":"normal","labels":[]}`)
 	if _, err := session.Call(context.Background(), "secret-call", "director_planning_command_submit", secret); failureCode(t, err) != CodeSecretRejected {
 		t.Fatalf("secret error = %v", err)
 	}

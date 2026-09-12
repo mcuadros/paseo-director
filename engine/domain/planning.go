@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 const (
@@ -267,7 +269,8 @@ type planningIndex struct {
 
 func boundedPlanningText(value string, maximum int) bool {
 	return len(value) > 0 && len(value) <= maximum && utf8.ValidString(value) &&
-		value == strings.TrimSpace(value) && strings.IndexFunc(value, unicode.IsControl) < 0
+		value == strings.TrimSpace(value) && strings.IndexFunc(value, unicode.IsControl) < 0 &&
+		safedata.ClassifyText(value, true) == safedata.Safe
 }
 
 func validPriority(priority Priority, optional bool) bool {

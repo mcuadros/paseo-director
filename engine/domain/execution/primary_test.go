@@ -11,6 +11,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain/agentprofile"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 )
 
 func primaryProfiles(t *testing.T) agentprofile.FrozenSet {
@@ -154,10 +155,18 @@ func TestPrimarySessionRejectsCredentialAndControlEnvironment(t *testing.T) {
 			}
 		})
 	}
-	server := primaryServer(scope.RunID)
-	server.Args = append(server.Args, "--token=ghp_0123456789abcdefghijklmnop")
-	if _, err := NewPrimarySession(scope, "effect-agent-1", profiles, server); err == nil {
-		t.Fatal("credential-shaped argv reached the durable primary session")
+	for _, canary := range []string{
+		"--token=" + secretfixture.GitHubLegacyPAT(),
+		secretfixture.AWSAccessKey(),
+		"Authorization: Bearer abcdefghijklmnop",
+		"https://owner:0123456789abcdef@example.invalid/repo",
+		"--socket=/run/user/1000/control.sock",
+	} {
+		server := primaryServer(scope.RunID)
+		server.Args = append(server.Args, canary)
+		if _, err := NewPrimarySession(scope, "effect-agent-1", profiles, server); err == nil {
+			t.Fatal("credential or control-shaped argv reached the durable primary session")
+		}
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mcuadros/director-engine/domain"
+	"github.com/mcuadros/director-engine/domain/safedata"
 	homeport "github.com/mcuadros/director-engine/ports/home"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 )
@@ -593,19 +594,9 @@ func (service *OperationsService) Operations(ctx context.Context, input planning
 }
 
 func diagnosticBytesSafe(value []byte) bool {
-	if len(value) == 0 || len(value) > planningport.MaximumResponseBytes {
-		return false
-	}
-	lower := strings.ToLower(string(value))
-	for _, forbidden := range []string{
-		"/home/", "/tmp/", "\\users\\", "file://", "authorization:", "bearer ", "basic ", "token=", "password=", "secret=",
-		"api_key=", "apikey=", "github_pat_", "ghp_", "gho_", "sk-", "-----begin private key-----", "https://user:",
-	} {
-		if strings.Contains(lower, forbidden) {
-			return false
-		}
-	}
-	return true
+	return safedata.ClassifyJSON(value, safedata.ScanRules{
+		MaximumBytes: planningport.MaximumResponseBytes, RejectPrivatePaths: true, RejectSensitiveKeys: true,
+	}) == safedata.Safe
 }
 
 func supportItems() []planningport.SupportBundleItem {

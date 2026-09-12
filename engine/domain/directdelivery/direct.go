@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 const (
@@ -34,7 +36,6 @@ var (
 	uuidPattern       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	digestPattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	gitOIDPattern     = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
-	secretPattern     = regexp.MustCompile(`(?i)(?:-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|(?:password|secret|token|credential|authorization)\s*[:=]\s*\S+)`)
 )
 
 func digest(value any) string {
@@ -47,14 +48,14 @@ func digest(value any) string {
 }
 
 func validIdentity(value string) bool {
-	return identifierPattern.MatchString(value) && !secretPattern.MatchString(value)
+	return identifierPattern.MatchString(value) && !safedata.ContainsSecret(value)
 }
 
 func validBranch(value string) bool {
 	if len(value) == 0 || len(value) > 255 || value == "@" || strings.HasPrefix(value, "-") ||
 		strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") || strings.HasSuffix(value, ".") ||
 		strings.HasSuffix(value, ".lock") || strings.Contains(value, "..") || strings.Contains(value, "@{") ||
-		strings.Contains(value, "//") || secretPattern.MatchString(value) {
+		strings.Contains(value, "//") || safedata.ContainsSecret(value) {
 		return false
 	}
 	return strings.IndexFunc(value, func(character rune) bool {
@@ -604,8 +605,8 @@ func ValidState(state State) bool {
 		!ValidBinding(state.Binding) || !ValidPolicy(state.Policy) ||
 		state.Binding.PolicySHA256 != state.Policy.SHA256 ||
 		state.Binding.ConfigurationSHA256 != state.Policy.ConfigurationSHA256 ||
-		!TargetAuthorized(state.Policy, state.Binding.TargetRef) || secretPattern.MatchString(state.NeedsYouCode) ||
-		secretPattern.MatchString(state.WakeCondition) || secretPattern.MatchString(state.InvalidationCode) {
+		!TargetAuthorized(state.Policy, state.Binding.TargetRef) || safedata.ContainsSecret(state.NeedsYouCode) ||
+		safedata.ContainsSecret(state.WakeCondition) || safedata.ContainsSecret(state.InvalidationCode) {
 		return false
 	}
 	if state.HumanAuthorization != nil && !ValidAuthorization(*state.HumanAuthorization, state.Binding) {

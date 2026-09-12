@@ -11,6 +11,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain/agentprofile"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 )
 
 func bridgeSelection(role agentprofile.Role) domainconfig.AgentSelection {
@@ -199,8 +200,11 @@ func TestToolInputRejectsForgedScopeUnknownFieldsOversizeAndSecrets(t *testing.T
 	}{
 		{"forged Task", json.RawMessage(`{"outcome":"blocked_by_dependency","dependencyIds":["task-2"],"wakePredicate":"dependency_done","taskId":"task-2"}`), InputInvalid},
 		{"unknown", json.RawMessage(`{"outcome":"budget_exhausted","budgetDimension":"tokens","observedAmount":1,"unit":"tokens","extra":true}`), InputInvalid},
-		{"secret", json.RawMessage(`{"outcome":"blocked_by_access","capabilityCode":"git","operationCode":"read","failureFingerprint":"token=github_pat_abcdefghijklmnop"}`), InputSecret},
+		{"secret", json.RawMessage(`{"outcome":"blocked_by_access","capabilityCode":"git","operationCode":"read","failureFingerprint":"token=` + secretfixture.GitHubFineGrainedLetters() + `"}`), InputSecret},
+		{"AWS credential", json.RawMessage(`{"outcome":"blocked_by_access","capabilityCode":"git","operationCode":"read","failureFingerprint":"` + secretfixture.AWSAccessKey() + `"}`), InputSecret},
+		{"sensitive key", json.RawMessage(`{"outcome":"blocked_by_access","capabilityCode":"git","operationCode":"read","failureFingerprint":"bounded","apiToken":"opaque-canary"}`), InputSecret},
 		{"private path", json.RawMessage(`{"outcome":"blocked_by_access","resourceCode":"repository","operationCode":"read","failureFingerprint":"/home/agent/private"}`), InputPrivatePath},
+		{"encoded traversal", json.RawMessage(`{"outcome":"blocked_by_access","resourceCode":"repository","operationCode":"read","failureFingerprint":"%2e%2e%2fprivate"}`), InputPrivatePath},
 		{"oversize", json.RawMessage(`{"value":"` + strings.Repeat("x", MaximumRequestBytes) + `"}`), InputTooLarge},
 	}
 	for _, test := range tests {

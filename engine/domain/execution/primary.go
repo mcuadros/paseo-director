@@ -18,6 +18,7 @@ import (
 	"github.com/mcuadros/director-engine/domain/agentbridge"
 	"github.com/mcuadros/director-engine/domain/agentprofile"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 const PrimarySessionSchemaVersion = "director.primary-session/v1"
@@ -26,7 +27,6 @@ var (
 	primaryIdentityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$`)
 	primarySHA256Pattern   = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	primaryGitOIDPattern   = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
-	primarySecretPattern   = regexp.MustCompile(`(?i)^--?(?:token|secret|password|credential|authorization|github|paseo|socket)(?:=|$)|(?:gh[pousr]_|sk-)[A-Za-z0-9_-]{16,}`)
 )
 
 // LeaseBinding freezes the exact Director Engine owner which admitted this
@@ -184,7 +184,9 @@ func validMCPServer(server MCPServerLaunch) bool {
 		return false
 	}
 	for _, argument := range server.Args {
-		if !boundedPrimaryValue(argument, 256) || primarySecretPattern.MatchString(argument) {
+		name := strings.SplitN(strings.TrimLeft(argument, "-"), "=", 2)[0]
+		if !boundedPrimaryValue(argument, 256) || safedata.SensitiveKey(name) || safedata.ContainsSecret(argument) ||
+			slices.Contains([]string{"github", "paseo", "socket"}, strings.ToLower(name)) {
 			return false
 		}
 	}

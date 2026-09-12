@@ -18,10 +18,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strings"
 	"syscall"
 	"time"
 
+	"github.com/mcuadros/director-engine/domain/safedata"
 	homeport "github.com/mcuadros/director-engine/ports/home"
 )
 
@@ -95,16 +95,9 @@ func validRequest(bundleID, fileName string) bool {
 }
 
 func safeEntry(content []byte) bool {
-	if len(content) == 0 || len(content) > maximumBundleBytes || !json.Valid(content) {
-		return false
-	}
-	lower := strings.ToLower(string(content))
-	for _, forbidden := range []string{"/home/", "/tmp/", "\\users\\", "file://", "authorization:", "bearer ", "basic ", "token=", "password=", "secret=", "api_key=", "apikey=", "github_pat_", "ghp_", "gho_", "sk-", "-----begin private key-----", "https://user:"} {
-		if strings.Contains(lower, forbidden) {
-			return false
-		}
-	}
-	return true
+	return json.Valid(content) && safedata.ClassifyJSON(content, safedata.ScanRules{
+		MaximumBytes: maximumBundleBytes, RejectPrivatePaths: true, RejectSensitiveKeys: true,
+	}) == safedata.Safe
 }
 
 func encodeBundle(input homeport.SupportBundleWrite) ([]byte, error) {

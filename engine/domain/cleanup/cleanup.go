@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 const (
@@ -41,7 +43,6 @@ var (
 	identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$`)
 	digestPattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	gitOIDPattern     = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
-	secretPattern     = regexp.MustCompile(`(?i)(?:-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|(?:password|secret|token|credential|authorization)\s*[:=]\s*\S+)`)
 )
 
 func digest(value any) string {
@@ -58,7 +59,7 @@ func digest(value any) string {
 func DigestText(value string) string { return digest(value) }
 
 func validIdentity(value string) bool {
-	return identifierPattern.MatchString(value) && !secretPattern.MatchString(value)
+	return identifierPattern.MatchString(value) && !safedata.ContainsSecret(value)
 }
 
 func validOID(value string) bool { return gitOIDPattern.MatchString(value) }
@@ -880,8 +881,8 @@ func ValidState(value State) bool {
 		!slices.Contains([]LifecycleState{LifecycleActive, LifecycleRestored, LifecycleReclaimed}, value.LifecycleState) ||
 		(value.Trigger == TriggerIntegrated) != (value.Binding.IntegrationKind != "") ||
 		!slices.Contains([]Phase{PhaseIntent, PhaseCleaning, PhaseWaiting, PhaseRetained, PhaseComplete, PhaseNeedsYou}, value.Phase) ||
-		len(value.Effects) > MaximumEffects || len(value.RetentionEffects) > 2 || secretPattern.MatchString(value.NeedsYouCode) || secretPattern.MatchString(value.WakeCondition) ||
-		secretPattern.MatchString(value.RetentionNeedsYouCode) || secretPattern.MatchString(value.RetentionWakeCondition) {
+		len(value.Effects) > MaximumEffects || len(value.RetentionEffects) > 2 || safedata.ContainsSecret(value.NeedsYouCode) || safedata.ContainsSecret(value.WakeCondition) ||
+		safedata.ContainsSecret(value.RetentionNeedsYouCode) || safedata.ContainsSecret(value.RetentionWakeCondition) {
 		return false
 	}
 	if value.Trigger == TriggerIntegrated && !value.Policy.TerminateOnCompletion {

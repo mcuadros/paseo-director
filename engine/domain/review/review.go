@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 const (
@@ -33,7 +35,6 @@ var (
 	gitOIDPattern      = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 	codePattern        = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 	workflowRunPattern = regexp.MustCompile(`^[1-9][0-9]{0,31}$`)
-	secretPattern      = regexp.MustCompile(`(?i)(?:-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|(?:password|secret|token|credential)\s*[:=]\s*\S+)`)
 )
 
 // Dimension is the mandatory complete review matrix. No profile or prompt may
@@ -561,12 +562,12 @@ func validFinding(value Finding) bool {
 	if !codePattern.MatchString(value.Code) || !slices.Contains([]Severity{SeverityP0, SeverityP1, SeverityP2, SeverityP3}, value.Severity) ||
 		!slices.Contains(dimensions, value.Dimension) || len(value.Summary) == 0 || len(value.Summary) > 1024 ||
 		len(value.References) == 0 || len(value.References) > MaximumReferences || !uniqueStrings(value.References) ||
-		secretPattern.MatchString(value.Summary) {
+		safedata.ContainsSecret(value.Summary) {
 		return false
 	}
 	for _, reference := range value.References {
 		if len(reference) > 256 || strings.ContainsRune(reference, 0) || strings.HasPrefix(reference, "/") ||
-			strings.Contains(reference, "../") || secretPattern.MatchString(reference) {
+			strings.Contains(reference, "../") || safedata.ContainsSecret(reference) {
 			return false
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 )
 
 func workspaceFixture(t *testing.T, projectID string, index int) Workspace {
@@ -53,6 +54,20 @@ func TestOrganizerIdentityIsStableAndIndependentOfMutableFields(t *testing.T) {
 	project.Organizer = &Organizer{ID: OrganizerID("project-2")}
 	if err := ValidateProject(project); !errors.Is(err, ErrInvalidProject) {
 		t.Fatalf("Project with foreign Organizer error = %v", err)
+	}
+}
+
+func TestProjectAndWorkspaceRejectCredentialShapedDurableFields(t *testing.T) {
+	project := Project{ID: "project-1", Name: "token=" + secretfixture.GitHubFineGrained(), State: "active",
+		Organizer: &Organizer{ID: OrganizerID("project-1")}}
+	if !errors.Is(ValidateProject(project), ErrInvalidProject) {
+		t.Fatal("credential-bearing Project name was admitted")
+	}
+	workspace := workspaceFixture(t, "project-1", 1)
+	workspace.Repository.SourcePath = "/srv/workspaces/sk-private"
+	workspace.Repository.GitCommonDirectory = workspace.Repository.SourcePath + "/.git"
+	if !errors.Is(ValidateWorkspace(workspace), ErrInvalidWorkspace) {
+		t.Fatal("credential-bearing repository path was admitted")
 	}
 }
 

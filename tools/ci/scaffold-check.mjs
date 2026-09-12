@@ -71,6 +71,9 @@ const ENGINE_ALLOWED_PREFIXES = [
   "engine/projection/",
   "engine/reducer/",
 ];
+const ENGINE_ALLOWED_PACKAGE_DIRECTORIES = new Set([
+  "engine/internal/testkit/secretfixture",
+]);
 const FUTURE_PRODUCT_PATHS = [
   /^(?:application|domain|orchestration|projection|reducers|scheduler|taskstore)\//,
   /^connector\/(?:application|domain|orchestration|projection|reducers|scheduler|taskstore)\//,
@@ -564,6 +567,21 @@ export function hostSourceErrors(path, source) {
   return errors;
 }
 
+export function enginePackageInventoryErrors(paths) {
+  const unexpectedEngine = paths.filter(
+    (path) =>
+      path.startsWith("engine/") &&
+      path.endsWith(".go") &&
+      !ENGINE_ALLOWED_PREFIXES.some((prefix) => path.startsWith(prefix)) &&
+      !ENGINE_ALLOWED_PACKAGE_DIRECTORIES.has(
+        path.slice(0, path.lastIndexOf("/")),
+      ),
+  );
+  return unexpectedEngine.length > 0
+    ? [`engine scaffold contains an unclassified product package: ${unexpectedEngine.join(", ")}`]
+    : [];
+}
+
 function architectureErrors(repositoryRoot, paths) {
   const errors = [];
   const futureProduct = paths.filter((path) =>
@@ -574,15 +592,7 @@ function architectureErrors(repositoryRoot, paths) {
       `product behavior is outside this scaffold and needs its PLAN section 21.1 suites: ${futureProduct.join(", ")}`,
     );
   }
-  const unexpectedEngine = paths.filter(
-    (path) =>
-      path.startsWith("engine/") &&
-      path.endsWith(".go") &&
-      !ENGINE_ALLOWED_PREFIXES.some((prefix) => path.startsWith(prefix)),
-  );
-  if (unexpectedEngine.length > 0) {
-    errors.push(`engine scaffold contains an unclassified product package: ${unexpectedEngine.join(", ")}`);
-  }
+  errors.push(...enginePackageInventoryErrors(paths));
   for (const path of paths.filter((candidate) => /\.[cm]?[jt]sx?$/.test(candidate))) {
     errors.push(
       ...hostSourceErrors(

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	planningtestkit "github.com/mcuadros/director-engine/internal/planningtestkit"
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 )
 
 func planningRef(kind PlanningNodeKind, id string) PlanningNodeRef {
@@ -95,6 +96,16 @@ func TestPlanningPropagatesEpicAndCrossWorkspaceBlocking(t *testing.T) {
 	requireTaskBlocked(t, report, "task-standalone", false)
 	if !report.HasCode(PlanningEpicDependencyBlocked) || !report.HasCode(PlanningTaskDependencyBlocked) {
 		t.Fatalf("missing deterministic blocker explanations: %#v", report)
+	}
+}
+
+func TestPlanningRejectsSecretAndPrivatePathBeforeDurableAdmission(t *testing.T) {
+	for _, unsafe := range []string{"token=" + secretfixture.GitHubFineGrained(), "/home/owner/private-evidence"} {
+		project := planningFixture()
+		project.Tasks[0].Objective = unsafe
+		if ValidateTask(project.Tasks[0]) == nil || EvaluatePlanning(project).Valid {
+			t.Fatalf("unsafe planning text was admitted: %q", unsafe)
+		}
 	}
 }
 

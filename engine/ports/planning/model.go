@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 const (
@@ -47,7 +49,28 @@ type QueryInput struct {
 
 func validOpaque(value string) bool {
 	return value != "" && utf8.ValidString(value) && utf8.RuneCountInString(value) <= 128 &&
-		value == strings.TrimSpace(value) && strings.IndexFunc(value, unicode.IsControl) < 0
+		value == strings.TrimSpace(value) && strings.IndexFunc(value, unicode.IsControl) < 0 &&
+		safedata.ClassifyText(value, true) == safedata.Safe
+}
+
+// ValidMutationActor validates the complete server-derived identity carried by
+// the connector-only headers. Request JSON has no representation for actor or
+// authentication fields.
+func ValidMutationActor(kind, id, session string) bool {
+	validIdentity := func(value string) bool {
+		if !validOpaque(value) {
+			return false
+		}
+		for index, character := range value {
+			if (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+				(character >= '0' && character <= '9') || index > 0 && strings.ContainsRune("_.:@/-", character) {
+				continue
+			}
+			return false
+		}
+		return true
+	}
+	return kind == "human" && validIdentity(id) && validIdentity(session)
 }
 
 func validUnique(values []string, maximum int, allowed map[string]struct{}) bool {
@@ -115,7 +138,7 @@ func ValidateQuery(input QueryInput) error {
 		!validUnique(input.Attention, 12, queryAttention) ||
 		(input.Search != nil && (*input.Search == "" || !utf8.ValidString(*input.Search) ||
 			utf8.RuneCountInString(*input.Search) > 256 || *input.Search != strings.TrimSpace(*input.Search) ||
-			strings.IndexFunc(*input.Search, unicode.IsControl) >= 0)) ||
+			strings.IndexFunc(*input.Search, unicode.IsControl) >= 0 || safedata.ClassifyText(*input.Search, true) != safedata.Safe)) ||
 		(input.Sort != "scheduler_order" && input.Sort != "updated_desc" && input.Sort != "priority_fifo" && input.Sort != "key_asc") ||
 		(input.Cursor != nil && !validPageCursor(*input.Cursor)) {
 		return ErrQueryInvalid
@@ -923,7 +946,9 @@ func ValidateOrganizerBootstrap(input OrganizerBootstrapInput) error {
 	if err != nil || input.SchemaVersion != 1 || input.ContractVersion != "director-planning/v1" || input.ContractHash != hash ||
 		!validOpaque(input.HostID) || len(input.RequestID) < 16 || !validOpaque(input.RequestID) || !validOpaque(input.ProjectID) ||
 		input.ProjectName == "" || len(input.ProjectName) > 512 || input.ProjectName != strings.TrimSpace(input.ProjectName) ||
-		len(input.RepositoryPath) < 2 || len(input.RepositoryPath) > 4096 || input.RepositoryPath != strings.TrimSpace(input.RepositoryPath) {
+		safedata.ClassifyText(input.ProjectName, true) != safedata.Safe || len(input.RepositoryPath) < 2 || len(input.RepositoryPath) > 4096 ||
+		input.RepositoryPath != strings.TrimSpace(input.RepositoryPath) || strings.IndexFunc(input.RepositoryPath, unicode.IsControl) >= 0 ||
+		safedata.ClassifyText(input.RepositoryPath, false) != safedata.Safe {
 		return ErrQueryInvalid
 	}
 	isCreate := input.Kind == "create.preview" || input.Kind == "create.apply"
@@ -931,6 +956,11 @@ func ValidateOrganizerBootstrap(input OrganizerBootstrapInput) error {
 	if (!isCreate && input.Kind != "adopt.preview" && input.Kind != "adopt.apply") ||
 		isCreate != (input.ConfigurationJSON != nil) || (input.ConfigurationJSON != nil && (len(*input.ConfigurationJSON) < 2 || len(*input.ConfigurationJSON) > 60000)) ||
 		isApply != (input.PreviewID != nil) || (input.PreviewID != nil && !validSHA256(*input.PreviewID)) {
+		return ErrQueryInvalid
+	}
+	if input.ConfigurationJSON != nil && safedata.ClassifyJSON([]byte(*input.ConfigurationJSON), safedata.ScanRules{
+		MaximumBytes: 60000, RejectSensitiveKeys: true,
+	}) != safedata.Safe {
 		return ErrQueryInvalid
 	}
 	return nil

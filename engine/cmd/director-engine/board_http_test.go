@@ -102,6 +102,18 @@ func TestBoardHandlerRedactsStoreFailure(t *testing.T) {
 	}
 }
 
+func TestBoardHandlerSuppressesUnsafeProjectionText(t *testing.T) {
+	canary := "Authorization: Bearer abcdefghijklmnop"
+	reader := &boardReaderStub{snapshot: projection.Board{SchemaVersion: 1, Cursor: "1", Tasks: []projection.BoardTask{{
+		ID: "task-1", ProjectID: "project-1", ProjectName: "Director", Title: canary, State: projection.StateQueued,
+	}}}}
+	recorder := httptest.NewRecorder()
+	newBoardHandler(reader).ServeHTTP(recorder, boardRequest(t, http.MethodGet, boardQueryPath))
+	if recorder.Code != http.StatusServiceUnavailable || strings.Contains(recorder.Body.String(), canary) {
+		t.Fatalf("unsafe Board output = %d %q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestBoardHandlerFitsWorstCaseAdmittedTextWithinTheContract(t *testing.T) {
 	tasks := make([]projection.BoardTask, projection.MaximumBoardTasks)
 	escapableText := strings.Repeat("<>&", 170) + "<>"

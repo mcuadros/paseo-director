@@ -20,6 +20,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain/candidate"
 	domainreview "github.com/mcuadros/director-engine/domain/review"
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 const (
@@ -43,7 +44,6 @@ var (
 	statusLoginPattern = regexp.MustCompile(`^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})|[A-Za-z0-9][A-Za-z0-9-]{0,38}\[bot\])$`)
 	digestPattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	gitOIDPattern      = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
-	secretPattern      = regexp.MustCompile(`(?i)(?:-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|(?:password|secret|token|credential|authorization)\s*[:=]\s*\S+)`)
 )
 
 func digest(value any) string {
@@ -56,12 +56,12 @@ func digest(value any) string {
 }
 
 func safeText(value string) bool {
-	return identifierPattern.MatchString(value) && !secretPattern.MatchString(value)
+	return identifierPattern.MatchString(value) && !safedata.ContainsSecret(value)
 }
 
 func safeName(value string) bool {
 	return value != "" && len(value) <= 200 && utf8.ValidString(value) && value == strings.TrimSpace(value) &&
-		strings.IndexFunc(value, unicode.IsControl) < 0 && !secretPattern.MatchString(value)
+		strings.IndexFunc(value, unicode.IsControl) < 0 && !safedata.ContainsSecret(value)
 }
 
 type CheckKind string

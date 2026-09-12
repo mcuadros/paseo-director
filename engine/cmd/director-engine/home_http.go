@@ -99,16 +99,5 @@ func (handler *homeHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		}
 		return
 	}
-	var encoded bytes.Buffer
-	encoder := json.NewEncoder(&encoded)
-	encoder.SetEscapeHTML(false)
-	if encoder.Encode(snapshot) != nil || encoded.Len() > planningport.MaximumResponseBytes {
-		writePlanningError(response, http.StatusServiceUnavailable, "HOME_UNAVAILABLE")
-		return
-	}
-	response.Header().Set("Cache-Control", "no-store")
-	response.Header().Set("Content-Type", "application/json")
-	response.Header().Set(contractVersionHeader, handler.contractVersion)
-	response.Header().Set(contractHashHeader, handler.contractHash)
-	_, _ = response.Write(encoded.Bytes())
+	writePlanningJSON(response, handler.contractVersion, handler.contractHash, snapshot, true)
 }

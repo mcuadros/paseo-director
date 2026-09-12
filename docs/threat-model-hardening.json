@@ -1,0 +1,244 @@
+{
+  "schemaVersion": 1,
+  "task": "dir-m5.9",
+  "status": "closed",
+  "inventorySources": [
+    "plan",
+    "adrs",
+    "beads_task_and_comments",
+    "prior_review_findings",
+    "public_contract_schemas",
+    "connectors",
+    "coordinator",
+    "engine_ports_and_adapters",
+    "operations_and_support",
+    "maintenance_backup_and_retention",
+    "tests"
+  ],
+  "normativeSources": [
+    "docs/PLAN.md",
+    "docs/adr/0003-paseo-0.7.2-lifecycle-recovery.md",
+    "docs/adr/0004-select-direct-dolt-taskstore.md",
+    "docs/adr/0005-session-scoped-mcp-provider-matrix.md",
+    "docs/adr/0006-exact-sha-github-delivery.md",
+    "docs/adr/0007-git-worktree-ownership-and-cleanup.md",
+    "docs/adr/0008-director-threat-model.md",
+    "docs/adr/0012-direct-dolt-operational-readiness.md",
+    "docs/adr/0013-scalable-ignored-tree-recovery-policy.md",
+    "docs/adr/0014-practical-linux-agent-boundary.md",
+    "docs/adr/0015-idempotent-command-effect-contract.md",
+    "docs/adr/0017-standalone-engine-connector-authority-boundary.md",
+    "docs/adr/0018-deterministic-coordination-boundary.md",
+    "docs/adr/0019-event-driven-delivery-fast-path.md",
+    "docs/adr/0020-zero-work-bootstrap-and-terminal-event-dispatch.md",
+    "docs/adr/0021-recover-exact-leased-ref-cleanup.md"
+  ],
+  "controls": [
+    {
+      "id": "TM-CREDENTIALS",
+      "severity": "P0",
+      "categories": ["credentials", "secrets"],
+      "threats": ["SEC-1", "SEC-2"],
+      "mitigation": "Credential bytes and credential-shaped values are rejected or redacted by one bounded classifier; connector and coordinator credentials remain in their narrow owner processes.",
+      "implementation": [
+        "engine/domain/safedata/safedata.go#ClassifyJSON",
+        "engine/domain/planning.go#boundedPlanningText",
+        "engine/domain/project.go#ValidateProject",
+        "connector/credential.server.ts#loadConnectorCredential",
+        "tools/coordinator/coordinator.mjs#selectedEnvironment"
+      ],
+      "tests": [
+        "engine/domain/safedata/safedata_test.go#TestCredentialCanaryMatrixRejectsValuesKeysAndEscapedJSON",
+        "engine/domain/planning_test.go#TestPlanningRejectsSecretAndPrivatePathBeforeDurableAdmission",
+        "engine/domain/project_test.go#TestProjectAndWorkspaceRejectCredentialShapedDurableFields",
+        "engine/adapters/dolt/store_adversarial_test.go#credential-bearing Project name",
+        "tests/connector-boundary.test.ts#the connector descriptor and engine environment never propagate its credential",
+        "tools/coordinator/paseo-auth.test.mjs#protected Paseo lifecycle reads isolate credentials and fail closed"
+      ],
+      "status": "closed"
+    },
+    {
+      "id": "TM-PUBLIC-SINKS",
+      "severity": "P0",
+      "categories": ["secrets", "private_paths"],
+      "threats": ["SUP-1"],
+      "mitigation": "Board, planning, technical-log, and support-bundle sinks post-scan bounded structured data and return only fixed content-free refusal codes.",
+      "implementation": [
+        "engine/cmd/director-engine/planning_http.go#encodeSafeBoundaryJSON",
+        "engine/application/home/operations.go#diagnosticBytesSafe",
+        "engine/adapters/diagnostics/bundle.go#safeEntry"
+      ],
+      "tests": [
+        "engine/cmd/director-engine/planning_http_test.go#TestPlanningHandlerSuppressesCredentialAndPrivatePathOutput",
+        "engine/cmd/director-engine/board_http_test.go#TestBoardHandlerSuppressesUnsafeProjectionText",
+        "engine/adapters/diagnostics/bundle_test.go#TestBundleWriterRefusesSecretsPathsUnknownEntriesAndRootReplacement"
+      ],
+      "status": "closed"
+    },
+    {
+      "id": "TM-PRIVATE-PATHS",
+      "severity": "P0",
+      "categories": ["private_paths", "exact_repository_resource_ownership"],
+      "threats": ["REP-1", "FS-1", "FS-2"],
+      "mitigation": "Untrusted paths reject traversal and encoded aliases; Git adapters canonicalize and re-observe source, worktree, common-directory, device, inode, registration, and remote identity immediately before effects.",
+      "implementation": [
+        "engine/domain/safedata/safedata.go#ContainsPrivatePath",
+        "engine/adapters/git/candidate.go#canonicalPath",
+        "engine/adapters/organizergit/repository.go#exactRoot"
+      ],
+      "tests": [
+        "engine/domain/safedata/safedata_test.go#TestPrivatePathMutationMatrixRejectsTraversalAliases",
+        "engine/adapters/git/candidate_test.go#TestAdapterRejectsPathAliasesAlternateObjectsAndMaliciousNamesWithoutLeaking",
+        "engine/adapters/organizergit/repository_test.go#TestResolveWorkspaceRejectsPathAliasesAndNoncanonicalRoots"
+      ],
+      "status": "closed"
+    },
+    {
+      "id": "TM-PROCESS-BOUNDARY",
+      "severity": "P0",
+      "categories": ["process_arguments_environment", "credentials"],
+      "threats": ["CMD-1", "CMD-2"],
+      "mitigation": "Processes use direct argument vectors, fixed commands, exact working directories, empty MCP environments, credential-free arguments, bounded output, and no shell expansion.",
+      "implementation": [
+        "engine/domain/execution/primary.go#validMCPServer",
+        "engine/ports/host/host-interface.v1.json#arguments",
+        "connector/paseo.server.ts#assertCreate",
+        "tools/coordinator/coordinator.mjs#defaultCommandRunner"
+      ],
+      "tests": [
+        "engine/domain/execution/primary_test.go#TestPrimarySessionRejectsCredentialAndControlEnvironment",
+        "tests/primary-host-connector.test.ts#primary creation fails before Paseo when frozen profile or session correlation drifts",
+        "tools/coordinator/coordinator.test.mjs#argument arrays preserve hostile PR title text without shell execution"
+      ],
+      "status": "closed"
+    },
+    {
+      "id": "TM-MCP-SCOPE",
+      "severity": "P0",
+      "categories": ["mcp_capability_scope", "actor_authority_separation"],
+      "threats": ["MCP-1", "MCP-2", "MCP-3"],
+      "mitigation": "The Engine derives a fixed role catalog, reauthorizes immutable Task/Run/Candidate scope on every call, rejects caller scope selectors, and never exposes lifecycle effects.",
+      "implementation": [
+        "engine/domain/agentbridge/contract.go#Catalog",
+        "engine/domain/agentbridge/schemas/director-agent-mcp.v1.json#reviewer",
+        "engine/application/agentbridge/service.go#OpenSession",
+        "engine/application/agentbridge/service.go#Call"
+      ],
+      "tests": [
+        "engine/domain/agentbridge/contract_test.go#TestContractMutationsFailClosed",
+        "engine/domain/agentbridge/contract_test.go#TestToolInputRejectsForgedScopeUnknownFieldsOversizeAndSecrets",
+        "engine/domain/agentbridge/executionoracle_conformance_test.go#TestExecutionOracleConformsToIntegratedSessionMCPContract"
+      ],
+      "status": "closed"
+    },
+    {
+      "id": "TM-POLICY-ENVELOPE",
+      "severity": "P0",
+      "categories": ["policy_envelope", "actor_authority_separation"],
+      "threats": ["CTL-1", "CTL-2", "AGT-3"],
+      "mitigation": "Lifecycle approval is an exact-scope, current, human command; model claims remain evidence only and cannot expand profiles, policy, delivery, cleanup, or integration authority.",
+      "implementation": [
+        "engine/domain/execution/admission.go#AdmitLifecycle",
+        "engine/domain/execution/primary.go#PrimarySessionMatchesProfiles",
+        "engine/domain/execution/control.go#ValidControlIntent"
+      ],
+      "tests": [
+        "engine/domain/execution/admission_test.go#TestLifecycleAdmissionRejectsStaleNonHumanAndCrossScopeApproval",
+        "engine/domain/execution/primary_test.go#TestPrimarySessionMutationMatrixFailsClosed",
+        "engine/domain/execution/control_test.go#TestControlIntentCannotInferEmergencyFromAgentOrConfirmationBoolean"
+      ],
+      "status": "closed"
+    },
+    {
+      "id": "TM-ACTOR-AUTHORITY",
+      "severity": "P0",
+      "categories": ["actor_authority_separation", "policy_envelope"],
+      "threats": ["AGT-1", "AGT-2", "AGT-4"],
+      "mitigation": "Mutation payloads cannot carry authorship; connector-only headers must contain one exact bounded human identity, and Task/Reviewer claims cannot close, publish, review themselves, or integrate.",
+      "implementation": [
+        "engine/ports/planning/model.go#ValidMutationActor",
+        "engine/ports/planning/planning-surface.v1.json#mutationActorHeaders",
+        "engine/cmd/director-engine/planning_mutation_http.go#planningMutationActor",
+        "engine/domain/review/review.go#ValidateClaim"
+      ],
+      "tests": [
+        "engine/cmd/director-engine/planning_mutation_http_test.go#TestPlanningControlHTTPRejectsCallerAuthorshipFields",
+        "engine/ports/planning/contract_test.go#TestPlanningIngressRejectsCredentialPathsAndForgedActorShapes",
+        "tools/coordinator/coordinator.test.mjs#review evidence rejects Task-Agent, coordinator, and harness identity aliasing"
+      ],
+      "status": "closed"
+    },
+    {
+      "id": "TM-RESPONSE-LOSS",
+      "severity": "P0",
+      "categories": ["response_loss_restart", "exact_repository_resource_ownership"],
+      "threats": ["AGT-5", "NET-1"],
+      "mitigation": "Every effect records intent before dispatch and reconciles fresh authoritative facts after loss or restart; unknown creation preserves possible resources and exact ref deletion alone permits compare-delete retry.",
+      "implementation": [
+        "engine/domain/execution/recovery.go#EvaluatePrimaryRecovery",
+        "engine/domain/execution/completion.go#AdmitCompletionEvent",
+        "engine/reducer/cleanup/reducer.go#Reduce"
+      ],
+      "tests": [
+        "engine/cmd/director-engine/startup_reconciliation_test.go#TestStartupReconciliationRestartsBeforeAndAfterEveryWalkingSkeletonEffect",
+        "engine/domain/execution/recovery_test.go#TestPrimaryRecoveryPropertyAndMutationExhaustion",
+        "engine/reducer/cleanup/reducer_test.go#TestExactRefResponseLossRetriesButWorktreeRemainsStrict"
+      ],
+      "status": "closed"
+    },
+    {
+      "id": "TM-EXACT-OWNERSHIP",
+      "severity": "P0",
+      "categories": ["exact_repository_resource_ownership", "owned_deletion"],
+      "threats": ["TCB-1", "FS-3"],
+      "mitigation": "Repository, worktree, agent, workspace, Candidate, review checkout, artifact, and ref identities are immutable and freshly matched; ambiguous or foreign resources remain untouched.",
+      "implementation": [
+        "engine/domain/execution/primary.go#RepositoryBindingSHA256",
+        "engine/adapters/git/cleanup.go#exactWorktreeRegistration",
+        "engine/adapters/git/review_checkout.go#Create"
+      ],
+      "tests": [
+        "engine/domain/execution/primary_test.go#TestRepositoryBindingPropertyMatrixBindsEveryRunAndTarget",
+        "engine/adapters/git/cleanup_test.go#TestCleanupAdapterRejectsPathDeviceRepositoryBranchAndConsumerAttacks",
+        "engine/adapters/git/review_checkout_test.go#TestReviewerCheckoutRefusesPrimaryAliasAndOwnerMarkerReplacement"
+      ],
+      "status": "closed"
+    },
+    {
+      "id": "TM-OWNED-DELETION",
+      "severity": "P0",
+      "categories": ["owned_deletion", "response_loss_restart"],
+      "threats": ["DEL-1"],
+      "mitigation": "Deletion is authorized only after terminal evidence and preservation, then uses exact registration/identity checks and force-with-lease or compare-delete guards; ambiguity never broadens cleanup.",
+      "implementation": [
+        "engine/adapters/git/cleanup.go#RemoveWorktree",
+        "engine/adapters/git/cleanup.go#DeleteRemoteRef",
+        "engine/adapters/git/cleanup.go#DeleteLocalRef"
+      ],
+      "tests": [
+        "engine/adapters/git/cleanup_test.go#TestCleanupAdapterRemoteRaceAndSameSHARecreationRemainRecoverable",
+        "engine/adapters/git/cleanup_test.go#TestCleanupAdapterLocalRefRequiresAbsentWorktreeAndNoConsumer",
+        "tools/coordinator/coordinator.test.mjs#the exact-ref retry exception does not broaden worktree removal"
+      ],
+      "status": "closed"
+    },
+    {
+      "id": "TM-DURABLE-BOUNDS",
+      "severity": "P1",
+      "categories": ["response_loss_restart", "secrets"],
+      "threats": ["DAT-1", "DOS-1"],
+      "mitigation": "Typed durable state, canonical JSON, strict versions, monotonic event cursors, resource limits, finite retries, disk-pressure gates, backups, and verified restore/migration preserve recoverability without unbounded work.",
+      "implementation": [
+        "engine/adapters/dolt/taskstore.go#prepareCommand",
+        "engine/adapters/dolt/maintenance.go#ObserveDisk",
+        "engine/domain/execution/admission.go#EvaluateOperationalLimits"
+      ],
+      "tests": [
+        "engine/adapters/dolt/store_adversarial_test.go#TestConcurrentStrictEventResumeObservesEveryCommit",
+        "engine/adapters/dolt/maintenance_contract_test.go#TestDoltInterruptedSchemaEffectProducesExactRecovery",
+        "engine/domain/execution/admission_test.go#TestOperationalLimitsAcceptExactBoundaryAndParkEveryMissingOrExceededFact"
+      ],
+      "status": "closed"
+    }
+  ]
+}

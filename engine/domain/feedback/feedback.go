@@ -12,10 +12,10 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/mcuadros/director-engine/domain/correction"
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 const (
@@ -37,9 +37,6 @@ var (
 	loginPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/\[\]-]{0,255}$`)
 	digestPattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	gitOIDPattern     = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
-	secretPattern     = regexp.MustCompile(`(?i)(?:-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|(?:password|secret|token|credential)\s*[:=]\s*\S+)`)
-	unixPathPattern   = regexp.MustCompile(`(?:^|[\s(])/(?:home|tmp|var|etc|run|root)/[^\s),;]+`)
-	windowsPath       = regexp.MustCompile(`(?i)(?:^|[\s(])[A-Z]:\\[^\s),;]+`)
 )
 
 type Source string
@@ -388,21 +385,7 @@ func Redact(body string) (string, bool) {
 	if body == "" || len(body) > MaximumBodyBytes || !utf8.ValidString(body) || strings.IndexByte(body, 0) >= 0 {
 		return "", false
 	}
-	value := secretPattern.ReplaceAllString(body, "[REDACTED_SECRET]")
-	value = unixPathPattern.ReplaceAllStringFunc(value, func(match string) string {
-		prefix := ""
-		if match[0] != '/' {
-			prefix = match[:1]
-		}
-		return prefix + "[REDACTED_PATH]"
-	})
-	value = windowsPath.ReplaceAllStringFunc(value, func(match string) string {
-		prefix := ""
-		if len(match) > 0 && unicode.IsSpace(rune(match[0])) {
-			prefix = match[:1]
-		}
-		return prefix + "[REDACTED_PATH]"
-	})
+	value, _ := safedata.Redact(body)
 	value = strings.TrimSpace(strings.Join(strings.Fields(value), " "))
 	if value == "" {
 		return "", false
@@ -515,7 +498,7 @@ func ValidRecord(value Record) bool {
 		return value.Summary == "" && value.Disposition == DispositionDeleted
 	}
 	return value.Summary != "" && len(value.Summary) <= MaximumSummaryBytes && utf8.ValidString(value.Summary) &&
-		!secretPattern.MatchString(value.Summary) && !unixPathPattern.MatchString(value.Summary) && !windowsPath.MatchString(value.Summary)
+		!safedata.ContainsSecret(value.Summary) && !safedata.ContainsPrivatePath(value.Summary)
 }
 
 func snapshotAudit(snapshot Snapshot) SnapshotRecord {

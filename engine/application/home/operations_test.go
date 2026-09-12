@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/mcuadros/director-engine/domain"
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 	homeport "github.com/mcuadros/director-engine/ports/home"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 )
@@ -213,7 +214,7 @@ func TestManualSyncIsIdempotentAcrossConcurrentResponseLossAndNeverRetriesSucces
 }
 
 func TestDiagnosticSafetyScannerRejectsEveryForbiddenClass(t *testing.T) {
-	for _, unsafe := range []string{"/home/user/repo", "/tmp/private", `C:\\Users\\Alice\\secret`, "file:///srv/repo", "Authorization: bearer abc", "Bearer abc", "Basic abc", "token=value", "password=value", "secret=value", "api_key=value", "apikey=value", "github_pat_private", "ghp_private", "gho_private", "sk-private", "-----BEGIN PRIVATE KEY-----", "https://user:pass@example.test"} {
+	for _, unsafe := range []string{"/home/user/repo", "/tmp/private", `C:\\Users\\Alice\\secret`, "file:///srv/repo", "Authorization: bearer abc", "Bearer abc", "Basic abc", "token=value", "password=value", "secret=value", "api_key=value", "apikey=value", "github_pat_private", "ghp_private", "gho_private", "sk-private", secretfixture.PrivateKeyHeader(""), "https://user:pass@example.test"} {
 		value, _ := json.Marshal(map[string]string{"value": unsafe})
 		if diagnosticBytesSafe(value) {
 			t.Fatalf("scanner accepted unsafe class %q", unsafe)
