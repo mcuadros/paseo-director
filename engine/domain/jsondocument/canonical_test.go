@@ -5,9 +5,29 @@ package jsondocument
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
+
+var benchmarkCanonicalDocument []byte
+
+type canonicalBoundary struct {
+	name       string
+	maximum    int
+	normalized bool
+}
+
+var canonicalBoundaries = []canonicalBoundary{
+	{name: "TaskStore", maximum: 64 * 1024, normalized: true},
+	{name: "configuration", maximum: 1 << 20},
+}
+
+func maximallyNestedObjectDocument(maximum int) []byte {
+	const prefix = `{"a":`
+	depth := (maximum - 1) / (len(prefix) + 1)
+	return []byte(strings.Repeat(prefix, depth) + "0" + strings.Repeat("}", depth))
+}
 
 func TestCanonicalSortsObjectsAndPreservesArrayOrder(t *testing.T) {
 	input := []byte(` { "z": [3, 2, 1], "a": {"second": 2, "first": 1}, "zero": -0 } `)
@@ -137,11 +157,103 @@ func TestCanonicalWithNormalizedNumbersPreservesStrictEncoding(t *testing.T) {
 }
 
 func TestCanonicalWithNormalizedNumbersBoundsExpansion(t *testing.T) {
-	if _, err := CanonicalWithNormalizedNumbers([]byte(`1e2000000`)); !errors.Is(err, ErrCanonicalDocumentTooLarge) {
-		t.Fatalf("oversize canonical number was not bounded: %v", err)
+	for name, input := range map[string][]byte{
+		"large exponent":             []byte(`1e2000000`),
+		"int64 exponent overflow":    []byte(`1e99999999999999999999`),
+		"negative exponent overflow": []byte(`1e-99999999999999999999`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := CanonicalWithNormalizedNumbers(input); !errors.Is(err, ErrCanonicalDocumentTooLarge) {
+				t.Fatalf("oversize canonical number was not bounded: %v", err)
+			}
+		})
+	}
+	zero, err := CanonicalWithNormalizedNumbers([]byte(`0e99999999999999999999`))
+	if err != nil || string(zero) != "0" {
+		t.Fatalf("large zero exponent = %q, %v", zero, err)
 	}
 	input := []byte("[" + strings.TrimSuffix(strings.Repeat("1e8191,", 129), ",") + "]")
 	if _, err := CanonicalWithNormalizedNumbersLimit(input, 1<<20); !errors.Is(err, ErrCanonicalDocumentTooLarge) {
 		t.Fatalf("document-wide numeric expansion was not bounded: %v", err)
+	}
+	if _, err := CanonicalWithNormalizedNumbersLimit(
+		[]byte(`{"same":0,"same":1e99999999999999999999}`), 64*1024,
+	); err == nil || errors.Is(err, ErrCanonicalDocumentTooLarge) {
+		t.Fatalf("duplicate-key rejection lost precedence over value sizing: %v", err)
+	}
+}
+
+func TestCanonicalNestedObjectsUseNearLinearWorkAtAdmittedLimits(t *testing.T) {
+	for _, boundary := range canonicalBoundaries {
+		t.Run(boundary.name, func(t *testing.T) {
+			input := maximallyNestedObjectDocument(boundary.maximum)
+			canonicalizeNumber := canonicalInteger
+			if boundary.normalized {
+				canonicalizeNumber = canonicalNormalizedNumber
+			}
+			canonical, work, err := canonical(input, canonicalizeNumber, boundary.maximum)
+			if err != nil {
+				t.Fatalf("canonical(maximally nested) error = %v", err)
+			}
+			if !bytes.Equal(canonical, input) || len(canonical) > boundary.maximum || len(canonical) < boundary.maximum-6 {
+				t.Fatalf("canonical bytes = %d, input = %d, maximum = %d", len(canonical), len(input), boundary.maximum)
+			}
+			if work.renderedBytes != int64(len(canonical)) {
+				t.Fatalf("rendered work = %d, want %d", work.renderedBytes, len(canonical))
+			}
+			if work.units() > int64(3*len(input)) {
+				t.Fatalf("deterministic work = %d for %d bytes, want at most 3x", work.units(), len(input))
+			}
+		})
+	}
+}
+
+func TestCanonicalNestedObjectAllocationsScaleNearLinearly(t *testing.T) {
+	for _, boundary := range canonicalBoundaries {
+		t.Run(boundary.name, func(t *testing.T) {
+			measure := func(size int) float64 {
+				input := maximallyNestedObjectDocument(size)
+				var callErr error
+				allocations := testing.AllocsPerRun(1, func() {
+					if boundary.normalized {
+						_, callErr = CanonicalWithNormalizedNumbersLimit(input, boundary.maximum)
+					} else {
+						_, callErr = CanonicalLimit(input, boundary.maximum)
+					}
+				})
+				if callErr != nil {
+					t.Fatalf("canonical(%d bytes) error = %v", len(input), callErr)
+				}
+				return allocations
+			}
+			half := measure(boundary.maximum / 2)
+			full := measure(boundary.maximum)
+			if full > half*2.25 {
+				t.Fatalf("allocations grew faster than near-linearly: half=%.0f full=%.0f ratio=%.2f", half, full, full/half)
+			}
+		})
+	}
+}
+
+func BenchmarkCanonicalNestedObjectBoundaries(b *testing.B) {
+	for _, boundary := range canonicalBoundaries {
+		for _, size := range []int{boundary.maximum / 2, boundary.maximum} {
+			input := maximallyNestedObjectDocument(size)
+			b.Run(fmt.Sprintf("%s/%d-bytes", boundary.name, len(input)), func(b *testing.B) {
+				b.ReportAllocs()
+				b.SetBytes(int64(len(input)))
+				for b.Loop() {
+					var err error
+					if boundary.normalized {
+						benchmarkCanonicalDocument, err = CanonicalWithNormalizedNumbersLimit(input, boundary.maximum)
+					} else {
+						benchmarkCanonicalDocument, err = CanonicalLimit(input, boundary.maximum)
+					}
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
 	}
 }

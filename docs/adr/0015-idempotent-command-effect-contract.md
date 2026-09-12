@@ -140,9 +140,14 @@ The canonical `commandKey` is the SHA-256 digest of the schema-versioned tuple
 `(Project, ingress kind/audience, requestId)`. The
 `payloadHash` is a separate SHA-256 digest of canonical JSON containing the
 schema version, command type, fixed scope, targets, expected versions, active
-revision bindings, and payload. Canonicalization rejects duplicate keys,
-non-JSON values, invalid Unicode, oversize values, secrets, and unknown schema
-versions before hashing.
+revision bindings, and payload. Before hashing, the owning typed ingress rejects
+unsupported schema versions and applies its contract-specific secret-safety
+checks. Shared JSON canonicalization separately rejects duplicate keys,
+non-JSON values, invalid Unicode, and oversize canonical output; it cannot infer
+schema or secret semantics from arbitrary JSON. The M1 generic TaskStore port
+therefore accepts only payloads already admitted by their typed ingress and
+does not claim to rescan them. `dir-m5.9` owns complete cross-ingress secret-
+safety hardening before release.
 
 Clients mint at least 128 bits of unpredictable request identity before their
 first submission and retain it across transport retries. A session MCP bridge

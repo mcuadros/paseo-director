@@ -101,7 +101,13 @@ func validateStringEncoding(document []byte) error {
 	return nil
 }
 
-type numberCanonicalizer func(json.Number) (string, error)
+type canonicalNumber struct {
+	integer    string
+	normalized normalizedNumber
+	isDecimal  bool
+}
+
+type numberCanonicalizer func(json.Number, int64) (canonicalNumber, int64, error)
 
 type normalizedNumber struct {
 	negative bool
@@ -110,12 +116,16 @@ type normalizedNumber struct {
 	zero     bool
 }
 
-func canonicalInteger(value json.Number) (string, error) {
+func canonicalInteger(value json.Number, maximum int64) (canonicalNumber, int64, error) {
 	integer := new(big.Int)
 	if _, ok := integer.SetString(value.String(), 10); !ok {
-		return "", fmt.Errorf("JSON number %q is not a canonical integer", value)
+		return canonicalNumber{}, 0, fmt.Errorf("JSON number %q is not a canonical integer", value)
 	}
-	return integer.String(), nil
+	canonical := integer.String()
+	if int64(len(canonical)) > maximum {
+		return canonicalNumber{}, 0, ErrCanonicalDocumentTooLarge
+	}
+	return canonicalNumber{integer: canonical}, int64(len(canonical)), nil
 }
 
 func parseNormalizedNumber(number json.Number) (normalizedNumber, error) {
@@ -124,13 +134,9 @@ func parseNormalizedNumber(number json.Number) (normalizedNumber, error) {
 	if negative {
 		value = value[1:]
 	}
-	exponent := int64(0)
+	exponentText := ""
 	if position := strings.IndexAny(value, "eE"); position >= 0 {
-		parsed, err := strconv.ParseInt(value[position+1:], 10, 32)
-		if err != nil {
-			return normalizedNumber{}, errors.New("JSON number exponent is outside the canonical bound")
-		}
-		exponent = parsed
+		exponentText = value[position+1:]
 		value = value[:position]
 	}
 	fractionDigits := 0
@@ -142,65 +148,83 @@ func parseNormalizedNumber(number json.Number) (normalizedNumber, error) {
 	if digits == "" {
 		return normalizedNumber{zero: true}, nil
 	}
+	exponent := int64(0)
+	if exponentText != "" {
+		parsed, err := strconv.ParseInt(exponentText, 10, 64)
+		if err != nil {
+			// The JSON decoder has already accepted the exponent grammar. An
+			// int64 overflow therefore means only that the rendered decimal
+			// magnitude cannot fit any supported document budget.
+			return normalizedNumber{}, ErrCanonicalDocumentTooLarge
+		}
+		exponent = parsed
+	}
+	if exponent < (-1<<63)+int64(fractionDigits) {
+		return normalizedNumber{}, ErrCanonicalDocumentTooLarge
+	}
 	power := exponent - int64(fractionDigits)
 	for strings.HasSuffix(digits, "0") {
 		digits = strings.TrimSuffix(digits, "0")
+		if power == 1<<63-1 {
+			return normalizedNumber{}, ErrCanonicalDocumentTooLarge
+		}
 		power++
 	}
 	return normalizedNumber{negative: negative, digits: digits, power: power}, nil
 }
 
-func (number normalizedNumber) canonicalSize() int64 {
+func (number normalizedNumber) canonicalSizeWithin(maximum int64) (int64, error) {
+	counter := canonicalSizeCounter{maximum: maximum}
 	if number.zero {
-		return 1
-	}
-	var size int64
-	switch point := int64(len(number.digits)) + number.power; {
-	case number.power >= 0:
-		size = int64(len(number.digits)) + number.power
-	case point > 0:
-		size = int64(len(number.digits)) + 1
-	default:
-		size = 2 - point + int64(len(number.digits))
+		if err := counter.add(1); err != nil {
+			return 0, err
+		}
+		return counter.current, nil
 	}
 	if number.negative {
-		size++
+		if err := counter.add(1); err != nil {
+			return 0, err
+		}
 	}
-	return size
-}
-
-func canonicalNormalizedNumberSize(number json.Number) (int64, error) {
-	normalized, err := parseNormalizedNumber(number)
-	if err != nil {
-		return 0, err
-	}
-	return normalized.canonicalSize(), nil
-}
-
-func canonicalNormalizedNumberWithin(number json.Number, maximum int64) (string, error) {
-	normalized, err := parseNormalizedNumber(number)
-	if err != nil {
-		return "", err
-	}
-	if normalized.canonicalSize() > maximum {
-		return "", ErrCanonicalDocumentTooLarge
-	}
-	if normalized.zero {
-		return "0", nil
-	}
-	var canonical string
-	switch point := int64(len(normalized.digits)) + normalized.power; {
-	case normalized.power >= 0:
-		canonical = normalized.digits + strings.Repeat("0", int(normalized.power))
+	switch point := int64(len(number.digits)) + number.power; {
+	case number.power >= 0:
+		if err := counter.add(int64(len(number.digits))); err != nil {
+			return 0, err
+		}
+		if err := counter.add(number.power); err != nil {
+			return 0, err
+		}
 	case point > 0:
-		canonical = normalized.digits[:point] + "." + normalized.digits[point:]
+		if err := counter.add(int64(len(number.digits)) + 1); err != nil {
+			return 0, err
+		}
 	default:
-		canonical = "0." + strings.Repeat("0", int(-point)) + normalized.digits
+		if point == -1<<63 {
+			return 0, ErrCanonicalDocumentTooLarge
+		}
+		if err := counter.add(2); err != nil {
+			return 0, err
+		}
+		if err := counter.add(-point); err != nil {
+			return 0, err
+		}
+		if err := counter.add(int64(len(number.digits))); err != nil {
+			return 0, err
+		}
 	}
-	if normalized.negative {
-		canonical = "-" + canonical
+	return counter.current, nil
+}
+
+func canonicalNormalizedNumber(number json.Number, maximum int64) (canonicalNumber, int64, error) {
+	normalized, err := parseNormalizedNumber(number)
+	if err != nil {
+		return canonicalNumber{}, 0, err
 	}
-	return canonical, nil
+	size, err := normalized.canonicalSizeWithin(maximum)
+	if err != nil {
+		return canonicalNumber{}, 0, err
+	}
+	return canonicalNumber{normalized: normalized, isDecimal: true}, size, nil
 }
 
 type canonicalSizeCounter struct {
@@ -216,225 +240,302 @@ func (counter *canonicalSizeCounter) add(size int64) error {
 	return nil
 }
 
-func countCanonicalValue(decoder *json.Decoder, counter *canonicalSizeCounter) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	switch value := token.(type) {
-	case json.Delim:
-		switch value {
-		case '{':
-			if err := counter.add(1); err != nil {
-				return err
-			}
-			members := make(map[string]struct{})
-			for index := 0; decoder.More(); index++ {
-				nameToken, err := decoder.Token()
-				if err != nil {
-					return err
-				}
-				name, ok := nameToken.(string)
-				if !ok {
-					return errors.New("JSON object name is not a string")
-				}
-				if _, duplicate := members[name]; duplicate {
-					return fmt.Errorf("duplicate JSON object key %q", name)
-				}
-				members[name] = struct{}{}
-				encodedName, _ := json.Marshal(name)
-				separatorSize := int64(len(encodedName) + 1)
-				if index > 0 {
-					separatorSize++
-				}
-				if err := counter.add(separatorSize); err != nil {
-					return err
-				}
-				if err := countCanonicalValue(decoder, counter); err != nil {
-					return err
-				}
-			}
-			closing, err := decoder.Token()
-			if err != nil || closing != json.Delim('}') {
-				return errors.New("JSON object is not closed")
-			}
-			return counter.add(1)
-		case '[':
-			if err := counter.add(1); err != nil {
-				return err
-			}
-			for index := 0; decoder.More(); index++ {
-				if index > 0 {
-					if err := counter.add(1); err != nil {
-						return err
-					}
-				}
-				if err := countCanonicalValue(decoder, counter); err != nil {
-					return err
-				}
-			}
-			closing, err := decoder.Token()
-			if err != nil || closing != json.Delim(']') {
-				return errors.New("JSON array is not closed")
-			}
-			return counter.add(1)
-		default:
-			return fmt.Errorf("unexpected JSON delimiter %q", value)
-		}
-	case json.Number:
-		size, err := canonicalNormalizedNumberSize(value)
-		if err != nil {
-			return err
-		}
-		return counter.add(size)
-	case string, bool, nil:
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		return counter.add(int64(len(encoded)))
-	default:
-		return fmt.Errorf("unsupported JSON token %T", token)
-	}
+type canonicalValueKind uint8
+
+const (
+	canonicalScalar canonicalValueKind = iota
+	canonicalNumberValue
+	canonicalArray
+	canonicalObject
+)
+
+type canonicalValue struct {
+	kind    canonicalValueKind
+	encoded []byte
+	number  canonicalNumber
+	array   []canonicalValue
+	object  []canonicalMember
+	size    int64
 }
 
-func validateCanonicalSize(document []byte, maximum int) error {
-	if maximum < 0 {
-		return ErrCanonicalDocumentTooLarge
-	}
-	if err := validateStringEncoding(document); err != nil {
-		return err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(document))
-	decoder.UseNumber()
-	counter := canonicalSizeCounter{maximum: int64(maximum)}
-	if err := countCanonicalValue(decoder, &counter); err != nil {
-		return err
-	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("trailing JSON value")
-		}
-		return err
-	}
-	return nil
+type canonicalMember struct {
+	name        string
+	encodedName []byte
+	value       canonicalValue
 }
 
-func writeCanonicalValue(
+// canonicalWork is deterministic algorithmic evidence used by the package
+// regressions. It counts parsed values, sort comparisons, and bytes written to
+// the one final output buffer; it is deliberately not a host-wide memory or
+// wall-clock measurement.
+type canonicalWork struct {
+	inputBytes      int64
+	values          int64
+	sortComparisons int64
+	renderedBytes   int64
+}
+
+func (work canonicalWork) units() int64 {
+	return work.inputBytes + work.values + work.sortComparisons + work.renderedBytes
+}
+
+func parseCanonicalValue(
 	decoder *json.Decoder,
-	output *bytes.Buffer,
 	canonicalizeNumber numberCanonicalizer,
-) error {
+	maximum int64,
+	work *canonicalWork,
+) (canonicalValue, error) {
 	token, err := decoder.Token()
 	if err != nil {
-		return err
+		return canonicalValue{}, err
 	}
+	work.values++
 	switch value := token.(type) {
 	case json.Delim:
 		switch value {
 		case '{':
-			members := make(map[string][]byte)
+			counter := canonicalSizeCounter{maximum: maximum}
+			if err := counter.add(2); err != nil {
+				return canonicalValue{}, err
+			}
+			var members []canonicalMember
+			var seenNames map[string]struct{}
 			for decoder.More() {
 				nameToken, err := decoder.Token()
 				if err != nil {
-					return err
+					return canonicalValue{}, err
 				}
 				name, ok := nameToken.(string)
 				if !ok {
-					return errors.New("JSON object name is not a string")
+					return canonicalValue{}, errors.New("JSON object name is not a string")
 				}
-				if _, duplicate := members[name]; duplicate {
-					return fmt.Errorf("duplicate JSON object key %q", name)
+				switch {
+				case len(members) == 1 && seenNames == nil:
+					if members[0].name == name {
+						return canonicalValue{}, fmt.Errorf("duplicate JSON object key %q", name)
+					}
+					seenNames = map[string]struct{}{members[0].name: {}, name: {}}
+				case seenNames != nil:
+					if _, duplicate := seenNames[name]; duplicate {
+						return canonicalValue{}, fmt.Errorf("duplicate JSON object key %q", name)
+					}
+					seenNames[name] = struct{}{}
 				}
-				var member bytes.Buffer
-				if err := writeCanonicalValue(decoder, &member, canonicalizeNumber); err != nil {
-					return err
+				encodedName, _ := json.Marshal(name)
+				memberValue, err := parseCanonicalValue(decoder, canonicalizeNumber, maximum, work)
+				if err != nil {
+					return canonicalValue{}, err
 				}
-				members[name] = member.Bytes()
+				if len(members) > 0 {
+					if err := counter.add(1); err != nil {
+						return canonicalValue{}, err
+					}
+				}
+				if err := counter.add(int64(len(encodedName) + 1)); err != nil {
+					return canonicalValue{}, err
+				}
+				if err := counter.add(memberValue.size); err != nil {
+					return canonicalValue{}, err
+				}
+				members = append(members, canonicalMember{name: name, encodedName: encodedName, value: memberValue})
 			}
 			closing, err := decoder.Token()
 			if err != nil || closing != json.Delim('}') {
-				return errors.New("JSON object is not closed")
+				return canonicalValue{}, errors.New("JSON object is not closed")
 			}
-			names := make([]string, 0, len(members))
-			for name := range members {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			output.WriteByte('{')
-			for index, name := range names {
-				if index > 0 {
-					output.WriteByte(',')
+			if len(members) > 1 {
+				sort.Slice(members, func(left, right int) bool {
+					work.sortComparisons++
+					return members[left].name < members[right].name
+				})
+				for index := 1; index < len(members); index++ {
+					if members[index-1].name == members[index].name {
+						return canonicalValue{}, fmt.Errorf("duplicate JSON object key %q", members[index].name)
+					}
 				}
-				encodedName, _ := json.Marshal(name)
-				output.Write(encodedName)
-				output.WriteByte(':')
-				output.Write(members[name])
 			}
-			output.WriteByte('}')
-			return nil
+			return canonicalValue{kind: canonicalObject, object: members, size: counter.current}, nil
 		case '[':
-			output.WriteByte('[')
+			counter := canonicalSizeCounter{maximum: maximum}
+			if err := counter.add(2); err != nil {
+				return canonicalValue{}, err
+			}
+			var values []canonicalValue
 			for index := 0; decoder.More(); index++ {
 				if index > 0 {
-					output.WriteByte(',')
+					if err := counter.add(1); err != nil {
+						return canonicalValue{}, err
+					}
 				}
-				if err := writeCanonicalValue(decoder, output, canonicalizeNumber); err != nil {
-					return err
+				item, err := parseCanonicalValue(decoder, canonicalizeNumber, maximum, work)
+				if err != nil {
+					return canonicalValue{}, err
 				}
+				if err := counter.add(item.size); err != nil {
+					return canonicalValue{}, err
+				}
+				values = append(values, item)
 			}
 			closing, err := decoder.Token()
 			if err != nil || closing != json.Delim(']') {
-				return errors.New("JSON array is not closed")
+				return canonicalValue{}, errors.New("JSON array is not closed")
 			}
-			output.WriteByte(']')
-			return nil
+			return canonicalValue{kind: canonicalArray, array: values, size: counter.current}, nil
 		default:
-			return fmt.Errorf("unexpected JSON delimiter %q", value)
+			return canonicalValue{}, fmt.Errorf("unexpected JSON delimiter %q", value)
 		}
 	case json.Number:
-		canonical, err := canonicalizeNumber(value)
+		number, size, err := canonicalizeNumber(value, maximum)
 		if err != nil {
-			return err
+			return canonicalValue{}, err
 		}
-		output.WriteString(canonical)
-		return nil
+		return canonicalValue{kind: canonicalNumberValue, number: number, size: size}, nil
 	case string, bool, nil:
 		encoded, err := json.Marshal(value)
 		if err != nil {
-			return err
+			return canonicalValue{}, err
 		}
-		output.Write(encoded)
-		return nil
+		if int64(len(encoded)) > maximum {
+			return canonicalValue{}, ErrCanonicalDocumentTooLarge
+		}
+		return canonicalValue{kind: canonicalScalar, encoded: encoded, size: int64(len(encoded))}, nil
 	default:
-		return fmt.Errorf("unsupported JSON token %T", token)
+		return canonicalValue{}, fmt.Errorf("unsupported JSON token %T", token)
 	}
 }
 
-func canonical(document []byte, canonicalizeNumber numberCanonicalizer) ([]byte, error) {
+func writeCanonicalBytes(output *bytes.Buffer, value []byte, work *canonicalWork) {
+	output.Write(value)
+	work.renderedBytes += int64(len(value))
+}
+
+func writeCanonicalString(output *bytes.Buffer, value string, work *canonicalWork) {
+	output.WriteString(value)
+	work.renderedBytes += int64(len(value))
+}
+
+func writeCanonicalByte(output *bytes.Buffer, value byte, work *canonicalWork) {
+	output.WriteByte(value)
+	work.renderedBytes++
+}
+
+func writeCanonicalZeroes(output *bytes.Buffer, count int64, work *canonicalWork) {
+	const zeroes = "0000000000000000000000000000000000000000000000000000000000000000"
+	for count > 0 {
+		current := int64(len(zeroes))
+		if count < current {
+			current = count
+		}
+		writeCanonicalString(output, zeroes[:current], work)
+		count -= current
+	}
+}
+
+func writeCanonicalNumber(output *bytes.Buffer, number canonicalNumber, work *canonicalWork) {
+	if !number.isDecimal {
+		writeCanonicalString(output, number.integer, work)
+		return
+	}
+	normalized := number.normalized
+	if normalized.zero {
+		writeCanonicalByte(output, '0', work)
+		return
+	}
+	if normalized.negative {
+		writeCanonicalByte(output, '-', work)
+	}
+	switch point := int64(len(normalized.digits)) + normalized.power; {
+	case normalized.power >= 0:
+		writeCanonicalString(output, normalized.digits, work)
+		writeCanonicalZeroes(output, normalized.power, work)
+	case point > 0:
+		writeCanonicalString(output, normalized.digits[:point], work)
+		writeCanonicalByte(output, '.', work)
+		writeCanonicalString(output, normalized.digits[point:], work)
+	default:
+		writeCanonicalString(output, "0.", work)
+		writeCanonicalZeroes(output, -point, work)
+		writeCanonicalString(output, normalized.digits, work)
+	}
+}
+
+func writeCanonicalValue(value canonicalValue, output *bytes.Buffer, work *canonicalWork) {
+	switch value.kind {
+	case canonicalScalar:
+		writeCanonicalBytes(output, value.encoded, work)
+	case canonicalNumberValue:
+		writeCanonicalNumber(output, value.number, work)
+	case canonicalArray:
+		writeCanonicalByte(output, '[', work)
+		for index, item := range value.array {
+			if index > 0 {
+				writeCanonicalByte(output, ',', work)
+			}
+			writeCanonicalValue(item, output, work)
+		}
+		writeCanonicalByte(output, ']', work)
+	case canonicalObject:
+		writeCanonicalByte(output, '{', work)
+		for index, member := range value.object {
+			if index > 0 {
+				writeCanonicalByte(output, ',', work)
+			}
+			writeCanonicalBytes(output, member.encodedName, work)
+			writeCanonicalByte(output, ':', work)
+			writeCanonicalValue(member.value, output, work)
+		}
+		writeCanonicalByte(output, '}', work)
+	}
+}
+
+func canonical(
+	document []byte,
+	canonicalizeNumber numberCanonicalizer,
+	maximum int,
+) ([]byte, canonicalWork, error) {
+	work := canonicalWork{inputBytes: int64(len(document))}
+	if maximum < 0 {
+		return nil, work, ErrCanonicalDocumentTooLarge
+	}
 	if err := validateStringEncoding(document); err != nil {
-		return nil, err
+		return nil, work, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(document))
 	decoder.UseNumber()
-	var canonical bytes.Buffer
-	if err := writeCanonicalValue(decoder, &canonical, canonicalizeNumber); err != nil {
-		return nil, err
+	value, err := parseCanonicalValue(decoder, canonicalizeNumber, int64(maximum), &work)
+	if err != nil {
+		return nil, work, err
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return nil, errors.New("trailing JSON value")
+			return nil, work, errors.New("trailing JSON value")
 		}
-		return nil, err
+		return nil, work, err
 	}
-	return canonical.Bytes(), nil
+	var output bytes.Buffer
+	output.Grow(int(value.size))
+	writeCanonicalValue(value, &output, &work)
+	if int64(output.Len()) != value.size {
+		return nil, work, errors.New("canonical JSON size changed during rendering")
+	}
+	return output.Bytes(), work, nil
 }
 
 // Canonical parses one complete JSON value, rejects invalid UTF-8, unpaired
 // escaped surrogates, duplicate keys, and non-integer numeric spellings, and
 // sorts object keys recursively. Array order remains significant.
 func Canonical(document []byte) ([]byte, error) {
-	return canonical(document, canonicalInteger)
+	maximum := int(^uint(0) >> 1)
+	canonical, _, err := canonical(document, canonicalInteger, maximum)
+	return canonical, err
+}
+
+// CanonicalLimit applies Canonical's integer-only contract and refuses a
+// canonical representation larger than the caller's document-wide byte
+// budget before allocating the final output buffer.
+func CanonicalLimit(document []byte, maximum int) ([]byte, error) {
+	canonical, _, err := canonical(document, canonicalInteger, maximum)
+	return canonical, err
 }
 
 // CanonicalWithNormalizedNumbers applies the same strict string, duplicate-key,
@@ -450,17 +551,6 @@ func CanonicalWithNormalizedNumbers(document []byte) ([]byte, error) {
 // size before rendering any exponent expansion. The maximum is a document-wide
 // byte budget, not a per-number allowance.
 func CanonicalWithNormalizedNumbersLimit(document []byte, maximum int) ([]byte, error) {
-	if err := validateCanonicalSize(document, maximum); err != nil {
-		return nil, err
-	}
-	canonical, err := canonical(document, func(number json.Number) (string, error) {
-		return canonicalNormalizedNumberWithin(number, int64(maximum))
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(canonical) > maximum {
-		return nil, ErrCanonicalDocumentTooLarge
-	}
-	return canonical, nil
+	canonical, _, err := canonical(document, canonicalNormalizedNumber, maximum)
+	return canonical, err
 }
