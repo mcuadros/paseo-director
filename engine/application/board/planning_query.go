@@ -70,6 +70,26 @@ type PlanningTaskUpdateReader interface {
 	PlanningTaskUpdatedAt(context.Context, string) (map[string]int64, error)
 }
 
+// PlanningProjectListReader and PlanningProjectGraphReader are optional typed
+// read optimizations. Together they preserve the complete graph validation
+// performed by ordinary TaskStore reads while avoiding four reloads of the
+// same Project Tasks for one Board/List page.
+type PlanningProjectListReader interface {
+	PlanningProjects(context.Context) ([]domain.Project, error)
+}
+
+type PlanningProjectGraphReader interface {
+	PlanningProject(context.Context, string) (
+		domain.Project,
+		[]domain.Workspace,
+		[]domain.Epic,
+		[]domain.Task,
+		[]domain.DependencyOverride,
+		map[string]int64,
+		error,
+	)
+}
+
 // PlanningReader integrates the durable planning graph with the pure Task
 // projection query. It owns I/O composition only; state, filters, ordering,
 // and cursor admission remain in the standalone engine projection package.
@@ -93,7 +113,13 @@ func cloneText(values []string) []string {
 }
 
 func (reader *PlanningReader) loadFacts(ctx context.Context) (planningFacts, error) {
-	projects, err := reader.store.Projects(ctx)
+	var projects []domain.Project
+	var err error
+	if optimized, ok := reader.store.(PlanningProjectListReader); ok {
+		projects, err = optimized.PlanningProjects(ctx)
+	} else {
+		projects, err = reader.store.Projects(ctx)
+	}
 	if err != nil {
 		return planningFacts{}, fmt.Errorf("read planning projects: %w", err)
 	}
@@ -108,21 +134,35 @@ func (reader *PlanningReader) loadFacts(ctx context.Context) (planningFacts, err
 	})
 	result := planningFacts{projects: make([]planningProjectFacts, 0, len(projects))}
 	for _, project := range projects {
-		workspaces, err := reader.store.Workspaces(ctx, project.ID)
-		if err != nil {
-			return planningFacts{}, fmt.Errorf("read planning Workspaces: %w", err)
-		}
-		epics, err := reader.store.Epics(ctx, project.ID)
-		if err != nil {
-			return planningFacts{}, fmt.Errorf("read planning Epics: %w", err)
-		}
-		tasks, err := reader.store.Tasks(ctx, project.ID)
-		if err != nil {
-			return planningFacts{}, fmt.Errorf("read planning Tasks: %w", err)
-		}
-		overrides, err := reader.store.DependencyOverrides(ctx, project.ID)
-		if err != nil {
-			return planningFacts{}, fmt.Errorf("read planning overrides: %w", err)
+		var workspaces []domain.Workspace
+		var epics []domain.Epic
+		var tasks []domain.Task
+		var overrides []domain.DependencyOverride
+		var updatedAtByTask map[string]int64
+		optimizedGraph := false
+		if optimized, ok := reader.store.(PlanningProjectGraphReader); ok {
+			project, workspaces, epics, tasks, overrides, updatedAtByTask, err = optimized.PlanningProject(ctx, project.ID)
+			if err != nil {
+				return planningFacts{}, fmt.Errorf("read planning Project graph: %w", err)
+			}
+			optimizedGraph = true
+		} else {
+			workspaces, err = reader.store.Workspaces(ctx, project.ID)
+			if err != nil {
+				return planningFacts{}, fmt.Errorf("read planning Workspaces: %w", err)
+			}
+			epics, err = reader.store.Epics(ctx, project.ID)
+			if err != nil {
+				return planningFacts{}, fmt.Errorf("read planning Epics: %w", err)
+			}
+			tasks, err = reader.store.Tasks(ctx, project.ID)
+			if err != nil {
+				return planningFacts{}, fmt.Errorf("read planning Tasks: %w", err)
+			}
+			overrides, err = reader.store.DependencyOverrides(ctx, project.ID)
+			if err != nil {
+				return planningFacts{}, fmt.Errorf("read planning overrides: %w", err)
+			}
 		}
 		if len(workspaces) > planningport.MaximumWorkspaces || len(epics) > planningport.MaximumEpics {
 			return planningFacts{}, ErrPlanningQueryInvalid
@@ -145,13 +185,17 @@ func (reader *PlanningReader) loadFacts(ctx context.Context) (planningFacts, err
 			epicProgress:    make(map[string]planningProgress, len(epics)),
 		}
 		labelSet := make(map[string]struct{})
-		updatedAtByTask := make(map[string]int64)
-		updates, updatesAvailable := reader.store.(PlanningTaskUpdateReader)
-		if updatesAvailable {
+		updatesAvailable := optimizedGraph
+		if !updatesAvailable {
+			updatedAtByTask = make(map[string]int64)
+		}
+		updates, separateUpdatesAvailable := reader.store.(PlanningTaskUpdateReader)
+		if !updatesAvailable && separateUpdatesAvailable {
 			updatedAtByTask, err = updates.PlanningTaskUpdatedAt(ctx, project.ID)
 			if err != nil {
 				return planningFacts{}, fmt.Errorf("read planning Task update facts: %w", err)
 			}
+			updatesAvailable = true
 		}
 		runsByTask := make(map[string][]domain.Run)
 		candidatesByID := make(map[string]domain.Candidate)

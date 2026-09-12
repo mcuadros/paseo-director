@@ -2051,6 +2051,96 @@ func (store *DoltTaskStore) Projects(ctx context.Context) ([]domain.Project, err
 	return projects, nil
 }
 
+// PlanningProjects returns typed Project aggregates without redundantly
+// loading each complete planning graph. The PlanningReader follows this call
+// with PlanningProject for every returned Project inside its event-sequence
+// stability guard, so corruption is still rejected before any snapshot is
+// projected.
+func (store *DoltTaskStore) PlanningProjects(ctx context.Context) ([]domain.Project, error) {
+	connection, err := store.readConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer connection.Close()
+	rows, err := connection.QueryContext(ctx,
+		`SELECT id, version, data FROM aggregates WHERE kind = ? ORDER BY id`, aggregateProject,
+	)
+	if err != nil {
+		return nil, queryFailure()
+	}
+	defer rows.Close()
+	var projects []domain.Project
+	for rows.Next() {
+		var project domain.Project
+		var rawData []byte
+		if err := rows.Scan(&project.ID, &project.Version, &rawData); err != nil {
+			return nil, scanFailure()
+		}
+		var data projectData
+		if err := decodeRecord(rawData, &data); err != nil {
+			return nil, err
+		}
+		project.Name, project.State, project.Organizer = data.Name, data.State, reloadedOrganizer(data.Organizer)
+		project.LastLeaseEpoch, project.Lease = data.LastLeaseEpoch, storedLease(data.Lease)
+		project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
+		project.Control = data.Control
+		if err := validateReloaded(validateProject(project)); err != nil {
+			return nil, err
+		}
+		projects = append(projects, project)
+	}
+	if err := finishRows(rows); err != nil {
+		return nil, err
+	}
+	return projects, nil
+}
+
+// PlanningProject returns one Project and its complete individually validated
+// planning records through a single typed read connection. The application
+// caller owns cross-record graph validation and dependency evaluation.
+// Ordinary TaskStore reads retain their existing full-graph validation
+// contract, while this optional Board/List path avoids reloading the same
+// Tasks once for Projects, Epics, Tasks, and dependency overrides.
+func (store *DoltTaskStore) PlanningProject(ctx context.Context, projectID string) (
+	domain.Project,
+	[]domain.Workspace,
+	[]domain.Epic,
+	[]domain.Task,
+	[]domain.DependencyOverride,
+	map[string]int64,
+	error,
+) {
+	if err := validateLookupID(projectID); err != nil {
+		return domain.Project{}, nil, nil, nil, nil, nil, err
+	}
+	connection, err := store.readConnection(ctx)
+	if err != nil {
+		return domain.Project{}, nil, nil, nil, nil, nil, err
+	}
+	defer connection.Close()
+	project, err := projectByID(ctx, connection, projectID)
+	if err != nil {
+		return domain.Project{}, nil, nil, nil, nil, nil, err
+	}
+	workspaces, err := workspacesByProject(ctx, connection, projectID)
+	if err != nil {
+		return domain.Project{}, nil, nil, nil, nil, nil, err
+	}
+	epics, err := epicsByProject(ctx, connection, projectID)
+	if err != nil {
+		return domain.Project{}, nil, nil, nil, nil, nil, err
+	}
+	tasks, updatedAtByTask, err := tasksAndUpdateTimesByProject(ctx, connection, projectID)
+	if err != nil {
+		return domain.Project{}, nil, nil, nil, nil, nil, err
+	}
+	overrides, err := dependencyOverridesByProject(ctx, connection, projectID)
+	if err != nil {
+		return domain.Project{}, nil, nil, nil, nil, nil, err
+	}
+	return project, workspaces, epics, tasks, overrides, updatedAtByTask, nil
+}
+
 // Workspace returns one Workspace without exposing its aggregate row or JSON.
 func (store *DoltTaskStore) Workspace(ctx context.Context, id string) (domain.Workspace, error) {
 	if err := validateLookupID(id); err != nil {
@@ -2183,36 +2273,45 @@ func taskByID(ctx context.Context, query rowQuerier, id string) (domain.Task, er
 	return task, nil
 }
 
-func tasksByProject(ctx context.Context, query rowsQuerier, projectID string) ([]domain.Task, error) {
+func tasksAndUpdateTimesByProject(ctx context.Context, query rowsQuerier, projectID string) ([]domain.Task, map[string]int64, error) {
 	rows, err := query.QueryContext(ctx,
-		`SELECT id, parent_id, version, data FROM aggregates WHERE kind = ? AND parent_id = ? ORDER BY id`,
+		`SELECT id, parent_id, version, data, CAST(UNIX_TIMESTAMP(updated_at) * 1000 AS SIGNED)
+		FROM aggregates WHERE kind = ? AND parent_id = ? ORDER BY id`,
 		aggregateTask, projectID,
 	)
 	if err != nil {
-		return nil, queryFailure()
+		return nil, nil, queryFailure()
 	}
 	defer rows.Close()
 	tasks := make([]domain.Task, 0)
+	updates := make(map[string]int64)
 	for rows.Next() {
 		var task domain.Task
 		var rawData []byte
-		if err := rows.Scan(&task.ID, &task.ProjectID, &task.Version, &rawData); err != nil {
-			return nil, scanFailure()
+		var updatedAt int64
+		if err := rows.Scan(&task.ID, &task.ProjectID, &task.Version, &rawData, &updatedAt); err != nil {
+			return nil, nil, scanFailure()
 		}
 		var data taskData
 		if err := decodeRecord(rawData, &data); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		reloadTask(&task, data)
-		if err := validateReloaded(validateTask(task)); err != nil {
-			return nil, err
+		if err := validateReloaded(validateTask(task)); err != nil || updatedAt < 0 {
+			return nil, nil, backendFailure(storeport.HealthStoredRecordInvalid)
 		}
 		tasks = append(tasks, task)
+		updates[task.ID] = updatedAt
 	}
 	if err := finishRows(rows); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return tasks, nil
+	return tasks, updates, nil
+}
+
+func tasksByProject(ctx context.Context, query rowsQuerier, projectID string) ([]domain.Task, error) {
+	tasks, _, err := tasksAndUpdateTimesByProject(ctx, query, projectID)
+	return tasks, err
 }
 
 func dependencyOverrideByID(ctx context.Context, query rowQuerier, id string) (domain.DependencyOverride, error) {

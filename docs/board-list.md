@@ -75,15 +75,21 @@ snapshot. A cursor from another filter, sort, page-size binding, or Event
 snapshot is rejected and the UI refreshes from the first page.
 
 The application reader samples the Event high-water mark around each read and
-makes at most three attempts. The direct-Dolt adapter loads Task update times,
-Project Runs, and current Candidates through three typed bulk reads instead of
-a per-Task query loop or all historical Candidate rows.
+makes at most three attempts. The direct-Dolt adapter loads one complete set
+of individually validated Project records together with server-owned Task
+update times, then loads Project Runs and current Candidates through two
+further typed bulk reads. It does not issue a per-Task query loop or load all
+historical Candidate rows. The ordinary TaskStore methods retain their complete-graph validation
+contract; the application validates the assembled cross-record graph once.
+This optional typed path avoids reloading the same records once for Projects,
+Epics, Tasks, and dependency overrides.
 
 Projection scans each immutable Task input once, retains at most the requested
 100 rows plus one next-page sentinel, and returns at most 4 MiB. The 25
-Workspace / 500 open / 10,000 historical fixture is an M2 planning-surface
-target; ADR-0016 still reserves production TaskStore scale proof for
-`dir-m5.10`.
+Workspace / 500 open / 10,000 historical fixture remains the deterministic
+presentation fixture. The production direct-Dolt proof, thresholds, recovery
+checks, and retained candidate-bound evidence contract are documented in
+[Linux release-scale validation](evidence/m5.10/README.md).
 
 ## UI behavior
 
@@ -127,10 +133,13 @@ failure results, torn-read retry, ownership mismatches, updates, contract
 generation, worst-case response size, HTTP drift rejection, redacted errors,
 typed bulk Run/Candidate reads, private runtime configuration, and the real
 Dolt cursor. Deterministic scale/property tests assert the exact agreed fixture,
-page boundaries, filter/sort invariance, conservative timing, allocation, and
-retained-row bounds. TypeScript tests cover strict RPC/transport validation,
-redirect refusal, exact response URL, one-request/no-retry behavior,
-loopback-only transport, actual ProjectBoard render scenes, grouping,
+page boundaries, filter/sort invariance, conservative timing, allocation,
+retained-row bounds, and the single typed Project-graph read. The explicit
+Linux release-scale test adds real direct-Dolt/Git measurements without being
+repeated by ordinary local or complete CI package runs. TypeScript tests cover
+strict RPC/transport validation, redirect refusal, exact response URL,
+one-request/no-retry behavior, loopback-only transport, actual ProjectBoard
+render scenes, grouping,
 cursor invalidation, wide/compact layouts, and bounded rendered rows.
 
 The loopback Board listener has no client authentication. Contract headers are
