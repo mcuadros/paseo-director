@@ -80,6 +80,12 @@ which resets only that host's cache.
 returned an exact native Workspace ID and the installed host exposes
 navigation.
 
+`Operations` opens the host-owned Project Operations modal. Its Health & Sync,
+Audit, Logs, and Support tabs render the standalone engine's strict projection;
+see [Sync, reconciliation, audit, logs, and support bundles](operations-diagnostics.md).
+The existing `Sync now` and `Reconcile now` actions enter the same exact-host
+surface rather than introducing a second operational shell.
+
 ## Doctor diagnostics
 
 Doctor diagnostics are strictly read-only and never mutate engine, workspace,

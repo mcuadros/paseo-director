@@ -13,6 +13,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/execution"
+	homeport "github.com/mcuadros/director-engine/ports/home"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 	"github.com/mcuadros/director-engine/projection"
 )
@@ -23,6 +24,7 @@ type homeStore struct {
 	tasks              map[string][]domain.Task
 	runs               map[string][]domain.Run
 	candidates         map[string]domain.Candidate
+	events             []domain.Event
 	cursor             uint64
 	bulkRunReads       int
 	bulkCandidateReads int
@@ -30,6 +32,14 @@ type homeStore struct {
 
 func (store *homeStore) Projects(context.Context) ([]domain.Project, error) {
 	return append([]domain.Project(nil), store.projects...), nil
+}
+func (store *homeStore) Project(_ context.Context, projectID string) (domain.Project, error) {
+	for _, project := range store.projects {
+		if project.ID == projectID {
+			return project, nil
+		}
+	}
+	return domain.Project{}, errors.New("project unavailable")
 }
 func (store *homeStore) Workspaces(_ context.Context, projectID string) ([]domain.Workspace, error) {
 	return append([]domain.Workspace(nil), store.workspaces[projectID]...), nil
@@ -55,6 +65,20 @@ func (store *homeStore) Candidate(_ context.Context, candidateID string) (domain
 }
 func (store *homeStore) LatestEventSequence(context.Context) (uint64, error) {
 	return store.cursor, nil
+}
+
+func (store *homeStore) Events(_ context.Context, query domain.EventQuery) ([]domain.Event, error) {
+	var result []domain.Event
+	for _, event := range store.events {
+		if event.GlobalSequence <= query.AfterGlobalSequence {
+			continue
+		}
+		result = append(result, event)
+		if uint32(len(result)) == query.Limit {
+			break
+		}
+	}
+	return result, nil
 }
 
 func (store *homeStore) PlanningRuns(_ context.Context, projectID string) ([]domain.Run, error) {
@@ -223,6 +247,26 @@ func TestHomeReaderBindsHostProjectsHealthActionsAndRedaction(t *testing.T) {
 	second, err := reader.Query(context.Background(), planningport.HomeQueryInput{HostID: "host-a", Cursor: result.Page.NextCursor, PageSize: 2})
 	if err != nil || len(second.Page.Projects) != 1 || second.Page.Projects[0].ID != "project-02" || second.Page.NextCursor != nil || second.Page.Totals != result.Page.Totals {
 		t.Fatalf("second Home page = %#v, %v", second, err)
+	}
+}
+
+func TestHomeHealthUsesDetailedStreamReasonAndRoutesDivergenceToNeedsYou(t *testing.T) {
+	now := int64(10_000)
+	store, observation := homeFixture(now, 1)
+	store.tasks["project-00"][1].Attention = nil
+	project := observation.Projects["project-00"]
+	project.GitSyncDetail = detailedSync(SyncCurrent, homeport.SyncReasonAligned, strings.Repeat("a", 64), strings.Repeat("a", 64), now, false)
+	project.TaskStoreSyncDetail = detailedSync(SyncDiverged, homeport.SyncReasonDiverged, strings.Repeat("b", 64), strings.Repeat("c", 64), now, false)
+	observation.Projects["project-00"] = project
+	reader := NewReader(store, &homeProjectionSource{store}, &staticObservationSource{value: observation}, func() int64 { return now })
+	result, err := reader.Query(context.Background(), planningport.HomeQueryInput{HostID: "host-a", PageSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := result.Page.Projects[0]
+	if row.Health != "needs_you" || row.Sync.State != "partial" || row.Sync.Git != "current" || row.Sync.DynamicState != "diverged" ||
+		len(row.HealthReasons) == 0 || row.HealthReasons[0].Code != "taskstore_dolt_diverged" || !row.HealthReasons[0].HumanActionRequired {
+		t.Fatalf("detailed Home health = %#v", row)
 	}
 }
 

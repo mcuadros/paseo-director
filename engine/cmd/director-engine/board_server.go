@@ -23,6 +23,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/mcuadros/director-engine/adapters/diagnostics"
 	"github.com/mcuadros/director-engine/adapters/dolt"
 	"github.com/mcuadros/director-engine/adapters/organizergit"
 	"github.com/mcuadros/director-engine/application/board"
@@ -30,6 +31,7 @@ import (
 	homeapp "github.com/mcuadros/director-engine/application/home"
 	organizerapp "github.com/mcuadros/director-engine/application/organizer"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
+	homeport "github.com/mcuadros/director-engine/ports/home"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 )
 
@@ -208,10 +210,36 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 	instanceDigest := sha256.Sum256([]byte(*hostID + "\x1f" + strconv.Itoa(os.Getpid()) + "\x1f" + strconv.FormatInt(startedAt, 10)))
 	now := func() int64 { return time.Now().UnixMilli() }
 	homeSource := homeapp.NewStaticSource(*hostID, *hostLabel, "engine-"+hex.EncodeToString(instanceDigest[:16]), now)
+	if logRoot, logRootError := diagnostics.DefaultLogRoot(); logRootError == nil {
+		if logs, logError := diagnostics.NewLogStore(logRoot); logError == nil {
+			logContext, cancelLogs := context.WithTimeout(context.Background(), 5*time.Second)
+			projects, projectsError := store.Projects(logContext)
+			logsCurrent := projectsError == nil
+			for _, project := range projects {
+				if logs.Append(logContext, project.ID, now(), homeport.TechnicalLogInfo, homeport.TechnicalLogEngine, homeport.TechnicalLogEngineStarted, 1) != nil {
+					logsCurrent = false
+					break
+				}
+			}
+			cancelLogs()
+			if logsCurrent {
+				homeSource.WithTechnicalLogs(logs)
+			}
+		}
+	}
 	handler.Handle(planningport.HomeQueryPath, newHomeHandler(homeapp.NewReader(store, board.NewTaskStoreFactSource(store), homeSource, now)))
 	doctorRepair := homeapp.NewDoctorRepairService(store, homeSource, nil, now)
 	handler.Handle(planningport.DoctorQueryPath, newDoctorHandler(doctorRepair))
 	handler.Handle(planningport.RepairMutationPath, newRepairHandler(doctorRepair))
+	var supportBundles homeport.SupportBundleWriter
+	if supportRoot, supportError := diagnostics.DefaultSupportRoot(); supportError == nil {
+		if writer, writerError := diagnostics.NewBundleWriter(supportRoot); writerError == nil {
+			supportBundles = writer
+		}
+	}
+	operations := homeapp.NewOperationsService(store, homeSource, nil, supportBundles, now)
+	handler.Handle(planningport.OperationsQueryPath, newOperationsHandler(operations))
+	handler.Handle(planningport.OperationsMutationPath, newOperationsMutationHandler(operations))
 	handler.Handle(planningport.OrganizerMutationPath, newOrganizerBootstrapHandler(organizerapp.New(store, organizergit.New(), nil), store, *hostID))
 	handler.Handle(planningport.MutationPath, newPlanningMutationHandler(
 		store, executionapp.NewController(store, nil, nil, nil),

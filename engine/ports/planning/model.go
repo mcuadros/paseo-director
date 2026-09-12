@@ -10,19 +10,23 @@ import (
 )
 
 const (
-	QueryPath             = "/v1/planning/query"
-	TaskDetailQueryPath   = "/v1/planning/task-detail"
-	HomeQueryPath         = "/v1/planning/home"
-	DoctorQueryPath       = "/v1/planning/doctor"
-	RepairMutationPath    = "/v1/planning/repair"
-	OrganizerMutationPath = "/v1/planning/organizer-bootstrap"
-	MaximumRequestBytes   = 64 * 1024
-	MaximumResponseBytes  = 4 * 1024 * 1024
-	MaximumPageSize       = 100
-	MaximumProjects       = 100
-	MaximumWorkspaces     = 100
-	MaximumEpics          = 500
-	MaximumHomePageSize   = 50
+	QueryPath              = "/v1/planning/query"
+	TaskDetailQueryPath    = "/v1/planning/task-detail"
+	HomeQueryPath          = "/v1/planning/home"
+	DoctorQueryPath        = "/v1/planning/doctor"
+	OperationsQueryPath    = "/v1/planning/operations"
+	OperationsMutationPath = "/v1/planning/operations-mutate"
+	RepairMutationPath     = "/v1/planning/repair"
+	OrganizerMutationPath  = "/v1/planning/organizer-bootstrap"
+	MaximumRequestBytes    = 64 * 1024
+	MaximumResponseBytes   = 4 * 1024 * 1024
+	MaximumPageSize        = 100
+	MaximumProjects        = 100
+	MaximumWorkspaces      = 100
+	MaximumEpics           = 500
+	MaximumHomePageSize    = 50
+	MaximumAuditEntries    = 64
+	MaximumTechnicalLogs   = 128
 )
 
 var ErrQueryInvalid = errors.New("planning query is invalid")
@@ -540,6 +544,238 @@ type HomeSnapshot struct {
 	ContractHash    string   `json:"contractHash"`
 	Cursor          string   `json:"cursor"`
 	Page            HomePage `json:"page"`
+}
+
+// OperationsQueryInput requests one exact Project's current operational
+// projection. Audit and technical logs are always server-bounded; callers
+// cannot request arbitrary history, paths, payloads, or raw output.
+type OperationsQueryInput struct {
+	HostID                 string `json:"hostId"`
+	ProjectID              string `json:"projectId"`
+	ExpectedProjectVersion string `json:"expectedProjectVersion"`
+}
+
+func ValidateOperationsQuery(input OperationsQueryInput) error {
+	if !validOpaque(input.HostID) || !validOpaque(input.ProjectID) {
+		return ErrQueryInvalid
+	}
+	if _, err := ParseExpectedVersion(input.ExpectedProjectVersion); err != nil {
+		return ErrQueryInvalid
+	}
+	return nil
+}
+
+type SyncStreamDetail struct {
+	Kind                      string  `json:"kind"`
+	State                     string  `json:"state"`
+	ReasonCode                string  `json:"reasonCode"`
+	Detail                    string  `json:"detail"`
+	LocalRevisionFingerprint  *string `json:"localRevisionFingerprint"`
+	RemoteRevisionFingerprint *string `json:"remoteRevisionFingerprint"`
+	ObservedAt                *string `json:"observedAt"`
+	LastSuccessAt             *string `json:"lastSuccessAt"`
+	Retryable                 bool    `json:"retryable"`
+}
+
+type OperationsSync struct {
+	State                      string             `json:"state"`
+	Streams                    []SyncStreamDetail `json:"streams"`
+	AutomaticEnabled           bool               `json:"automaticEnabled"`
+	DebounceMillis             string             `json:"debounceMillis"`
+	FlushAtCriticalTransitions bool               `json:"flushAtCriticalTransitions"`
+}
+
+type OperationsReconciliation struct {
+	Mode                    string  `json:"mode"`
+	State                   string  `json:"state"`
+	ReasonCode              string  `json:"reasonCode"`
+	Detail                  string  `json:"detail"`
+	TerminalEventDispatch   string  `json:"terminalEventDispatch"`
+	TerminalTargetMillis    string  `json:"terminalTargetMillis"`
+	ActiveIntervalMillis    string  `json:"activeIntervalMillis"`
+	IdleIntervalMillis      string  `json:"idleIntervalMillis"`
+	LostEventWatchdogMillis string  `json:"lostEventWatchdogMillis"`
+	LastCompletedAt         *string `json:"lastCompletedAt"`
+	PendingWakeups          string  `json:"pendingWakeups"`
+}
+
+// OperationsAuditEntry is derived only from immutable Event envelope fields.
+// Raw payload, identifiers, paths, content, and actor claims are absent.
+type OperationsAuditEntry struct {
+	ID                 string  `json:"id"`
+	Sequence           string  `json:"sequence"`
+	Category           string  `json:"category"`
+	Action             string  `json:"action"`
+	Outcome            string  `json:"outcome"`
+	ActorKind          string  `json:"actorKind"`
+	ActorFingerprint   *string `json:"actorFingerprint"`
+	SubjectFingerprint string  `json:"subjectFingerprint"`
+	RunFingerprint     *string `json:"runFingerprint"`
+	PayloadIncluded    bool    `json:"payloadIncluded"`
+}
+
+type OperationsAudit struct {
+	Entries          []OperationsAuditEntry `json:"entries"`
+	EntryLimit       string                 `json:"entryLimit"`
+	Truncated        bool                   `json:"truncated"`
+	PayloadsIncluded bool                   `json:"payloadsIncluded"`
+	PathsIncluded    bool                   `json:"pathsIncluded"`
+}
+
+type OperationsLogEntry struct {
+	Sequence    string `json:"sequence"`
+	OccurredAt  string `json:"occurredAt"`
+	Level       string `json:"level"`
+	Component   string `json:"component"`
+	Code        string `json:"code"`
+	Message     string `json:"message"`
+	Occurrences string `json:"occurrences"`
+}
+
+type OperationsLogs struct {
+	State             string               `json:"state"`
+	Reason            *Explanation         `json:"reason"`
+	Entries           []OperationsLogEntry `json:"entries"`
+	EntryLimit        string               `json:"entryLimit"`
+	ReturnedBytes     string               `json:"returnedBytes"`
+	RetentionDays     string               `json:"retentionDays"`
+	RetentionBytes    string               `json:"retentionBytes"`
+	Truncated         bool                 `json:"truncated"`
+	RawOutputIncluded bool                 `json:"rawOutputIncluded"`
+}
+
+type SupportAvailability struct {
+	PreviewAvailable bool         `json:"previewAvailable"`
+	Reason           *Explanation `json:"reason"`
+	UploadPolicy     string       `json:"uploadPolicy"`
+}
+
+type OperationsControlAvailability struct {
+	SyncAvailable      bool         `json:"syncAvailable"`
+	ReconcileAvailable bool         `json:"reconcileAvailable"`
+	Reason             *Explanation `json:"reason"`
+}
+
+type OperationsReport struct {
+	SchemaVersion    int                           `json:"schemaVersion"`
+	ContractVersion  string                        `json:"contractVersion"`
+	ContractHash     string                        `json:"contractHash"`
+	Cursor           string                        `json:"cursor"`
+	HostID           string                        `json:"hostId"`
+	HostInstanceID   string                        `json:"hostInstanceId"`
+	ProjectID        string                        `json:"projectId"`
+	ProjectName      string                        `json:"projectName"`
+	ProjectVersion   string                        `json:"projectVersion"`
+	ObservationID    string                        `json:"observationId"`
+	ObservedAt       string                        `json:"observedAt"`
+	MaximumAgeMillis string                        `json:"maximumAgeMillis"`
+	Status           string                        `json:"status"`
+	Reasons          []Explanation                 `json:"reasons"`
+	Hybrid           OperationsReconciliation      `json:"hybrid"`
+	Sync             OperationsSync                `json:"sync"`
+	Audit            OperationsAudit               `json:"audit"`
+	Logs             OperationsLogs                `json:"logs"`
+	Controls         OperationsControlAvailability `json:"controls"`
+	Support          SupportAvailability           `json:"support"`
+}
+
+type OperationsMutationInput struct {
+	SchemaVersion          int     `json:"schemaVersion"`
+	ContractVersion        string  `json:"contractVersion"`
+	ContractHash           string  `json:"contractHash"`
+	HostID                 string  `json:"hostId"`
+	RequestID              string  `json:"requestId"`
+	Kind                   string  `json:"kind"`
+	ProjectID              string  `json:"projectId"`
+	ExpectedProjectVersion string  `json:"expectedProjectVersion"`
+	PreviewID              *string `json:"previewId"`
+	Confirmed              bool    `json:"confirmed"`
+}
+
+func ValidateOperationsMutation(input OperationsMutationInput) error {
+	hash, err := SchemaSHA256()
+	if err != nil || input.SchemaVersion != 1 || input.ContractVersion != "director-planning/v1" || input.ContractHash != hash ||
+		!validOpaque(input.HostID) || !validOpaque(input.ProjectID) || len(input.RequestID) < 16 || !validOpaque(input.RequestID) {
+		return ErrQueryInvalid
+	}
+	if _, err := ParseExpectedVersion(input.ExpectedProjectVersion); err != nil {
+		return ErrQueryInvalid
+	}
+	switch input.Kind {
+	case "support.preview":
+		if input.PreviewID != nil || input.Confirmed {
+			return ErrQueryInvalid
+		}
+	case "support.generate":
+		if input.PreviewID == nil || !validSHA256(*input.PreviewID) || !input.Confirmed {
+			return ErrQueryInvalid
+		}
+	case "sync.now", "reconcile.now":
+		if input.PreviewID != nil || !input.Confirmed {
+			return ErrQueryInvalid
+		}
+	default:
+		return ErrQueryInvalid
+	}
+	return nil
+}
+
+type SupportBundleItem struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+type SupportBundlePreview struct {
+	ID                 string              `json:"id"`
+	RequestID          string              `json:"requestId"`
+	ProjectFingerprint string              `json:"projectFingerprint"`
+	Cursor             string              `json:"cursor"`
+	ProjectVersion     string              `json:"projectVersion"`
+	Items              []SupportBundleItem `json:"items"`
+	Excluded           []string            `json:"excluded"`
+	EstimatedBytes     string              `json:"estimatedBytes"`
+	ScanStatus         string              `json:"scanStatus"`
+	LocalOnly          bool                `json:"localOnly"`
+	UploadPolicy       string              `json:"uploadPolicy"`
+	OutputFileName     string              `json:"outputFileName"`
+	Valid              bool                `json:"valid"`
+	Issues             []Explanation       `json:"issues"`
+	Confirmation       string              `json:"confirmation"`
+}
+
+type SupportBundleResult struct {
+	BundleID        string `json:"bundleId"`
+	FileName        string `json:"fileName"`
+	SHA256          string `json:"sha256"`
+	Bytes           string `json:"bytes"`
+	Permission      string `json:"permission"`
+	GeneratedAt     string `json:"generatedAt"`
+	UploadAttempted bool   `json:"uploadAttempted"`
+}
+
+type OperationsEffectResult struct {
+	Kind                  string `json:"kind"`
+	EffectClass           string `json:"effectClass"`
+	Outcome               string `json:"outcome"`
+	GitState              string `json:"gitState"`
+	DynamicState          string `json:"dynamicState"`
+	SuccessfulHalfRetried bool   `json:"successfulHalfRetried"`
+}
+
+type OperationsMutationResult struct {
+	SchemaVersion   int                     `json:"schemaVersion"`
+	ContractVersion string                  `json:"contractVersion"`
+	ContractHash    string                  `json:"contractHash"`
+	HostID          string                  `json:"hostId"`
+	ProjectID       string                  `json:"projectId"`
+	Cursor          string                  `json:"cursor"`
+	RequestID       string                  `json:"requestId"`
+	Status          string                  `json:"status"`
+	Message         string                  `json:"message"`
+	SupportPreview  *SupportBundlePreview   `json:"supportPreview"`
+	Bundle          *SupportBundleResult    `json:"bundle"`
+	Effect          *OperationsEffectResult `json:"effect"`
+	RefusalCode     *string                 `json:"refusalCode"`
 }
 
 type DoctorQueryInput struct {

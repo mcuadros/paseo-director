@@ -40,6 +40,10 @@ import type {
   HomeSnapshot,
   DoctorQueryInput,
   DoctorReport,
+  OperationsQueryInput,
+  OperationsReport,
+  OperationsMutationInput,
+  OperationsMutationResult,
   OrganizerBootstrapInput,
   OrganizerBootstrapResult,
   RepairInput,
@@ -895,6 +899,20 @@ export class PaseoHostConnector implements DirectorHost {
       throw new Error("DOCTOR_SURFACE_NOT_WIRED");
     }
     return this.#planningTransport.doctor(input);
+  }
+
+  async queryOperations(input: OperationsQueryInput): Promise<OperationsReport> {
+    if (!this.#planningTransport.operations) {
+      throw new Error("OPERATIONS_SURFACE_NOT_WIRED");
+    }
+    return this.#planningTransport.operations(input);
+  }
+
+  async mutateOperations(input: OperationsMutationInput): Promise<OperationsMutationResult> {
+    if (!this.#planningTransport.mutateOperations) {
+      throw new Error("OPERATIONS_MUTATION_NOT_WIRED");
+    }
+    return this.#planningTransport.mutateOperations(input);
   }
 
   async repairProject(input: RepairInput): Promise<RepairResult> {

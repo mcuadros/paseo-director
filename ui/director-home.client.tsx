@@ -53,6 +53,7 @@ import {
   homeProjectKey,
 } from "./director-home-model.client.ts";
 import { shellMetrics } from "./shell-layout.client.ts";
+import { ProjectOperations } from "./project-operations.client.tsx";
 
 const HOME_PAGE_SIZE = 25;
 
@@ -86,6 +87,7 @@ const actionIcons: Record<HomeActionKind, string> = {
   open_board: "Columns3",
   open_organizer: "FolderCog",
   open_needs_you: "CircleAlert",
+  operations: "Activity",
   sync_now: "RefreshCw",
   reconcile_now: "ScanSearch",
   doctor: "Stethoscope",
@@ -132,6 +134,8 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     projectVersion: string;
     requestId: string;
   } | null>(null);
+  const [operationsProject, setOperationsProject] = useState<string | null>(null);
+  const [operationsInitialTab, setOperationsInitialTab] = useState<"health" | "audit" | "logs" | "support">("health");
   const home = useInfiniteQuery({
     queryKey: ["director", "home", host.id],
     initialPageParam: null as string | null,
@@ -189,6 +193,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     setEntry(null);
     setInspectedProject(null);
     setRepairRequest(null);
+    setOperationsProject(null);
     organizer.reset();
     control.reset();
     doctor.reset();
@@ -428,6 +433,11 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     }
     if (action.kind === "repair" && action.projectId) {
       openRepairForProject(action.projectId);
+      return;
+    }
+    if ((action.kind === "operations" || action.kind === "sync_now" || action.kind === "reconcile_now") && action.projectId) {
+      setOperationsInitialTab("health");
+      setOperationsProject(action.projectId);
       return;
     }
     const intent = mutationIntent(action);
@@ -1034,6 +1044,17 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
           </ScrollView>
         </Modal.Content>
       </Modal>
+      <ProjectOperations
+        hostId={host.id}
+        initialTab={operationsInitialTab}
+        layout={layout}
+        onOpenChange={(value) => {
+          if (!value) setOperationsProject(null);
+        }}
+        open={operationsProject !== null}
+        project={snapshot?.page.projects.find((project) => project.id === operationsProject) ?? null}
+        theme={theme}
+      />
       </>
     </AccessibilityProvider>
   );

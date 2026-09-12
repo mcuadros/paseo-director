@@ -109,6 +109,11 @@ browser console or page errors.
   Repair Preview/confirmation/refused/success states in wide and compact
   layouts. Confirm Doctor remains read-only and every Repair action retains its
   exact engine-issued confirmation, busy, disabled, and announcement semantics.
+- [ ] Verify Project Operations healthy/degraded/partial-sync/loading/offline/
+  stale/error, Audit, bounded Logs, and support Preview/refusal/success states.
+  Traverse every tab and manual control with keyboard and touch, confirm
+  reduced-motion loading is static, and confirm support output remains local,
+  mode `0600`, redacted, and never uploaded automatically.
 - [ ] Verify Task close/back/gesture dismissal, Explorer Inspector, Open agent
   available/unavailable behavior, the composer pill, Return to Director Board,
   and Command Center items all resolve the exact native context.

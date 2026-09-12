@@ -47,6 +47,7 @@ function snapshot() {
         actions: [
           { kind: "open_board", label: "Board", hostId: "host-a", projectId: "project-shared", enabled: true, unavailableReason: null, paseoWorkspaceId: "native-board", command: null, emphasis: "primary" },
           { kind: "open_organizer", label: "Organizer", hostId: "host-a", projectId: "project-shared", enabled: true, unavailableReason: null, paseoWorkspaceId: "native-organizer", command: null, emphasis: "secondary" },
+          { kind: "operations", label: "Operations", hostId: "host-a", projectId: "project-shared", enabled: true, unavailableReason: null, paseoWorkspaceId: null, command: null, emphasis: "secondary" },
           { kind: "doctor", label: "Doctor", hostId: "host-a", projectId: "project-shared", enabled: true, unavailableReason: null, paseoWorkspaceId: null, command: null, emphasis: "secondary" },
           { kind: "repair", label: "Repair…", hostId: "host-a", projectId: "project-shared", enabled: true, unavailableReason: null, paseoWorkspaceId: null, command: null, emphasis: "secondary" },
         ],
@@ -101,6 +102,7 @@ function loadHomeComponent(
       case "./shell-layout.client.ts": return ShellLayout;
       case "./accessibility.client.tsx":
         return loadClientModule("ui/accessibility.client.tsx", require);
+      case "./project-operations.client.tsx": return { ProjectOperations: ({ open, project }: { open: boolean; project?: { name?: string } }) => open ? React.createElement("Text", {}, `Project operations ${project?.name ?? "Project"}`) : null };
       default: throw new Error(`unexpected runtime import ${specifier}`);
     }
   };
@@ -158,6 +160,9 @@ test("DirectorHome renders current data, exact navigation, entry points, and sta
   const boardText = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Board")[0]!;
   await act(async () => boardText.parent!.props.onPress());
   assert.deepEqual(opened, ["native-board"]);
+  const operationsText = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Operations" && String(node.parent?.type) === "Pressable")[0]!;
+  await act(async () => operationsText.parent!.props.onPress());
+  assert.match(renderedText(renderer), /Project operations Rendered Project/);
 
   const createText = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Create Project")[0]!;
   await act(async () => createText.parent!.props.onPress());
