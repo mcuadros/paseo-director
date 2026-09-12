@@ -212,6 +212,53 @@ func planningScaleStore() *planningFactStore {
 	}
 }
 
+type optimizedPlanningFactStore struct {
+	*planningFactStore
+	projectListReads  int
+	projectGraphReads int
+}
+
+func (store *optimizedPlanningFactStore) PlanningProjects(context.Context) ([]domain.Project, error) {
+	store.projectListReads++
+	return slices.Clone(store.projects), nil
+}
+
+func (store *optimizedPlanningFactStore) PlanningProject(_ context.Context, projectID string) (
+	domain.Project,
+	[]domain.Workspace,
+	[]domain.Epic,
+	[]domain.Task,
+	[]domain.DependencyOverride,
+	map[string]int64,
+	error,
+) {
+	store.projectGraphReads++
+	for _, project := range store.projects {
+		if project.ID == projectID {
+			workspaces := slices.Clone(store.workspaces[projectID])
+			epics, tasks := slices.Clone(store.epics[projectID]), slices.Clone(store.tasks[projectID])
+			overrides := slices.Clone(store.overrides[projectID])
+			updates := make(map[string]int64, len(tasks))
+			for _, task := range tasks {
+				updates[task.ID] = task.QueuedAtUnixMillis
+			}
+			return project, workspaces, epics, tasks, overrides, updates, nil
+		}
+	}
+	return domain.Project{}, nil, nil, nil, nil, nil, errors.New("Project not found")
+}
+
+func TestPlanningReaderUsesOneTypedProjectGraphRead(t *testing.T) {
+	store := &optimizedPlanningFactStore{planningFactStore: planningScaleStore()}
+	snapshot, err := NewPlanningReader(store).Query(context.Background(), planningQueryInput())
+	if err != nil || snapshot.Page.TotalTasks != "500" || len(snapshot.Page.Tasks) != planningport.MaximumPageSize {
+		t.Fatalf("optimized planning query = %#v, %v", snapshot.Page, err)
+	}
+	if store.projectListReads != 1 || store.projectGraphReads != 1 {
+		t.Fatalf("optimized planning reads = list %d, graph %d", store.projectListReads, store.projectGraphReads)
+	}
+}
+
 func TestPlanningReaderIntegratesScaleFiltersSortAndSnapshotPages(t *testing.T) {
 	store := planningScaleStore()
 	reader := NewPlanningReader(store)
