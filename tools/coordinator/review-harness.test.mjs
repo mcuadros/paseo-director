@@ -77,6 +77,15 @@ function lstatMode(path) {
   return lstatSync(path).mode & 0o777;
 }
 
+function rebindManifest(fixture, changes) {
+  const manifest = JSON.parse(readFileSync(fixture.manifestPath, "utf8"));
+  delete manifest.manifestHash;
+  Object.assign(manifest, changes);
+  manifest.manifestHash = digest(manifest);
+  writeFileSync(fixture.manifestPath, `${JSON.stringify(manifest)}\n`);
+  return manifest.manifestHash;
+}
+
 test("the exact review-state lock serializes one remote observation consumer", async () => {
   const fixture = harnessFixture();
   mkdirSync(fixture.checkout);
@@ -438,6 +447,125 @@ test("remote CI consumption fails closed on a foreign, failed, or rerun observat
         return true;
       },
     );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("schema-v2 Candidate budget survives response loss and manifest rebinding", async () => {
+  const fixture = harnessFixture();
+  mkdirSync(fixture.checkout);
+  let verificationCount = 0;
+  const dependencies = harnessDependencies({
+    verifyReviewManifest: () => {
+      verificationCount += 1;
+      return { id: "manifest-identity", status: "passed" };
+    },
+  });
+  try {
+    const firstManifest = JSON.parse(
+      readFileSync(fixture.manifestPath, "utf8"),
+    ).manifestHash;
+    await assert.rejects(
+      runReviewHarness(fixture.options, {
+        ...dependencies,
+        afterPersist() {
+          throw new Error("simulated response loss");
+        },
+      }),
+      /simulated response loss/u,
+    );
+
+    const recovered = await runReviewHarness(fixture.options, dependencies);
+    assert.equal(recovered.result.manifestHash, firstManifest);
+    assert.equal(recovered.result.attempt, 1);
+    assert.equal(verificationCount, 1);
+
+    const reboundManifest = rebindManifest(fixture, {
+      ownership: { actor: "paseo:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+    });
+    const rebound = await runReviewHarness(fixture.options, dependencies);
+    assert.equal(rebound.result.manifestHash, reboundManifest);
+    assert.equal(rebound.result.reviewKey, recovered.result.reviewKey);
+    assert.equal(rebound.result.attempt, 1);
+    assert.equal(verificationCount, 2);
+
+    const state = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(state.schemaVersion, 2);
+    assert.equal(Object.keys(state.budgets).length, 1);
+    const budget = state.budgets[rebound.result.reviewKey];
+    assert.deepEqual(budget.remoteObservationIds, [
+      rebound.result.completeCi.observationId,
+    ]);
+    assert.deepEqual(budget.observedManifestHashes, [
+      firstManifest,
+      reboundManifest,
+    ]);
+    assert.equal(Object.keys(budget.manifests).length, 2);
+    assert.deepEqual(budget.exceptions, []);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("schema-v1 manifest-keyed history and rerun exceptions migrate without loss", async () => {
+  const fixture = harnessFixture();
+  mkdirSync(fixture.checkout);
+  const manifest = JSON.parse(readFileSync(fixture.manifestPath, "utf8"));
+  const legacyKey = digest({
+    candidate: manifest.candidate.sha,
+    base: manifest.base.sha,
+    manifestHash: manifest.manifestHash,
+  });
+  const legacy = {
+    schemaVersion: 1,
+    reviews: {
+      [legacyKey]: {
+        attempts: [
+          {
+            number: 2,
+            reviewId: fixture.options["review-id"],
+            reason: "invalid_environment",
+            reasonRecord: "recorded invalid environment",
+            phase: "complete",
+            results: [
+              {
+                id: "maintained-linux-ci",
+                status: "invalid",
+                code: "REVIEW_TOOLCHAIN_NOT_PREPARED",
+              },
+            ],
+          },
+        ],
+      },
+    },
+  };
+  writeFileSync(fixture.stateFile, `${JSON.stringify(legacy)}\n`, {
+    mode: 0o600,
+  });
+  try {
+    const output = await runReviewHarness(
+      fixture.options,
+      harnessDependencies({
+        verifyReviewManifest: () => ({
+          id: "manifest-identity",
+          status: "passed",
+        }),
+      }),
+    );
+    const state = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    const budget = state.budgets[output.result.reviewKey];
+    assert.equal(state.schemaVersion, 2);
+    assert.deepEqual(state.legacyReviews[legacyKey], legacy.reviews[legacyKey]);
+    assert.deepEqual(budget.observedManifestHashes, [manifest.manifestHash]);
+    assert.deepEqual(budget.exceptions, [
+      {
+        manifestHash: manifest.manifestHash,
+        attempt: 2,
+        reason: "invalid_environment",
+        reasonRecordHash: digest("recorded invalid environment"),
+      },
+    ]);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

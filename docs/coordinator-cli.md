@@ -3,7 +3,9 @@
 `director-coordinator` is the repository delivery tool for an authorized
 coordinator. It batches the Beads, Git, GitHub, and documented Paseo CLI reads
 needed around one exact Task Candidate. It is dependency-free, Linux-only, and
-uses direct process argument arrays without a shell.
+uses direct process argument arrays without a shell. Its state locks use the
+Linux `/usr/bin/flock` primitive supplied by util-linux; inability to acquire
+that kernel lock fails closed before state is read or changed.
 
 The Task Agent may run only `snapshot` and `review-handoff`. Publication,
 integration, and lifecycle cleanup remain coordinator-only.
@@ -34,7 +36,11 @@ Use `--checkout-state present` while the exact owned Task worktree remains.
 Use `--checkout-state reclaimed` only when both its path and Git registration
 are absent but the exact local Task ref remains at the Candidate. Post-handoff
 `publish`, `gate`, `integrate`, `cleanup-plan`, and `cleanup-apply` then operate
-from `--control-repo` without recreating a worktree. Use
+from `--control-repo` without recreating a worktree. The checkout's immediate
+parent may also be absent: the coordinator canonicalizes the missing suffix
+below its nearest existing directory without creating anything, while the
+exact local-ref, registration-absence, repository, Candidate, and base checks
+remain mandatory. Use
 `--lifecycle-state active` or `restored` with two exact Paseo IDs while the
 current/recovered resource facts remain observable; a handoff recorded active
 may later verify as restored without changing its identity. Use `reclaimed`
@@ -45,9 +51,12 @@ IDs is valid only when the Run never had those resources.
 
 Mutating commands also require an absolute `--state-file` outside every Git
 checkout. The file is mode `0600`, atomically replaced and filesystem-synced.
-It records immutable bindings and effect phases before dispatch. A Linux
-process-identity lock prevents concurrent PR creation; a stale lock is removed
-only after its exact process identity is absent. Preserve this state file
+It records immutable bindings and effect phases before dispatch. A private
+stable guard file holds a nonblocking Linux kernel lock while the exact
+process-identity record is inspected or atomically replaced. This gives one
+concurrent stale-lock reclaimer; a stale record is replaced only after its
+exact PID/start-time identity is absent, and no second process can interleave a
+state write. Preserve the state file and its mode-`0600` `.lock.guard` sibling
 through publication, integration, and cleanup.
 
 Coordinator state schema v2 stores `ownershipTokenHash` in its immutable
@@ -105,7 +114,9 @@ response content.
   It refuses blocked Tasks, pushes only the owned branch under an exact lease,
   and creates or updates one marked draft. A corrected Candidate updates that
   same open draft with an exact old-head lease. Its result always reports
-  `mergeAuthorized: false`.
+  `mergeAuthorized: false`. Owned-PR discovery is limited to one 100-entry
+  GitHub page and refuses a saturated page as incomplete before reasoning
+  about ownership or creating a PR.
 - `remote-ci` requires `--state-file`, `--validation-file`, `--ci-workflow`,
   and one or more `--required-check` values. It records the unique completed
   GitHub workflow run for the exact Candidate/base plus exactly one instance of
@@ -222,11 +233,17 @@ references, detached Candidate and trees, raw diff, clean state, GitHub remote,
 and live base SHA. This mechanically proves unchanged immutable history; it
 does not turn the manifest into evidence.
 
-The private review state consumes one observation for an exact
-review/Candidate/base/manifest tuple. Replay by the same Reviewer adopts the
+Private review-state schema v2 keys the one complete-CI authority to the exact
+Candidate/base pair. Manifest hashes are append-only observations inside that
+budget, so a lifecycle or ownership rebinding cannot create another CI budget;
+the same Reviewer can verify the new manifest while reusing the exact recorded
+remote observation. Replay after response loss adopts the manifest-bound
 stored result. A different Reviewer, observation, or complete-CI source is
-refused. The harness uses an exact Linux process-identity lock so concurrent
-invocations cannot consume duplicate observations.
+refused. Schema-v1 manifest-keyed state is migrated in place: its original
+entries, observed manifest hashes, and recorded invalid-environment or
+failure-confirmation exception reasons remain private history. The harness
+uses the same kernel-serialized exact process-identity lock, so concurrent
+stale reclaimers cannot consume observations or lose a state record.
 
 The maintained adversarial probes under `tools/coordinator/*.test.mjs` use
 disposable repositories internally and run through CI. Reviewers invoke these

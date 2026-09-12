@@ -2,14 +2,17 @@
 
 import assert from "node:assert/strict";
 import {
+  existsSync,
   lstatSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
 
 import {
   CoordinatorError,
@@ -84,6 +87,101 @@ test("shared process-identity lock serializes one exact binding", async () => {
     );
     release();
     assert.equal(await first, "complete");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent stale-lock reclamation has one winner and preserves its effect record", async () => {
+  const root = mkdtempSync(join(tmpdir(), "director-internal-stale-lock-"));
+  const lockPath = join(root, "state.lock");
+  const statePath = join(root, "state.json");
+  const bindingHash = "b".repeat(64);
+  const configuration = {
+    lockPath,
+    bindingHash,
+    label: "stale test lock",
+    busyCode: "TEST_BUSY",
+    invalidCode: "TEST_INVALID",
+    replacedCode: "TEST_REPLACED",
+    processCode: "TEST_PROCESS",
+  };
+  writeFileSync(
+    lockPath,
+    `${canonicalJson({
+      schemaVersion: 1,
+      pid: 2_147_483_647,
+      processStartTime: "0",
+      nonce: "c".repeat(32),
+      bindingHash,
+    })}\n`,
+    { mode: 0o600 },
+  );
+  try {
+    const barrier = new SharedArrayBuffer(8);
+    const values = new Int32Array(barrier);
+    const messages = [];
+    const workers = ["first", "second"].map(
+      (effect) =>
+        new Worker(new URL("./lock-contender.fixture.mjs", import.meta.url), {
+          workerData: {
+            barrier,
+            configuration,
+            effect,
+            statePath,
+          },
+        }),
+    );
+    const completions = workers.map(
+      (worker) =>
+        new Promise((resolvePromise, rejectPromise) => {
+          worker.on("message", (message) => {
+            messages.push(message);
+            if (
+              messages.filter(({ status }) =>
+                status === "ready"
+              ).length === 2
+            ) {
+              Atomics.store(values, 0, 1);
+              Atomics.notify(values, 0, 2);
+            }
+            if (
+              messages.filter(({ status }) =>
+                status === "entered" || status === "rejected"
+              ).length === 2
+            ) {
+              Atomics.store(values, 1, 1);
+              Atomics.notify(values, 1, 2);
+            }
+          });
+          worker.once("error", rejectPromise);
+          worker.once("exit", (code) => {
+            if (code === 0) resolvePromise();
+            else rejectPromise(new Error(`lock contender exited ${code}`));
+          });
+        }),
+    );
+    await Promise.all(completions);
+    assert.equal(
+      messages.filter(({ status }) => status === "entered").length,
+      1,
+    );
+    assert.equal(
+      messages.filter(({ status }) => status === "fulfilled").length,
+      1,
+    );
+    assert.deepEqual(
+      messages
+        .filter(({ status }) => status === "rejected")
+        .map(({ code }) => code),
+      ["TEST_BUSY"],
+    );
+    assert.equal(
+      Object.keys(JSON.parse(readFileSync(statePath, "utf8")).effects).length,
+      1,
+    );
+    assert.equal(existsSync(lockPath), false);
+    assert.equal(lstatSync(`${lockPath}.guard`).mode & 0o777, 0o600);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

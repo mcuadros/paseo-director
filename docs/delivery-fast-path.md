@@ -27,6 +27,13 @@ missing sibling and never starts a second complete CI for the Candidate. A
 corrected commit is a new Candidate; it updates the same owned draft and gets a
 new CI observation and independent Review.
 
+The repository review harness keys that complete-CI budget to the exact
+Candidate/base pair. Regenerated handoff manifests remain recorded history
+inside the same budget and reuse its exact remote observation; changing
+ownership or lifecycle routing fields cannot reset CI consumption. Legacy
+manifest-keyed private state and its recorded exception history migrate without
+becoming new authority.
+
 The product-side observation, pagination, budget, and base-race contract is
 documented in [GitHub checks and base invalidation](github-checks.md).
 
