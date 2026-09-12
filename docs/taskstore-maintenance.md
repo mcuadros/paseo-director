@@ -4,6 +4,24 @@ The standalone Director Engine owns TaskStore maintenance. The Paseo connector,
 UI, agents, repositories, and Organizer configuration never receive a Dolt
 credential, raw SQL surface, backup path, or maintenance-state path.
 
+Production does not give the Engine a global Dolt administrator. The supported
+TaskStore bootstrap uses transient owner authority to provision three distinct
+runtime principals and then removes that owner from production configuration.
+Control has only scoped observation/migration capabilities, writer retains the
+table-scoped DML contract, and maintenance has only exact execution of the
+source database's backup routine. None receives `ALL`, `SUPER`, user/role
+administration, or grant option; control and writer cannot invoke backup, while
+maintenance cannot read TaskStore rows or invoke another admin routine.
+
+Bootstrap seals the exact grant contract plus the canonical Dolt privilege
+file's mode-`0600` content digest. Startup, writes, and maintenance fail closed
+with a bounded `taskstore_authority_*` code on identity, file, mode, or digest
+drift. Repair is to rerun the supported TaskStore bootstrap; raw SQL is not an
+operator interface. The supervised Dolt configuration owns the global safe-
+commit value of zero. Runtime connections set only their session value and
+verify both values, avoiding a global runtime administrator merely to repair
+configuration drift. See [ADR-0022](adr/0022-least-privilege-taskstore-maintenance.md).
+
 ## Startup and recurring operation
 
 `director-engine serve-board` opens the exact configured direct-Dolt store and
@@ -49,13 +67,27 @@ backup directory. Response loss is reconciled from that exact directory and
 manifest; an ambiguous, empty, replaced, or mismatched artifact is never
 adopted.
 
+One exception repairs the confirmed denied-first-backup frontier. When the
+ledger contains exactly one first-attempt daily backup, the store is
+mechanically proven fresh and empty, its source fingerprint is unchanged, the
+bootstrap authority attestation is current, and the manifest-bound owner-only
+directory is still exactly empty, the service records a CAS rearm intent and
+hash-chained audit entry and retries into that same directory. It deletes and
+overwrites nothing. A response-lost populated artifact is adopted. Any data,
+extra backup or migration, branch/history ambiguity, changed authority,
+fingerprint, directory, manifest, owner, mode, device/inode, symlink, or
+unavailable observation remains `Needs you`; a valid backup is never retried.
+
 A successful backup call is not validation. The Engine restores it without
 force into a fresh deterministic validation database, verifies constraints,
 and compares one SHA-256 fingerprint covering schema columns and indexes,
 trigger bodies, every application table row in primary-key order, store
 identity, schema metadata, Dolt branches, and working-set status. Only an exact
 match becomes `validated`. The temporary validation database is removed only
-after the proof succeeds.
+after the proof succeeds. An owner-only validation receipt makes exact
+response-loss and restart adoption idempotent; its immutable dispatch attempt
+is CAS-fenced before restore. Validation and rearm are each bounded to two
+attempts.
 
 ## Migration and interruption recovery
 

@@ -21,6 +21,7 @@ const (
 	MinimumFreeBasisPoints       = uint64(1_000)
 	MaximumRecords               = 32
 	MaximumProjects              = 10_000
+	MaximumRecoveryAudit         = 32
 )
 
 var (
@@ -38,13 +39,15 @@ const (
 type BackupPhase string
 
 const (
-	BackupIntentRecorded     BackupPhase = "intent_recorded"
-	BackupDispatching        BackupPhase = "dispatching"
-	BackupValidationRequired BackupPhase = "validation_required"
-	BackupValidated          BackupPhase = "validated"
-	BackupExpiryDispatching  BackupPhase = "expiry_dispatching"
-	BackupExpired            BackupPhase = "expired"
-	BackupNeedsYou           BackupPhase = "needs_you"
+	BackupIntentRecorded        BackupPhase = "intent_recorded"
+	BackupDispatching           BackupPhase = "dispatching"
+	BackupValidationRequired    BackupPhase = "validation_required"
+	BackupValidationDispatching BackupPhase = "validation_dispatching"
+	BackupValidated             BackupPhase = "validated"
+	BackupExpiryDispatching     BackupPhase = "expiry_dispatching"
+	BackupExpired               BackupPhase = "expired"
+	BackupRearmDispatching      BackupPhase = "rearm_dispatching"
+	BackupNeedsYou              BackupPhase = "needs_you"
 )
 
 type Backup struct {
@@ -60,6 +63,30 @@ type Backup struct {
 	ValidatedAtMillis   int64         `json:"validatedAtMillis,omitempty"`
 	RestoreFingerprint  string        `json:"restoreFingerprint,omitempty"`
 	NeedsYouCode        string        `json:"needsYouCode,omitempty"`
+	RecoveryAttempt     uint32        `json:"recoveryAttempt,omitempty"`
+	RecoveryEvidenceSHA string        `json:"recoveryEvidenceSha256,omitempty"`
+	ValidationAttempt   uint32        `json:"validationAttempt,omitempty"`
+}
+
+type RecoveryAuditCode string
+
+const (
+	RecoveryRearmAuthorized      RecoveryAuditCode = "backup_rearm_authorized"
+	RecoveryRearmRetryAuthorized RecoveryAuditCode = "backup_rearm_retry_authorized"
+	RecoveryRearmCompleted       RecoveryAuditCode = "backup_rearm_completed"
+	RecoveryBackupValidated      RecoveryAuditCode = "backup_recovery_validated"
+	RecoveryRearmRefused         RecoveryAuditCode = "backup_rearm_refused"
+)
+
+type RecoveryAuditEntry struct {
+	Sequence         uint64            `json:"sequence"`
+	BackupID         string            `json:"backupId"`
+	Code             RecoveryAuditCode `json:"code"`
+	Attempt          uint32            `json:"attempt"`
+	ObservedAtMillis int64             `json:"observedAtMillis"`
+	EvidenceSHA256   string            `json:"evidenceSha256"`
+	PreviousSHA256   string            `json:"previousSha256,omitempty"`
+	SHA256           string            `json:"sha256"`
 }
 
 type ProjectBinding struct {
@@ -101,13 +128,14 @@ type Migration struct {
 }
 
 type State struct {
-	SchemaVersion      string     `json:"schemaVersion"`
-	StoreID            string     `json:"storeId"`
-	StoreBindingSHA256 string     `json:"storeBindingSha256"`
-	Revision           uint64     `json:"revision"`
-	Backups            []Backup   `json:"backups,omitempty"`
-	Migration          *Migration `json:"migration,omitempty"`
-	SHA256             string     `json:"sha256"`
+	SchemaVersion      string               `json:"schemaVersion"`
+	StoreID            string               `json:"storeId"`
+	StoreBindingSHA256 string               `json:"storeBindingSha256"`
+	Revision           uint64               `json:"revision"`
+	Backups            []Backup             `json:"backups,omitempty"`
+	Migration          *Migration           `json:"migration,omitempty"`
+	RecoveryAudit      []RecoveryAuditEntry `json:"recoveryAudit,omitempty"`
+	SHA256             string               `json:"sha256"`
 }
 
 func stateValue(value State) State { value.SHA256 = ""; return value }
@@ -131,6 +159,41 @@ func NewState(storeID, storeBindingSHA256 string) State {
 	return SealState(State{StoreID: storeID, StoreBindingSHA256: storeBindingSHA256, Revision: 1})
 }
 
+func recoveryAuditValue(value RecoveryAuditEntry) RecoveryAuditEntry { value.SHA256 = ""; return value }
+
+func RecoveryAuditSHA256(value RecoveryAuditEntry) string {
+	encoded, err := json.Marshal(recoveryAuditValue(value))
+	if err != nil {
+		panic("marshal fixed TaskStore maintenance recovery audit: " + err.Error())
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func validRecoveryAuditCode(value RecoveryAuditCode) bool {
+	switch value {
+	case RecoveryRearmAuthorized, RecoveryRearmRetryAuthorized, RecoveryRearmCompleted, RecoveryBackupValidated, RecoveryRearmRefused:
+		return true
+	default:
+		return false
+	}
+}
+
+func AppendRecoveryAudit(state *State, backupID string, code RecoveryAuditCode, attempt uint32, observedAtMillis int64, evidenceSHA256 string) bool {
+	if state == nil || len(state.RecoveryAudit) >= MaximumRecoveryAudit || !identifierPattern.MatchString(backupID) ||
+		!validRecoveryAuditCode(code) || attempt == 0 || attempt > 2 || observedAtMillis < 0 || !digestPattern.MatchString(evidenceSHA256) {
+		return false
+	}
+	entry := RecoveryAuditEntry{Sequence: uint64(len(state.RecoveryAudit) + 1), BackupID: backupID, Code: code,
+		Attempt: attempt, ObservedAtMillis: observedAtMillis, EvidenceSHA256: evidenceSHA256}
+	if len(state.RecoveryAudit) > 0 {
+		entry.PreviousSHA256 = state.RecoveryAudit[len(state.RecoveryAudit)-1].SHA256
+	}
+	entry.SHA256 = RecoveryAuditSHA256(entry)
+	state.RecoveryAudit = append(state.RecoveryAudit, entry)
+	return true
+}
+
 func validProjectState(value string) bool {
 	return value == "active" || value == "paused" || value == "degraded" || value == "archived"
 }
@@ -138,7 +201,9 @@ func validProjectState(value string) bool {
 func validBackup(value Backup) bool {
 	if !identifierPattern.MatchString(value.ID) || (value.Purpose != BackupDaily && value.Purpose != BackupMigration) ||
 		value.SourceSchemaVersion <= 0 || !digestPattern.MatchString(value.SourceFingerprint) || value.Attempt > 2 ||
-		value.CreatedAtMillis < 0 || value.RetentionUntil-value.CreatedAtMillis != RetentionMillis {
+		value.CreatedAtMillis < 0 || value.RetentionUntil-value.CreatedAtMillis != RetentionMillis || value.RecoveryAttempt > 2 || value.ValidationAttempt > 2 ||
+		(value.RecoveryAttempt == 0) != (value.RecoveryEvidenceSHA == "") ||
+		(value.RecoveryEvidenceSHA != "" && !digestPattern.MatchString(value.RecoveryEvidenceSHA)) {
 		return false
 	}
 	if value.Purpose == BackupMigration {
@@ -149,8 +214,11 @@ func validBackup(value Backup) bool {
 		return false
 	}
 	switch value.Phase {
-	case BackupIntentRecorded, BackupDispatching, BackupValidationRequired:
+	case BackupIntentRecorded, BackupDispatching, BackupValidationRequired, BackupValidationDispatching:
 		return value.ValidatedAtMillis == 0 && value.RestoreFingerprint == "" && value.NeedsYouCode == ""
+	case BackupRearmDispatching:
+		return value.Purpose == BackupDaily && value.Attempt == 1 && value.RecoveryAttempt > 0 &&
+			value.ValidatedAtMillis == 0 && value.RestoreFingerprint == "" && value.NeedsYouCode == ""
 	case BackupValidated, BackupExpiryDispatching:
 		return value.ValidatedAtMillis >= value.CreatedAtMillis && value.ValidatedAtMillis <= value.RetentionUntil &&
 			value.RestoreFingerprint == value.SourceFingerprint && value.NeedsYouCode == ""
@@ -206,7 +274,8 @@ func validMigration(value Migration) bool {
 func ValidState(value State) bool {
 	if value.SchemaVersion != StateSchemaVersion || !identifierPattern.MatchString(value.StoreID) ||
 		!digestPattern.MatchString(value.StoreBindingSHA256) || value.Revision == 0 ||
-		len(value.Backups) > MaximumRecords || !digestPattern.MatchString(value.SHA256) || value.SHA256 != StateSHA256(value) {
+		len(value.Backups) > MaximumRecords || len(value.RecoveryAudit) > MaximumRecoveryAudit ||
+		!digestPattern.MatchString(value.SHA256) || value.SHA256 != StateSHA256(value) {
 		return false
 	}
 	seen := map[string]struct{}{}
@@ -218,6 +287,15 @@ func ValidState(value State) bool {
 			return false
 		}
 		seen[backup.ID] = struct{}{}
+	}
+	previous := ""
+	for index, entry := range value.RecoveryAudit {
+		if entry.Sequence != uint64(index+1) || !identifierPattern.MatchString(entry.BackupID) || !validRecoveryAuditCode(entry.Code) ||
+			entry.Attempt == 0 || entry.Attempt > 2 || entry.ObservedAtMillis < 0 || !digestPattern.MatchString(entry.EvidenceSHA256) ||
+			entry.PreviousSHA256 != previous || !digestPattern.MatchString(entry.SHA256) || entry.SHA256 != RecoveryAuditSHA256(entry) {
+			return false
+		}
+		previous = entry.SHA256
 	}
 	return value.Migration == nil || validMigration(*value.Migration)
 }

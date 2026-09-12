@@ -77,7 +77,15 @@ func TestDoltMaintenanceEffectsEndToEnd(t *testing.T) {
 
 func TestDoltV1ToV2EffectEndToEnd(t *testing.T) {
 	fixture := startDoltFixture(t)
-	store := openContractStore(t, fixture, "migration-store", true)
+	bootstrap := openContractStore(t, fixture, "migration-store", true)
+	if err := bootstrap.Close(); err != nil {
+		t.Fatal(err)
+	}
+	config := provisionRuntimeAuthorities(t, fixture, "migration-store")
+	store, err := dolt.Open(config)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = store.Close() })
 	project := domain.Project{ID: "migration-project", Name: "Migration project", State: "active", Organizer: testOrganizer("migration-project")}
 	workspace := testWorkspace(t, project.ID, "migration-workspace", "/srv/migration-project", "https://github.com/example/migration-project.git")

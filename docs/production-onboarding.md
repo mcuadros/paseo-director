@@ -8,16 +8,25 @@ restart.
 
 ## 1. Start a private direct-Dolt store
 
-Create an owner-only directory, initialize an ordinary Dolt database, and run
-the public loopback SQL server from that database directory. The directory
-basename is the database name passed to Director.
+Create owner-only data/configuration directories, initialize an ordinary Dolt
+database, and run the public loopback SQL server with one explicit private
+configuration. The supervised global safe-commit value must be zero and the
+exact privilege file must be inside its canonical owner-only configuration
+directory. The directory basename is the database name passed to Director.
 
 ```text
-install -d -m 0700 /absolute/private/director-dolt/director
+install -d -m 0700 /absolute/private/director-dolt/director /absolute/private/director-dolt/.doltcfg
 cd /absolute/private/director-dolt/director
 dolt init --name "Director" --email director@example.invalid
-dolt sql-server --host 127.0.0.1 --port 3307
+dolt sql-server --config /absolute/private/director-dolt/server.yaml
 ```
+
+The owner-only `server.yaml` binds `data_dir`, `cfg_dir`, and
+`privilege_file` to those exact directories, binds the listener to
+`127.0.0.1:3307`, and sets `system_variables.dolt_force_transaction_commit`
+to `0`. Director refuses a different listener, database, privilege-file
+identity, file mode, digest, or global safe value. This Director-owned Dolt
+server remains separate from every Beads server.
 
 In another terminal, ask the engine to create and verify its complete schema,
 identity, event cursor, and Project readback while atomically writing the
@@ -29,15 +38,27 @@ director-engine bootstrap-taskstore \
   --address 127.0.0.1:3307 \
   --database director \
   --store-id director-local \
-  --control-user root
+  --owner-user root \
+  --control-user director_control \
+  --writer-user director_writer \
+  --maintenance-user director_maintenance \
+  --control-password-file /absolute/private/director-runtime/dolt-control.password \
+  --writer-password-file /absolute/private/director-runtime/dolt-writer.password \
+  --maintenance-password-file /absolute/private/director-runtime/dolt-maintenance.password \
+  --privilege-file /absolute/private/director-dolt/.doltcfg/privileges.db
 ```
 
 The successful JSON result is path- and credential-free. Repeating the exact
 command is idempotent. A different store identity, an unknown/partial schema,
 unsafe file ownership or mode, a dirty migration frontier, or changed
-configuration is refused. Password files, when the local Dolt deployment uses
-them, must be absolute owner-only regular files and are supplied with the
-documented `--control-password-file` and `--writer-password-file` options.
+configuration is refused. The three runtime password files must be non-empty
+absolute owner-only regular files. Only the transient owner-local bootstrap
+connection may omit `--owner-password-file`; it is never written into the
+runtime configuration. Bootstrap installs schema version two, resets only the
+three exact runtime identities, grants their closed capabilities, reads the
+grants back, seals the grant and privilege-file digests, and then verifies the
+new runtime configuration. Users run no raw SQL and `serve-board` receives no
+owner credential.
 
 `serve-board` does not guess or replace a store. It starts only after the
 bootstrap readback succeeds:

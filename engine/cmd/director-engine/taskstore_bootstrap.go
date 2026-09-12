@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,6 +28,7 @@ func (bootstrapLogCompactor) CompactExpired(context.Context, int64) error { retu
 type taskStoreBootstrapResult struct {
 	Event         string `json:"event"`
 	Status        string `json:"status"`
+	Authority     string `json:"authority,omitempty"`
 	StoreID       string `json:"storeId"`
 	Database      string `json:"database"`
 	SchemaVersion int    `json:"schemaVersion"`
@@ -41,6 +43,14 @@ func bootstrapTaskStore(ctx context.Context, config dolt.Config, maintenanceRoot
 		return taskStoreBootstrapResult{}, err
 	}
 	defer store.Close()
+	authority := ""
+	if config.RequireLeastPrivilege {
+		status, authorityErr := store.VerifyRuntimeAuthority(ctx)
+		if authorityErr != nil || !status.Exact {
+			return taskStoreBootstrapResult{}, dolt.ErrRuntimeAuthority
+		}
+		authority = string(status.Code)
+	}
 	if err := store.Bootstrap(ctx); err != nil {
 		if maintenanceRoot == "" {
 			maintenanceRoot, err = dolt.DefaultMaintenanceRoot(config.StoreID)
@@ -85,7 +95,7 @@ func bootstrapTaskStore(ctx context.Context, config dolt.Config, maintenanceRoot
 		return taskStoreBootstrapResult{}, fmt.Errorf("Project readback: %w", err)
 	}
 	return taskStoreBootstrapResult{Event: "director-engine.taskstore-ready", Status: "ready",
-		StoreID: config.StoreID, Database: config.Control.Database, SchemaVersion: version,
+		Authority: authority, StoreID: config.StoreID, Database: config.Control.Database, SchemaVersion: version,
 		EventCursor: cursor, ProjectCount: len(projects), Idempotent: true}, nil
 }
 
@@ -97,39 +107,54 @@ func runTaskStoreBootstrap(arguments []string, stdout, stderr io.Writer) int {
 	address := flags.String("address", "", "exact loopback Dolt listener")
 	database := flags.String("database", "", "exact Dolt database identity")
 	storeID := flags.String("store-id", "", "stable Director TaskStore identity")
-	controlUser := flags.String("control-user", "", "Dolt bootstrap/control identity")
+	ownerUser := flags.String("owner-user", "", "transient Dolt bootstrap owner identity")
+	ownerPasswordFile := flags.String("owner-password-file", "", "optional absolute owner-only bootstrap password file")
+	controlUser := flags.String("control-user", "", "Dolt runtime control identity")
 	writerUser := flags.String("writer-user", "", "Dolt runtime writer identity")
-	controlPasswordFile := flags.String("control-password-file", "", "optional absolute owner-only control password file")
-	writerPasswordFile := flags.String("writer-password-file", "", "optional absolute owner-only writer password file")
+	maintenanceUser := flags.String("maintenance-user", "", "Dolt runtime maintenance identity")
+	controlPasswordFile := flags.String("control-password-file", "", "absolute owner-only control password file")
+	writerPasswordFile := flags.String("writer-password-file", "", "absolute owner-only writer password file")
+	maintenancePasswordFile := flags.String("maintenance-password-file", "", "absolute owner-only maintenance password file")
+	privilegeFile := flags.String("privilege-file", "", "canonical owner-only Dolt privileges.db")
 	maintenanceRoot := flags.String("maintenance-root", "", "optional absolute owner-only maintenance root")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 ||
 		(*maintenanceRoot != "" && (!filepath.IsAbs(*maintenanceRoot) || filepath.Clean(*maintenanceRoot) != *maintenanceRoot)) {
-		fmt.Fprintln(stderr, "usage: director-engine bootstrap-taskstore (--taskstore-config <absolute-path> | --config-output <absolute-path> --address <loopback:port> --database <name> --store-id <id> --control-user <user> [--writer-user <user>] [--control-password-file <absolute-path>] [--writer-password-file <absolute-path>]) [--maintenance-root <absolute-path>]")
+		fmt.Fprintln(stderr, "usage: director-engine bootstrap-taskstore (--taskstore-config <absolute-path> | --config-output <absolute-path> --address <loopback:port> --database <name> --store-id <id> --owner-user <user> [--owner-password-file <absolute-path>] --control-user <user> --writer-user <user> --maintenance-user <user> --control-password-file <absolute-path> --writer-password-file <absolute-path> --maintenance-password-file <absolute-path> --privilege-file <absolute-path>) [--maintenance-root <absolute-path>]")
 		return 2
 	}
-	seedMode := *configOutput != "" || *address != "" || *database != "" || *storeID != "" || *controlUser != "" || *writerUser != "" || *controlPasswordFile != "" || *writerPasswordFile != ""
+	seedMode := *configOutput != "" || *address != "" || *database != "" || *storeID != "" || *ownerUser != "" ||
+		*ownerPasswordFile != "" || *controlUser != "" || *writerUser != "" || *maintenanceUser != "" ||
+		*controlPasswordFile != "" || *writerPasswordFile != "" || *maintenancePasswordFile != "" || *privilegeFile != ""
 	if (*configPath != "") == seedMode {
 		fmt.Fprintln(stderr, "director-engine: choose exactly one existing-config or engine-seeded configuration mode")
 		return 2
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
 	if seedMode {
-		if *writerUser == "" {
-			*writerUser = *controlUser
-		}
-		if err := seedTaskStoreConfig(*configOutput, *address, *database, *storeID, *controlUser, *writerUser,
-			*controlPasswordFile, *writerPasswordFile); err != nil {
+		result, err := provisionTaskStore(ctx, taskStoreProvisionInput{
+			ConfigOutput: *configOutput, Address: *address, Database: *database, StoreID: *storeID,
+			OwnerUser: *ownerUser, OwnerPasswordFile: *ownerPasswordFile,
+			ControlUser: *controlUser, WriterUser: *writerUser, MaintenanceUser: *maintenanceUser,
+			ControlPasswordFile: *controlPasswordFile, WriterPasswordFile: *writerPasswordFile,
+			MaintenancePasswordFile: *maintenancePasswordFile, PrivilegeFile: *privilegeFile,
+			MaintenanceRoot: *maintenanceRoot, NowMillis: time.Now().UnixMilli(),
+		})
+		if err != nil {
 			fmt.Fprintln(stderr, "director-engine: TaskStore configuration seed refused incompatible or ambiguous state")
 			return 1
 		}
-		*configPath = *configOutput
+		if err := writeJSON(stdout, result); err != nil {
+			fmt.Fprintln(stderr, "director-engine: TaskStore bootstrap readback failed")
+			return 1
+		}
+		return 0
 	}
 	config, err := readBoardServerConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(stderr, "director-engine: TaskStore bootstrap configuration is invalid")
 		return 1
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-	defer cancel()
 	result, err := bootstrapTaskStore(ctx, config, *maintenanceRoot, time.Now().UnixMilli())
 	if err != nil {
 		fmt.Fprintln(stderr, "director-engine: TaskStore bootstrap refused incompatible or ambiguous state")
@@ -140,6 +165,91 @@ func runTaskStoreBootstrap(arguments []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+type taskStoreProvisionInput struct {
+	ConfigOutput            string
+	Address                 string
+	Database                string
+	StoreID                 string
+	OwnerUser               string
+	OwnerPasswordFile       string
+	ControlUser             string
+	WriterUser              string
+	MaintenanceUser         string
+	ControlPasswordFile     string
+	WriterPasswordFile      string
+	MaintenancePasswordFile string
+	PrivilegeFile           string
+	MaintenanceRoot         string
+	NowMillis               int64
+}
+
+func bootstrapPassword(path string, required bool) (string, error) {
+	if path == "" {
+		if required {
+			return "", errors.New("TaskStore runtime password file is required")
+		}
+		return "", nil
+	}
+	content, err := privateFile(path, 16*1024)
+	if err != nil {
+		return "", errors.New("TaskStore bootstrap password file is invalid")
+	}
+	password := strings.TrimSpace(string(content))
+	if password == "" {
+		return "", errors.New("TaskStore bootstrap password file is empty")
+	}
+	return password, nil
+}
+
+func provisionTaskStore(ctx context.Context, input taskStoreProvisionInput) (taskStoreBootstrapResult, error) {
+	if !filepath.IsAbs(input.ConfigOutput) || filepath.Clean(input.ConfigOutput) != input.ConfigOutput ||
+		!loopbackListenAddress(input.Address) || input.Database == "" || input.StoreID == "" || input.OwnerUser == "" ||
+		input.ControlUser == "" || input.WriterUser == "" || input.MaintenanceUser == "" || input.PrivilegeFile == "" ||
+		input.NowMillis < 0 {
+		return taskStoreBootstrapResult{}, errors.New("TaskStore provision input is invalid")
+	}
+	ownerPassword, err := bootstrapPassword(input.OwnerPasswordFile, false)
+	if err != nil {
+		return taskStoreBootstrapResult{}, err
+	}
+	controlPassword, err := bootstrapPassword(input.ControlPasswordFile, true)
+	if err != nil {
+		return taskStoreBootstrapResult{}, err
+	}
+	writerPassword, err := bootstrapPassword(input.WriterPasswordFile, true)
+	if err != nil {
+		return taskStoreBootstrapResult{}, err
+	}
+	maintenancePassword, err := bootstrapPassword(input.MaintenancePasswordFile, true)
+	if err != nil {
+		return taskStoreBootstrapResult{}, err
+	}
+	owner := dolt.Endpoint{Address: input.Address, Database: input.Database, User: input.OwnerUser, Password: ownerPassword}
+	ownerConfig := dolt.Config{Control: owner, Writer: owner, Maintenance: owner, StoreID: input.StoreID}
+	if _, err := bootstrapTaskStore(ctx, ownerConfig, input.MaintenanceRoot, input.NowMillis); err != nil {
+		return taskStoreBootstrapResult{}, err
+	}
+	config, status, err := dolt.ProvisionRuntimeAuthority(ctx, dolt.RuntimeAuthorityBootstrap{
+		Owner: owner, StoreID: input.StoreID, PrivilegeFile: input.PrivilegeFile,
+		Control:     dolt.RuntimeIdentity{User: input.ControlUser, Host: "%", Password: controlPassword},
+		Writer:      dolt.RuntimeIdentity{User: input.WriterUser, Host: "%", Password: writerPassword},
+		Maintenance: dolt.RuntimeIdentity{User: input.MaintenanceUser, Host: "%", Password: maintenancePassword},
+	})
+	if err != nil || !status.Exact || status.Code != dolt.AuthorityCurrent {
+		return taskStoreBootstrapResult{}, dolt.ErrRuntimeAuthority
+	}
+	if err := installTaskStoreConfig(input.ConfigOutput, config, input.ControlPasswordFile,
+		input.WriterPasswordFile, input.MaintenancePasswordFile); err != nil {
+		return taskStoreBootstrapResult{}, err
+	}
+	readback, err := readBoardServerConfig(input.ConfigOutput)
+	if err != nil || readback.AuthoritySHA256 != config.AuthoritySHA256 ||
+		readback.PrivilegeFileSHA256 != config.PrivilegeFileSHA256 {
+		return taskStoreBootstrapResult{}, errors.New("TaskStore configuration readback differs")
+	}
+	return bootstrapTaskStore(ctx, readback, input.MaintenanceRoot, input.NowMillis)
 }
 
 func passwordFileJSON(path string) (json.RawMessage, error) {
@@ -153,8 +263,41 @@ func passwordFileJSON(path string) (json.RawMessage, error) {
 	return encoded, err
 }
 
-func seedTaskStoreConfig(path, address, database, storeID, controlUser, writerUser, controlPassword, writerPassword string) error {
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path || !loopbackListenAddress(address) || database == "" || storeID == "" || controlUser == "" || writerUser == "" {
+func decodeTaskStoreConfigDocument(document []byte) (boardServerConfig, []byte, error) {
+	canonical, err := jsondocument.CanonicalWithNormalizedNumbersLimit(document, maximumBoardServerConfigBytes)
+	if err != nil {
+		return boardServerConfig{}, nil, errors.New("TaskStore configuration is invalid")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(canonical))
+	decoder.DisallowUnknownFields()
+	var value boardServerConfig
+	if decoder.Decode(&value) != nil {
+		return boardServerConfig{}, nil, errors.New("TaskStore configuration is invalid")
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return boardServerConfig{}, nil, errors.New("TaskStore configuration is invalid")
+	}
+	return value, canonical, nil
+}
+
+func sameTaskStoreConfigBinding(left, right boardServerConfig) bool {
+	left.AuthoritySHA256, left.PrivilegeSHA256 = "", ""
+	right.AuthoritySHA256, right.PrivilegeSHA256 = "", ""
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
+}
+
+func exactPrivateConfig(path string) (boardServerConfig, []byte, error) {
+	document, err := privateFile(path, maximumBoardServerConfigBytes)
+	if err != nil {
+		return boardServerConfig{}, nil, err
+	}
+	return decodeTaskStoreConfigDocument(document)
+}
+
+func installTaskStoreConfig(path string, config dolt.Config, controlPassword, writerPassword, maintenancePassword string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || !config.RequireLeastPrivilege {
 		return errors.New("TaskStore seed is invalid")
 	}
 	controlFile, err := passwordFileJSON(controlPassword)
@@ -165,9 +308,18 @@ func seedTaskStoreConfig(path, address, database, storeID, controlUser, writerUs
 	if err != nil {
 		return err
 	}
-	document := boardServerConfig{SchemaVersion: 1, StoreID: storeID,
-		Control: boardServerEndpoint{Address: address, Database: database, User: controlUser, PasswordFile: controlFile},
-		Writer:  boardServerEndpoint{Address: address, Database: database, User: writerUser, PasswordFile: writerFile}}
+	maintenanceFile, err := passwordFileJSON(maintenancePassword)
+	if err != nil {
+		return err
+	}
+	document := boardServerConfig{SchemaVersion: 2, StoreID: config.StoreID,
+		AuthoritySHA256: config.AuthoritySHA256, PrivilegeFile: config.PrivilegeFile, PrivilegeSHA256: config.PrivilegeFileSHA256,
+		Control: boardServerEndpoint{Address: config.Control.Address, Database: config.Control.Database, User: config.Control.User,
+			Principal: config.Control.Principal, PasswordFile: controlFile},
+		Writer: boardServerEndpoint{Address: config.Writer.Address, Database: config.Writer.Database, User: config.Writer.User,
+			Principal: config.Writer.Principal, PasswordFile: writerFile},
+		Maintenance: boardServerEndpoint{Address: config.Maintenance.Address, Database: config.Maintenance.Database, User: config.Maintenance.User,
+			Principal: config.Maintenance.Principal, PasswordFile: maintenanceFile}}
 	encoded, err := json.Marshal(document)
 	if err != nil || len(encoded) > maximumBoardServerConfigBytes {
 		return errors.New("TaskStore seed is invalid")
@@ -184,26 +336,34 @@ func seedTaskStoreConfig(path, address, database, storeID, controlUser, writerUs
 	if !parentInfo.IsDir() || parentInfo.Mode().Perm()&0o077 != 0 || !ok || identity.Uid != uint32(os.Geteuid()) {
 		return errors.New("TaskStore configuration parent is unsafe")
 	}
-	if existing, err := privateFile(path, maximumBoardServerConfigBytes); err == nil {
-		left, leftErr := jsondocument.Canonical(existing)
-		right, rightErr := jsondocument.Canonical(encoded)
-		if leftErr != nil || rightErr != nil || !bytes.Equal(left, right) {
+	desired, desiredCanonical, err := decodeTaskStoreConfigDocument(encoded)
+	if err != nil {
+		return err
+	}
+	targetPresent := false
+	var priorCanonical []byte
+	if existing, canonical, existingErr := exactPrivateConfig(path); existingErr == nil {
+		targetPresent, priorCanonical = true, canonical
+		if bytes.Equal(canonical, desiredCanonical) {
+			return nil
+		}
+		if !sameTaskStoreConfigBinding(existing, desired) {
 			return errors.New("TaskStore configuration already differs")
 		}
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
-			return errors.New("TaskStore configuration target is unsafe")
-		}
+	} else if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		return errors.New("TaskStore configuration target is unsafe")
 	}
 	next := path + ".next"
-	if staged, stagedErr := privateFile(next, maximumBoardServerConfigBytes); stagedErr == nil {
-		left, leftErr := jsondocument.Canonical(staged)
-		right, rightErr := jsondocument.Canonical(encoded)
-		if leftErr != nil || rightErr != nil || !bytes.Equal(left, right) {
+	if _, stagedCanonical, stagedErr := exactPrivateConfig(next); stagedErr == nil {
+		if !bytes.Equal(stagedCanonical, desiredCanonical) {
 			return errors.New("TaskStore configuration staging state differs")
 		}
-		if _, targetErr := os.Lstat(path); !errors.Is(targetErr, os.ErrNotExist) {
+		if targetPresent {
+			_, currentCanonical, currentErr := exactPrivateConfig(path)
+			if currentErr != nil || !bytes.Equal(currentCanonical, priorCanonical) {
+				return errors.New("TaskStore configuration target became ambiguous")
+			}
+		} else if _, targetErr := os.Lstat(path); !errors.Is(targetErr, os.ErrNotExist) {
 			return errors.New("TaskStore configuration target became ambiguous")
 		}
 		if err := os.Rename(next, path); err != nil {
@@ -223,6 +383,14 @@ func seedTaskStoreConfig(path, address, database, storeID, controlUser, writerUs
 	closeErr := file.Close()
 	if err != nil || closeErr != nil {
 		return errors.New("TaskStore configuration could not be durably staged")
+	}
+	if targetPresent {
+		_, currentCanonical, currentErr := exactPrivateConfig(path)
+		if currentErr != nil || !bytes.Equal(currentCanonical, priorCanonical) {
+			return errors.New("TaskStore configuration target became ambiguous")
+		}
+	} else if _, targetErr := os.Lstat(path); !errors.Is(targetErr, os.ErrNotExist) {
+		return errors.New("TaskStore configuration target became ambiguous")
 	}
 	if err := os.Rename(next, path); err != nil {
 		return errors.New("TaskStore configuration could not be installed")

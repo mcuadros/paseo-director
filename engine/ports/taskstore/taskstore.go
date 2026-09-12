@@ -53,6 +53,7 @@ const (
 	HealthTransactionBeginFailed       HealthCode = "TRANSACTION_BEGIN_FAILED"
 	HealthWriteFailed                  HealthCode = "WRITE_FAILED"
 	HealthRetryBudgetExhausted         HealthCode = "TRANSACTION_RETRY_BUDGET_EXHAUSTED"
+	HealthAuthorityAttestationMismatch HealthCode = "AUTHORITY_ATTESTATION_MISMATCH"
 )
 
 // SchemaCode classifies a fail-closed schema problem without exposing SQL or

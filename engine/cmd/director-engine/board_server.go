@@ -49,14 +49,19 @@ type boardServerEndpoint struct {
 	Address      string          `json:"address"`
 	Database     string          `json:"database"`
 	User         string          `json:"user"`
+	Principal    string          `json:"principal"`
 	PasswordFile json.RawMessage `json:"passwordFile"`
 }
 
 type boardServerConfig struct {
-	SchemaVersion int                 `json:"schemaVersion"`
-	StoreID       string              `json:"storeId"`
-	Control       boardServerEndpoint `json:"control"`
-	Writer        boardServerEndpoint `json:"writer"`
+	SchemaVersion   int                 `json:"schemaVersion"`
+	StoreID         string              `json:"storeId"`
+	AuthoritySHA256 string              `json:"authoritySha256"`
+	PrivilegeFile   string              `json:"privilegeFile"`
+	PrivilegeSHA256 string              `json:"privilegeFileSha256"`
+	Control         boardServerEndpoint `json:"control"`
+	Writer          boardServerEndpoint `json:"writer"`
+	Maintenance     boardServerEndpoint `json:"maintenance"`
 }
 
 func privateFile(path string, maximum int) ([]byte, error) {
@@ -113,11 +118,15 @@ func endpointConfig(endpoint boardServerEndpoint) (dolt.Endpoint, error) {
 	}
 	return dolt.Endpoint{
 		Address: endpoint.Address, Database: endpoint.Database,
-		User: endpoint.User, Password: password,
+		User: endpoint.User, Password: password, Principal: endpoint.Principal,
 	}, nil
 }
 
 func readBoardServerConfig(path string) (dolt.Config, error) {
+	info, statErr := os.Lstat(path)
+	if statErr != nil || info.Mode().Perm() != 0o600 {
+		return dolt.Config{}, errors.New("Board server configuration is invalid")
+	}
 	content, err := privateFile(path, maximumBoardServerConfigBytes)
 	if err != nil {
 		return dolt.Config{}, errors.New("Board server configuration is invalid")
@@ -132,7 +141,8 @@ func readBoardServerConfig(path string) (dolt.Config, error) {
 	if err := decoder.Decode(&document); err != nil {
 		return dolt.Config{}, errors.New("Board server configuration is invalid")
 	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) || document.SchemaVersion != 1 || document.StoreID == "" {
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) || document.SchemaVersion != 2 || document.StoreID == "" || document.AuthoritySHA256 == "" ||
+		document.PrivilegeFile == "" || document.PrivilegeSHA256 == "" {
 		return dolt.Config{}, errors.New("Board server configuration is invalid")
 	}
 	control, err := endpointConfig(document.Control)
@@ -143,7 +153,13 @@ func readBoardServerConfig(path string) (dolt.Config, error) {
 	if err != nil {
 		return dolt.Config{}, err
 	}
-	return dolt.Config{Control: control, Writer: writer, StoreID: document.StoreID}, nil
+	maintenance, err := endpointConfig(document.Maintenance)
+	if err != nil || control.Password == "" || writer.Password == "" || maintenance.Password == "" {
+		return dolt.Config{}, errors.New("TaskStore production credentials are invalid")
+	}
+	return dolt.Config{Control: control, Writer: writer, Maintenance: maintenance, StoreID: document.StoreID,
+		AuthoritySHA256: document.AuthoritySHA256, PrivilegeFile: document.PrivilegeFile,
+		PrivilegeFileSHA256: document.PrivilegeSHA256, RequireLeastPrivilege: true}, nil
 }
 
 func loopbackListenAddress(value string) bool {
@@ -360,6 +376,10 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer store.Close()
+	if status, authorityError := store.VerifyRuntimeAuthority(context.Background()); authorityError != nil || !status.Exact {
+		fmt.Fprintf(stderr, "director-engine: TaskStore authority is unavailable (%s)\n", status.Code)
+		return 1
+	}
 	logRoot, err := diagnostics.DefaultLogRoot()
 	if err != nil {
 		fmt.Fprintln(stderr, "director-engine: TaskStore maintenance is unavailable")

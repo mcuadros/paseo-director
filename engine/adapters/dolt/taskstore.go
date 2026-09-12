@@ -68,13 +68,21 @@ func boundedMutationError(err error) error {
 // DoltTaskStore is the direct-Dolt implementation of the engine-owned typed
 // port. Its SQL pools and identity checks are not exposed through that port.
 type DoltTaskStore struct {
-	control       *sql.DB
-	writer        *sql.DB
-	database      string
-	address       string
-	storeID       string
-	testNowMillis func() int64
-	maintenance   sync.RWMutex
+	control               *sql.DB
+	writer                *sql.DB
+	maintenanceClient     *sql.DB
+	database              string
+	address               string
+	storeID               string
+	controlPrincipal      string
+	writerPrincipal       string
+	maintenancePrincipal  string
+	authoritySHA256       string
+	privilegeFile         string
+	privilegeFileSHA256   string
+	requireLeastPrivilege bool
+	testNowMillis         func() int64
+	maintenance           sync.RWMutex
 }
 
 var _ storeport.TaskStore = (*DoltTaskStore)(nil)
@@ -209,11 +217,18 @@ func isDuplicateError(err error) bool {
 }
 
 func (store *DoltTaskStore) prepareWriteConnection(ctx context.Context) (*sql.Conn, error) {
+	if store.requireLeastPrivilege && !store.verifyPrivilegeAttestation() {
+		return nil, backendFailure(storeport.HealthAuthorityAttestationMismatch)
+	}
 	control, err := store.control.Conn(ctx)
 	if err != nil {
 		return nil, backendFailure(storeport.HealthControlConnectionUnavailable)
 	}
-	if err := setAndVerifySafeCommitMode(ctx, control, true); err != nil {
+	// Production runtime principals deliberately have no SUPER or other global
+	// administrator privilege. The supervised Dolt configuration owns the
+	// global safe value; the Engine sets only its session value and verifies
+	// both before every write.
+	if err := setAndVerifySafeCommitMode(ctx, control, false); err != nil {
 		control.Close()
 		return nil, boundedMutationError(err)
 	}

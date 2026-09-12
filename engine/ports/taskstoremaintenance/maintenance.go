@@ -13,8 +13,21 @@ import (
 type BackupObservation struct {
 	Present               bool
 	Exact                 bool
+	EmptyOwned            bool
 	PriorDispatcherAbsent bool
 	Source                taskstoremaintenance.StoreObservation
+}
+
+// BackupRecoveryObservation is the closed proof required for the one narrow
+// denied-first-backup recovery. It contains no path, SQL, principal, grant, or
+// filesystem identity.
+type BackupRecoveryObservation struct {
+	Store                taskstoremaintenance.StoreObservation
+	FreshEmptyStore      bool
+	EmptyOwnedArtifact   bool
+	ArtifactAbsentExact  bool
+	MaintenanceAuthority bool
+	EvidenceSHA256       string
 }
 
 type BackupResult struct {
@@ -45,7 +58,9 @@ type StateStore interface {
 type Backend interface {
 	ObserveStore(context.Context) (taskstoremaintenance.StoreObservation, error)
 	ObserveBackup(context.Context, string) (BackupObservation, error)
+	ObserveBackupRecovery(context.Context, taskstoremaintenance.Backup) (BackupRecoveryObservation, error)
 	CreateBackup(context.Context, taskstoremaintenance.Backup) (BackupResult, error)
+	RearmBackup(context.Context, taskstoremaintenance.Backup, string) error
 	ValidateBackup(context.Context, taskstoremaintenance.Backup) (ValidationResult, error)
 	PlanProjectPause(context.Context) ([]taskstoremaintenance.ProjectBinding, error)
 	PauseProjects(context.Context, taskstoremaintenance.Migration) ([]taskstoremaintenance.ProjectBinding, error)

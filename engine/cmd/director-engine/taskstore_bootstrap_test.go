@@ -42,20 +42,42 @@ func TestTaskStoreBootstrapCLIUsesOnlyPrivateConfigAndBoundedReadback(t *testing
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(root, "taskstore.json")
+	controlPassword := filepath.Join(root, "control.password")
+	writerPassword := filepath.Join(root, "writer.password")
+	maintenancePassword := filepath.Join(root, "maintenance.password")
+	for path, value := range map[string]string{controlPassword: "control-secret", writerPassword: "writer-secret", maintenancePassword: "maintenance-secret"} {
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var stdout, stderr bytes.Buffer
-	status := runTaskStoreBootstrap([]string{"--config-output", configPath, "--address", fixture.address,
-		"--database", fixture.database, "--store-id", "bootstrap-cli-store", "--control-user", "root",
-		"--maintenance-root", filepath.Join(root, "maintenance")}, &stdout, &stderr)
+	arguments := []string{"--config-output", configPath, "--address", fixture.address,
+		"--database", fixture.database, "--store-id", "bootstrap-cli-store", "--owner-user", "root",
+		"--control-user", "director_control", "--writer-user", "director_writer", "--maintenance-user", "director_maintenance",
+		"--control-password-file", controlPassword, "--writer-password-file", writerPassword,
+		"--maintenance-password-file", maintenancePassword, "--privilege-file", filepath.Join(fixture.root, ".doltcfg", "privileges.db"),
+		"--maintenance-root", filepath.Join(root, "maintenance")}
+	status := runTaskStoreBootstrap(arguments, &stdout, &stderr)
 	if status != 0 || stderr.Len() != 0 || strings.Contains(stdout.String(), configPath) || strings.Contains(stdout.String(), fixture.address) {
 		t.Fatalf("bootstrap CLI status=%d stdout=%s stderr=%s", status, stdout.String(), stderr.String())
 	}
 	var result taskStoreBootstrapResult
-	if json.Unmarshal(stdout.Bytes(), &result) != nil || result.Status != "ready" || result.StoreID != "bootstrap-cli-store" {
+	if json.Unmarshal(stdout.Bytes(), &result) != nil || result.Status != "ready" || result.StoreID != "bootstrap-cli-store" ||
+		result.Authority != string(dolt.AuthorityCurrent) {
 		t.Fatalf("bootstrap readback = %s", stdout.String())
 	}
 	info, err := os.Lstat(configPath)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 		t.Fatalf("seeded TaskStore config mode = %v, %v", info, err)
+	}
+	config, err := readBoardServerConfig(configPath)
+	if err != nil || !config.RequireLeastPrivilege || config.Control.Principal != "director_control@%" ||
+		config.Writer.Principal != "director_writer@%" || config.Maintenance.Principal != "director_maintenance@%" {
+		t.Fatalf("seeded least-privilege config = %#v, %v", config, err)
+	}
+	stdout.Reset()
+	if status := runTaskStoreBootstrap(arguments, &stdout, &stderr); status != 0 || stderr.Len() != 0 {
+		t.Fatalf("idempotent bootstrap CLI status=%d stdout=%s stderr=%s", status, stdout.String(), stderr.String())
 	}
 }
 
@@ -65,10 +87,27 @@ func TestTaskStoreConfigSeedRecoversExactDurableStagingAndRefusesChangedState(t 
 		t.Fatal(err)
 	}
 	reference := filepath.Join(root, "reference.json")
-	arguments := []string{"127.0.0.1:3307", "director", "bootstrap-recovery", "root", "root", "", ""}
-	if err := seedTaskStoreConfig(reference, arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], arguments[5], arguments[6]); err != nil {
+	passwords := []string{filepath.Join(root, "control.password"), filepath.Join(root, "writer.password"), filepath.Join(root, "maintenance.password")}
+	config := dolt.Config{
+		Control:     dolt.Endpoint{Address: "127.0.0.1:3307", Database: "director", User: "control", Principal: "control@%"},
+		Writer:      dolt.Endpoint{Address: "127.0.0.1:3307", Database: "director", User: "writer", Principal: "writer@%"},
+		Maintenance: dolt.Endpoint{Address: "127.0.0.1:3307", Database: "director", User: "maintenance", Principal: "maintenance@%"},
+		StoreID:     "bootstrap-recovery", AuthoritySHA256: strings.Repeat("a", 64),
+		PrivilegeFile: filepath.Join(root, "privileges.db"), PrivilegeFileSHA256: strings.Repeat("b", 64), RequireLeastPrivilege: true,
+	}
+	if err := installTaskStoreConfig(reference, config, passwords[0], passwords[1], passwords[2]); err != nil {
 		t.Fatal(err)
 	}
+	updated := config
+	updated.PrivilegeFileSHA256 = strings.Repeat("c", 64)
+	if err := installTaskStoreConfig(reference, updated, passwords[0], passwords[1], passwords[2]); err != nil {
+		t.Fatalf("update only current authority attestation: %v", err)
+	}
+	readback, err := os.ReadFile(reference)
+	if err != nil || !strings.Contains(string(readback), strings.Repeat("c", 64)) {
+		t.Fatalf("updated authority attestation readback=%s err=%v", readback, err)
+	}
+	config = updated
 	content, err := os.ReadFile(reference)
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +116,7 @@ func TestTaskStoreConfigSeedRecoversExactDurableStagingAndRefusesChangedState(t 
 	if err := os.WriteFile(target+".next", content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := seedTaskStoreConfig(target, arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], arguments[5], arguments[6]); err != nil {
+	if err := installTaskStoreConfig(target, config, passwords[0], passwords[1], passwords[2]); err != nil {
 		t.Fatalf("recover exact staging: %v", err)
 	}
 	if _, err := os.Lstat(target + ".next"); !errors.Is(err, os.ErrNotExist) {
@@ -87,7 +126,7 @@ func TestTaskStoreConfigSeedRecoversExactDurableStagingAndRefusesChangedState(t 
 	if err := os.WriteFile(changed+".next", []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := seedTaskStoreConfig(changed, arguments[0], arguments[1], arguments[2], arguments[3], arguments[4], arguments[5], arguments[6]); err == nil {
+	if err := installTaskStoreConfig(changed, config, passwords[0], passwords[1], passwords[2]); err == nil {
 		t.Fatal("changed staging state was adopted")
 	}
 }

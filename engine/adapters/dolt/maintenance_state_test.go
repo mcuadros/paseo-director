@@ -61,6 +61,44 @@ func TestMaintenanceStateCASPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestMaintenanceStateRecoveryAuditCannotBeRewritten(t *testing.T) {
+	maintenance, _ := maintenanceFixture(t)
+	state, err := maintenance.Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := state
+	if !domainmaintenance.AppendRecoveryAudit(&next, "backup-audit", domainmaintenance.RecoveryRearmAuthorized, 1, 10_000, strings.Repeat("a", 64)) {
+		t.Fatal("append recovery audit")
+	}
+	next.Revision++
+	next = domainmaintenance.SealState(next)
+	if err := maintenance.CompareAndSwap(context.Background(), state.Revision, next); err != nil {
+		t.Fatal(err)
+	}
+	tampered := next
+	tampered.RecoveryAudit = append([]domainmaintenance.RecoveryAuditEntry(nil), next.RecoveryAudit...)
+	tampered.RecoveryAudit[0].Code = domainmaintenance.RecoveryRearmRefused
+	tampered.RecoveryAudit[0].SHA256 = domainmaintenance.RecoveryAuditSHA256(tampered.RecoveryAudit[0])
+	tampered.Revision++
+	tampered = domainmaintenance.SealState(tampered)
+	if !domainmaintenance.ValidState(tampered) {
+		t.Fatal("tampered fixture must remain structurally valid")
+	}
+	if err := maintenance.CompareAndSwap(context.Background(), next.Revision, tampered); !errors.Is(err, ErrMaintenanceUnsafe) {
+		t.Fatalf("rewritten recovery audit error=%v", err)
+	}
+	appended := next
+	if !domainmaintenance.AppendRecoveryAudit(&appended, "backup-audit", domainmaintenance.RecoveryRearmCompleted, 1, 10_001, strings.Repeat("b", 64)) {
+		t.Fatal("append second recovery audit")
+	}
+	appended.Revision++
+	appended = domainmaintenance.SealState(appended)
+	if err := maintenance.CompareAndSwap(context.Background(), next.Revision, appended); err != nil {
+		t.Fatalf("append-only recovery audit error=%v", err)
+	}
+}
+
 func TestMaintenanceStateRefusesTamperStoreMismatchAndAliasedRoot(t *testing.T) {
 	maintenance, root := maintenanceFixture(t)
 	statePath := filepath.Join(root, "maintenance-state.json")

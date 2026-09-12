@@ -376,20 +376,43 @@ func expectedTriggerDigests() (map[string][sha256.Size]byte, bool) {
 }
 
 func schemaTriggers(ctx context.Context, connection *sql.Conn) (map[string][sha256.Size]byte, error) {
-	rows, err := connection.QueryContext(ctx,
-		`SELECT trigger_name, event_manipulation, event_object_table, action_timing, action_statement
-		FROM information_schema.triggers WHERE trigger_schema = DATABASE() ORDER BY trigger_name`,
-	)
+	// Dolt 2.3.2 denies direct information_schema.triggers reads to a
+	// database-scoped principal even when it has TRIGGER on that database.
+	// SHOW TRIGGERS is the supported least-privilege observation and exposes the
+	// same five fields needed by the exact trigger digest.
+	rows, err := connection.QueryContext(ctx, `SHOW TRIGGERS`)
 	if err != nil {
 		return nil, storeport.InvalidSchema(storeport.SchemaInspectionFailed)
 	}
 	defer rows.Close()
-	triggers := make(map[string][sha256.Size]byte)
-	for rows.Next() {
-		var name, event, table, timing, statement string
-		if err := rows.Scan(&name, &event, &table, &timing, &statement); err != nil {
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, storeport.InvalidSchema(storeport.SchemaInspectionFailed)
+	}
+	positions := map[string]int{}
+	for index, column := range columns {
+		positions[strings.ToLower(column)] = index
+	}
+	for _, required := range []string{"trigger", "event", "table", "statement", "timing"} {
+		if _, ok := positions[required]; !ok {
 			return nil, storeport.InvalidSchema(storeport.SchemaInspectionFailed)
 		}
+	}
+	triggers := make(map[string][sha256.Size]byte)
+	for rows.Next() {
+		values := make([]sql.RawBytes, len(columns))
+		destinations := make([]any, len(values))
+		for index := range values {
+			destinations[index] = &values[index]
+		}
+		if err := rows.Scan(destinations...); err != nil {
+			return nil, storeport.InvalidSchema(storeport.SchemaInspectionFailed)
+		}
+		name := string(values[positions["trigger"]])
+		event := string(values[positions["event"]])
+		table := string(values[positions["table"]])
+		statement := string(values[positions["statement"]])
+		timing := string(values[positions["timing"]])
 		if _, duplicate := triggers[name]; duplicate {
 			return nil, storeport.InvalidSchema(storeport.SchemaTriggerSetMismatch)
 		}

@@ -5,6 +5,7 @@ package taskstoremaintenance
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -52,20 +53,38 @@ type fakeBackend struct {
 	store                                                                                    domainmaintenance.StoreObservation
 	pausedFingerprint                                                                        string
 	backups                                                                                  map[string]maintenanceport.BackupObservation
+	validations                                                                              map[string]maintenanceport.ValidationResult
 	projects                                                                                 []domainmaintenance.ProjectBinding
 	paused, resumed                                                                          bool
 	createCount, validateCount, applyCount, restoreCount, expireCount, logCount              int
+	rearmCount                                                                               int
 	loseCreateResponse, failBackupObservationOnce, mismatchValidation, changeAfterValidation bool
-	loseApplyResponse, partialApply, loseExpireResponse                                      bool
+	loseApplyResponse, partialApply, loseExpireResponse, loseRearmResponse                   bool
+	denyCreateWithEmpty, failRearmBeforeDispatchOnce                                         bool
+	loseValidationResponseOnce                                                               bool
+	freshEmptyStore, maintenanceAuthority                                                    bool
 	disks                                                                                    []domainmaintenance.DiskObservation
 }
 
 func newFakeBackend() *fakeBackend {
 	return &fakeBackend{
 		store:             domainmaintenance.StoreObservation{SchemaVersion: 1, Fingerprint: testDigest("a"), Exact: true},
-		pausedFingerprint: testDigest("b"), backups: map[string]maintenanceport.BackupObservation{},
-		projects: []domainmaintenance.ProjectBinding{{ID: "project-1", OriginalState: "active", OriginalVersion: 2, PausedVersion: 3}},
+		pausedFingerprint: testDigest("b"), backups: map[string]maintenanceport.BackupObservation{}, validations: map[string]maintenanceport.ValidationResult{},
+		projects:        []domainmaintenance.ProjectBinding{{ID: "project-1", OriginalState: "active", OriginalVersion: 2, PausedVersion: 3}},
+		freshEmptyStore: true, maintenanceAuthority: true,
 	}
+}
+
+func (backend *fakeBackend) ObserveBackupRecovery(_ context.Context, backup domainmaintenance.Backup) (maintenanceport.BackupRecoveryObservation, error) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	artifact, present := backend.backups[backup.ID]
+	return maintenanceport.BackupRecoveryObservation{
+		Store: backend.store, FreshEmptyStore: backend.freshEmptyStore,
+		EmptyOwnedArtifact:  present && artifact.Present && artifact.EmptyOwned,
+		ArtifactAbsentExact: !present, MaintenanceAuthority: backend.maintenanceAuthority && !backend.denyCreateWithEmpty,
+		EvidenceSHA256: testDigest("9"),
+	}, nil
 }
 
 func (backend *fakeBackend) ObserveStore(context.Context) (domainmaintenance.StoreObservation, error) {
@@ -92,6 +111,10 @@ func (backend *fakeBackend) CreateBackup(_ context.Context, backup domainmainten
 	defer backend.mu.Unlock()
 	backend.createCount++
 	source := domainmaintenance.StoreObservation{SchemaVersion: backup.SourceSchemaVersion, Fingerprint: backup.SourceFingerprint, Exact: true}
+	if backend.denyCreateWithEmpty {
+		backend.backups[backup.ID] = maintenanceport.BackupObservation{Present: true, EmptyOwned: true, Source: source}
+		return maintenanceport.BackupResult{}, errors.New("maintenance authority denied")
+	}
 	backend.backups[backup.ID] = maintenanceport.BackupObservation{Present: true, Exact: true, Source: source}
 	if backend.loseCreateResponse {
 		return maintenanceport.BackupResult{}, errors.New("credential in lost response")
@@ -99,9 +122,29 @@ func (backend *fakeBackend) CreateBackup(_ context.Context, backup domainmainten
 	return maintenanceport.BackupResult{Source: source}, nil
 }
 
+func (backend *fakeBackend) RearmBackup(_ context.Context, backup domainmaintenance.Backup, _ string) error {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	backend.rearmCount++
+	if backend.failRearmBeforeDispatchOnce {
+		backend.failRearmBeforeDispatchOnce = false
+		return errors.New("rearm failed before dispatch")
+	}
+	backend.backups[backup.ID] = maintenanceport.BackupObservation{Present: true, Exact: true, Source: domainmaintenance.StoreObservation{
+		SchemaVersion: backup.SourceSchemaVersion, Fingerprint: backup.SourceFingerprint, Exact: true,
+	}}
+	if backend.loseRearmResponse {
+		return errors.New("lost rearm response")
+	}
+	return nil
+}
+
 func (backend *fakeBackend) ValidateBackup(_ context.Context, backup domainmaintenance.Backup) (maintenanceport.ValidationResult, error) {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
+	if result, ok := backend.validations[backup.ID]; ok {
+		return result, nil
+	}
 	backend.validateCount++
 	restored := backup.SourceFingerprint
 	if backend.mismatchValidation {
@@ -111,6 +154,13 @@ func (backend *fakeBackend) ValidateBackup(_ context.Context, backup domainmaint
 		Fingerprint: backup.SourceFingerprint, Exact: true}, RestoredFingerprint: restored}
 	if backend.changeAfterValidation {
 		backend.store.Fingerprint = testDigest("e")
+	}
+	if !backend.mismatchValidation {
+		backend.validations[backup.ID] = result
+	}
+	if backend.loseValidationResponseOnce {
+		backend.loseValidationResponseOnce = false
+		return maintenanceport.ValidationResult{}, errors.New("lost validation response")
 	}
 	return result, nil
 }
@@ -229,6 +279,143 @@ func TestDailyBackupRecoversLostResponseAcrossServiceReopen(t *testing.T) {
 	}
 	if duplicate, err := second.ReconcileDaily(context.Background(), Command{ID: "daily-duplicate", NowMillis: 10_001}); err != nil || duplicate.Progressed {
 		t.Fatalf("duplicate daily backup = %#v, %v", duplicate, err)
+	}
+}
+
+func TestDailyBackupAdoptsValidationReceiptAfterResponseLoss(t *testing.T) {
+	store, backend := newMemoryStateStore(), newFakeBackend()
+	backend.loseValidationResponseOnce = true
+	command := Command{ID: "daily-validation-loss", NowMillis: 10_000}
+	first, err := newTestService(t, store, backend).ReconcileDaily(context.Background(), command)
+	if !errors.Is(err, ErrExternalUnavailable) || first.State.Backups[0].Phase != domainmaintenance.BackupValidationRequired ||
+		first.State.Backups[0].ValidationAttempt != 1 || backend.validateCount != 1 {
+		t.Fatalf("lost validation response=%#v err=%v backend=%#v", first, err, backend)
+	}
+	recovered, err := newTestService(t, store, backend).ReconcileDaily(context.Background(), command)
+	if err != nil || recovered.State.Backups[0].Phase != domainmaintenance.BackupValidated ||
+		recovered.State.Backups[0].ValidationAttempt != 2 || backend.validateCount != 1 {
+		t.Fatalf("adopted validation=%#v err=%v backend=%#v", recovered, err, backend)
+	}
+}
+
+func TestDeniedFirstBackupRearmsFreshEmptyStoreAfterAuthorityCorrection(t *testing.T) {
+	store, backend := newMemoryStateStore(), newFakeBackend()
+	backend.denyCreateWithEmpty = true
+	service := newTestService(t, store, backend)
+	command := Command{ID: "daily-denied", NowMillis: 10_000}
+	first, err := service.ReconcileDaily(context.Background(), command)
+	if !errors.Is(err, ErrNeedsYou) || len(first.State.Backups) != 1 ||
+		first.State.Backups[0].Phase != domainmaintenance.BackupNeedsYou ||
+		first.State.Backups[0].NeedsYouCode != "backup_handoff_ambiguous" {
+		t.Fatalf("denied first backup=%#v err=%v", first, err)
+	}
+	backend.denyCreateWithEmpty = false
+	recovered, err := newTestService(t, store, backend).ReconcileDaily(context.Background(), command)
+	if err != nil || recovered.State.Backups[0].Phase != domainmaintenance.BackupValidated ||
+		recovered.State.Backups[0].Attempt != 2 || recovered.State.Backups[0].RecoveryAttempt != 1 ||
+		backend.createCount != 1 || backend.rearmCount != 1 || backend.validateCount != 1 {
+		t.Fatalf("recovered backup=%#v err=%v backend=%#v", recovered, err, backend)
+	}
+	codes := []domainmaintenance.RecoveryAuditCode{}
+	for _, entry := range recovered.State.RecoveryAudit {
+		codes = append(codes, entry.Code)
+	}
+	wanted := []domainmaintenance.RecoveryAuditCode{
+		domainmaintenance.RecoveryRearmAuthorized,
+		domainmaintenance.RecoveryRearmCompleted,
+		domainmaintenance.RecoveryBackupValidated,
+	}
+	if !slices.Equal(codes, wanted) || !domainmaintenance.ValidState(recovered.State) {
+		t.Fatalf("recovery audit=%#v", recovered.State.RecoveryAudit)
+	}
+}
+
+func TestDeniedFirstBackupRecoveryFailsClosedOnEveryAmbiguity(t *testing.T) {
+	for name, mutate := range map[string]func(*fakeBackend, string){
+		"store no longer empty":   func(backend *fakeBackend, _ string) { backend.freshEmptyStore = false },
+		"authority not corrected": func(backend *fakeBackend, _ string) { backend.maintenanceAuthority = false },
+		"artifact no longer empty": func(backend *fakeBackend, id string) {
+			artifact := backend.backups[id]
+			artifact.EmptyOwned = false
+			backend.backups[id] = artifact
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, backend := newMemoryStateStore(), newFakeBackend()
+			backend.denyCreateWithEmpty = true
+			service := newTestService(t, store, backend)
+			command := Command{ID: "daily-denied", NowMillis: 10_000}
+			if _, err := service.ReconcileDaily(context.Background(), command); !errors.Is(err, ErrNeedsYou) {
+				t.Fatalf("initial denial=%v", err)
+			}
+			state, _ := store.Load(context.Background())
+			mutate(backend, state.Backups[0].ID)
+			backend.denyCreateWithEmpty = false
+			result, err := newTestService(t, store, backend).ReconcileDaily(context.Background(), command)
+			if !errors.Is(err, ErrNeedsYou) || result.State.Backups[0].Phase != domainmaintenance.BackupNeedsYou ||
+				result.State.Backups[0].NeedsYouCode != "backup_handoff_ambiguous" || backend.rearmCount != 0 ||
+				len(result.State.RecoveryAudit) != 0 {
+				t.Fatalf("ambiguous recovery=%#v err=%v backend=%#v", result, err, backend)
+			}
+		})
+	}
+}
+
+func TestDeniedFirstBackupRearmAdoptsResponseLossAndRestartsPreDispatch(t *testing.T) {
+	for name, preDispatch := range map[string]bool{"response loss": false, "process restart": true} {
+		t.Run(name, func(t *testing.T) {
+			store, backend := newMemoryStateStore(), newFakeBackend()
+			backend.denyCreateWithEmpty = true
+			command := Command{ID: "daily-denied", NowMillis: 10_000}
+			if _, err := newTestService(t, store, backend).ReconcileDaily(context.Background(), command); !errors.Is(err, ErrNeedsYou) {
+				t.Fatalf("initial denial=%v", err)
+			}
+			backend.denyCreateWithEmpty = false
+			backend.loseRearmResponse = !preDispatch
+			backend.failRearmBeforeDispatchOnce = preDispatch
+			first, err := newTestService(t, store, backend).ReconcileDaily(context.Background(), command)
+			if preDispatch {
+				if !errors.Is(err, ErrNeedsYou) || first.State.Backups[0].Phase != domainmaintenance.BackupNeedsYou ||
+					first.State.Backups[0].NeedsYouCode != "backup_handoff_ambiguous" {
+					t.Fatalf("pre-dispatch interruption=%#v err=%v", first, err)
+				}
+				backend.loseRearmResponse = false
+				first, err = newTestService(t, store, backend).ReconcileDaily(context.Background(), command)
+			}
+			if err != nil || first.State.Backups[0].Phase != domainmaintenance.BackupValidated || backend.createCount != 1 ||
+				backend.validateCount != 1 || (preDispatch && first.State.Backups[0].RecoveryAttempt != 2) {
+				t.Fatalf("rearm recovery=%#v err=%v backend=%#v", first, err, backend)
+			}
+		})
+	}
+}
+
+func TestDeniedFirstBackupThirtyTwoCoordinatorsFenceRecovery(t *testing.T) {
+	store, backend := newMemoryStateStore(), newFakeBackend()
+	backend.denyCreateWithEmpty = true
+	command := Command{ID: "daily-denied", NowMillis: 10_000}
+	if _, err := newTestService(t, store, backend).ReconcileDaily(context.Background(), command); !errors.Is(err, ErrNeedsYou) {
+		t.Fatalf("initial denial=%v", err)
+	}
+	backend.denyCreateWithEmpty = false
+	start := make(chan struct{})
+	errorsSeen := make(chan error, 32)
+	for range 32 {
+		service := newTestService(t, store, backend)
+		go func() {
+			<-start
+			_, err := service.ReconcileDaily(context.Background(), command)
+			errorsSeen <- err
+		}()
+	}
+	close(start)
+	for range 32 {
+		<-errorsSeen
+	}
+	result, err := newTestService(t, store, backend).ReconcileDaily(context.Background(), command)
+	if err != nil || result.State.Backups[0].Phase != domainmaintenance.BackupValidated ||
+		backend.rearmCount != 1 || backend.createCount != 1 || backend.validateCount != 1 {
+		t.Fatalf("contended recovery=%#v err=%v backend=%#v", result, err, backend)
 	}
 }
 

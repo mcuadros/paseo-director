@@ -5,6 +5,8 @@
 - **Beads Task:** `dir-m0.4`
 - **Plan gate:** M0 TaskStore mapping
 - **Decision owner:** Human project owner and Director maintainers
+- **Amended by:** [ADR-0022](0022-least-privilege-taskstore-maintenance.md)
+  for runtime global-safe-mode correction and least-privilege backup authority
 - **Replaces unreviewed Candidate:**
   `681c2e2113fe63b5aad6e963f78f55b5832ac1f0`
 
