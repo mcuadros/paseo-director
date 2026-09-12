@@ -99,7 +99,7 @@ func TestRealIncidentCorpusDrivesProviderClassAndPrimaryRecovery(t *testing.T) {
 	}
 }
 
-func TestFindingF002AdoptExistingIsUnreachableFromTerminalClasses(t *testing.T) {
+func TestFindingF002ResolvedTerminalSignalAdoptsResumableSession(t *testing.T) {
 	for _, signal := range []ProviderFailureSignal{
 		ProviderFailureTerminal,
 		ProviderFailurePolicy,
@@ -112,15 +112,15 @@ func TestFindingF002AdoptExistingIsUnreachableFromTerminalClasses(t *testing.T) 
 		agent.ArchivedAtPresent = false
 		facts.Recovery.Observation.Runtime.OriginalAgentProcessAbsent = false
 		rehashRealIncidentFacts(&facts)
-		if decision := EvaluatePrimaryRecovery(facts); decision.Disposition == RecoveryDispositionAdoptExisting {
-			t.Fatalf("DIR-M5.13-F002: terminal signal %s unexpectedly adopted existing", signal)
+		if decision := EvaluatePrimaryRecovery(facts); decision.Disposition != RecoveryDispositionAdoptExisting {
+			t.Fatalf("DIR-M5.13-F002 resolved: terminal signal %s want adopt_existing, got %s (%s)", signal, decision.Disposition, decision.Code)
 		}
 	}
 }
 
-func TestRealIncidentDivergencesAreCoded(t *testing.T) {
+func TestRealIncidentDivergencesAreCodedWithF001AndF002Resolution(t *testing.T) {
 	corpus := loadRealIncidentCorpus(t)
-	want := map[string]bool{"DIR-M5.13-F001": true, "DIR-M5.13-F002": false}
+	want := map[string]bool{"DIR-M5.13-F001": true, "DIR-M5.13-F002": true}
 	for _, finding := range corpus.Findings {
 		changed, ok := want[finding.Code]
 		if !ok {
