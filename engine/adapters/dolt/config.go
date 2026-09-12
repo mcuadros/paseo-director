@@ -106,6 +106,7 @@ func Open(config Config) (*DoltTaskStore, error) {
 		control:  control,
 		writer:   writer,
 		database: config.Control.Database,
+		address:  config.Control.Address,
 		storeID:  config.StoreID,
 	}, nil
 }

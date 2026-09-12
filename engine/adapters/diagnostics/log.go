@@ -13,12 +13,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
 
 	homeport "github.com/mcuadros/director-engine/ports/home"
 )
+
+var technicalLogName = regexp.MustCompile(`^project-[0-9a-f]{64}\.jsonl$`)
 
 const (
 	logRetentionMillis    int64 = 14 * 24 * 60 * 60 * 1_000
@@ -208,7 +211,7 @@ func encodeLogRecord(value logRecord) ([]byte, error) {
 	return append(encoded, '\n'), nil
 }
 
-func (store *LogStore) compact(path string, rows []logRecord) error {
+func (store *LogStore) compact(path string, expected os.FileInfo, rows []logRecord) error {
 	temporary, err := os.CreateTemp(store.root, ".director-logs-*.tmp")
 	if err != nil {
 		return ErrUnsafeBundle
@@ -233,7 +236,8 @@ func (store *LogStore) compact(path string, rows []logRecord) error {
 	if temporary.Sync() != nil || temporary.Close() != nil {
 		return ErrUnsafeBundle
 	}
-	if _, err := safeLogFile(path); err != nil {
+	current, err := safeLogFile(path)
+	if err != nil || !os.SameFile(expected, current) {
 		return ErrUnsafeBundle
 	}
 	identity, err := directoryIdentity(store.root)
@@ -271,7 +275,7 @@ func (store *LogStore) Append(ctx context.Context, projectID string, occurredAtM
 		return ErrUnsafeBundle
 	}
 	if info.Size() > 90*1024*1024 {
-		if file.Close() != nil || store.compact(path, rows) != nil {
+		if file.Close() != nil || store.compact(path, info, rows) != nil {
 			return ErrUnsafeBundle
 		}
 		file, _, err = store.open(projectID, true)
@@ -329,4 +333,51 @@ func (store *LogStore) ReadTechnicalLogs(ctx context.Context, projectID string, 
 		result = append(result, homeport.TechnicalLogObservation{Sequence: row.Sequence, OccurredAtMillis: row.OccurredAtMillis, Level: row.Level, Component: row.Component, Code: row.Code, Occurrences: row.Occurrences})
 	}
 	return result, nil
+}
+
+// CompactExpired physically applies the bounded retention policy to known
+// technical-log files. Unknown entries, aliases, symlinks, and owner or mode
+// drift are never removed or rewritten.
+func (store *LogStore) CompactExpired(ctx context.Context, now int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if now <= 0 {
+		return ErrUnsafeBundle
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	identity, err := directoryIdentity(store.root)
+	if err != nil || identity != store.identity {
+		return ErrUnsafeBundle
+	}
+	entries, err := os.ReadDir(store.root)
+	if err != nil {
+		return ErrUnsafeBundle
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !technicalLogName.MatchString(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(store.root, entry.Name())
+		before, err := safeLogFile(path)
+		if err != nil {
+			return ErrUnsafeBundle
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return ErrUnsafeBundle
+		}
+		opened, statErr := file.Stat()
+		if statErr != nil || !os.SameFile(before, opened) {
+			_ = file.Close()
+			return ErrUnsafeBundle
+		}
+		rows, _, scanErr := scanLogs(file, now, maximumReadLogEntries)
+		closeErr := file.Close()
+		if scanErr != nil || closeErr != nil || store.compact(path, opened, rows) != nil {
+			return ErrUnsafeBundle
+		}
+	}
+	return nil
 }

@@ -69,3 +69,47 @@ func TestStructuredLogsRefuseUnknownCodesAndReplacedRoots(t *testing.T) {
 		t.Fatalf("replaced-root read error = %v", err)
 	}
 }
+
+func TestCompactExpiredIsBoundedAndRefusesAmbiguousKnownFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "logs")
+	store, err := NewLogStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := int64(1_757_640_000_000)
+	if err := store.Append(context.Background(), "project-a", now-logRetentionMillis-1, homeport.TechnicalLogInfo,
+		homeport.TechnicalLogEngine, homeport.TechnicalLogEngineStarted, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(context.Background(), "project-a", now, homeport.TechnicalLogWarning,
+		homeport.TechnicalLogReconciliation, homeport.TechnicalLogReconciliationWaiting, 1); err != nil {
+		t.Fatal(err)
+	}
+	unknown := filepath.Join(root, "operator-note")
+	if err := os.WriteFile(unknown, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompactExpired(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	logs, err := store.ReadTechnicalLogs(context.Background(), "project-a", now)
+	if err != nil || len(logs) != 1 || logs[0].Sequence != 2 {
+		t.Fatalf("compacted logs = %#v, %v", logs, err)
+	}
+	if document, err := os.ReadFile(unknown); err != nil || string(document) != "keep" {
+		t.Fatalf("unknown file changed: %q, %v", document, err)
+	}
+	known, ok := logFile(root, "project-b")
+	if !ok {
+		t.Fatal("known log name")
+	}
+	if err := os.Symlink(unknown, known); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompactExpired(context.Background(), now); !errors.Is(err, ErrUnsafeBundle) {
+		t.Fatalf("ambiguous known log error = %v", err)
+	}
+	if document, err := os.ReadFile(unknown); err != nil || string(document) != "keep" {
+		t.Fatalf("symlink target changed: %q, %v", document, err)
+	}
+}
