@@ -167,8 +167,37 @@ func validObservation(value HostObservation, requested string, projectIDs []stri
 				return false
 			}
 		}
+		seenCapabilities := make(map[homeport.PreflightCapability]struct{}, len(project.Preflight))
+		for _, preflight := range project.Preflight {
+			if !validPreflightCapability(preflight.Capability) || !validPreflightState(preflight.State) {
+				return false
+			}
+			if _, duplicate := seenCapabilities[preflight.Capability]; duplicate {
+				return false
+			}
+			seenCapabilities[preflight.Capability] = struct{}{}
+		}
 	}
 	return true
+}
+
+func validPreflightCapability(value homeport.PreflightCapability) bool {
+	switch value {
+	case homeport.CapabilityPaseoRuntime, homeport.CapabilityConnectorContract,
+		homeport.CapabilityProviderCodex, homeport.CapabilityProviderClaude,
+		homeport.CapabilityProviderOpenCode, homeport.CapabilityProviderAuth,
+		homeport.CapabilitySessionMCP, homeport.CapabilityExactMCPPolicy,
+		homeport.CapabilityRootlessOCI, homeport.CapabilityRepositoryIdentity,
+		homeport.CapabilityResourceLimits:
+		return true
+	default:
+		return false
+	}
+}
+
+func validPreflightState(value homeport.PreflightState) bool {
+	return value == homeport.PreflightCurrent || value == homeport.PreflightMissing || value == homeport.PreflightMismatch ||
+		value == homeport.PreflightUnavailable || value == homeport.PreflightStale
 }
 
 func boundedHomeText(value string, maximum int) bool {

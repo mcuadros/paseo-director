@@ -164,6 +164,13 @@ test("Director Home uses host-scoped pagination, current-data action gates, toke
     "Adopt Organizer",
     '[snapshot.page.totals.paused, "Paused"]',
     "organizerBootstrapRpc",
+    "doctorQueryRpc",
+    "repairProjectRpc",
+    "Running read-only Doctor…",
+    "Blocking preflight and capabilities",
+    "Missing capability:",
+    "Confirm exact Repair",
+    "No effect, retry, installation, or cross-host fallback",
     "Apply exact Preview",
     "Nothing is applied without a fresh server-authenticated human confirmation",
     'from "@getpaseo/plugin/react-native"',
@@ -178,4 +185,7 @@ test("Director Home uses host-scoped pagination, current-data action gates, toke
   assert.doesNotMatch(source, /onHover|hover/iu);
   assert.doesNotMatch(source, /@getpaseo\/client/iu);
   assert.doesNotMatch(source, /hostBadge|>Director Home<|\{host\.label\}/u);
+  assert.doesNotMatch(source, /pseudoSha256|verifyAndApplyRepair|actorId:\s*["']human|buildRepairPreview/u);
+  const model = readFileSync("ui/director-home-model.client.ts", "utf8");
+  assert.doesNotMatch(model, /install|repair|mutation|sha256/iu);
 });

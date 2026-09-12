@@ -209,6 +209,9 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 	now := func() int64 { return time.Now().UnixMilli() }
 	homeSource := homeapp.NewStaticSource(*hostID, *hostLabel, "engine-"+hex.EncodeToString(instanceDigest[:16]), now)
 	handler.Handle(planningport.HomeQueryPath, newHomeHandler(homeapp.NewReader(store, board.NewTaskStoreFactSource(store), homeSource, now)))
+	doctorRepair := homeapp.NewDoctorRepairService(store, homeSource, nil, now)
+	handler.Handle(planningport.DoctorQueryPath, newDoctorHandler(doctorRepair))
+	handler.Handle(planningport.RepairMutationPath, newRepairHandler(doctorRepair))
 	handler.Handle(planningport.OrganizerMutationPath, newOrganizerBootstrapHandler(organizerapp.New(store, organizergit.New(), nil), store, *hostID))
 	handler.Handle(planningport.MutationPath, newPlanningMutationHandler(
 		store, executionapp.NewController(store, nil, nil, nil),

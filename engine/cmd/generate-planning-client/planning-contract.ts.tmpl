@@ -18,8 +18,10 @@ export const PLANNING_MUTATION_NAME = {{quote .MutationName}} as const;
 export const PLANNING_QUERY_PATH = {{quote .QueryPath}} as const;
 export const PLANNING_TASK_DETAIL_QUERY_PATH = {{quote .TaskDetailQueryPath}} as const;
 export const PLANNING_HOME_QUERY_PATH = {{quote .HomeQueryPath}} as const;
+export const PLANNING_DOCTOR_QUERY_PATH = {{quote .DoctorQueryPath}} as const;
 export const PLANNING_MUTATION_PATH = {{quote .MutationPath}} as const;
 export const PLANNING_ORGANIZER_MUTATION_PATH = {{quote .OrganizerMutationPath}} as const;
+export const PLANNING_REPAIR_MUTATION_PATH = {{quote .RepairMutationPath}} as const;
 export const PLANNING_MUTATION_ACTOR_HEADERS = {
   kind: {{quote .MutationActorHeaders.Kind}},
   id: {{quote .MutationActorHeaders.ID}},
@@ -411,6 +413,130 @@ export const homeSnapshotSchema = z.strictObject({
   page: homePageSchema,
 });
 
+export const doctorQueryInputSchema = z.strictObject({
+  hostId: opaquePlanningIdSchema,
+  projectId: opaquePlanningIdSchema,
+  expectedProjectVersion: uint64DecimalSchema,
+});
+
+export const doctorCheckSchema = z.strictObject({
+  id: opaquePlanningIdSchema,
+  category: z.enum(["host", "contract", "dynamic_state", "organizer", "lease", "sync", "workspace", "provider", "mcp", "isolation", "resources"]),
+  status: z.enum(["passed", "degraded", "blocking", "unavailable", "stale"]),
+  code: opaquePlanningIdSchema,
+  title: boundedPlanningTextSchema,
+  detail: boundedPlanningTextSchema,
+  blocking: z.boolean(),
+  missingCapability: boundedPlanningTextSchema.nullable(),
+  installationGuidance: z.array(boundedPlanningTextSchema).max(8).readonly(),
+}).superRefine((value, context) => {
+  const passed = value.status === "passed";
+  if ((passed && (value.missingCapability !== null || value.installationGuidance.length !== 0 || value.blocking)) ||
+    (!passed && (value.missingCapability === null || value.installationGuidance.length === 0))) {
+    context.addIssue({ code: "custom", message: "Doctor failures require concrete capability guidance", path: ["missingCapability"] });
+  }
+});
+
+export const doctorRepairAvailabilitySchema = z.strictObject({
+  available: z.boolean(),
+  reason: explanationSchema.nullable(),
+}).superRefine((value, context) => {
+  if (value.available === (value.reason !== null)) {
+    context.addIssue({ code: "custom", message: "Repair availability must be explicit", path: ["reason"] });
+  }
+});
+
+export const doctorReportSchema = z.strictObject({
+  schemaVersion: z.literal(PLANNING_SCHEMA_VERSION),
+  contractVersion: z.literal(PLANNING_CONTRACT_VERSION),
+  contractHash: z.literal(PLANNING_CONTRACT_SHA256),
+  cursor: uint64DecimalSchema,
+  hostId: opaquePlanningIdSchema,
+  hostInstanceId: opaquePlanningIdSchema,
+  projectId: opaquePlanningIdSchema,
+  projectName: boundedPlanningTextSchema,
+  projectVersion: uint64DecimalSchema,
+  observationId: sha256Schema,
+  observedAt: z.iso.datetime(),
+  maximumAgeMillis: uint64DecimalSchema,
+  status: z.enum(["healthy", "degraded", "blocking", "offline", "stale"]),
+  readOnly: z.literal(true),
+  assurance: boundedPlanningTextSchema,
+  checks: z.array(doctorCheckSchema).min(1).max(128).readonly(),
+  blockingCount: uint64DecimalSchema,
+  repair: doctorRepairAvailabilitySchema,
+});
+
+export const repairInputSchema = z.strictObject({
+  schemaVersion: z.literal(PLANNING_SCHEMA_VERSION),
+  contractVersion: z.literal(PLANNING_CONTRACT_VERSION),
+  contractHash: z.literal(PLANNING_CONTRACT_SHA256),
+  hostId: opaquePlanningIdSchema,
+  requestId: opaquePlanningIdSchema.refine((value) => value.length >= 16),
+  kind: z.enum(["repair.preview", "repair.apply"]),
+  projectId: opaquePlanningIdSchema,
+  expectedProjectVersion: uint64DecimalSchema,
+  previewId: sha256Schema.nullable(),
+  confirmed: z.boolean(),
+}).superRefine((value, context) => {
+  const apply = value.kind === "repair.apply";
+  if (apply ? (value.previewId === null || !value.confirmed) : (value.previewId !== null || value.confirmed)) {
+    context.addIssue({ code: "custom", message: "Repair Apply requires the exact Preview and explicit confirmation", path: ["previewId"] });
+  }
+});
+
+export const repairOperationSchema = z.strictObject({
+  id: opaquePlanningIdSchema,
+  kind: z.enum(["reconcile_git_sync", "reconcile_dynamic_state", "reconcile_lease", "reconcile_workspace_recovery"]),
+  description: boundedPlanningTextSchema,
+  affectedResource: boundedPlanningTextSchema,
+  effectClass: z.enum(["store_only", "conditional_update"]),
+  destructive: z.literal(false),
+  automaticInstall: z.literal(false),
+});
+
+export const repairPreviewSchema = z.strictObject({
+  id: sha256Schema,
+  requestId: opaquePlanningIdSchema,
+  hostId: opaquePlanningIdSchema,
+  hostInstanceId: opaquePlanningIdSchema,
+  projectId: opaquePlanningIdSchema,
+  projectName: boundedPlanningTextSchema,
+  projectVersion: uint64DecimalSchema,
+  cursor: uint64DecimalSchema,
+  observationId: sha256Schema,
+  operations: z.array(repairOperationSchema).max(64).readonly(),
+  valid: z.boolean(),
+  issues: z.array(explanationSchema).max(32).readonly(),
+  confirmation: boundedPlanningTextSchema,
+}).superRefine((value, context) => {
+  if (value.valid !== (value.operations.length > 0 && value.issues.length === 0)) {
+    context.addIssue({ code: "custom", message: "Repair Preview validity must match its exact effects and issues", path: ["valid"] });
+  }
+});
+
+export const repairResultSchema = z.strictObject({
+  schemaVersion: z.literal(PLANNING_SCHEMA_VERSION),
+  contractVersion: z.literal(PLANNING_CONTRACT_VERSION),
+  contractHash: z.literal(PLANNING_CONTRACT_SHA256),
+  hostId: opaquePlanningIdSchema,
+  projectId: opaquePlanningIdSchema,
+  cursor: uint64DecimalSchema,
+  requestId: opaquePlanningIdSchema,
+  status: z.enum(["preview", "applied", "refused"]),
+  message: boundedPlanningTextSchema,
+  preview: repairPreviewSchema.nullable(),
+  projectVersion: uint64DecimalSchema.nullable(),
+  refusalCode: opaquePlanningIdSchema.nullable(),
+}).superRefine((value, context) => {
+  const preview = value.status === "preview";
+  const applied = value.status === "applied";
+  const refused = value.status === "refused";
+  if (preview !== (value.preview !== null) || applied !== (value.projectVersion !== null) || refused !== (value.refusalCode !== null)) {
+    context.addIssue({ code: "custom", message: "Repair result fields do not match its status", path: ["status"] });
+  }
+});
+
 export const organizerBootstrapKindSchema = z.enum(["create.preview", "create.apply", "adopt.preview", "adopt.apply"]);
 
 export const organizerBootstrapInputSchema = z.strictObject({
@@ -783,6 +909,13 @@ export type HomeQueryInput = z.output<typeof homeQueryInputSchema>;
 export type HomeAction = z.output<typeof homeActionSchema>;
 export type HomeProject = z.output<typeof homeProjectSchema>;
 export type HomeSnapshot = z.output<typeof homeSnapshotSchema>;
+export type DoctorQueryInput = z.output<typeof doctorQueryInputSchema>;
+export type DoctorCheck = z.output<typeof doctorCheckSchema>;
+export type DoctorReport = z.output<typeof doctorReportSchema>;
+export type RepairInput = z.output<typeof repairInputSchema>;
+export type RepairOperation = z.output<typeof repairOperationSchema>;
+export type RepairPreview = z.output<typeof repairPreviewSchema>;
+export type RepairResult = z.output<typeof repairResultSchema>;
 export type OrganizerBootstrapInput = z.output<typeof organizerBootstrapInputSchema>;
 export type OrganizerBootstrapPreview = z.output<typeof organizerBootstrapPreviewSchema>;
 export type OrganizerBootstrapResult = z.output<typeof organizerBootstrapResultSchema>;
@@ -805,6 +938,8 @@ export interface PlanningClient {
 
 export interface HomeClient {
   home(input: HomeQueryInput): Promise<HomeSnapshot>;
+  doctor(input: DoctorQueryInput): Promise<DoctorReport>;
+  repair(input: RepairInput): Promise<RepairResult>;
   bootstrapOrganizer(input: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult>;
 }
 

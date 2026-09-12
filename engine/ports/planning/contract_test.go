@@ -19,6 +19,7 @@ func TestEmbeddedPlanningContract(t *testing.T) {
 		t.Fatalf("planning identity = %#v", definition)
 	}
 	if definition.QueryPath != QueryPath || definition.HomeQueryPath != HomeQueryPath ||
+		definition.DoctorQueryPath != DoctorQueryPath || definition.RepairMutationPath != RepairMutationPath ||
 		definition.OrganizerMutationPath != OrganizerMutationPath || definition.MaximumRequestBytes != MaximumRequestBytes ||
 		definition.MaximumResponseBytes != MaximumResponseBytes || definition.MaximumPageSize != MaximumPageSize ||
 		definition.MaximumHomePageSize != MaximumHomePageSize {
@@ -35,6 +36,51 @@ func TestEmbeddedPlanningContract(t *testing.T) {
 	}
 	if len(hash) != 64 {
 		t.Fatalf("planning schema hash length = %d", len(hash))
+	}
+}
+
+func TestDoctorAndRepairValidationAreExactHostVersionAndConfirmationBound(t *testing.T) {
+	if err := ValidateDoctorQuery(DoctorQueryInput{HostID: "host-a", ProjectID: "project-a", ExpectedProjectVersion: "7"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []DoctorQueryInput{
+		{HostID: "", ProjectID: "project-a", ExpectedProjectVersion: "7"},
+		{HostID: "host-a", ProjectID: "", ExpectedProjectVersion: "7"},
+		{HostID: "host-a", ProjectID: "project-a", ExpectedProjectVersion: "07"},
+	} {
+		if ValidateDoctorQuery(invalid) == nil {
+			t.Fatalf("invalid Doctor query accepted: %#v", invalid)
+		}
+	}
+	hash, _ := SchemaSHA256()
+	valid := RepairInput{SchemaVersion: 1, ContractVersion: "director-planning/v1", ContractHash: hash,
+		HostID: "host-a", RequestID: "repair-request-0001", Kind: "repair.preview", ProjectID: "project-a", ExpectedProjectVersion: "7"}
+	if err := ValidateRepairInput(valid); err != nil {
+		t.Fatal(err)
+	}
+	preview := strings.Repeat("a", 64)
+	valid.Kind, valid.PreviewID, valid.Confirmed = "repair.apply", &preview, true
+	if err := ValidateRepairInput(valid); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*RepairInput){
+		"host absent":        func(input *RepairInput) { input.HostID = "" },
+		"version mismatch":   func(input *RepairInput) { input.ExpectedProjectVersion = "07" },
+		"Preview absent":     func(input *RepairInput) { input.PreviewID = nil },
+		"confirmation false": func(input *RepairInput) { input.Confirmed = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := valid
+			mutate(&input)
+			if ValidateRepairInput(input) == nil {
+				t.Fatal("invalid Repair input was accepted")
+			}
+		})
+	}
+	previewInput := valid
+	previewInput.Kind, previewInput.PreviewID = "repair.preview", nil
+	if ValidateRepairInput(previewInput) == nil {
+		t.Fatal("Doctor Preview accepted a confirmation boolean")
 	}
 }
 
