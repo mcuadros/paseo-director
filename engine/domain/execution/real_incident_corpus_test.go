@@ -118,16 +118,16 @@ func TestFindingF002AdoptExistingIsUnreachableFromTerminalClasses(t *testing.T) 
 	}
 }
 
-func TestRealIncidentDivergencesAreCodedWithoutBehaviorChanges(t *testing.T) {
+func TestRealIncidentDivergencesAreCoded(t *testing.T) {
 	corpus := loadRealIncidentCorpus(t)
-	want := map[string]bool{"DIR-M5.13-F001": false, "DIR-M5.13-F002": false}
+	want := map[string]bool{"DIR-M5.13-F001": true, "DIR-M5.13-F002": false}
 	for _, finding := range corpus.Findings {
 		changed, ok := want[finding.Code]
 		if !ok {
 			t.Fatalf("unexpected divergence finding %s", finding.Code)
 		}
 		if finding.BehaviorChanged != changed {
-			t.Fatalf("%s behaviorChanged = %v", finding.Code, finding.BehaviorChanged)
+			t.Fatalf("%s behaviorChanged = %v, want %v", finding.Code, finding.BehaviorChanged, changed)
 		}
 		delete(want, finding.Code)
 	}

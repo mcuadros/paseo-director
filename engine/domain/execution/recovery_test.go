@@ -55,8 +55,10 @@ func recoveryFactsForTest(signal ProviderFailureSignal) PrimaryRecoveryFacts {
 
 func TestProviderFailureClassifierIsClosedAndContradictionSafe(t *testing.T) {
 	cases := map[ProviderFailureSignal]ProviderFailureClass{
-		ProviderFailureNone: FailureClassNone, ProviderFailureTransient: FailureClassTransient,
-		ProviderFailureTerminal: FailureClassTerminalProvider, ProviderFailurePolicy: FailureClassTerminalPolicy,
+		ProviderFailureNone:           FailureClassNone,
+		ProviderFailureTransient:      FailureClassTransient,
+		ProviderFailureTerminal:       FailureClassTerminalProvider,
+		ProviderFailurePolicy:         FailureClassTerminalPolicy,
 		ProviderFailureAuthentication: FailureClassTerminalAuthentication,
 		ProviderFailureConfiguration:  FailureClassTerminalConfiguration,
 		ProviderFailureUnknown:        FailureClassAmbiguous,
@@ -65,9 +67,37 @@ func TestProviderFailureClassifierIsClosedAndContradictionSafe(t *testing.T) {
 		if got := ClassifyProviderFailure([]ProviderFailureSignal{signal}); got != expected {
 			t.Fatalf("signal %s classified %s, want %s", signal, got, expected)
 		}
+		// Deduplication preserves valid signal
+		if got := ClassifyProviderFailure([]ProviderFailureSignal{signal, signal}); got != expected {
+			t.Fatalf("duplicate signal %s classified %s, want %s", signal, got, expected)
+		}
 	}
-	if got := ClassifyProviderFailure([]ProviderFailureSignal{ProviderFailurePolicy, ProviderFailureAuthentication}); got != FailureClassAmbiguous {
-		t.Fatalf("contradictory signals classified %s", got)
+
+	// Pairwise contradictions all fail closed to FailureClassAmbiguous
+	contradictionPairs := [][]ProviderFailureSignal{
+		{ProviderFailurePolicy, ProviderFailureAuthentication},
+		{ProviderFailureConfiguration, ProviderFailurePolicy},
+		{ProviderFailureConfiguration, ProviderFailureAuthentication},
+		{ProviderFailureConfiguration, ProviderFailureTransient},
+		{ProviderFailureConfiguration, ProviderFailureTerminal},
+		{ProviderFailureConfiguration, ProviderFailureUnknown},
+		{ProviderFailureAuthentication, ProviderFailureTransient},
+		{ProviderFailureTerminal, ProviderFailureTransient},
+		{ProviderFailurePolicy, ProviderFailureTransient},
+		{ProviderFailureConfiguration, ProviderFailurePolicy, ProviderFailureAuthentication},
+	}
+	for _, pair := range contradictionPairs {
+		if got := ClassifyProviderFailure(pair); got != FailureClassAmbiguous {
+			t.Fatalf("contradictory signals %v classified %s, want ambiguous", pair, got)
+		}
+	}
+
+	// Unknown or unvalidated signals fail closed
+	if got := ClassifyProviderFailure([]ProviderFailureSignal{"invalid_signal"}); got != FailureClassAmbiguous {
+		t.Fatalf("invalid signal classified %s, want ambiguous", got)
+	}
+	if got := ClassifyProviderFailure([]ProviderFailureSignal{ProviderFailureConfiguration, "invalid_signal"}); got != FailureClassAmbiguous {
+		t.Fatalf("mixed invalid signal classified %s, want ambiguous", got)
 	}
 }
 

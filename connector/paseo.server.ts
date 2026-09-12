@@ -409,10 +409,12 @@ export class PaseoHostConnector implements DirectorHost {
     if (/\b(?:401|unauthori[sz]ed|authentication required|login required|invalid api key|expired credential)\b/u.test(value)) {
       signals.add("authentication_rejection");
     }
-    if (/\b(?:configuration|invalid option|unsupported model|model not found|provider not configured)\b/u.test(value)) {
+    const hasHostPrerequisiteFailure = /\b(?:could not find \S+ on path|missing (?:host )?(?:dependency|prerequisite)|install \S+ with your (?:os )?package manager|(?:host|sandbox) prerequisites?)\b/u.test(value);
+    if (hasHostPrerequisiteFailure || /\b(?:configuration|invalid option|unsupported model|model not found|provider not configured)\b/u.test(value)) {
       signals.add("configuration_rejection");
     }
-    if (/\b(?:policy|permission denied|not allowed|approval required|sandbox|tool policy|tool denied)\b/u.test(value)) {
+    if (/\b(?:policy|permission denied|not allowed|approval required|sandbox (?:policy|violation|restriction|denied|disallowed|refused)|tool policy|tool denied)\b/u.test(value) ||
+        (!hasHostPrerequisiteFailure && /\bsandbox\b/u.test(value))) {
       signals.add("policy_rejection");
     }
     if (/\b(?:timeout|temporarily unavailable|rate limit|429|502|503|connection reset)\b/u.test(value)) {
