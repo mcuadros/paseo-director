@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -19,7 +20,6 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +33,15 @@ const commandEnvironment = {
   PASEO_VOICE_MODE_ENABLED: "false",
   PASEO_LOG_LEVEL: "warn",
 };
+for (const name of [
+  "DIRECTOR_ENGINE_MODE",
+  "DIRECTOR_ENGINE_RELEASE_METADATA",
+  "DIRECTOR_ENGINE_SOURCE_ROOT",
+  "DIRECTOR_ENGINE_URL",
+  "DIRECTOR_PASEO_CREDENTIAL_FILE",
+  "DIRECTOR_PASEO_PASSWORD",
+  "DIRECTOR_PASEO_URL",
+]) delete commandEnvironment[name];
 
 function run(executable, args, options = {}) {
   const result = spawnSync(executable, args, {
@@ -103,18 +112,6 @@ function repositoryCopy(destination) {
   }
 }
 
-async function availablePort() {
-  const server = createServer();
-  await new Promise((resolveListen, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolveListen);
-  });
-  const address = server.address();
-  assert(address && typeof address === "object");
-  await new Promise((resolveClose, reject) => server.close((error) => error ? reject(error) : resolveClose()));
-  return address.port;
-}
-
 function startDaemon(home, port) {
   const child = spawn("paseo", ["daemon", "start", "--home", home, "--listen", `127.0.0.1:${port}`, "--foreground", "--no-relay", "--no-mcp", "--no-web-ui"], {
     env: commandEnvironment,
@@ -181,10 +178,16 @@ export async function runLifecycle() {
   const source = join(root, "source");
   const home = join(root, "paseo-home");
   const external = join(root, "operator-state");
+  const configBase = join(root, "operator-config");
+  const cacheBase = join(root, "engine-cache");
+  const authority = join(root, "authority");
+  const credentialFile = join(authority, "connector.password");
   const stateSentinel = join(external, "director-state.json");
   const cacheSentinel = join(external, "engine-cache.marker");
+  const port = 6767;
   mkdirSync(source, { recursive: true, mode: 0o700 });
   mkdirSync(external, { mode: 0o700 });
+  for (const path of [configBase, cacheBase, authority]) mkdirSync(path, { mode: 0o700 });
   writeFileSync(stateSentinel, "preserved-state\n", { mode: 0o600 });
   writeFileSync(cacheSentinel, "preserved-cache\n", { mode: 0o600 });
   repositoryCopy(source);
@@ -192,9 +195,22 @@ export async function runLifecycle() {
   git(source, "config", "user.name", "Director Lifecycle Fixture");
   git(source, "config", "user.email", "director-lifecycle@example.invalid");
   const initial = commit(source, "fixture: clean Director install", ["."]);
+  const password = `${randomUUID()}${randomUUID()}`;
+  writeFileSync(credentialFile, `${password}\n`, { mode: 0o600 });
+  const runtimeDirectory = join(configBase, "director");
+  mkdirSync(runtimeDirectory, { mode: 0o700 });
+  writeFileSync(join(runtimeDirectory, "runtime.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    paseo: { credentialFile },
+    engine: { mode: "development", sourceRoot: join(source, "engine") },
+  }, null, 2)}\n`, { mode: 0o600 });
+  Object.assign(commandEnvironment, {
+    PASEO_PASSWORD: password,
+    XDG_CONFIG_HOME: configBase,
+    XDG_CACHE_HOME: cacheBase,
+  });
   const packageBytes = readFileSync(join(source, "package.json"));
   const lockBytes = readFileSync(join(source, "package-lock.json"));
-  const port = await availablePort();
   let daemon = startDaemon(home, port);
   const observed = { cleanInstall: initial, compatibleUpdate: "", recoveryUpdate: "" };
   try {

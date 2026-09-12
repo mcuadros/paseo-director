@@ -24,6 +24,7 @@ const REGISTRY_ORIGIN = "https://registry.npmjs.org";
 const INTEGRITY_PATTERN = /^sha512-[A-Za-z0-9+/]+={0,2}$/u;
 const VERSION_PATTERN = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$/u;
 const ALLOWED_INSTALL_SCRIPTS = new Map([
+  ["node_modules/esbuild", "0.25.12"],
   ["node_modules/fsevents", "2.3.3"],
 ]);
 

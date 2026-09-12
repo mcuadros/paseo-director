@@ -37,6 +37,23 @@ export const connectorStartupStatus = defineRpc({
     state: z.literal("board-ready"),
     engineMode: z.enum(["release", "development"]),
     productBehavior: z.literal(true),
+    activation: z.strictObject({
+      lifecycle: z.literal("plugin-reload"),
+      result: z.literal("running-current"),
+      configurationSchemaVersion: z.literal(1),
+      configurationSha256: z.string().regex(/^[0-9a-f]{64}$/u),
+      legacyEnvironment: z.enum(["absent", "ignored"]),
+      settings: z.array(z.strictObject({
+        name: z.enum([
+          "paseo.url",
+          "engine.mode",
+          "engine.url",
+          "engine.cache-base",
+          "engine.module-cache",
+        ]),
+        source: z.enum(["defaulted", "overridden"]),
+      })).max(5),
+    }),
     compatibility: z.strictObject({
       paseoVersion: z.literal("0.7.2"),
       nodeVersion: z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+$/u),

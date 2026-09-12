@@ -250,21 +250,74 @@ function releaseRoot(selection: ReleaseEngineSelection, metadata: PublishedRelea
   return join(selection.cacheRoot, "release", metadata.version, metadata.target, metadata.binary.sha256);
 }
 
+function releaseMetadataBytes(selection: ReleaseEngineSelection): Uint8Array {
+  if (selection.releaseMetadata) return selection.releaseMetadata;
+  if (selection.metadataPath) {
+    return readRegularFile(selection.metadataPath, "ENGINE_RELEASE_METADATA");
+  }
+  throw new EngineDistributionError(
+    "ENGINE_RELEASE_METADATA",
+    "release metadata is unavailable",
+  );
+}
+
+function resolvedConnectorCommit(
+  selection: EngineSelection,
+  dependencies: DistributionDependencies,
+): string {
+  const commit = dependencies.connectorCommit
+    ? dependencies.connectorCommit(selection.checkoutRoot ?? "")
+    : selection.connectorCommit ??
+      (selection.checkoutRoot ? gitCommit(selection.checkoutRoot) : "");
+  if (!GIT_SHA_PATTERN.test(commit)) {
+    throw new EngineDistributionError(
+      "ENGINE_SOURCE_IDENTITY",
+      "exact connector Git identity is unavailable",
+    );
+  }
+  return commit;
+}
+
+function assertCacheOutsideCheckout(selection: EngineSelection): void {
+  if (
+    selection.checkoutRoot &&
+    pathIsWithin(selection.cacheRoot, selection.checkoutRoot)
+  ) {
+    throw new EngineDistributionError(
+      "ENGINE_CACHE_IN_CHECKOUT",
+      `${selection.mode} cache must be outside the plugin checkout`,
+    );
+  }
+}
+
 function releaseEnginePaths(selection: ReleaseEngineSelection, metadata: ReleaseMetadata): string[] {
   const base = join(selection.cacheRoot, "release", metadata.version, metadata.target);
+  const installationPaths = [
+    ...(selection.checkoutRoot ? [selection.checkoutRoot] : []),
+    selection.cacheRoot,
+    ...(selection.metadataPath ? [selection.metadataPath] : []),
+  ];
   if (metadata.state === "unpublished") {
-    return [selection.checkoutRoot, selection.cacheRoot, selection.metadataPath, base];
+    return [...installationPaths, base];
   }
   const root = releaseRoot(selection, metadata);
-  return [selection.checkoutRoot, selection.cacheRoot, selection.metadataPath, base, root, join(root, "director-engine"), join(root, NOTICES_NAME)];
+  return [...installationPaths, base, root, join(root, "director-engine"), join(root, NOTICES_NAME)];
 }
 
 export function engineBoundaryPaths(selection: EngineSelection): string[] {
   if (selection.mode === "release") {
-    return releaseEnginePaths(selection, parseReleaseMetadata(readRegularFile(selection.metadataPath, "ENGINE_RELEASE_METADATA")));
+    return releaseEnginePaths(selection, parseReleaseMetadata(releaseMetadataBytes(selection)));
   }
   const paths = developmentEnginePaths(selection);
-  return [selection.checkoutRoot, selection.sourceRoot, selection.cacheRoot, selection.moduleCache, paths.binaryPath, paths.temporaryBinaryPath, paths.goCache];
+  return [
+    ...(selection.checkoutRoot ? [selection.checkoutRoot] : []),
+    selection.sourceRoot,
+    selection.cacheRoot,
+    selection.moduleCache,
+    paths.binaryPath,
+    paths.temporaryBinaryPath,
+    paths.goCache,
+  ];
 }
 
 function ensurePrivateDirectory(path: string): void {
@@ -487,14 +540,12 @@ function cleanStalePartials(base: string, prefix: string, binding: string): void
 }
 
 async function resolveRelease(selection: ReleaseEngineSelection, dependencies: DistributionDependencies): Promise<ResolvedEngine> {
-  const metadata = parseReleaseMetadata(readRegularFile(selection.metadataPath, "ENGINE_RELEASE_METADATA"));
+  const metadata = parseReleaseMetadata(releaseMetadataBytes(selection));
   if (metadata.state === "unpublished") {
     throw new EngineDistributionError("ENGINE_RELEASE_UNPUBLISHED", "the scaffold release is explicitly unpublished");
   }
-  if (pathIsWithin(selection.cacheRoot, selection.checkoutRoot)) {
-    throw new EngineDistributionError("ENGINE_CACHE_IN_CHECKOUT", "release cache must be outside the plugin checkout");
-  }
-  const connectorCommit = (dependencies.connectorCommit ?? gitCommit)(selection.checkoutRoot);
+  assertCacheOutsideCheckout(selection);
+  const connectorCommit = resolvedConnectorCommit(selection, dependencies);
   const inspectBinary = dependencies.inspectBinary ?? defaultInspectBinary;
   const root = releaseRoot(selection, metadata);
   const binaryPath = join(root, "director-engine");
@@ -575,10 +626,8 @@ function defaultCompile(selection: DevelopmentEngineSelection, destination: stri
 }
 
 function resolveDevelopment(selection: DevelopmentEngineSelection, dependencies: DistributionDependencies): ResolvedEngine {
-  if (pathIsWithin(selection.cacheRoot, selection.checkoutRoot)) {
-    throw new EngineDistributionError("ENGINE_CACHE_IN_CHECKOUT", "development cache must be outside the plugin checkout");
-  }
-  const connectorCommit = (dependencies.connectorCommit ?? gitCommit)(selection.checkoutRoot);
+  assertCacheOutsideCheckout(selection);
+  const connectorCommit = resolvedConnectorCommit(selection, dependencies);
   const sourceCandidate = (dependencies.sourceCandidate ?? gitCommit)(selection.sourceRoot);
   if (!GIT_SHA_PATTERN.test(sourceCandidate)) {
     throw new EngineDistributionError("ENGINE_SOURCE_IDENTITY", "development source Candidate is invalid");

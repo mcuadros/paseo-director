@@ -130,7 +130,7 @@ function assertAncestorIdentitiesUnchanged(
 
 export function loadConnectorCredential(options: {
   credentialPath: string | undefined;
-  checkoutRoot: string;
+  checkoutRoot?: string;
   disjointEnginePaths: readonly string[];
 }): string {
   if (!options.credentialPath || !existsSync(options.credentialPath)) {
@@ -141,8 +141,13 @@ export function loadConnectorCredential(options: {
   }
   const credentialPath = realpathSync(options.credentialPath);
   const credentialDirectory = canonicalProspectivePath(dirname(credentialPath));
-  const checkoutRoot = canonicalProspectivePath(options.checkoutRoot);
-  if (!pathsAreDisjoint(credentialDirectory, checkoutRoot)) {
+  if (
+    options.checkoutRoot &&
+    !pathsAreDisjoint(
+      credentialDirectory,
+      canonicalProspectivePath(options.checkoutRoot),
+    )
+  ) {
     throw new ConnectorCredentialError(
       "CONNECTOR_CREDENTIAL_IN_CHECKOUT",
       "the connector credential directory must be disjoint from the plugin checkout",
@@ -204,4 +209,24 @@ export function loadConnectorCredential(options: {
     );
   }
   return credential;
+}
+
+export function assertConnectorCredentialOutsideCheckout(
+  credentialPath: string,
+  checkoutRoot: string,
+): void {
+  const credentialDirectory = canonicalProspectivePath(
+    dirname(realpathSync(credentialPath)),
+  );
+  if (
+    !pathsAreDisjoint(
+      credentialDirectory,
+      canonicalProspectivePath(checkoutRoot),
+    )
+  ) {
+    throw new ConnectorCredentialError(
+      "CONNECTOR_CREDENTIAL_IN_CHECKOUT",
+      "the connector credential directory must be disjoint from the plugin checkout",
+    );
+  }
 }

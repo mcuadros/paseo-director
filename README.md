@@ -6,10 +6,12 @@
 > Install only if you accept this bounded P2 residual risk.
 
 The credential must be a non-empty owner-only file outside both the repository
-and every Paseo-managed plugin checkout. Before constructing a Paseo client,
-the connector resolves symlinks and proves the credential directory is
-bidirectionally disjoint from the checkout, engine source, engine cache, and
-every derived engine path. It checks that directory and every canonical
+and every Paseo-managed plugin checkout. Candidate preparation proves the
+private runtime file and credential are disjoint from the candidate checkout;
+the connector proves the credential is disjoint from every configured or
+derived engine path before constructing its public SDK client, then uses a
+public SDK configuration read to recheck the active checkout before engine
+attachment or host mutation. It checks that directory and every canonical
 ancestor through the filesystem root, rejecting group/other-writable ancestors
 unless Linux sticky-bit semantics protect a trusted-owner child in a directory
 owned by the connector user or root (for example, an owner-only credential
@@ -20,9 +22,9 @@ the read, and every checked ancestor must retain its identity afterward. A
 detected pre-open substitution, read-time metadata change, or ancestor
 substitution fails closed. Its bytes and path never enter Director Engine
 arguments, environment, protocol, UI, store, projections, logs, timelines,
-diagnostics, or support bundles. Connector startup and reload fail closed before
-host mutation when the file is absent, empty, broadly readable, in an unsafe
-directory, or overlaps any protected path. The connector advertises only
+diagnostics, or support bundles. Connector startup, update, and reload fail
+closed before host mutation when the file is absent, empty, broadly readable,
+in an unsafe directory, or overlaps any protected path. The connector advertises only
 `credentialScope=full-daemon-operator`, the exact contract version/hash, and the
 fixed capability set. Director will narrow this authority when a supported
 connector-scoped Paseo mechanism is available and evidenced.
@@ -113,9 +115,12 @@ Once a channel is published, install and update explicitly:
 paseo plugin add mcuadros/paseo-director --ref stable
 paseo plugin status director
 paseo plugin update director
+paseo plugin reload director
 ```
 
-Tags and exact commits are immutable pins and do not advance through update.
+`update` activates a changed Git candidate and `reload` re-reads Director's
+private runtime file without restarting Paseo or interrupting other agents or
+workspaces. Tags and exact commits are immutable pins and do not advance through update.
 See [installation, update, rollback, and compatibility](docs/installation-update.md)
 before installing; it includes the full-daemon-operator warning, release and
 development modes, diagnostics, failure recovery, and removal behavior.
@@ -147,24 +152,55 @@ empty environment, and removes the temporary cache.
 
 ## Paseo host configuration
 
-Director for Paseo targets exact Paseo 0.7.2. Its server entry requires these
-daemon-process environment values before installation or reload:
+Director for Paseo targets exact Paseo 0.7.2. Plugin-specific settings live in
+the owner-only XDG runtime file at
+`$XDG_CONFIG_HOME/director/runtime.json`, or `~/.config/director/runtime.json`
+when `XDG_CONFIG_HOME` is unset. Create its directory with mode `0700` and the
+file with mode `0600` before Git installation. The credential itself remains a
+separate non-empty mode-`0600` file; create it with a private editor or
+credential tool so its bytes never enter command arguments or documentation.
 
-- `DIRECTOR_PASEO_URL`: the daemon WebSocket URL.
-- `DIRECTOR_PASEO_CREDENTIAL_FILE`: an absolute path to the owner-only
-  connector credential outside the checkout.
-- `DIRECTOR_ENGINE_URL`: an origin-only loopback HTTP URL with an explicit
-  port, such as `http://127.0.0.1:7041`, for the separately supervised Director
-  Engine Home and Board endpoint.
-- `DIRECTOR_ENGINE_MODE`: exactly `release` or `development`.
-- `DIRECTOR_ENGINE_SOURCE_ROOT`: an absolute engine source path, required only
-  in development mode.
-- `XDG_CACHE_HOME`: optional platform cache base; engine artifacts are always
-  kept under its `director/engines` subtree outside the plugin checkout.
-- `GOMODCACHE`: optional absolute development module-cache path; otherwise the
-  Go toolchain's standard user module cache is used. The path is included in
-  the connector credential-disjointness boundary and only reaches the
-  development compiler environment.
+The minimal release configuration is:
+
+```json
+{
+  "schemaVersion": 1,
+  "paseo": {
+    "credentialFile": "/absolute/private/connector.password"
+  },
+  "engine": {}
+}
+```
+
+Safe defaults are `release` engine mode, the exact same-host Paseo 0.7.2 SDK
+endpoint `ws://127.0.0.1:6767/ws`, the loopback Director Engine endpoint
+`http://127.0.0.1:7041`, the standard XDG user cache base, and the standard Go
+module cache in development mode. `engine.mode` and `engine.url` are strict
+explicit overrides. Development mode additionally requires an explicit
+absolute `engine.sourceRoot`; `engine.moduleCache` is an optional absolute
+override. Release mode rejects either development path. Unknown fields,
+non-loopback endpoints, unsafe permissions, symlinks, overlaps, and invalid
+values fail closed with bounded codes.
+
+Legacy `DIRECTOR_PASEO_*` and `DIRECTOR_ENGINE_*` daemon environment values are
+ignored and reported only as `legacyEnvironment=ignored`; they never override
+the runtime file, and removing them is not a prerequisite for live activation.
+No Paseo daemon or machine restart is supported or required. After editing the
+runtime file, activate it only with:
+
+```text
+paseo plugin reload director
+paseo plugin ls --json
+paseo plugin logs director --json
+```
+
+The bounded `DIRECTOR_ACTIVATION_READY` record reports the exact connector
+commit, configuration SHA-256, `running-current` result, and only whether each
+non-secret setting was defaulted or overridden. It contains no URL, path,
+credential, raw environment, or secret. The native selection resolver accepts
+one current public Paseo Project/workspace pair and derives its Project ID/name,
+repository root, Workspace identity/name, and working directory for the M6.11
+selector; none of those facts belongs in this runtime JSON.
 
 The schema-2 committed release descriptor explicitly marks `0.0.0-scaffold` as
 unpublished and declares no assets or digests. Release resolution rejects that

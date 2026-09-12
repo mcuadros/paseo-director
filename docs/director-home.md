@@ -88,6 +88,15 @@ surface rather than introducing a second operational shell.
 
 ## Doctor diagnostics
 
+Connector pre-load failures occur before Director Home or Doctor can render.
+Inspect them with the public `paseo plugin ls --json` and
+`paseo plugin logs director --json` commands, correct the owner-only runtime
+file, and run `paseo plugin reload director`. The latest
+`DIRECTOR_ACTIVATION_READY` record must bind `running-current`, the expected
+connector commit, and configuration SHA-256. It exposes only defaulted versus
+overridden non-secret setting names. A daemon restart cannot be prescribed by
+Doctor and is not an activation or repair step.
+
 Doctor diagnostics are strictly read-only and never mutate engine, workspace,
 or repository state. The client submits only exact host, Project, and expected
 Project-version identity to `POST /v1/planning/doctor`. The Go application
@@ -161,7 +170,8 @@ Repair fails closed if:
 Every Preview operation is explicitly non-destructive and
 `automaticInstall=false`. Missing executables and authentication remain manual
 guidance; Repair never installs software, switches provider/delivery/store,
-selects another host, deletes a path, or retries an unknown effect. Exact
+selects another host, reloads a plugin, restarts Paseo, deletes a path, or
+retries an unknown effect. Exact
 same-request replays return the first observed durable outcome; changed
 payload bindings or terminal drift are refused without another effect.
 

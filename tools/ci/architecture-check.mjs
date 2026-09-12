@@ -303,6 +303,10 @@ function followsDirectorRuntimeConvention(path, role) {
   if (role === "composition") return path === "index.ts";
   if (role === "ui") return /\.client\.tsx?$/.test(path);
   if (role === "rpc" || role === "generated") return /\.shared\.ts$/.test(path);
+  if (
+    path === "connector/runtime-configuration.server.mjs" ||
+    path === "connector/runtime-configuration.server.d.mts"
+  ) return true;
   return /\.server\.ts$/.test(path);
 }
 

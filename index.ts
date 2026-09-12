@@ -7,7 +7,7 @@ import { DirectorHome } from "./ui/director-home.client";
 import { ProjectBoard } from "./ui/planning-surface.client";
 import { DirectorWorkers } from "./ui/director-workers-panel.client";
 import { contributeTaskNavigation } from "./ui/task-navigation.client";
-import { startConnectorShellFromEnvironment } from "./connector/paseo.server";
+import { startInstalledConnectorShell } from "./connector/paseo.server";
 import { connectorStartupStatus } from "./rpc/startup.shared";
 import { boardSnapshotRpc } from "./rpc/board.shared";
 import { directorWorkersRpc } from "./rpc/workers.shared";
@@ -25,7 +25,7 @@ import {
 } from "./rpc/planning.shared";
 
 export default function contribute(plugin: PluginContext) {
-  const connector = startConnectorShellFromEnvironment();
+  const connector = startInstalledConnectorShell();
 
   plugin.addSurface("home", DirectorHome);
   plugin.addSidebarItem({
