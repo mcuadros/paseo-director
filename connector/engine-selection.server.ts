@@ -71,15 +71,26 @@ export function pathsAreDisjoint(left: string, right: string): boolean {
 
 export function developmentEnginePaths(
   selection: DevelopmentEngineSelection,
+  sourceCandidate = "selected-source",
 ): { binaryPath: string; temporaryBinaryPath: string; goCache: string } {
   const developmentRoot = join(selection.cacheRoot, "development");
   const sourceIdentity = createHash("sha256")
     .update(resolve(selection.sourceRoot))
     .digest("hex");
-  const binaryPath = join(developmentRoot, sourceIdentity, "director-engine");
+  const binaryPath = join(
+    developmentRoot,
+    sourceIdentity,
+    sourceCandidate,
+    "director-engine",
+  );
   return {
     binaryPath,
-    temporaryBinaryPath: `${binaryPath}.partial-${process.pid}`,
+    temporaryBinaryPath: join(
+      developmentRoot,
+      sourceIdentity,
+      `.partial-${sourceCandidate}-${process.pid}`,
+      "director-engine",
+    ),
     goCache: join(developmentRoot, "go-build-cache"),
   };
 }
@@ -88,7 +99,7 @@ function absolutePath(value: string | undefined, code: string): string {
   if (!value || !isAbsolute(value)) {
     throw new EngineSelectionError(code, "engine paths must be absolute");
   }
-  return resolve(value);
+  return canonicalProspectivePath(resolve(value));
 }
 
 export function selectEngine(
@@ -104,8 +115,8 @@ export function selectEngine(
   }
   const cacheBase = environment.XDG_CACHE_HOME
     ? absolutePath(environment.XDG_CACHE_HOME, "ENGINE_CACHE_PATH")
-    : join(homedir(), ".cache");
-  const cacheRoot = resolve(cacheBase, "director", "engines");
+    : canonicalProspectivePath(join(homedir(), ".cache"));
+  const cacheRoot = canonicalProspectivePath(join(cacheBase, "director", "engines"));
   if (pathIsWithin(cacheRoot, checkoutRoot)) {
     throw new EngineSelectionError(
       "ENGINE_CACHE_IN_CHECKOUT",
@@ -121,8 +132,8 @@ export function selectEngine(
     }
     return {
       mode,
-      checkoutRoot: resolve(checkoutRoot),
-      metadataPath: resolve(checkoutRoot, "release", "engine.json"),
+      checkoutRoot: canonicalProspectivePath(checkoutRoot),
+      metadataPath: canonicalProspectivePath(join(checkoutRoot, "release", "engine.json")),
       cacheRoot,
     };
   }
@@ -143,7 +154,7 @@ export function selectEngine(
   }
   return {
     mode,
-    checkoutRoot: resolve(checkoutRoot),
+    checkoutRoot: canonicalProspectivePath(checkoutRoot),
     sourceRoot: absolutePath(
       environment.DIRECTOR_ENGINE_SOURCE_ROOT,
       "ENGINE_SOURCE_REQUIRED",
@@ -163,6 +174,7 @@ export function engineProcessEnvironment(
     GOCACHE: goCache,
     GOMODCACHE: moduleCache,
     GOTOOLCHAIN: "local",
+    GOWORK: "off",
   };
   if (source.PATH) {
     environment.PATH = source.PATH;

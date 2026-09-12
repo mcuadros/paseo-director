@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "state": "unpublished",
   "version": "0.0.0-scaffold",
   "target": "linux-amd64"

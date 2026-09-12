@@ -1,7 +1,7 @@
 # ADR-0017: Bound the standalone engine connector authority on Paseo 0.7.2
 
 - **Status:** Accepted
-- **Amended by:** [ADR-0020](0020-zero-work-bootstrap-and-terminal-event-dispatch.md)
+- **Amended by:** [ADR-0020](0020-zero-work-bootstrap-and-terminal-event-dispatch.md); project-owner decision `dir-m6.9` comment `01a09682-1168-70ca-841a-4ef6a4aabedb` for deterministic locked npm candidate preparation
 - **Date:** 2026-09-07
 - **Beads Task:** `dir-m1.12`
 - **Plan gate:** M1 engine/process/host boundary before scaffolding
@@ -53,8 +53,11 @@ that mechanism and its bounded full daemon-operator authority.
 The owner also fixed engine distribution. Release mode downloads a versioned,
 digest-pinned Director binary from GitHub Releases. Development mode compiles
 the Go engine. Mode selection is explicit and deterministic, and neither mode
-falls back to the other. Paseo plugin installation itself is a Git clone; it
-does not run dependency installation or install hooks.
+falls back to the other. Paseo plugin installation is a Git clone followed by
+the manifest's reviewed direct-argv candidate preparation: the exact locked
+production npm closure is installed with package lifecycle scripts disabled,
+then compatibility and dependency integrity are verified before Paseo compiles
+or loads the candidate. Preparation failure never replaces the prior install.
 
 This is evidence-driven architecture research, not product implementation.
 Candidate `80f5cf1a3344cf3ac9232ba5e10f1de07b5509a8` and rebased carrier
@@ -176,10 +179,13 @@ data directory remains invalid.
 ### Connector-owned authority works mechanically but is over-broad
 
 The focused live fixture declared `@getpaseo/client@0.7.2` as a connector-only
-dependency. Because Git installation is only a clone, a manifest preparation
-step ran direct argv `npm ci --ignore-scripts` from the committed lockfile
-before activation. This is a declared auditable build step, not a Paseo install
-hook, and it does not vendor dependencies.
+dependency. Git candidate preparation now runs direct argv
+`npm ci --omit=dev --ignore-scripts --no-audit --no-fund` from the committed
+lockfile before activation, followed by a committed exact-host and installed-
+closure verifier. This is declared trusted daemon-host preparation; it does not
+vendor dependencies or execute package lifecycle scripts. Registry, lock,
+integrity, dependency, or verification failure rejects the candidate while
+Paseo retains the prior installed commit.
 
 At startup the connector read its own credential file, constructed the public
 SDK client, connected headlessly, made one read-only `workspaces.list`, and

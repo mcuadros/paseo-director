@@ -1078,7 +1078,7 @@ Linux platform rules:
 ### 19.4 Public distribution
 
 - Public repository: `mcuadros/paseo-director`.
-- Director for Paseo installs/updates through Paseo's Git-clone plugin lifecycle, which performs no dependency installation or install hook (ADR-0009 and ADR-0017).
+- Director for Paseo installs/updates through Paseo's Git-clone plugin lifecycle. The declared direct-argv preparation runs `npm ci --omit=dev --ignore-scripts --no-audit --no-fund` from the committed lockfile and then the committed compatibility/dependency verifier before Paseo compiles or loads the candidate. CI audits the complete locked registry/integrity graph and the disabled lifecycle-script set; drift, registry failure, lock/package mismatch, or verification failure rejects the candidate without replacing the prior installation (ADR-0009 and ADR-0017, as amended by owner decision `dir-m6.9` comment `01a09682-1168-70ca-841a-4ef6a4aabedb`).
 - In explicit `release` mode, the installed connector commit pins the Director Engine version, target, exact reviewed source Candidate, and SHA-256 of both the binary and exact-source third-party notices. It downloads those Director-owned GitHub Release assets, verifies them before execution, and atomically caches them outside the plugin checkout at the platform XDG cache location. Missing/mismatched identity, asset, notice, target, source, or digest fails closed and never compiles (ADR-0017).
 - In explicit `development` mode, the connector builds the Go engine from the selected local source with the declared local Go toolchain and never downloads or falls back to release mode. A missing explicit mode fails closed; ambient Git state, cache, toolchain, or network never selects or changes it (ADR-0017).
 - Every engine start reports mode, version, exact source Candidate, target, executable/notices SHA-256, connector commit, and contract version/hash in structured diagnostics. Go is a development/release-builder prerequisite, not a release-user prerequisite. Statically linked releases ship verified notices generated from the exact source Candidate (ADR-0009 and ADR-0017).
@@ -1189,6 +1189,7 @@ Tests use real disposable Git repositories/worktrees and the selected TaskStore.
 
 - Clean installation on exact supported Paseo `0.7.2`, including the disclosed full-daemon-operator connector authority and fail-closed missing-credential behavior (ADR-0017).
 - Upgrade from the previous Director version.
+- Locked npm candidate preparation, concurrent/replayed update reconciliation, failed-update preservation, and recovery from registry, lockfile, dependency, and lifecycle verification failures.
 - Release-mode version/source/digest/notices download and external-cache verification, development-mode Go compilation, attributable engine identity, and no cross-mode fallback.
 - Real PR and CI in a GitHub sandbox repository.
 - Manual smoke with compatible Codex, Claude Code, and OpenCode installations.

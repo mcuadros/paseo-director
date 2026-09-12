@@ -23,7 +23,12 @@ import {
   ConnectorCredentialError,
   loadConnectorCredential,
 } from "../connector/credential.server.ts";
-import { engineBoundaryPaths } from "../connector/engine-distribution.server.ts";
+import {
+  EngineDistributionError,
+  engineBoundaryPaths,
+  type ResolvedEngine,
+} from "../connector/engine-distribution.server.ts";
+import { HostCompatibilityError } from "../connector/compatibility.server.ts";
 import { BoardTransportError } from "../connector/engine-board.server.ts";
 import {
   developmentEnginePaths,
@@ -55,6 +60,32 @@ function temporaryBoundary() {
     credentialDirectory,
     credentialPath,
   };
+}
+
+function hostCompatibility() {
+  return {
+    paseoVersion: "0.7.2" as const,
+    nodeVersion: "22.0.0",
+    platform: "linux" as const,
+    architecture: "x64" as const,
+    target: "linux-amd64" as const,
+  };
+}
+
+function resolvedEngine(selection: { mode: "release" | "development" }): Promise<ResolvedEngine> {
+  return Promise.resolve({
+    mode: selection.mode,
+    version: "1.0.0",
+    sourceCandidate: "1".repeat(40),
+    target: "linux-amd64",
+    binaryPath: "/not-exposed/director-engine",
+    noticesPath: "/not-exposed/THIRD_PARTY_NOTICES.txt",
+    binarySha256: "2".repeat(64),
+    noticesSha256: "3".repeat(64),
+    connectorCommit: "4".repeat(40),
+    contractVersion: "director.host/v1",
+    contractSha256: "5".repeat(64),
+  });
 }
 
 test("credential loading fails closed for absence, content, location, and permissions", () => {
@@ -321,6 +352,7 @@ test("connector startup fails before constructing a client when credential is ab
             XDG_CACHE_HOME: boundary.cacheBase,
           },
           dependencies: {
+            hostCompatibility,
             createClient() {
               clients += 1;
               return { async close() {} };
@@ -331,6 +363,26 @@ test("connector startup fails before constructing a client when credential is ab
         error instanceof ConnectorCredentialError &&
         error.code === "CONNECTOR_CREDENTIAL_REQUIRED",
     );
+    assert.equal(clients, 0);
+  } finally {
+    rmSync(boundary.root, { recursive: true, force: true });
+  }
+});
+
+test("incompatible host fails before credential loading or client construction", () => {
+  const boundary = temporaryBoundary();
+  let clients = 0;
+  try {
+    assert.throws(() => startConnectorShell({
+      checkoutRoot: boundary.checkoutRoot,
+      environment: {},
+      dependencies: {
+        hostCompatibility() {
+          throw new HostCompatibilityError("PASEO_VERSION_UNSUPPORTED", "Director supports exact Paseo 0.7.2; observed 0.8.0");
+        },
+        createClient() { clients += 1; return { async close() {} }; },
+      },
+    }), (error: unknown) => error instanceof HostCompatibilityError && error.code === "PASEO_VERSION_UNSUPPORTED");
     assert.equal(clients, 0);
   } finally {
     rmSync(boundary.root, { recursive: true, force: true });
@@ -353,6 +405,7 @@ test("connector startup requires the explicit engine Board endpoint before const
             XDG_CACHE_HOME: boundary.cacheBase,
           },
           dependencies: {
+            hostCompatibility,
             createClient() {
               clients += 1;
               return { async close() {} };
@@ -409,6 +462,7 @@ test("credential directory is bidirectionally disjoint from every canonical engi
             GOMODCACHE: options.moduleCache,
           },
           dependencies: {
+            hostCompatibility,
             createClient() {
               clients += 1;
               return { async close() {} };
@@ -572,6 +626,8 @@ test("the connector descriptor and engine environment never propagate its creden
         XDG_CACHE_HOME: boundary.cacheBase,
       },
       dependencies: {
+        hostCompatibility,
+        resolveEngine: resolvedEngine,
         createClient(value) {
           configuration = value;
           return {
@@ -583,9 +639,11 @@ test("the connector descriptor and engine environment never propagate its creden
       },
     });
     assert.equal(configuration?.password, "boundary-secret");
-    const serialized = JSON.stringify(connector.status());
+    const status = await connector.status();
+    const serialized = JSON.stringify(status);
     assert.doesNotMatch(serialized, /boundary-secret|connector\.password/);
-    assert.deepEqual(Object.keys(connector.status().descriptor).sort(), [
+    assert.doesNotMatch(serialized, /binaryPath|not-exposed|checkout|cache-base/);
+    assert.deepEqual(Object.keys(status.descriptor).sort(), [
       "capabilities",
       "contractHash",
       "contractVersion",
@@ -606,6 +664,7 @@ test("the connector descriptor and engine environment never propagate its creden
       "GOCACHE",
       "GOMODCACHE",
       "GOTOOLCHAIN",
+      "GOWORK",
       "PATH",
     ]);
     assert.doesNotMatch(
@@ -634,6 +693,34 @@ test("the connector descriptor and engine environment never propagate its creden
       /HOST_PUBLIC_SDK_UNAVAILABLE/,
     );
     await connector.close();
+    assert.equal(closed, true);
+  } finally {
+    rmSync(boundary.root, { recursive: true, force: true });
+  }
+});
+
+test("engine verification failure closes connector authority before startup becomes ready", async () => {
+  const boundary = temporaryBoundary();
+  let closed = false;
+  try {
+    const connector = startConnectorShell({
+      checkoutRoot: boundary.checkoutRoot,
+      environment: {
+        DIRECTOR_PASEO_CREDENTIAL_FILE: boundary.credentialPath,
+        DIRECTOR_PASEO_URL: "ws://127.0.0.1:6767/ws",
+        DIRECTOR_ENGINE_URL: "http://127.0.0.1:7041",
+        DIRECTOR_ENGINE_MODE: "development",
+        DIRECTOR_ENGINE_SOURCE_ROOT: boundary.sourceRoot,
+        XDG_CACHE_HOME: boundary.cacheBase,
+      },
+      dependencies: {
+        hostCompatibility,
+        async resolveEngine() { throw new EngineDistributionError("ENGINE_IDENTITY_MISMATCH", "engine identity does not match the installed pin"); },
+        createClient() { return { async close() { closed = true; } }; },
+      },
+    });
+    await assert.rejects(connector.status(), (error: unknown) =>
+      error instanceof EngineDistributionError && error.code === "ENGINE_IDENTITY_MISMATCH");
     assert.equal(closed, true);
   } finally {
     rmSync(boundary.root, { recursive: true, force: true });
