@@ -2,7 +2,9 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath, URL } from "node:url";
 
 import type { PaseoAgent, PaseoWorkspace } from "@getpaseo/client";
 
@@ -32,6 +34,27 @@ type FakeAgent = PaseoAgent & {
     };
   }[];
 };
+
+type RealIncidentFixture = {
+  id: string;
+  classifierProbe: null | {
+    lastError: string;
+    pendingPermission: boolean;
+    expectedConnectorSignals: string[];
+    expectedEngineClass: string;
+  };
+};
+
+function realIncidentFixtures(): RealIncidentFixture[] {
+  const corpus = JSON.parse(readFileSync(
+    fileURLToPath(new URL(
+      "../engine/domain/execution/testdata/real-incident-corpus.v1.json",
+      import.meta.url,
+    )),
+    "utf8",
+  )) as { fixtures: RealIncidentFixture[] };
+  return corpus.fixtures;
+}
 
 function fakePaseo() {
   const workspaces: PaseoWorkspace[] = [];
@@ -529,6 +552,77 @@ test("primary recovery inventory is complete, bounded, and redacts provider fail
   }, cursor));
   assert.equal(orphan.result.inventory?.agents.length, 2);
   assert.equal(world.calls.agentArchives, 0, "read-only recovery inventory must not contain resources");
+});
+
+test("real incident corpus drives the unchanged connector failure classifier", async () => {
+  const world = fakePaseo();
+  const host = connector(world.client);
+  const base = primaryArguments();
+  const workspace = await host.invoke(command("executionWorkspace.createManaged", {
+    ...base, effectKind: "host_view.create", effectId: "effect-corpus-workspace", workspaceId: undefined,
+  }));
+  const workspaceId = workspace.result.externalId!;
+  const labels = { ...base.labels!, [WORKER_LABEL.executionWorkspace]: workspaceId };
+  const createArguments = { ...base, workspaceId, labels };
+  const created = await host.invoke(command("taskAgent.createWithBootstrap", createArguments));
+  const agent = world.agents[0]!;
+  agent.timelineEntries.push({
+    item: {
+      type: "user_message", text: "fixed bootstrap marker",
+      messageId: directorMessageId(createArguments.effectId),
+    },
+  });
+  agent.timelineEntries.push({
+    item: { type: "user_message", text: "fixed real work marker", messageId: "message-corpus-real" },
+  });
+  agent.status = "error";
+  agent.activeTurn = null;
+  agent.attentionReason = "error";
+  agent.persistence = {
+    provider: "codex", sessionId: "opaque-session", nativeHandle: "opaque-session", metadata: {},
+  };
+
+  const recoveryArguments: HostCommandArguments = {
+    ...createArguments,
+    effectKind: "primary_recovery.observe",
+    effectId: "effect-corpus-observe",
+    agentId: agent.id,
+    clientMessageId: "message-corpus-real",
+    labels: {
+      [WORKER_LABEL.project]: createArguments.scope.projectId,
+      [WORKER_LABEL.workspace]: createArguments.scope.workspaceId,
+      [WORKER_LABEL.task]: createArguments.scope.taskId,
+      [WORKER_LABEL.run]: createArguments.scope.runId,
+    },
+  };
+
+  let cursor = created.cursor;
+  let exercised = 0;
+  for (const [index, fixture] of realIncidentFixtures().entries()) {
+    if (!fixture.classifierProbe) continue;
+    exercised++;
+    agent.lastError = fixture.classifierProbe.lastError;
+    agent.pendingPermissions = fixture.classifierProbe.pendingPermission
+      ? ([{}] as PaseoAgent["pendingPermissions"])
+      : [];
+    const observation = await host.invoke(command("agent.observe", {
+      ...recoveryArguments,
+      effectId: `effect-corpus-observe-${index}`,
+    }, cursor));
+    cursor = observation.cursor;
+    assert.deepEqual(
+      observation.result.inventory?.agents[0]?.failureSignals,
+      fixture.classifierProbe.expectedConnectorSignals,
+      fixture.id,
+    );
+    assert.equal(
+      JSON.stringify(observation).includes(fixture.classifierProbe.lastError),
+      false,
+      `${fixture.id} leaked its classifier probe`,
+    );
+  }
+  assert.equal(exercised, 6);
+  assert.equal(world.calls.agentArchives, 0);
 });
 
 test("control observations wait at an active boundary and archive exactly once", async () => {

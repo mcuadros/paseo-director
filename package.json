@@ -16,6 +16,7 @@
     "architecture:check": "node --test tools/ci/architecture-check.test.mjs && node tools/ci/architecture-check.mjs",
     "build": "npm run build:engine && npm run typecheck",
     "build:engine": "go -C engine build -trimpath -buildvcs=false ./...",
+    "check:real-incident-corpus": "node tools/ci/real-incident-corpus-check.mjs",
     "ci": "npm run format:check && npm run lint && npm run contract:check && npm run architecture:check && npm run build && npm run test:engine && npm run test:host && npm run smoke && npm run test:baseline",
     "contract:check": "node --test tools/ci/contract-check.test.mjs && node tools/ci/contract-check.mjs",
     "contract:generate": "go -C engine run ./cmd/generate-host-client --schema ports/host/host-interface.v1.json --output ../generated/host-contract.shared.ts && go -C engine run ./cmd/generate-planning-client --schema ports/planning/planning-surface.v1.json --output ../generated/planning-contract.shared.ts && go -C engine run ./cmd/generate-agent-mcp-client --schema domain/agentbridge/schemas/director-agent-mcp.v1.json --output ../generated/agent-mcp-contract.shared.ts",
