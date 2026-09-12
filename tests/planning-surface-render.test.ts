@@ -22,6 +22,10 @@ import type {
 } from "../generated/planning-contract.shared.ts";
 import * as PlanningRpc from "../rpc/planning.shared.ts";
 import { DeterministicPlanningFixture } from "./fixtures/planning-fixture.ts";
+import {
+  loadClientModule,
+  testAccessibilityInfo,
+} from "./client-module-loader.ts";
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -112,6 +116,7 @@ function loadPlanningModule(): PlanningSurfaceModule {
         return JsxRuntime;
       case "react-native":
         return {
+          AccessibilityInfo: testAccessibilityInfo,
           ActivityIndicator: "ActivityIndicator",
           FlatList: MockFlatList,
           Pressable: "Pressable",
@@ -120,12 +125,17 @@ function loadPlanningModule(): PlanningSurfaceModule {
           Text: "Text",
           TextInput: "TextInput",
           View: "View",
+          useWindowDimensions: () => ({ width: 1_440, height: 1_000, scale: 1, fontScale: 1 }),
         };
+      case "./accessibility.client.tsx":
+      case "./accessibility.client":
+        return loadClientModule("ui/accessibility.client.tsx", require);
       case "../generated/planning-contract.shared.ts":
         return PlanningContract;
       case "../rpc/planning.shared.ts":
         return PlanningRpc;
       case "./task-detail-view.client.ts":
+      case "./task-detail-view.client.tsx":
       case "./task-detail-view.client": {
         const subSource = readFileSync("ui/task-detail-view.client.tsx", "utf8");
         const subCompiled = ts.transpileModule(subSource, {
@@ -476,7 +486,7 @@ test("wide List uses fixed purposeful columns and accessible engine-ordered rows
   }
   const firstRow = renderer.root.findAllByProps({
     accessibilityHint: "Opens engine-projected task details. Task state cannot be moved here.",
-  })[0];
+  }).find((node) => String(node.type) === "Pressable");
   assert.ok(firstRow);
   assert.equal(firstRow.props.focusable, true);
   assert.equal(firstRow.props.hitSlop, 4);
@@ -604,7 +614,7 @@ test("compact List uses bounded virtualized rendering and stable opaque keys", a
   assert.ok(
     renderer.root.findAllByProps({
       accessibilityHint: "Opens engine-projected task details. Task state cannot be moved here.",
-    }).length <= 16,
+    }).filter((node) => String(node.type) === "Pressable").length <= 16,
   );
 
   const done = renderer.root.findByProps({ accessibilityLabel: "Filter state Done" });
@@ -617,7 +627,7 @@ test("compact List uses bounded virtualized rendering and stable opaque keys", a
   assert.ok(
     renderer.root.findAllByProps({
       accessibilityHint: "Opens engine-projected task details. Task state cannot be moved here.",
-    }).length <= 16,
+    }).filter((node) => String(node.type) === "Pressable").length <= 16,
   );
 
   await act(async () => renderer.unmount());

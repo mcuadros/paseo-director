@@ -8,7 +8,6 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Pressable,
   StyleSheet,
   Text,
   View,
@@ -27,15 +26,20 @@ import {
   planningTaskDetailRpc,
 } from "../rpc/planning.shared.ts";
 import { shellMetrics } from "./shell-layout.client.ts";
-import { TaskDetailView, type TaskDetailTab } from "./task-detail-view.client.ts";
+import { TaskDetailView, type TaskDetailTab } from "./task-detail-view.client.tsx";
+import {
+  AccessibilityProvider,
+  AccessiblePressable,
+  useAccessibilityAnnouncement,
+  useAccessibilityPreferences,
+  useResponsiveCompactLayout,
+} from "./accessibility.client.tsx";
 
 type TaskInspectorClient = Pick<PlanningClient, "taskDetail" | "mutate">;
 
 export type TaskInspectorProps = PluginAgentPanelProps & {
   client?: TaskInspectorClient;
 };
-
-const touchHitSlop = 4;
 
 export function TaskInspector({
   theme,
@@ -46,6 +50,7 @@ export function TaskInspector({
   agentId,
   client: directClient,
 }: TaskInspectorProps) {
+  const accessibilityPreferences = useAccessibilityPreferences();
   const queryTaskDetail = useRpc(planningTaskDetailRpc);
   const mutatePlanning = useRpc(planningMutationRpc);
   const client = useMemo<TaskInspectorClient>(
@@ -105,7 +110,24 @@ export function TaskInspector({
     });
   }
 
-  const metrics = shellMetrics(layout.compact);
+  const compact = useResponsiveCompactLayout(layout.compact);
+  const metrics = shellMetrics(compact);
+  const offline = detailQuery.fetchStatus === "paused";
+  useAccessibilityAnnouncement(
+    offline && !detailQuery.data
+      ? "Waiting for this host before loading Task Inspector"
+      : detailQuery.isPending && !detailQuery.data
+        ? "Loading Task Inspector"
+        : detailQuery.isError && !detailQuery.data
+          ? "Task Inspector unavailable"
+          : detailQuery.data && !detailQuery.data.detail
+            ? "No Director Task is bound to this agent and workspace"
+            : mutation.isPending
+              ? "Submitting Task Inspector intent to Director Engine"
+              : mutation.isError
+                ? "Director Engine rejected the Task Inspector intent"
+                : null,
+  );
   const styles = useMemo(
     () =>
       StyleSheet.create({
@@ -120,9 +142,9 @@ export function TaskInspector({
           alignItems: "center",
           justifyContent: "center",
           gap: 10,
-          padding: layout.compact ? 16 : 24,
+          padding: compact ? 16 : 24,
           borderRadius: 10,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface1,
         },
@@ -153,12 +175,12 @@ export function TaskInspector({
           fontWeight: "700",
         },
       }),
-    [layout.compact, metrics, theme],
+    [accessibilityPreferences.highContrast, compact, metrics, theme],
   );
 
-  const offline = detailQuery.fetchStatus === "paused";
   if (offline && !detailQuery.data) {
     return (
+      <AccessibilityProvider focusColor={theme.colors.accent} preferences={accessibilityPreferences}>
       <View style={styles.screen}>
         <View accessibilityLiveRegion="polite" style={styles.liveState}>
           <Icon color={theme.colors.foregroundMuted} name="CloudOff" size={28} />
@@ -168,22 +190,30 @@ export function TaskInspector({
           </Text>
         </View>
       </View>
+      </AccessibilityProvider>
     );
   }
 
   if (detailQuery.isPending && !detailQuery.data) {
     return (
+      <AccessibilityProvider focusColor={theme.colors.accent} preferences={accessibilityPreferences}>
       <View style={styles.screen}>
         <View accessibilityLiveRegion="polite" style={styles.liveState}>
-          <ActivityIndicator color={theme.colors.accent} size="large" />
+          {accessibilityPreferences.reduceMotion ? (
+            <Icon color={theme.colors.accent} name="Clock3" size={28} />
+          ) : (
+            <ActivityIndicator color={theme.colors.accent} size="large" />
+          )}
           <Text style={styles.stateTitle}>Loading Task Inspector</Text>
         </View>
       </View>
+      </AccessibilityProvider>
     );
   }
 
   if (detailQuery.isError && !detailQuery.data) {
     return (
+      <AccessibilityProvider focusColor={theme.colors.accent} preferences={accessibilityPreferences}>
       <View style={styles.screen}>
         <View accessibilityLiveRegion="assertive" style={styles.liveState}>
           <Icon color={theme.colors.statusDanger} name="CircleAlert" size={28} />
@@ -191,24 +221,26 @@ export function TaskInspector({
           <Text style={styles.stateBody}>
             Director Engine could not load the exact host, workspace, and agent binding.
           </Text>
-          <Pressable
+          <AccessiblePressable
+            accessibilityHint="Retries the exact host, workspace, and agent binding"
             accessibilityLabel="Try loading Task Inspector again"
             accessibilityRole="button"
             focusable
-            hitSlop={touchHitSlop}
             onPress={() => void detailQuery.refetch()}
             style={styles.primaryButton}
           >
             <Text style={styles.primaryButtonText}>Try again</Text>
-          </Pressable>
+          </AccessiblePressable>
         </View>
       </View>
+      </AccessibilityProvider>
     );
   }
 
   const snapshot = detailQuery.data;
   if (!snapshot?.detail) {
     return (
+      <AccessibilityProvider focusColor={theme.colors.accent} preferences={accessibilityPreferences}>
       <View style={styles.screen}>
         <View accessibilityLiveRegion="polite" style={styles.liveState}>
           <Icon color={theme.colors.foregroundMuted} name="Unplug" size={28} />
@@ -219,11 +251,13 @@ export function TaskInspector({
           </Text>
         </View>
       </View>
+      </AccessibilityProvider>
     );
   }
 
   const task = snapshot.detail;
   return (
+    <AccessibilityProvider focusColor={theme.colors.accent} preferences={accessibilityPreferences}>
     <View style={styles.screen}>
       <TaskDetailView
         activeTab={activeTab}
@@ -236,7 +270,7 @@ export function TaskInspector({
         }}
         configurationDraft={configurationDraft}
         epicName={task.summary.epicId ?? undefined}
-        layout={layout}
+        layout={{ ...layout, compact }}
         navigation={navigation}
         onAction={submitAction}
         onConfigurationDraftChange={(draft) => {
@@ -263,5 +297,6 @@ export function TaskInspector({
         </Text>
       ) : null}
     </View>
+    </AccessibilityProvider>
   );
 }

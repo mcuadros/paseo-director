@@ -83,3 +83,8 @@ hardcoded visual system. Interactive controls expose native roles, selected or
 disabled state, focusability, live-region updates, and a minimum 44-point touch
 target. Nothing depends on hover; web Enter/Space activation and host-owned
 Escape/back/sheet dismissal remain native Paseo behavior.
+
+The compact bottom-sheet, focus return/trap, large-text reflow, keyboard/touch,
+screen-reader, contrast, and reduced-motion checks are shared with Home and
+Board/List and specified in
+[Mobile and accessibility behavior](mobile-accessibility.md).

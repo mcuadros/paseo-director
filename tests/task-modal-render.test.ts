@@ -23,6 +23,10 @@ import type {
 import * as PlanningRpc from "../rpc/planning.shared.ts";
 import * as HostContract from "../generated/host-contract.shared.ts";
 import { DeterministicPlanningFixture } from "./fixtures/planning-fixture.ts";
+import {
+  loadClientModule,
+  testAccessibilityInfo,
+} from "./client-module-loader.ts";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -92,6 +96,7 @@ function loadTaskDetailViewModule() {
         return JsxRuntime;
       case "react-native":
         return {
+          AccessibilityInfo: testAccessibilityInfo,
           ActivityIndicator: "ActivityIndicator",
           Pressable: "Pressable",
           ScrollView: "ScrollView",
@@ -99,7 +104,11 @@ function loadTaskDetailViewModule() {
           Text: "Text",
           TextInput: "TextInput",
           View: "View",
+          useWindowDimensions: () => ({ width: 1_440, height: 1_000, scale: 1, fontScale: 1 }),
         };
+      case "./accessibility.client.tsx":
+      case "./accessibility.client":
+        return loadClientModule("ui/accessibility.client.tsx", require);
       case "../generated/planning-contract.shared.ts":
         return PlanningContract;
       case "./shell-layout.client.ts":
@@ -165,6 +174,7 @@ function loadTaskInspectorModule(injectedRpc: (contract: unknown) => unknown) {
         return JsxRuntime;
       case "react-native":
         return {
+          AccessibilityInfo: testAccessibilityInfo,
           ActivityIndicator: "ActivityIndicator",
           Pressable: "Pressable",
           ScrollView: "ScrollView",
@@ -172,12 +182,17 @@ function loadTaskInspectorModule(injectedRpc: (contract: unknown) => unknown) {
           Text: "Text",
           TextInput: "TextInput",
           View: "View",
+          useWindowDimensions: () => ({ width: 1_440, height: 1_000, scale: 1, fontScale: 1 }),
         };
+      case "./accessibility.client.tsx":
+      case "./accessibility.client":
+        return loadClientModule("ui/accessibility.client.tsx", require);
       case "../generated/planning-contract.shared.ts":
         return PlanningContract;
       case "../rpc/planning.shared.ts":
         return PlanningRpc;
       case "./task-detail-view.client.ts":
+      case "./task-detail-view.client.tsx":
       case "./task-detail-view.client": {
         const subSource = readFileSync("ui/task-detail-view.client.tsx", "utf8");
         const subCompiled = ts.transpileModule(subSource, {

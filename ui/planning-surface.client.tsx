@@ -12,7 +12,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -43,10 +42,16 @@ import {
   planningQueryRpc,
   planningTaskDetailRpc,
 } from "../rpc/planning.shared.ts";
-import { TaskDetailView, type TaskDetailTab } from "./task-detail-view.client.ts";
+import { TaskDetailView, type TaskDetailTab } from "./task-detail-view.client.tsx";
+import {
+  AccessibilityProvider,
+  AccessiblePressable,
+  useAccessibilityAnnouncement,
+  useAccessibilityPreferences,
+  useResponsiveCompactLayout,
+} from "./accessibility.client.tsx";
 
 const pageSize = 100;
-const touchHitSlop = 4;
 const initialRequest: Omit<PlanningQueryInput, "cursor"> = {
   projectId: null,
   workspaceIds: [],
@@ -220,8 +225,10 @@ export function PlanningSurface({
   host,
   navigation,
 }: PlanningSurfaceProps) {
+  const accessibilityPreferences = useAccessibilityPreferences();
+  const compact = useResponsiveCompactLayout(layout.compact);
   const [view, setView] = useState<"board" | "list">(
-    layout.compact ? "list" : "board",
+    compact ? "list" : "board",
   );
   const [request, setRequest] = useState(initialRequest);
   const [searchDraft, setSearchDraft] = useState("");
@@ -230,7 +237,7 @@ export function PlanningSurface({
     Exclude<DerivedState, "done">
   >("queued");
   const [grouping, setGrouping] = useState<"flat" | "epic">(
-    layout.compact ? "epic" : "flat",
+    compact ? "epic" : "flat",
   );
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [modalTab, setModalTab] = useState<TaskDetailTab>("details");
@@ -276,6 +283,24 @@ export function PlanningSurface({
     (request.search === null ? 0 : 1) +
     (request.sort === initialRequest.sort ? 0 : 1);
   const selectedSummary = tasks.find((task) => task.id === selectedTaskId);
+  const planningAnnouncement = planningOffline && !snapshot
+    ? "Waiting for connection before loading planning data"
+    : planning.isPending && !snapshot
+      ? "Loading planning data"
+      : planning.isError && !snapshot
+        ? "Planning data is unavailable"
+        : snapshot && planning.isFetching
+          ? "Updating the engine planning snapshot"
+          : snapshot && (planning.isError || planningOffline)
+            ? "Showing the last engine snapshot. Tasks may be stale"
+            : snapshot && snapshot.page.projects.length === 0
+              ? "No Director Projects are available"
+              : snapshot && tasks.length === 0
+                ? "No tasks match this query"
+                : snapshot
+                  ? `${tasks.length} tasks shown in ${view} view${compact && view === "board" ? ", one lane at a time" : ""}`
+                  : null;
+  useAccessibilityAnnouncement(planningAnnouncement);
 
   const detail = useQuery({
     queryKey: ["director", "planning-task", host.id, selectedTaskId],
@@ -302,6 +327,28 @@ export function PlanningSurface({
     Awaited<ReturnType<PlanningClient["mutate"]>>["preview"]
   >(null);
   const [pendingApply, setPendingApply] = useState<AllowedAction | null>(null);
+  useAccessibilityAnnouncement(
+    selectedTaskId === null
+      ? null
+      : detailOffline && !detail.data
+        ? "Waiting for this host before loading Task details"
+        : detail.isPending && !detail.data
+          ? "Loading Task details"
+          : detail.isError && !detail.data?.detail
+            ? "Task details are unavailable"
+            : detail.data?.detail
+              ? `${detail.data.detail.summary.key} Task details opened`
+              : detail.data
+                ? "No Task details are available for this exact host"
+                : null,
+  );
+  useAccessibilityAnnouncement(
+    mutation.isPending
+      ? "Submitting intent to Director Engine"
+      : mutation.isError
+        ? "Director Engine rejected the intent"
+        : mutation.data?.message ?? null,
+  );
 
   function openTask(taskId: string) {
     setSelectedTaskId(taskId);
@@ -320,6 +367,12 @@ export function PlanningSurface({
     setPendingApply(null);
   }, [detail.data?.cursor]);
 
+  useEffect(() => {
+    if (!compact) return;
+    setView("list");
+    setGrouping("epic");
+  }, [compact]);
+
   const styles = useMemo(
     () =>
       StyleSheet.create({
@@ -328,8 +381,8 @@ export function PlanningSurface({
           backgroundColor: theme.colors.surface0,
         },
         content: {
-          padding: layout.compact ? 12 : 16,
-          gap: layout.compact ? 10 : 12,
+          padding: compact ? 12 : 16,
+          gap: compact ? 10 : 12,
         },
         toolbar: {
           flexDirection: "row",
@@ -338,18 +391,21 @@ export function PlanningSurface({
           flexWrap: "wrap",
           gap: 8,
           paddingBottom: 10,
-          borderBottomWidth: 1,
+          borderBottomWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderBottomColor: theme.colors.border,
         },
         toolbarModes: {
-          flexDirection: "row",
-          alignItems: "center",
+          width: compact ? "100%" : undefined,
+          flexDirection: compact ? "column" : "row",
+          alignItems: compact ? "stretch" : "center",
           flexWrap: "wrap",
           gap: 8,
         },
         segmentGroup: {
+          width: compact ? "100%" : undefined,
           flexDirection: "row",
           alignItems: "center",
+          flexWrap: "wrap",
           gap: 2,
           padding: 2,
           borderRadius: 9,
@@ -364,14 +420,19 @@ export function PlanningSurface({
           paddingHorizontal: 11,
           paddingVertical: 7,
           borderRadius: 7,
+          flexGrow: compact ? 1 : 0,
+          flexShrink: 1,
+          flexBasis: compact ? 0 : "auto",
         },
         segmentSelected: { backgroundColor: theme.colors.surface2 },
-        segmentText: { color: theme.colors.foregroundMuted, fontWeight: "600" },
-        segmentTextSelected: { color: theme.colors.foreground, fontWeight: "700" },
+        segmentText: { color: theme.colors.foregroundMuted, fontWeight: "600", textAlign: "center" },
+        segmentTextSelected: { color: theme.colors.foreground, fontWeight: "700", textAlign: "center" },
         filterButton: {
+          alignSelf: compact ? "stretch" : "auto",
           minHeight: 44,
           flexDirection: "row",
           alignItems: "center",
+          justifyContent: "center",
           gap: 7,
           paddingHorizontal: 12,
           borderRadius: 8,
@@ -401,7 +462,7 @@ export function PlanningSurface({
           paddingHorizontal: 11,
           paddingVertical: 8,
           borderRadius: 9,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface2,
         },
@@ -427,7 +488,7 @@ export function PlanningSurface({
           paddingHorizontal: 12,
           paddingVertical: 9,
           borderRadius: 8,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           color: theme.colors.foreground,
           backgroundColor: theme.colors.surface2,
@@ -449,12 +510,12 @@ export function PlanningSurface({
         liveBody: { color: theme.colors.foregroundMuted, textAlign: "center" },
         board: { gap: 12, paddingBottom: 8 },
         lane: {
-          width: layout.compact ? 300 : 260,
-          maxHeight: 560,
+          width: compact ? "100%" : 260,
+          maxHeight: compact ? undefined : 560,
           padding: 10,
           gap: 8,
           borderRadius: 8,
-          borderTopWidth: 3,
+          borderTopWidth: accessibilityPreferences.highContrast ? 5 : 3,
           backgroundColor: theme.colors.surface1,
         },
         laneHeader: {
@@ -463,7 +524,7 @@ export function PlanningSurface({
           alignItems: "center",
           gap: 8,
           paddingBottom: 8,
-          borderBottomWidth: 1,
+          borderBottomWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderBottomColor: theme.colors.border,
         },
         laneTitle: { color: theme.colors.foreground, fontWeight: "700" },
@@ -481,17 +542,18 @@ export function PlanningSurface({
           paddingVertical: 9,
           gap: 4,
           borderRadius: 7,
-          borderLeftWidth: 3,
+          borderLeftWidth: accessibilityPreferences.highContrast ? 5 : 3,
           backgroundColor: theme.colors.surface2,
         },
         taskHeader: {
           flexDirection: "row",
           justifyContent: "space-between",
+          flexWrap: "wrap",
           gap: 8,
         },
         taskKey: { color: theme.colors.foregroundMuted, fontSize: 12 },
         taskPriority: { color: theme.colors.foregroundMuted, fontSize: 12 },
-        taskTitle: { color: theme.colors.foreground, fontWeight: "700" },
+        taskTitle: { color: theme.colors.foreground, fontWeight: "700", flexShrink: 1 },
         taskMeta: { color: theme.colors.foregroundMuted, fontSize: 12 },
         attention: { color: theme.colors.statusWarning, fontSize: 12 },
         labelRow: { flexDirection: "row", flexWrap: "wrap", gap: 5 },
@@ -501,7 +563,7 @@ export function PlanningSurface({
           paddingHorizontal: 6,
           paddingVertical: 2,
           borderRadius: 6,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
         },
         list: {
@@ -515,7 +577,7 @@ export function PlanningSurface({
           gap: 12,
           paddingHorizontal: 12,
           paddingVertical: 8,
-          borderBottomWidth: 1,
+          borderBottomWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderBottomColor: theme.colors.border,
           backgroundColor: theme.colors.surface2,
         },
@@ -526,7 +588,7 @@ export function PlanningSurface({
           gap: 12,
           paddingHorizontal: 12,
           paddingVertical: 9,
-          borderBottomWidth: 1,
+          borderBottomWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderBottomColor: theme.colors.border,
           backgroundColor: theme.colors.surface0,
         },
@@ -536,7 +598,7 @@ export function PlanningSurface({
           alignItems: "center",
           gap: 10,
           padding: 11,
-          borderBottomWidth: 1,
+          borderBottomWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderBottomColor: theme.colors.border,
           backgroundColor: theme.colors.surface0,
         },
@@ -559,8 +621,8 @@ export function PlanningSurface({
         epicColumn: { flex: 1.2, minWidth: 110 },
         priorityColumn: { width: 72 },
         updatedColumn: { width: 88 },
-        compactTaskColumn: { flex: 1, gap: 3 },
-        compactStatusColumn: { width: 92, alignItems: "flex-end", gap: 3 },
+        compactTaskColumn: { flex: 1, flexShrink: 1, minWidth: 0, gap: 3 },
+        compactStatusColumn: { width: "32%", minWidth: 92, alignItems: "flex-end", gap: 3 },
         listPrimary: { color: theme.colors.foreground, fontWeight: "700" },
         listValue: { color: theme.colors.foreground, fontSize: 12 },
         listSecondary: { color: theme.colors.foregroundMuted, fontSize: 12 },
@@ -585,7 +647,7 @@ export function PlanningSurface({
           paddingHorizontal: 12,
           paddingVertical: 9,
           borderRadius: 8,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface2,
         },
@@ -595,7 +657,7 @@ export function PlanningSurface({
           gap: 8,
           padding: 12,
           borderRadius: 10,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface1,
         },
@@ -610,7 +672,7 @@ export function PlanningSurface({
         danger: { color: theme.colors.statusDanger },
         divider: { height: 1, backgroundColor: theme.colors.border },
       }),
-    [layout.compact, theme],
+    [accessibilityPreferences.highContrast, compact, theme],
   );
 
   function stateAccent(state: DerivedState): string {
@@ -725,12 +787,11 @@ export function PlanningSurface({
   function taskCard(task: TaskSummary) {
     const explanation = task.needsYou[0] ?? task.blockers[0];
     return (
-      <Pressable
+      <AccessiblePressable
         accessibilityHint="Opens engine-projected task details. Task state cannot be moved here."
         accessibilityLabel={taskAccessibilityLabel(task)}
         accessibilityRole="button"
         focusable
-        hitSlop={touchHitSlop}
         key={task.id}
         onPress={() => openTask(task.id)}
         style={[
@@ -742,7 +803,7 @@ export function PlanningSurface({
           <Text style={styles.taskKey}>{task.key}</Text>
           <Text style={styles.taskPriority}>{task.priority}</Text>
         </View>
-        <Text numberOfLines={2} style={styles.taskTitle}>{task.title}</Text>
+        <Text style={styles.taskTitle}>{task.title}</Text>
         <Text style={styles.taskMeta}>
           {workspaceNames.get(task.workspaceId) ?? task.workspaceId}
           {task.epicId === null
@@ -773,7 +834,7 @@ export function PlanningSurface({
             ) : null}
           </View>
         ) : null}
-      </Pressable>
+      </AccessiblePressable>
     );
   }
 
@@ -808,7 +869,7 @@ export function PlanningSurface({
         removeClippedSubviews
         renderItem={({ item: row }) =>
           row.kind === "header" ? (
-            <View accessibilityLabel={row.label} style={styles.taskGroup}>
+            <View accessible accessibilityLabel={row.label} style={styles.taskGroup}>
               <Text accessibilityRole="header" style={styles.taskGroupTitle}>
                 {row.label}
               </Text>
@@ -833,22 +894,21 @@ export function PlanningSurface({
       { color: stateAccent(task.derivedState) },
     ];
     return (
-      <Pressable
+      <AccessiblePressable
         accessibilityHint="Opens engine-projected task details. Task state cannot be moved here."
         accessibilityLabel={taskAccessibilityLabel(task)}
         accessibilityRole="button"
         focusable
-        hitSlop={touchHitSlop}
         onPress={() => openTask(task.id)}
-        style={layout.compact ? styles.compactListRow : styles.listRow}
+        style={compact ? styles.compactListRow : styles.listRow}
       >
-        {layout.compact ? (
+        {compact ? (
           <>
             <View style={styles.compactTaskColumn}>
-              <Text numberOfLines={2} style={styles.listPrimary}>
+              <Text style={styles.listPrimary}>
                 {task.key} · {task.title}
               </Text>
-              <Text numberOfLines={1} style={styles.listSecondary}>
+              <Text style={styles.listSecondary}>
                 {workspace} · {epic}
               </Text>
             </View>
@@ -860,16 +920,16 @@ export function PlanningSurface({
         ) : (
           <>
             <View style={styles.taskColumn}>
-              <Text numberOfLines={1} style={styles.listPrimary}>{task.title}</Text>
+            <Text style={styles.listPrimary}>{task.title}</Text>
               <Text style={styles.listSecondary}>{task.key}</Text>
             </View>
             <Text style={[styles.stateColumn, ...stateStyle]}>
               {stateLabels[task.derivedState]}
             </Text>
-            <Text numberOfLines={1} style={[styles.workspaceColumn, styles.listValue]}>
+            <Text style={[styles.workspaceColumn, styles.listValue]}>
               {workspace}
             </Text>
-            <Text numberOfLines={1} style={[styles.epicColumn, styles.listValue]}>
+            <Text style={[styles.epicColumn, styles.listValue]}>
               {epic}
             </Text>
             <Text style={[styles.priorityColumn, styles.listValue]}>{task.priority}</Text>
@@ -878,7 +938,7 @@ export function PlanningSurface({
             </Text>
           </>
         )}
-      </Pressable>
+      </AccessiblePressable>
     );
   }
 
@@ -894,12 +954,12 @@ export function PlanningSurface({
       <View style={styles.list}>
         <View
           accessible
-          accessibilityLabel={layout.compact
+          accessibilityLabel={compact
             ? "Task list columns: Task and status"
             : "Task list columns: Task, State, Workspace, Epic, Priority, Updated"}
           style={styles.listHeader}
         >
-          {layout.compact ? (
+          {compact ? (
             <>
               <Text style={[styles.compactTaskColumn, styles.columnHeading]}>Task</Text>
               <Text style={[styles.compactStatusColumn, styles.columnHeading]}>Status</Text>
@@ -943,11 +1003,12 @@ export function PlanningSurface({
     const selectedCompactLane = states.includes(compactLane)
       ? compactLane
       : states[0] ?? "queued";
-    const visibleStates = layout.compact ? [selectedCompactLane] : states;
+    const visibleStates = compact ? [selectedCompactLane] : states;
     return (
       <View style={{ gap: 8 }}>
-        {layout.compact ? (
+        {compact ? (
           <FlatList
+            accessibilityLabel="Board lanes"
             accessibilityRole="tablist"
             contentContainerStyle={styles.switcherContent}
             data={states}
@@ -958,19 +1019,19 @@ export function PlanningSurface({
             renderItem={({ item: state }) => {
               const selected = selectedCompactLane === state;
               return (
-                <Pressable
+                <AccessiblePressable
+                  accessibilityHint="Shows this engine-derived lane without changing Task state"
                   accessibilityLabel={`Show ${stateLabels[state]} lane`}
                   accessibilityRole="tab"
                   accessibilityState={{ selected }}
                   focusable
-                  hitSlop={touchHitSlop}
                   onPress={() => setCompactLane(state)}
                   style={[styles.chip, selected && styles.chipSelected]}
                 >
                   <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
                     {stateLabels[state]}
                   </Text>
-                </Pressable>
+                </AccessiblePressable>
               );
             }}
             showsHorizontalScrollIndicator={false}
@@ -980,10 +1041,10 @@ export function PlanningSurface({
         <FlatList
           contentContainerStyle={styles.board}
           data={visibleStates}
-          horizontal={!layout.compact}
-          initialNumToRender={layout.compact ? 1 : 6}
+          horizontal={!compact}
+          initialNumToRender={compact ? 1 : 6}
           keyExtractor={(state) => state}
-          maxToRenderPerBatch={layout.compact ? 1 : 6}
+          maxToRenderPerBatch={compact ? 1 : 6}
           renderItem={({ item: state }) => {
             const laneTasks = tasks.filter((task) => task.derivedState === state);
             return (
@@ -1004,14 +1065,14 @@ export function PlanningSurface({
                 {laneTasks.length === 0 ? (
                   <Text style={styles.muted}>No tasks</Text>
                 ) : grouping === "epic" ? (
-                  virtualizedGroups(laneTasks, !layout.compact)
+                  virtualizedGroups(laneTasks, !compact)
                 ) : (
-                  virtualizedTasks(laneTasks, !layout.compact)
+                  virtualizedTasks(laneTasks, !compact)
                 )}
               </View>
             );
           }}
-          showsHorizontalScrollIndicator={!layout.compact}
+          showsHorizontalScrollIndicator={!compact}
           windowSize={3}
         />
       </View>
@@ -1025,7 +1086,7 @@ export function PlanningSurface({
       : undefined;
 
     return (
-      <View style={{ minHeight: layout.compact ? 420 : 500, flex: 1 }}>
+      <View style={{ minHeight: compact ? 420 : 500, flex: 1 }}>
         <TaskDetailView
           activeTab={modalTab}
           activityState={{
@@ -1037,7 +1098,7 @@ export function PlanningSurface({
           }}
           configurationDraft={configurationDraft}
           epicName={epicName}
-          layout={layout}
+          layout={{ ...layout, compact }}
           navigation={navigation}
           onAction={submitAction}
           onConfigurationDraftChange={(draft) => {
@@ -1065,19 +1126,28 @@ export function PlanningSurface({
   );
 
   return (
+    <AccessibilityProvider
+      focusColor={theme.colors.accent}
+      preferences={accessibilityPreferences}
+    >
     <View style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.toolbar}>
           <View style={styles.toolbarModes}>
-            <View accessibilityRole="tablist" style={styles.segmentGroup}>
+            <View
+              accessibilityLabel="Planning view"
+              accessibilityRole="tablist"
+              style={styles.segmentGroup}
+            >
               {(["board", "list"] as const).map((choice) => {
                 const selected = view === choice;
                 return (
-                  <Pressable
+                  <AccessiblePressable
+                    accessibilityHint={`Shows the ${choice} presentation without changing Task state`}
+                    accessibilityLabel={choice === "board" ? "Board" : "List"}
                     accessibilityRole="tab"
                     accessibilityState={{ selected }}
                     focusable
-                    hitSlop={touchHitSlop}
                     key={choice}
                     onPress={() => selectView(choice)}
                     style={[styles.segment, selected && styles.segmentSelected]}
@@ -1094,22 +1164,26 @@ export function PlanningSurface({
                       : styles.segmentText}>
                       {choice === "board" ? "Board" : "List"}
                     </Text>
-                  </Pressable>
+                  </AccessiblePressable>
                 );
               })}
             </View>
-            <View accessibilityRole="tablist" style={styles.segmentGroup}>
+            <View
+              accessibilityLabel="Task grouping"
+              accessibilityRole="tablist"
+              style={styles.segmentGroup}
+            >
               {(["flat", "epic"] as const).map((choice) => {
                 const selected = grouping === choice;
                 return (
-                  <Pressable
+                  <AccessiblePressable
+                    accessibilityHint="Changes grouping only; engine order and Task state stay unchanged"
                     accessibilityLabel={choice === "flat"
                       ? "Show flat tasks"
                       : "Group tasks by epic"}
                     accessibilityRole="tab"
                     accessibilityState={{ selected }}
                     focusable
-                    hitSlop={touchHitSlop}
                     key={choice}
                     onPress={() => setGrouping(choice)}
                     style={[styles.segment, selected && styles.segmentSelected]}
@@ -1119,18 +1193,18 @@ export function PlanningSurface({
                       : styles.segmentText}>
                       {choice === "flat" ? "Flat" : "By epic"}
                     </Text>
-                  </Pressable>
+                  </AccessiblePressable>
                 );
               })}
             </View>
           </View>
           {snapshot ? (
-            <Pressable
+            <AccessiblePressable
+              accessibilityHint="Opens Paseo’s native filter dialog or compact bottom sheet"
               accessibilityLabel="Open task filters"
               accessibilityRole="button"
               accessibilityState={{ expanded: filtersExpanded }}
               focusable
-              hitSlop={touchHitSlop}
               onPress={() => setFiltersExpanded(true)}
               style={styles.filterButton}
             >
@@ -1138,7 +1212,7 @@ export function PlanningSurface({
               <Text style={styles.filterButtonText}>
                 Filters{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ""}
               </Text>
-            </Pressable>
+            </AccessiblePressable>
           ) : null}
         </View>
 
@@ -1178,12 +1252,12 @@ export function PlanningSurface({
                     renderItem={({ item: project }) => {
                       const selected = selectedProjectId === project.id;
                       return (
-                        <Pressable
+                        <AccessiblePressable
+                          accessibilityHint="Loads this Project’s engine-projected Task query"
                           accessibilityLabel={`Open project ${project.name}`}
                           accessibilityRole="button"
                           accessibilityState={{ selected }}
                           focusable
-                          hitSlop={touchHitSlop}
                           onPress={() => {
                             setRequest({ ...initialRequest, projectId: project.id });
                             setSearchDraft("");
@@ -1196,7 +1270,7 @@ export function PlanningSurface({
                           <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
                             {project.name}
                           </Text>
-                        </Pressable>
+                        </AccessiblePressable>
                       );
                     }}
                     showsHorizontalScrollIndicator={false}
@@ -1213,12 +1287,12 @@ export function PlanningSurface({
                     renderItem={({ item: workspace }) => {
                       const selected = selectedWorkspaceIds.includes(workspace.id);
                       return (
-                        <Pressable
+                        <AccessiblePressable
+                          accessibilityHint="Toggles this Workspace in the engine query"
                           accessibilityLabel={`Filter workspace ${workspace.name}`}
                           accessibilityRole="button"
                           accessibilityState={{ selected }}
                           focusable
-                          hitSlop={touchHitSlop}
                           onPress={() =>
                             updateRequest({
                               workspaceIds: toggleValue(request.workspaceIds, workspace.id),
@@ -1229,7 +1303,7 @@ export function PlanningSurface({
                           <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
                             {workspace.name}
                           </Text>
-                        </Pressable>
+                        </AccessiblePressable>
                       );
                     }}
                     showsHorizontalScrollIndicator={false}
@@ -1246,12 +1320,12 @@ export function PlanningSurface({
                     renderItem={({ item: epic }) => {
                       const selected = selectedEpicIds.includes(epic.id);
                       return (
-                        <Pressable
+                        <AccessiblePressable
+                          accessibilityHint="Toggles this Epic in the engine query"
                           accessibilityLabel={`Filter epic ${epic.key}`}
                           accessibilityRole="button"
                           accessibilityState={{ selected }}
                           focusable
-                          hitSlop={touchHitSlop}
                           onPress={() =>
                             updateRequest({ epicIds: toggleValue(request.epicIds, epic.id) })
                           }
@@ -1260,7 +1334,7 @@ export function PlanningSurface({
                           <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
                             {epic.key}
                           </Text>
-                        </Pressable>
+                        </AccessiblePressable>
                       );
                     }}
                     showsHorizontalScrollIndicator={false}
@@ -1273,6 +1347,7 @@ export function PlanningSurface({
                     <>
                       <Text style={styles.sectionLabel}>Search</Text>
                       <TextInput
+                        accessibilityHint="Press Search to apply this term to the engine query"
                         accessibilityLabel="Search tasks"
                         onChangeText={setSearchDraft}
                         onSubmitEditing={() =>
@@ -1289,12 +1364,12 @@ export function PlanningSurface({
                         {PLANNING_DERIVED_STATES.map((state) => {
                           const selected = snapshot.page.appliedQuery.states.includes(state);
                           return (
-                            <Pressable
+                            <AccessiblePressable
+                              accessibilityHint="Toggles this derived state in the engine query"
                               accessibilityLabel={`Filter state ${stateLabels[state]}`}
                               accessibilityRole="button"
                               accessibilityState={{ selected }}
                               focusable
-                              hitSlop={touchHitSlop}
                               key={state}
                               onPress={() => toggleStateFilter(state)}
                               style={[styles.chip, selected && styles.chipSelected]}
@@ -1302,7 +1377,7 @@ export function PlanningSurface({
                               <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
                                 {state === "done" ? "Done history" : stateLabels[state]}
                               </Text>
-                            </Pressable>
+                            </AccessiblePressable>
                           );
                         })}
                       </View>
@@ -1311,12 +1386,12 @@ export function PlanningSurface({
                         {PLANNING_PRIORITIES.map((priority) => {
                           const selected = snapshot.page.appliedQuery.priorities.includes(priority);
                           return (
-                            <Pressable
+                            <AccessiblePressable
+                              accessibilityHint="Toggles this priority in the engine query"
                               accessibilityLabel={`Filter priority ${priority}`}
                               accessibilityRole="button"
                               accessibilityState={{ selected }}
                               focusable
-                              hitSlop={touchHitSlop}
                               key={priority}
                               onPress={() => updateRequest({ priorities: toggleValue(request.priorities, priority) })}
                               style={[styles.chip, selected && styles.chipSelected]}
@@ -1324,7 +1399,7 @@ export function PlanningSurface({
                               <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
                                 {priority}
                               </Text>
-                            </Pressable>
+                            </AccessiblePressable>
                           );
                         })}
                       </View>
@@ -1333,12 +1408,12 @@ export function PlanningSurface({
                         {snapshot.page.availableLabels.map((label) => {
                           const selected = snapshot.page.appliedQuery.labels.includes(label);
                           return (
-                            <Pressable
+                            <AccessiblePressable
+                              accessibilityHint="Toggles this label in the engine query"
                               accessibilityLabel={`Filter label ${label}`}
                               accessibilityRole="button"
                               accessibilityState={{ selected }}
                               focusable
-                              hitSlop={touchHitSlop}
                               key={label}
                               onPress={() => updateRequest({ labels: toggleValue(request.labels, label) })}
                               style={[styles.chip, selected && styles.chipSelected]}
@@ -1346,7 +1421,7 @@ export function PlanningSurface({
                               <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
                                 {label}
                               </Text>
-                            </Pressable>
+                            </AccessiblePressable>
                           );
                         })}
                       </View>
@@ -1356,14 +1431,14 @@ export function PlanningSurface({
                           const selected =
                             snapshot.page.appliedQuery.attention.includes(code);
                           return (
-                            <Pressable
+                            <AccessiblePressable
+                              accessibilityHint="Toggles this attention reason in the engine query"
                               accessibilityLabel={
                                 `Filter attention ${attentionLabel(code)}`
                               }
                               accessibilityRole="button"
                               accessibilityState={{ selected }}
                               focusable
-                              hitSlop={touchHitSlop}
                               key={code}
                               onPress={() => updateRequest({
                                 attention: toggleValue(request.attention, code),
@@ -1373,7 +1448,7 @@ export function PlanningSurface({
                               <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
                                 {attentionLabel(code)}
                               </Text>
-                            </Pressable>
+                            </AccessiblePressable>
                           );
                         })}
                       </View>
@@ -1382,12 +1457,12 @@ export function PlanningSurface({
                         {snapshot.page.availableSorts.map((sort) => {
                           const selected = snapshot.page.appliedQuery.sort === sort;
                           return (
-                            <Pressable
+                            <AccessiblePressable
+                              accessibilityHint="Applies this engine-supported stable sort"
                               accessibilityLabel={`Sort by ${sortLabels[sort]}`}
                               accessibilityRole="button"
                               accessibilityState={{ selected }}
                               focusable
-                              hitSlop={touchHitSlop}
                               key={sort}
                               onPress={() => updateRequest({ sort })}
                               style={[styles.chip, selected && styles.chipSelected]}
@@ -1395,7 +1470,7 @@ export function PlanningSurface({
                               <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
                                 {sortLabels[sort]}
                               </Text>
-                            </Pressable>
+                            </AccessiblePressable>
                           );
                         })}
                       </View>
@@ -1418,7 +1493,11 @@ export function PlanningSurface({
         ) : null}
         {planning.isPending && !planningOffline ? (
           <View accessibilityLiveRegion="polite" style={styles.live}>
-            <ActivityIndicator color={theme.colors.accent} />
+            {accessibilityPreferences.reduceMotion ? (
+              <Icon color={theme.colors.accent} name="Clock3" size={24} />
+            ) : (
+              <ActivityIndicator color={theme.colors.accent} />
+            )}
             <Text style={styles.liveTitle}>Loading planning data</Text>
           </View>
         ) : null}
@@ -1429,7 +1508,8 @@ export function PlanningSurface({
             <Text style={styles.liveBody}>
               Director Engine did not provide a validated planning snapshot.
             </Text>
-            <Pressable
+            <AccessiblePressable
+              accessibilityHint="Retries only this exact engine query"
               accessibilityLabel={pageCursor === null
                 ? "Try loading planning data again"
                 : "Refresh planning data from the first page"}
@@ -1440,12 +1520,16 @@ export function PlanningSurface({
               <Text style={styles.primaryButtonText}>
                 {pageCursor === null ? "Try again" : "Refresh from first page"}
               </Text>
-            </Pressable>
+            </AccessiblePressable>
           </View>
         ) : null}
         {snapshot && planning.isFetching ? (
           <View accessibilityLiveRegion="polite" style={styles.row}>
-            <ActivityIndicator color={theme.colors.accent} size="small" />
+            {accessibilityPreferences.reduceMotion ? (
+              <Icon color={theme.colors.accent} name="RefreshCw" size={16} />
+            ) : (
+              <ActivityIndicator color={theme.colors.accent} size="small" />
+            )}
             <Text style={styles.muted}>Updating engine snapshot</Text>
           </View>
         ) : null}
@@ -1467,16 +1551,16 @@ export function PlanningSurface({
                 : "The latest planning refresh failed. Tasks below may be stale."}
             </Text>
             {!planningOffline ? (
-              <Pressable
+              <AccessiblePressable
+                accessibilityHint="Retries only this exact engine query"
                 accessibilityLabel="Try refreshing planning data again"
                 accessibilityRole="button"
                 focusable
-                hitSlop={touchHitSlop}
                 onPress={() => void planning.refetch()}
                 style={styles.secondaryButton}
               >
                 <Text style={styles.secondaryButtonText}>Try again</Text>
-              </Pressable>
+              </AccessiblePressable>
             ) : null}
           </View>
         ) : null}
@@ -1503,34 +1587,36 @@ export function PlanningSurface({
           : null}
         {snapshot &&
         (previousCursors.length > 0 || snapshot.page.nextCursor !== null) ? (
-          <View
-            accessibilityLabel={`Task page ${previousCursors.length + 1}`}
-            style={styles.footer}
-          >
-            <Text style={styles.muted}>
+          <View style={styles.footer}>
+            <Text
+              accessibilityLabel={`Task page ${previousCursors.length + 1}`}
+              style={styles.muted}
+            >
               Page {previousCursors.length + 1} · {snapshot.page.totalTasks} matching
               tasks
             </Text>
             <View style={styles.row}>
               {previousCursors.length > 0 ? (
-                <Pressable
+                <AccessiblePressable
+                  accessibilityHint="Returns to the previous engine-bound Task page"
                   accessibilityLabel="Load previous task page"
                   accessibilityRole="button"
                   onPress={openPreviousPage}
                   style={styles.secondaryButton}
                 >
                   <Text style={styles.secondaryButtonText}>Previous</Text>
-                </Pressable>
+                </AccessiblePressable>
               ) : null}
               {snapshot.page.nextCursor !== null ? (
-                <Pressable
+                <AccessiblePressable
+                  accessibilityHint="Loads the next engine-bound Task page"
                   accessibilityLabel="Load next task page"
                   accessibilityRole="button"
                   onPress={openNextPage}
                   style={styles.secondaryButton}
                 >
                   <Text style={styles.secondaryButtonText}>Next</Text>
-                </Pressable>
+                </AccessiblePressable>
               ) : null}
             </View>
           </View>
@@ -1556,12 +1642,16 @@ export function PlanningSurface({
           ) : null}
           {detail.isPending && !detailOffline ? (
             <View accessibilityLiveRegion="polite" style={styles.live}>
-              <ActivityIndicator color={theme.colors.accent} />
+              {accessibilityPreferences.reduceMotion ? (
+                <Icon color={theme.colors.accent} name="Clock3" size={24} />
+              ) : (
+                <ActivityIndicator color={theme.colors.accent} />
+              )}
               <Text style={styles.liveTitle}>Loading task details</Text>
             </View>
           ) : null}
           {detail.isError && !detail.data?.detail ? (
-            <View accessibilityLiveRegion="polite" style={styles.live}>
+            <View accessibilityLiveRegion="assertive" style={styles.live}>
               <Text style={styles.liveTitle}>Task details are unavailable</Text>
               {selectedSummary ? (
                 <View
@@ -1601,7 +1691,7 @@ export function PlanningSurface({
             </Text>
           ) : null}
           {mutation.isError ? (
-            <Text accessibilityLiveRegion="polite" style={styles.danger}>
+            <Text accessibilityLiveRegion="assertive" style={styles.danger}>
               Director Engine rejected the intent
             </Text>
           ) : null}
@@ -1613,5 +1703,6 @@ export function PlanningSurface({
         </Modal.Content>
       </Modal>
     </View>
+    </AccessibilityProvider>
   );
 }
