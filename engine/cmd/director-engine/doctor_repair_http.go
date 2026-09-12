@@ -80,14 +80,6 @@ func decodeClosedJSON(request *http.Request, output any) error {
 	return nil
 }
 
-func writePlanningJSON(response http.ResponseWriter, contractVersion, contractHash string, value any) {
-	response.Header().Set("Cache-Control", "no-store")
-	response.Header().Set("Content-Type", "application/json")
-	response.Header().Set(contractVersionHeader, contractVersion)
-	response.Header().Set(contractHashHeader, contractHash)
-	_ = json.NewEncoder(response).Encode(value)
-}
-
 func validPlanningRequest(request *http.Request, version, hash string) bool {
 	return request.Header.Get("Content-Type") == "application/json" &&
 		request.Header.Get(contractVersionHeader) == version && request.Header.Get(contractHashHeader) == hash
@@ -126,7 +118,7 @@ func (handler *doctorHandler) ServeHTTP(response http.ResponseWriter, request *h
 		}
 		return
 	}
-	writePlanningJSON(response, handler.contractVersion, handler.contractHash, report)
+	writePlanningJSON(response, handler.contractVersion, handler.contractHash, report, true)
 }
 
 func (handler *repairHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -169,5 +161,5 @@ func (handler *repairHandler) ServeHTTP(response http.ResponseWriter, request *h
 		}
 		return
 	}
-	writePlanningJSON(response, handler.contractVersion, handler.contractHash, result)
+	writePlanningJSON(response, handler.contractVersion, handler.contractHash, result, true)
 }

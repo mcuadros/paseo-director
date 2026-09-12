@@ -78,7 +78,7 @@ func (handler *operationsHandler) ServeHTTP(response http.ResponseWriter, reques
 		operationsFailure(response, err, "OPERATIONS_INPUT_INVALID")
 		return
 	}
-	writePlanningJSON(response, handler.contractVersion, handler.contractHash, report)
+	writePlanningJSON(response, handler.contractVersion, handler.contractHash, report, true)
 }
 
 func (handler *operationsMutationHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -110,5 +110,5 @@ func (handler *operationsMutationHandler) ServeHTTP(response http.ResponseWriter
 		operationsFailure(response, err, "OPERATIONS_MUTATION_INPUT_INVALID")
 		return
 	}
-	writePlanningJSON(response, handler.contractVersion, handler.contractHash, result)
+	writePlanningJSON(response, handler.contractVersion, handler.contractHash, result, true)
 }

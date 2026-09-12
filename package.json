@@ -18,7 +18,7 @@
     "build:engine": "go -C engine build -trimpath -buildvcs=false ./...",
     "check:real-incident-corpus": "node tools/ci/real-incident-corpus-check.mjs",
     "ci": "npm run format:check && npm run lint && npm run contract:check && npm run architecture:check && npm run build && npm run test:engine && npm run test:host && npm run smoke && npm run test:baseline",
-    "contract:check": "node --test tools/ci/contract-check.test.mjs && node tools/ci/contract-check.mjs",
+    "contract:check": "node --test tools/ci/contract-check.test.mjs && node tools/ci/contract-check.mjs && npm run threat-model:check",
     "contract:generate": "go -C engine run ./cmd/generate-host-client --schema ports/host/host-interface.v1.json --output ../generated/host-contract.shared.ts && go -C engine run ./cmd/generate-planning-client --schema ports/planning/planning-surface.v1.json --output ../generated/planning-contract.shared.ts && go -C engine run ./cmd/generate-agent-mcp-client --schema domain/agentbridge/schemas/director-agent-mcp.v1.json --output ../generated/agent-mcp-contract.shared.ts",
     "engine:check": "node tools/ci/engine-independence.mjs",
     "format:check": "node tools/ci/scaffold-check.mjs format",
@@ -28,6 +28,7 @@
     "test:baseline": "node tools/spikes/dir-m0.10/effect-contract.mjs && node tools/spikes/dir-m0.10/guard-mutations.mjs && node tools/spikes/dir-m0.6/worktree-ownership.mjs --state-fsync-fixture && node tools/spikes/dir-m0.7/github-delivery.mjs --self-test && node docs/evidence/m0.14/practical-boundary-contract.mjs && node tools/spikes/dir-m0.17/ignored-tree-policy.mjs --timeout-probe",
     "test:engine": "go -C engine test ./...",
     "test:host": "node --experimental-strip-types --test tests/*.test.ts && node --test tools/ci/scaffold-check.test.mjs tools/coordinator/*.test.mjs",
+    "threat-model:check": "node --test tools/ci/threat-model-check.test.mjs tools/ci/credential-fixture-check.test.mjs && node tools/ci/threat-model-check.mjs && node tools/ci/credential-fixture-check.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

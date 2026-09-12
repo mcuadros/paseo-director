@@ -17,11 +17,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   checkWorkflowContract,
   checkWorkflowSet,
+  enginePackageInventoryErrors,
   formatErrors,
   hostSourceErrors,
   lintRepository,
@@ -69,8 +70,91 @@ function trackedRepositoryCopy(prefix) {
   return temporaryRoot;
 }
 
+async function loadMutatedScaffoldCheck(mutate) {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "director-scaffold-mutant-"));
+  const source = readFileSync(
+    resolve(repositoryRoot, "tools/ci/scaffold-check.mjs"),
+    "utf8",
+  );
+  const mutated = mutate(source);
+  assert.notEqual(mutated, source, "mutation must change the scaffold checker");
+  const destination = resolve(temporaryRoot, "scaffold-check.mjs");
+  writeFileSync(destination, mutated, { mode: 0o600 });
+  return {
+    checker: await import(pathToFileURL(destination).href),
+    temporaryRoot,
+  };
+}
+
 test("the maintained scaffold and workflow satisfy their contracts", () => {
   assert.deepEqual(lintRepository(repositoryRoot).errors, []);
+});
+
+test("scaffold inventory admits only the exact credential fixture package", () => {
+  const exact = "engine/internal/testkit/secretfixture/canary.go";
+  assert.deepEqual(enginePackageInventoryErrors([exact]), []);
+
+  const rejected = [
+    "engine/internal/testkit/secretfixtures/canary.go",
+    "engine/internal/testkit/secretfixture/runtime/canary.go",
+    "engine/internal/testkit/secretfixture-product/canary.go",
+    "engine/internal/runtime/secretfixture.go",
+  ];
+  assert.deepEqual(enginePackageInventoryErrors(rejected), [
+    `engine scaffold contains an unclassified product package: ${rejected.join(", ")}`,
+  ]);
+});
+
+test("copied repository retains exact fixture admission and rejects neighboring runtime packages", () => {
+  const temporaryRoot = trackedRepositoryCopy("director-scaffold-fixture-boundary-");
+  const rejected = [
+    "engine/internal/testkit/secretfixtures/canary.go",
+    "engine/internal/testkit/secretfixture/runtime/canary.go",
+  ];
+  try {
+    assert.deepEqual(lintRepository(temporaryRoot).errors, []);
+    for (const path of rejected) {
+      const absolute = resolve(temporaryRoot, path);
+      mkdirSync(dirname(absolute), { recursive: true });
+      writeFileSync(absolute, "package runtime\n", { mode: 0o600 });
+    }
+    assert.ok(
+      lintRepository(temporaryRoot).errors.includes(
+        `engine scaffold contains an unclassified product package: ${rejected.toSorted().join(", ")}`,
+      ),
+    );
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("scaffold inventory mutations cannot omit or broaden the exact fixture boundary", async () => {
+  const exact = "engine/internal/testkit/secretfixture/canary.go";
+  const neighboring = "engine/internal/testkit/secretfixtures/canary.go";
+  const expected = [
+    `engine scaffold contains an unclassified product package: ${neighboring}`,
+  ];
+  const mutations = [
+    (source) => source.replace(
+      '  "engine/internal/testkit/secretfixture",\n',
+      "",
+    ),
+    (source) => source.replace(
+      "!ENGINE_ALLOWED_PACKAGE_DIRECTORIES.has(\n        path.slice(0, path.lastIndexOf(\"/\")),\n      )",
+      "![...ENGINE_ALLOWED_PACKAGE_DIRECTORIES].some((directory) => path.startsWith(directory.slice(0, directory.lastIndexOf(\"/\"))))",
+    ),
+  ];
+  for (const mutate of mutations) {
+    const { checker, temporaryRoot } = await loadMutatedScaffoldCheck(mutate);
+    try {
+      assert.notDeepEqual(
+        checker.enginePackageInventoryErrors([exact, neighboring]),
+        expected,
+      );
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  }
 });
 
 test("workflow coverage rejects pull-request, main, path, and event filters", () => {

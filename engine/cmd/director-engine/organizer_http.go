@@ -199,9 +199,8 @@ func (handler *organizerBootstrapHandler) ServeHTTP(response http.ResponseWriter
 		}
 		return
 	}
-	response.Header().Set("Cache-Control", "no-store")
-	response.Header().Set("Content-Type", "application/json")
-	response.Header().Set(contractVersionHeader, handler.contractVersion)
-	response.Header().Set(contractHashHeader, handler.contractHash)
-	_ = json.NewEncoder(response).Encode(result)
+	// The Organizer result intentionally returns the exact repository selected
+	// by the local owner. It still receives the universal credential scan, while
+	// private-path output remains confined to this one explicit contract.
+	writePlanningJSON(response, handler.contractVersion, handler.contractHash, result, false)
 }

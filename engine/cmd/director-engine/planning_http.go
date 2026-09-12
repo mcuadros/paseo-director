@@ -12,6 +12,7 @@ import (
 
 	"github.com/mcuadros/director-engine/application/board"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
+	"github.com/mcuadros/director-engine/domain/safedata"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 	"github.com/mcuadros/director-engine/projection"
 )
@@ -112,18 +113,34 @@ func (handler *planningHandler) ServeHTTP(response http.ResponseWriter, request 
 		}
 		return
 	}
+	writePlanningJSON(response, handler.contractVersion, handler.contractHash, snapshot, true)
+}
+
+func encodeSafeBoundaryJSON(value any, maximumBytes int, rejectPrivatePaths bool) ([]byte, bool) {
 	var encoded bytes.Buffer
 	encoder := json.NewEncoder(&encoded)
 	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(snapshot); err != nil || encoded.Len() > planningport.MaximumResponseBytes {
-		writePlanningError(response, http.StatusServiceUnavailable, "PLANNING_UNAVAILABLE")
-		return
+	if encoder.Encode(value) != nil || encoded.Len() > maximumBytes ||
+		safedata.ClassifyJSON(encoded.Bytes(), safedata.ScanRules{
+			MaximumBytes: maximumBytes, RejectPrivatePaths: rejectPrivatePaths, RejectSensitiveKeys: true,
+		}) != safedata.Safe {
+		return nil, false
+	}
+	return encoded.Bytes(), true
+}
+
+func writePlanningJSON(response http.ResponseWriter, contractVersion, contractHash string, value any, rejectPrivatePaths bool) bool {
+	encoded, safe := encodeSafeBoundaryJSON(value, planningport.MaximumResponseBytes, rejectPrivatePaths)
+	if !safe {
+		writePlanningError(response, http.StatusServiceUnavailable, "PLANNING_OUTPUT_UNSAFE")
+		return false
 	}
 	response.Header().Set("Cache-Control", "no-store")
 	response.Header().Set("Content-Type", "application/json")
-	response.Header().Set(contractVersionHeader, handler.contractVersion)
-	response.Header().Set(contractHashHeader, handler.contractHash)
-	_, _ = response.Write(encoded.Bytes())
+	response.Header().Set(contractVersionHeader, contractVersion)
+	response.Header().Set(contractHashHeader, contractHash)
+	_, _ = response.Write(encoded)
+	return true
 }
 
 func writePlanningError(response http.ResponseWriter, status int, code string) {

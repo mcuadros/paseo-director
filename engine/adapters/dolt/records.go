@@ -27,6 +27,7 @@ import (
 	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
+	"github.com/mcuadros/director-engine/domain/safedata"
 	validationdomain "github.com/mcuadros/director-engine/domain/validation"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 )
@@ -177,6 +178,8 @@ func validateProject(project domain.Project) error {
 		organizer.HumanActorID == "" || !utf8.ValidString(organizer.HumanActorID) ||
 		organizer.HumanActorID != strings.TrimSpace(organizer.HumanActorID) ||
 		strings.IndexFunc(organizer.HumanActorID, unicode.IsControl) >= 0 || len(organizer.HumanActorID) > 256 ||
+		safedata.ClassifyText(organizer.RepositoryPath, false) != safedata.Safe ||
+		safedata.ClassifyText(organizer.HumanActorID, true) != safedata.Safe ||
 		len(organizer.ConfigurationSHA256) != 64 || !validGitObjectID(organizer.ConfigurationSHA256) {
 		return fmt.Errorf("%w: invalid Organizer identity", storeport.ErrInvalidRecord)
 	}
@@ -188,8 +191,9 @@ func validateProject(project domain.Project) error {
 		if organizer.Mode != domain.OrganizerModeCreate || len(organizer.PendingConfiguration) == 0 || project.State != "paused" {
 			return fmt.Errorf("%w: invalid pending Organizer", storeport.ErrInvalidRecord)
 		}
-		var pending any
-		if err := json.Unmarshal(organizer.PendingConfiguration, &pending); err != nil {
+		pending, err := domainconfig.Parse(organizer.PendingConfiguration)
+		if err != nil || pending.SHA256() != organizer.ConfigurationSHA256 ||
+			!bytes.Equal(pending.CanonicalJSON(), organizer.PendingConfiguration) {
 			return fmt.Errorf("%w: invalid pending Organizer configuration", storeport.ErrInvalidRecord)
 		}
 		if organizer.Phase == domain.OrganizerPhaseRevisionCommitted {

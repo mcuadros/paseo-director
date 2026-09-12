@@ -15,6 +15,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain/execution"
 	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 const (
@@ -174,7 +175,8 @@ func ProjectLeaseObservationID(observation ProjectLeaseObservation) string {
 
 func boundedIdentity(value string, maximum int) bool {
 	return len(value) > 0 && len(value) <= maximum && utf8.ValidString(value) &&
-		value == strings.TrimSpace(value) && strings.IndexFunc(value, unicode.IsControl) < 0
+		value == strings.TrimSpace(value) && strings.IndexFunc(value, unicode.IsControl) < 0 &&
+		safedata.ClassifyText(value, true) == safedata.Safe
 }
 
 func boundedDisplayName(value string) bool {
@@ -232,7 +234,7 @@ func validCanonicalPath(value string) bool {
 	return len(value) >= 2 && len(value) <= repositorydomain.MaximumPathBytes && filepath.IsAbs(value) &&
 		filepath.Clean(value) == value && strings.IndexFunc(value, func(r rune) bool {
 		return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.In(r, unicode.Cf)
-	}) < 0
+	}) < 0 && safedata.ClassifyText(value, false) == safedata.Safe
 }
 
 func validGitBranch(value string) bool {

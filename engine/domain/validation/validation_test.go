@@ -5,6 +5,8 @@ package validation
 import (
 	"strings"
 	"testing"
+
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 )
 
 func validationFixture(t *testing.T) (Binding, Policy, WorkflowScan, CheckScan, StatusScan) {
@@ -140,7 +142,7 @@ func TestPendingFailedTimedOutAndRedactedIdentities(t *testing.T) {
 	if result := Evaluate(binding, policy, workflows, checks, statuses, strings.Repeat("6", 64), strings.Repeat("7", 64), before, after, 300); result.Code != CodeTimedOut || result.Outcome != OutcomeTimedOut {
 		t.Fatalf("timeout = %#v", result)
 	}
-	checks.Checks[0].Name = "token=github_pat_abcdefghijklmnop"
+	checks.Checks[0].Name = "token=" + secretfixture.GitHubFineGrainedLetters()
 	checks = SealCheckScan(checks)
 	if result := Evaluate(binding, policy, workflows, checks, statuses, strings.Repeat("6", 64), strings.Repeat("7", 64), before, after, 300); result.Code != CodeResponseUnknown || result.Evidence != nil {
 		t.Fatalf("secret check = %#v", result)

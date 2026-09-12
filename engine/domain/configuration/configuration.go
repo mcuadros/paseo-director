@@ -25,6 +25,7 @@ import (
 
 	"github.com/mcuadros/director-engine/domain/jsondocument"
 	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 const (
@@ -49,7 +50,6 @@ var embeddedSchema []byte
 var (
 	identifierPattern  = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 	tokenPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
-	secretShapePattern = regexp.MustCompile(`(?i)(?:github_pat_|gh[pousr]_|sk-)[A-Za-z0-9_-]{16,}|(?:password|secret|token|credential|authorization)\s*[:=]\s*\S+`)
 	githubActorPattern = regexp.MustCompile(`^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})|[A-Za-z0-9][A-Za-z0-9-]{0,38}\[bot\])$`)
 )
 
@@ -855,7 +855,7 @@ func validateGitHubCI(path string, configuration *GitHubCI, budget RunBudget, de
 	if configuration.WorkflowID <= 0 {
 		*issues = append(*issues, issue("github_ci_workflow_invalid", path+".workflowId", "workflow database ID must be positive"))
 	}
-	if !validBoundedName(configuration.WorkflowName, 200) || secretShapePattern.MatchString(configuration.WorkflowName) {
+	if !validBoundedName(configuration.WorkflowName, 200) || safedata.ContainsSecret(configuration.WorkflowName) {
 		*issues = append(*issues, issue("github_ci_workflow_invalid", path+".workflowName", "workflow name must be bounded, trimmed, and non-secret"))
 	}
 	if configuration.CycleRuntimeSeconds < 1 || configuration.CycleRuntimeSeconds > 21_600 ||
@@ -883,7 +883,7 @@ func validateGitHubCI(path string, configuration *GitHubCI, budget RunBudget, de
 			*issues = append(*issues, issue("github_ci_check_provider_duplicate", base, "provider-bound check identity must be unique"))
 		}
 		providers[provider] = struct{}{}
-		if !validBoundedName(check.Name, 200) || secretShapePattern.MatchString(check.Name) {
+		if !validBoundedName(check.Name, 200) || safedata.ContainsSecret(check.Name) {
 			*issues = append(*issues, issue("github_ci_check_invalid", base+".name", "check name must be bounded, trimmed, and non-secret"))
 		}
 		switch check.Kind {
@@ -1097,6 +1097,11 @@ func Parse(input []byte) (Document, error) {
 	}
 	if err := validate(value); err != nil {
 		return Document{}, err
+	}
+	if safedata.ClassifyJSON(canonical, safedata.ScanRules{
+		MaximumBytes: MaximumCanonicalDocumentBytes, RejectSensitiveKeys: true,
+	}) == safedata.Secret {
+		return Document{}, invalidDocument("secret_value_unsupported", "configuration cannot contain credential material")
 	}
 	digest := sha256.Sum256(canonical)
 	return Document{

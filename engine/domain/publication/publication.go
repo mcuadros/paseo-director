@@ -16,6 +16,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 const (
@@ -38,8 +40,6 @@ var (
 	digestPattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	gitOIDPattern     = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 	riskPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$`)
-	secretPattern     = regexp.MustCompile(`(?i)(?:-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|(?:password|secret|token|credential|authorization)\s*[:=]\s*\S+)`)
-	privatePath       = regexp.MustCompile(`(?:^|[[:space:]` + "`" + `'(])/(?:home|tmp|var/tmp|run/user|root)(?:/|[[:space:]` + "`" + `')])`)
 )
 
 func digest(value any) string {
@@ -222,8 +222,8 @@ func TemplateSHA256(value Template) string { return digest(templateValue(value))
 
 func safePublicText(value string, maximum int) bool {
 	return value != "" && len(value) <= maximum && utf8.ValidString(value) && value == strings.TrimSpace(value) &&
-		strings.IndexFunc(value, unicode.IsControl) < 0 && !secretPattern.MatchString(value) &&
-		!privatePath.MatchString(value) && !strings.Contains(value, "<!--")
+		strings.IndexFunc(value, unicode.IsControl) < 0 && !safedata.ContainsSecret(value) &&
+		!safedata.ContainsPrivatePath(value) && !strings.Contains(value, "<!--")
 }
 
 // RenderTemplate produces the one canonical title/body layout. Risk input is
@@ -261,7 +261,7 @@ func RenderTemplate(binding Binding, policy Policy, taskTitle, reviewStatus, rev
 		binding.CandidateSHA, binding.BaseSHA, binding.TreeSHA, binding.ManifestSHA256,
 		reviewText, validationText, binding.TaskID, binding.RunID, binding.Branch, riskText,
 		policy.RollbackDescription, Marker(binding))
-	if len(body) > MaximumBodyBytes || secretPattern.MatchString(body) || privatePath.MatchString(body) {
+	if len(body) > MaximumBodyBytes || safedata.ContainsSecret(body) || safedata.ContainsPrivatePath(body) {
 		return Template{}, false
 	}
 	value := Template{Title: title, Body: body, ReviewStatus: reviewStatus, ReviewEvidenceID: reviewID,
@@ -272,7 +272,7 @@ func RenderTemplate(binding Binding, policy Policy, taskTitle, reviewStatus, rev
 
 func ValidTemplate(value Template, binding Binding, policy Policy) bool {
 	if len(value.Body) == 0 || len(value.Body) > MaximumBodyBytes || !safePublicText(value.Title, 256) ||
-		secretPattern.MatchString(value.Body) || privatePath.MatchString(value.Body) || value.SHA256 != TemplateSHA256(value) ||
+		safedata.ContainsSecret(value.Body) || safedata.ContainsPrivatePath(value.Body) || value.SHA256 != TemplateSHA256(value) ||
 		!strings.HasSuffix(value.Body, Marker(binding)+"\n") {
 		return false
 	}

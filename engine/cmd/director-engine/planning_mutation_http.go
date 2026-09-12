@@ -165,14 +165,16 @@ func planningMutationActor(request *http.Request) (execution.AuthenticatedContro
 	}
 	headers := definition.MutationActorHeaders
 	if len(request.Header.Values(headers.Kind)) != 1 || len(request.Header.Values(headers.ID)) != 1 ||
-		len(request.Header.Values(headers.Session)) != 1 || request.Header.Get(headers.Kind) != "human" {
+		len(request.Header.Values(headers.Session)) != 1 || !planningport.ValidMutationActor(
+		request.Header.Get(headers.Kind), request.Header.Get(headers.ID), request.Header.Get(headers.Session),
+	) {
 		return execution.AuthenticatedControlActor{}, false
 	}
 	actor := execution.AuthenticatedControlActor{
 		Kind: domainexecution.ControlActorHuman, ID: request.Header.Get(headers.ID),
 		SessionID: request.Header.Get(headers.Session), Source: "server", Authenticated: true,
 	}
-	return actor, actor.ID != "" && actor.SessionID != ""
+	return actor, true
 }
 
 func (handler *planningMutationHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -206,9 +208,5 @@ func (handler *planningMutationHandler) ServeHTTP(response http.ResponseWriter, 
 		writePlanningError(response, http.StatusServiceUnavailable, "PLANNING_UNAVAILABLE")
 		return
 	}
-	response.Header().Set("Cache-Control", "no-store")
-	response.Header().Set("Content-Type", "application/json")
-	response.Header().Set(contractVersionHeader, handler.contractVersion)
-	response.Header().Set(contractHashHeader, handler.contractHash)
-	_ = json.NewEncoder(response).Encode(result)
+	writePlanningJSON(response, handler.contractVersion, handler.contractHash, result, true)
 }

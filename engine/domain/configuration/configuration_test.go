@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 )
 
 type configurationRemoteLengthCase struct {
@@ -257,7 +258,7 @@ func TestGitHubCIConfigurationFreezesWorkflowProviderIdentityAndFourCycleLimit(t
 	}
 	for _, mutation := range [][]byte{
 		bytes.Replace(configured, []byte(`"ciCycles": 4`), []byte(`"ciCycles": 5`), 1),
-		bytes.Replace(configured, []byte(`"name":"Linux CI"`), []byte(`"name":"token=github_pat_abcdefghijklmnop"`), 1),
+		bytes.Replace(configured, []byte(`"name":"Linux CI"`), []byte(`"name":"token=`+secretfixture.GitHubFineGrainedLetters()+`"`), 1),
 		bytes.Replace(configured, []byte(`"appId":15368`), []byte(`"creatorId":15368`), 1),
 	} {
 		if _, err := Parse(mutation); err == nil {

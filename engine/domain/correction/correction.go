@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mcuadros/director-engine/domain/candidate"
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 const (
@@ -34,7 +35,6 @@ var (
 	digestPattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	gitOIDPattern     = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 	uuidPattern       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-	secretPattern     = regexp.MustCompile(`(?i)(?:-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|(?:password|secret|token|credential)\s*[:=]\s*\S+)`)
 )
 
 type Source string
@@ -140,7 +140,7 @@ func digest(value any) string {
 
 func validText(value string, maximum int) bool {
 	return value != "" && len(value) <= maximum && utf8.ValidString(value) && value == strings.TrimSpace(value) &&
-		strings.IndexFunc(value, unicode.IsControl) < 0 && !secretPattern.MatchString(value) &&
+		strings.IndexFunc(value, unicode.IsControl) < 0 && !safedata.ContainsSecret(value) &&
 		!strings.HasPrefix(value, "/") && !strings.Contains(value, "../")
 }
 

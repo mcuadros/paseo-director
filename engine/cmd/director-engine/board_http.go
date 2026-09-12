@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -79,10 +78,8 @@ func (handler *boardHandler) ServeHTTP(response http.ResponseWriter, request *ht
 		writeBoardError(response, http.StatusServiceUnavailable, "BOARD_UNAVAILABLE")
 		return
 	}
-	var encoded bytes.Buffer
-	encoder := json.NewEncoder(&encoded)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(snapshot); err != nil || encoded.Len() > boardContract.MaximumBytes {
+	encoded, safe := encodeSafeBoundaryJSON(snapshot, boardContract.MaximumBytes, true)
+	if !safe {
 		writeBoardError(response, http.StatusServiceUnavailable, "BOARD_UNAVAILABLE")
 		return
 	}
@@ -90,7 +87,7 @@ func (handler *boardHandler) ServeHTTP(response http.ResponseWriter, request *ht
 	response.Header().Set("Content-Type", "application/json")
 	response.Header().Set(contractVersionHeader, handler.descriptor.ContractVersion)
 	response.Header().Set(contractHashHeader, handler.descriptor.ContractHash)
-	_, _ = response.Write(encoded.Bytes())
+	_, _ = response.Write(encoded)
 }
 
 func writeBoardError(response http.ResponseWriter, status int, code string) {

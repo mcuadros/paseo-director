@@ -18,6 +18,7 @@ const TESTKIT_IMPORTS = new Set([
   `${ENGINE_MODULE}/internal/testkit/configoracle`,
   `${ENGINE_MODULE}/internal/testkit/scheduleroracle`,
   `${ENGINE_MODULE}/internal/testkit/executionoracle`,
+  `${ENGINE_MODULE}/internal/testkit/secretfixture`,
 ]);
 const TESTKIT_RELATIVE_PATHS = new Set(
   [...TESTKIT_IMPORTS].map((path) => path.slice(ENGINE_MODULE.length + 1)),

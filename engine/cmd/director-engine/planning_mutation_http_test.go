@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	executionapp "github.com/mcuadros/director-engine/application/execution"
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 )
 
@@ -133,5 +135,24 @@ func TestPlanningControlHTTPRejectsCallerAuthorshipFields(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("missing server actor response = %d %s", response.Code, response.Body.String())
+	}
+	for _, actor := range [][3]string{
+		{"model", "server-owner", "server-session"},
+		{"human", secretfixture.GitHubFineGrained(), "server-session"},
+		{"human", "/home/owner", "server-session"},
+		{"human", "server-owner", "server session"},
+	} {
+		request = httptest.NewRequest(http.MethodPost, planningport.MutationPath, bytes.NewReader(validBody))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set(contractVersionHeader, definition.ContractVersion)
+		request.Header.Set(contractHashHeader, hash)
+		request.Header.Set(definition.MutationActorHeaders.Kind, actor[0])
+		request.Header.Set(definition.MutationActorHeaders.ID, actor[1])
+		request.Header.Set(definition.MutationActorHeaders.Session, actor[2])
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized || strings.Contains(response.Body.String(), actor[1]) {
+			t.Fatalf("forged actor response = %d %s", response.Code, response.Body.String())
+		}
 	}
 }

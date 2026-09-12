@@ -13,6 +13,7 @@ import (
 	domainintegration "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 	githubport "github.com/mcuadros/director-engine/ports/github"
 )
 
@@ -331,7 +332,7 @@ func TestChecksConnectorUsesExactCandidateIdentityAndBoundedPages(t *testing.T) 
 
 func TestChecksConnectorRedactsSecretShapedProviderNames(t *testing.T) {
 	sha := strings.Repeat("b", 40)
-	runner := &queuedRunner{results: []Result{{Started: true, Stdout: includedJSON(`{"total_count":1,"check_runs":[{"id":600,"name":"token=github_pat_abcdefghijklmnop","head_sha":"`+sha+`","status":"completed","conclusion":"success","details_url":"https://example.invalid","started_at":"2026-09-11T00:00:00Z","completed_at":"2026-09-11T00:01:00Z","check_suite":{"id":700,"head_sha":"`+sha+`"},"app":{"id":15368,"slug":"github-actions"}}]}`, 5_000)}}}
+	runner := &queuedRunner{results: []Result{{Started: true, Stdout: includedJSON(`{"total_count":1,"check_runs":[{"id":600,"name":"token=`+secretfixture.GitHubFineGrainedLetters()+`","head_sha":"`+sha+`","status":"completed","conclusion":"success","details_url":"https://example.invalid","started_at":"2026-09-11T00:00:00Z","completed_at":"2026-09-11T00:01:00Z","check_suite":{"id":700,"head_sha":"`+sha+`"},"app":{"id":15368,"slug":"github-actions"}}]}`, 5_000)}}}
 	page, err := NewWithRunner(runner).ListCheckRuns(context.Background(), githubport.CandidatePageRequest{Owner: "example", Name: "product", RepositoryID: 123, CandidateSHA: sha, Page: 1, PageSize: 100, TaskStoreNowMillis: 1_000})
 	if err != nil || page.Code != domainvalidation.CodeRedactionFailure || len(page.Checks) != 0 || strings.Contains(fmt.Sprintf("%#v", page), "github_pat_") {
 		t.Fatalf("redacted page = %#v, %v", page, err)

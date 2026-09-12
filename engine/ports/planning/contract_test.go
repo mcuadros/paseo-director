@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 )
 
 func TestEmbeddedPlanningContract(t *testing.T) {
@@ -135,6 +137,34 @@ func TestHomeAndOrganizerBootstrapValidationStayHostBoundAndClosed(t *testing.T)
 			if _, present := typeOf.FieldByName(forbidden); present {
 				t.Fatalf("%s exposes caller-authored %s", typeOf.Name(), forbidden)
 			}
+		}
+	}
+}
+
+func TestPlanningIngressRejectsCredentialPathsAndForgedActorShapes(t *testing.T) {
+	secret := secretfixture.GitHubFineGrained()
+	query := QueryInput{WorkspaceIDs: []string{}, EpicIDs: []string{}, States: []string{}, Priorities: []string{},
+		Labels: []string{}, Attention: []string{}, Sort: "scheduler_order", PageSize: 1, Search: &secret}
+	if ValidateQuery(query) == nil {
+		t.Fatal("credential-bearing planning search was accepted")
+	}
+	privatePath := "/home/owner/private"
+	query.Search = &privatePath
+	if ValidateQuery(query) == nil {
+		t.Fatal("private-path planning search was accepted")
+	}
+	if !ValidMutationActor("human", "local-project-owner", "paseo-connector-42") {
+		t.Fatal("valid server actor was rejected")
+	}
+	for _, actor := range [][3]string{
+		{"model", "local-project-owner", "paseo-connector-42"},
+		{"human", secretfixture.GitHubFineGrained(), "paseo-connector-42"},
+		{"human", "/home/owner", "paseo-connector-42"},
+		{"human", "local owner", "paseo-connector-42"},
+		{"human", "local-project-owner", ""},
+	} {
+		if ValidMutationActor(actor[0], actor[1], actor[2]) {
+			t.Fatalf("forged actor was accepted: %#v", actor)
 		}
 	}
 }

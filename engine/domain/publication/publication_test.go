@@ -5,6 +5,8 @@ package publication
 import (
 	"strings"
 	"testing"
+
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 )
 
 func testBinding(candidate string) Binding {
@@ -59,7 +61,7 @@ func TestTemplateIsDeterministicBoundedAndRejectsSecretsOrPrivatePaths(t *testin
 	if !ok || !again || !ValidTemplate(first, binding, policy) || first.SHA256 != second.SHA256 || first.Body != second.Body {
 		t.Fatal("template was not deterministic")
 	}
-	for _, forbidden := range []string{"github_pat_abcdefghijklmnop", "/tmp/private-evidence", "/home/operator/control.json"} {
+	for _, forbidden := range []string{secretfixture.GitHubFineGrainedLetters(), "/tmp/private-evidence", "/home/operator/control.json"} {
 		if _, accepted := RenderTemplate(binding, policy, "publish "+forbidden, "pending", "", "pending", "", nil); accepted {
 			t.Fatalf("unsafe public text %q was accepted", forbidden)
 		}

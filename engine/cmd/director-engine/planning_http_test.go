@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 	"github.com/mcuadros/director-engine/projection"
 )
@@ -124,5 +125,22 @@ func TestPlanningHandlerClassifiesCursorAndRedactsFailures(t *testing.T) {
 	}
 	if bytes.Contains(recorder.Body.Bytes(), []byte(strings.Repeat("x", 128))) {
 		t.Fatal("oversize planning response leaked its body")
+	}
+}
+
+func TestPlanningHandlerSuppressesCredentialAndPrivatePathOutput(t *testing.T) {
+	for _, canary := range []string{"token=" + secretfixture.GitHubFineGrained(), "/tmp/director/private-evidence"} {
+		reader := &planningReaderStub{snapshot: planningport.Snapshot{Page: planningport.Page{
+			Projects: []planningport.ProjectSummary{{Name: canary}},
+		}}}
+		recorder := httptest.NewRecorder()
+		newPlanningHandler(reader).ServeHTTP(recorder, planningRequest(t, validPlanningQuery))
+		if recorder.Code != http.StatusServiceUnavailable || recorder.Body.String() != "{\"code\":\"PLANNING_OUTPUT_UNSAFE\"}\n" ||
+			strings.Contains(recorder.Body.String(), canary) {
+			t.Fatalf("unsafe output response = %d %q", recorder.Code, recorder.Body.String())
+		}
+	}
+	if encoded, safe := encodeSafeBoundaryJSON(map[string]string{"password": "opaque-value"}, planningport.MaximumResponseBytes, true); safe || encoded != nil {
+		t.Fatal("sensitive output key crossed the planning boundary")
 	}
 }

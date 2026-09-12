@@ -15,12 +15,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/mcuadros/director-engine/domain/jsondocument"
+	"github.com/mcuadros/director-engine/domain/safedata"
 )
 
 var (
 	commandTokenPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$`)
-	secretValuePattern  = regexp.MustCompile(`(?i)(?:-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|github_pat_[A-Za-z0-9_]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|(?:password|secret|token|credential)\s*[:=]\s*\S+)`)
-	privatePathPattern  = regexp.MustCompile(`(?:^|[[:space:]])/(?:home|root|tmp|etc|var|run|proc|sys)(?:/|[[:space:]]|$)`)
 	helperCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
@@ -65,31 +64,13 @@ func uniqueBounded(values []string, maximumCount, maximumLength int, minimumCoun
 }
 
 func inspectSafeValue(value any) InputCode {
-	switch current := value.(type) {
-	case map[string]any:
-		for key, child := range current {
-			if secretValuePattern.MatchString(key) {
-				return InputSecret
-			}
-			if code := inspectSafeValue(child); code != "" {
-				return code
-			}
-		}
-	case []any:
-		for _, child := range current {
-			if code := inspectSafeValue(child); code != "" {
-				return code
-			}
-		}
-	case string:
-		if secretValuePattern.MatchString(current) {
-			return InputSecret
-		}
-		trimmed := strings.TrimSpace(current)
-		if strings.HasPrefix(trimmed, "/") || privatePathPattern.MatchString(trimmed) || strings.Contains(trimmed, `:\`) ||
-			strings.Contains(trimmed, "../") || strings.Contains(trimmed, "..\\") {
-			return InputPrivatePath
-		}
+	switch safedata.ClassifyValue(value, safedata.ScanRules{RejectPrivatePaths: true, RejectSensitiveKeys: true}) {
+	case safedata.Secret:
+		return InputSecret
+	case safedata.PrivatePath:
+		return InputPrivatePath
+	case safedata.Invalid:
+		return InputInvalid
 	}
 	return ""
 }
