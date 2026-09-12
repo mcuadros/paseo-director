@@ -201,7 +201,9 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 	}
 	handler := http.NewServeMux()
 	handler.Handle(boardQueryPath, newBoardHandler(board.NewReader(store)))
-	handler.Handle(planningport.QueryPath, newPlanningHandler(board.NewPlanningReader(store)))
+	planningReader := board.NewPlanningReader(store)
+	handler.Handle(planningport.QueryPath, newPlanningHandler(planningReader))
+	handler.Handle(planningport.TaskDetailQueryPath, newTaskDetailHandler(planningReader, *hostID))
 	startedAt := time.Now().UnixNano()
 	instanceDigest := sha256.Sum256([]byte(*hostID + "\x1f" + strconv.Itoa(os.Getpid()) + "\x1f" + strconv.FormatInt(startedAt, 10)))
 	now := func() int64 { return time.Now().UnixMilli() }

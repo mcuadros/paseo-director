@@ -201,6 +201,7 @@ export class DeterministicPlanningFixture implements PlanningClient {
   readonly openTaskCount = 500;
   readonly historicalTaskCount = 10_000;
   readonly requests: PlanningQueryInput[] = [];
+  readonly detailRequests: Parameters<PlanningClient["taskDetail"]>[0][] = [];
   readonly mutations: PlanningMutationInput[] = [];
   #snapshot = 1;
 
@@ -339,14 +340,78 @@ export class DeterministicPlanningFixture implements PlanningClient {
 
   async taskDetail(rawInput: Parameters<PlanningClient["taskDetail"]>[0]): Promise<TaskDetailSnapshot> {
     const input = taskDetailQueryInputSchema.parse(rawInput);
-    const summary = this.tasks.find((task) => task.id === input.taskId);
-    if (!summary) throw new Error("fixture task not found");
+    this.detailRequests.push(input);
+    const resolvedTaskId = input.context === "board"
+      ? input.taskId
+      : input.paseoWorkspaceId === "paseo-workspace-task-0" &&
+          input.paseoAgentId === "paseo-agent-task-0"
+        ? "task-0"
+        : null;
+    const summary = this.tasks.find((task) => task.id === resolvedTaskId);
+    if (!summary) {
+      return taskDetailSnapshotSchema.parse({
+        schemaVersion: PLANNING_SCHEMA_VERSION,
+        contractVersion: PLANNING_CONTRACT_VERSION,
+        contractHash: PLANNING_CONTRACT_SHA256,
+        hostId: input.hostId,
+        cursor: count(this.#snapshot),
+        query: input,
+        detail: null,
+        unavailableReason: {
+          code: input.context === "agent" ? "agent_task_unbound" : "task_unavailable",
+          message: input.context === "agent"
+            ? "No Director Task is exactly bound to this Paseo agent and workspace"
+            : "The requested Task is unavailable on this exact Director host",
+          wakeCondition: "refresh_exact_host_task_binding",
+          humanActionRequired: false,
+        },
+      });
+    }
     return taskDetailSnapshotSchema.parse({
       schemaVersion: PLANNING_SCHEMA_VERSION,
       contractVersion: PLANNING_CONTRACT_VERSION,
       contractHash: PLANNING_CONTRACT_SHA256,
+      hostId: input.hostId,
       cursor: count(this.#snapshot),
+      query: input,
+      unavailableReason: null,
       detail: {
+        binding: summary.id === "task-0" ? {
+          hostId: input.hostId,
+          projectId: summary.projectId,
+          workspaceId: summary.workspaceId,
+          taskId: summary.id,
+          taskVersion: summary.version,
+          runId: "run-task-0",
+          runNumber: "1",
+          runVersion: "7",
+          candidateId: "candidate-task-0",
+          candidateSha: "a".repeat(40),
+          paseoWorkspaceId: "paseo-workspace-task-0",
+          paseoAgentId: "paseo-agent-task-0",
+          agentNavigation: "available",
+          unavailableReason: null,
+        } : {
+          hostId: input.hostId,
+          projectId: summary.projectId,
+          workspaceId: summary.workspaceId,
+          taskId: summary.id,
+          taskVersion: summary.version,
+          runId: null,
+          runNumber: null,
+          runVersion: null,
+          candidateId: null,
+          candidateSha: null,
+          paseoWorkspaceId: null,
+          paseoAgentId: null,
+          agentNavigation: "unavailable",
+          unavailableReason: {
+            code: "task_not_started",
+            message: "No Run has been created for this Task",
+            wakeCondition: "refresh_exact_host_task_binding",
+            humanActionRequired: false,
+          },
+        },
         summary,
         objective: "Render only engine-owned planning facts and submit typed intents.",
         acceptanceCriteria: [{
@@ -370,8 +435,10 @@ export class DeterministicPlanningFixture implements PlanningClient {
         configurationPreview: null,
         activity: [{
           id: "activity-created",
-          occurredAt: "2026-09-09T00:00:00.000Z",
+          sequence: "1",
+          occurredAt: null,
           kind: "planning",
+          code: "task.created",
           message: "Task projection created",
         }],
       },

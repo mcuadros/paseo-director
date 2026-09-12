@@ -11,6 +11,7 @@ import (
 
 const (
 	QueryPath             = "/v1/planning/query"
+	TaskDetailQueryPath   = "/v1/planning/task-detail"
 	HomeQueryPath         = "/v1/planning/home"
 	OrganizerMutationPath = "/v1/planning/organizer-bootstrap"
 	MaximumRequestBytes   = 64 * 1024
@@ -286,6 +287,135 @@ type Snapshot struct {
 	ContractHash    string `json:"contractHash"`
 	Cursor          string `json:"cursor"`
 	Page            Page   `json:"page"`
+}
+
+// TaskDetailQueryInput resolves either one explicit Board Task or the one Task
+// whose current Run is exactly bound to the native Paseo agent/workspace pair.
+// The two contexts are intentionally disjoint so a native ID can never be
+// confused with a Director Workspace ID.
+type TaskDetailQueryInput struct {
+	HostID           string  `json:"hostId"`
+	Context          string  `json:"context"`
+	TaskID           *string `json:"taskId"`
+	PaseoWorkspaceID *string `json:"paseoWorkspaceId"`
+	PaseoAgentID     *string `json:"paseoAgentId"`
+	AfterCursor      *string `json:"afterCursor"`
+}
+
+func validUint64Decimal(value string) bool {
+	if value == "" || len(value) > 20 || (len(value) > 1 && value[0] == '0') {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	if len(value) == 20 && value > "18446744073709551615" {
+		return false
+	}
+	return true
+}
+
+func ValidateTaskDetailQuery(input TaskDetailQueryInput) error {
+	if !validOpaque(input.HostID) || (input.AfterCursor != nil && !validUint64Decimal(*input.AfterCursor)) {
+		return ErrQueryInvalid
+	}
+	board := input.Context == "board" && input.TaskID != nil && validOpaque(*input.TaskID) &&
+		input.PaseoWorkspaceID == nil && input.PaseoAgentID == nil
+	agent := input.Context == "agent" && input.TaskID == nil && input.PaseoWorkspaceID != nil &&
+		input.PaseoAgentID != nil && validOpaque(*input.PaseoWorkspaceID) && validOpaque(*input.PaseoAgentID)
+	if !board && !agent {
+		return ErrQueryInvalid
+	}
+	return nil
+}
+
+type TaskDetailBinding struct {
+	HostID            string       `json:"hostId"`
+	ProjectID         string       `json:"projectId"`
+	WorkspaceID       string       `json:"workspaceId"`
+	TaskID            string       `json:"taskId"`
+	TaskVersion       string       `json:"taskVersion"`
+	RunID             *string      `json:"runId"`
+	RunNumber         *string      `json:"runNumber"`
+	RunVersion        *string      `json:"runVersion"`
+	CandidateID       *string      `json:"candidateId"`
+	CandidateSHA      *string      `json:"candidateSha"`
+	PaseoWorkspaceID  *string      `json:"paseoWorkspaceId"`
+	PaseoAgentID      *string      `json:"paseoAgentId"`
+	AgentNavigation   string       `json:"agentNavigation"`
+	UnavailableReason *Explanation `json:"unavailableReason"`
+}
+
+type TaskAcceptanceCriterion struct {
+	ID     string `json:"id"`
+	Text   string `json:"text"`
+	Status string `json:"status"`
+}
+
+type TaskDependencyDetail struct {
+	ID             string      `json:"id"`
+	Kind           string      `json:"kind"`
+	Key            string      `json:"key"`
+	Title          string      `json:"title"`
+	Satisfied      bool        `json:"satisfied"`
+	OverrideStatus string      `json:"overrideStatus"`
+	Explanation    Explanation `json:"explanation"`
+}
+
+type ConfigurationOverride struct {
+	Key   string      `json:"key"`
+	Mode  string      `json:"mode"`
+	Value interface{} `json:"value,omitempty"`
+}
+
+type ConfigurationEntry struct {
+	Key             string                `json:"key"`
+	Configured      ConfigurationOverride `json:"configured"`
+	EffectiveValue  interface{}           `json:"effectiveValue"`
+	EffectiveSource string                `json:"effectiveSource"`
+	AllowedValues   []interface{}         `json:"allowedValues"`
+}
+
+type ConfigurationTarget struct {
+	Scope string `json:"scope"`
+	ID    string `json:"id"`
+}
+
+type TaskActivity struct {
+	ID         string  `json:"id"`
+	Sequence   string  `json:"sequence"`
+	OccurredAt *string `json:"occurredAt"`
+	Kind       string  `json:"kind"`
+	Code       string  `json:"code"`
+	Message    string  `json:"message"`
+}
+
+// TaskDetail is a bounded semantic projection. Activity contains humanized
+// event summaries only; raw event payloads, logs, paths, and credentials have
+// no representation here.
+type TaskDetail struct {
+	Binding              TaskDetailBinding         `json:"binding"`
+	Summary              TaskSummary               `json:"summary"`
+	Objective            string                    `json:"objective"`
+	AcceptanceCriteria   []TaskAcceptanceCriterion `json:"acceptanceCriteria"`
+	Dependencies         []TaskDependencyDetail    `json:"dependencies"`
+	ConfigurationTarget  ConfigurationTarget       `json:"configurationTarget"`
+	Configuration        []ConfigurationEntry      `json:"configuration"`
+	ConfigurationPreview interface{}               `json:"configurationPreview"`
+	Activity             []TaskActivity            `json:"activity"`
+}
+
+type TaskDetailSnapshot struct {
+	SchemaVersion     int                  `json:"schemaVersion"`
+	ContractVersion   string               `json:"contractVersion"`
+	ContractHash      string               `json:"contractHash"`
+	HostID            string               `json:"hostId"`
+	Cursor            string               `json:"cursor"`
+	Query             TaskDetailQueryInput `json:"query"`
+	Detail            *TaskDetail          `json:"detail"`
+	UnavailableReason *Explanation         `json:"unavailableReason"`
 }
 
 type HomeQueryInput struct {

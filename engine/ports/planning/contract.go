@@ -28,6 +28,7 @@ type Definition struct {
 	OrganizerMutationPath string                     `json:"organizerMutationPath"`
 	MutationActorHeaders  MutationActorHeaders       `json:"mutationActorHeaders"`
 	QueryPath             string                     `json:"queryPath"`
+	TaskDetailQueryPath   string                     `json:"taskDetailQueryPath"`
 	HomeQueryPath         string                     `json:"homeQueryPath"`
 	MaximumRequestBytes   int                        `json:"maximumRequestBytes"`
 	MaximumResponseBytes  int                        `json:"maximumResponseBytes"`
@@ -84,6 +85,7 @@ var requiredDefinitions = []string{
 	"runtimeBudgetSummary",
 	"schedulerFacts",
 	"taskDetail",
+	"taskDetailBinding",
 	"taskDetailQueryInput",
 	"taskDetailSnapshot",
 	"taskSummary",
@@ -201,7 +203,7 @@ func ParseDefinition(schema []byte) (Definition, error) {
 	}) {
 		return Definition{}, errors.New("planning mutation actor headers do not match")
 	}
-	if definition.QueryPath != QueryPath || definition.HomeQueryPath != HomeQueryPath || definition.MaximumRequestBytes != MaximumRequestBytes ||
+	if definition.QueryPath != QueryPath || definition.TaskDetailQueryPath != TaskDetailQueryPath || definition.HomeQueryPath != HomeQueryPath || definition.MaximumRequestBytes != MaximumRequestBytes ||
 		definition.MaximumResponseBytes != MaximumResponseBytes ||
 		definition.MaximumPageSize != MaximumPageSize || definition.MaximumProjects != MaximumProjects ||
 		definition.MaximumWorkspaces != MaximumWorkspaces || definition.MaximumEpics != MaximumEpics ||

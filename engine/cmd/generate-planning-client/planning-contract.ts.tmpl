@@ -16,6 +16,7 @@ export const PLANNING_QUERY_NAMES = [
 ] as const;
 export const PLANNING_MUTATION_NAME = {{quote .MutationName}} as const;
 export const PLANNING_QUERY_PATH = {{quote .QueryPath}} as const;
+export const PLANNING_TASK_DETAIL_QUERY_PATH = {{quote .TaskDetailQueryPath}} as const;
 export const PLANNING_HOME_QUERY_PATH = {{quote .HomeQueryPath}} as const;
 export const PLANNING_MUTATION_PATH = {{quote .MutationPath}} as const;
 export const PLANNING_ORGANIZER_MUTATION_PATH = {{quote .OrganizerMutationPath}} as const;
@@ -75,6 +76,7 @@ export const PLANNING_CONFIGURATION_KEYS = [
 export const opaquePlanningIdSchema = z.string().min(1).max(128);
 export const boundedPlanningTextSchema = z.string().min(1).max(2048);
 export const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+export const gitCommitShaSchema = z.string().regex(/^[0-9a-f]{40}$/);
 export const uint64DecimalSchema = z
   .string()
   .regex(/^(?:0|[1-9][0-9]{0,19})$/)
@@ -522,7 +524,41 @@ export const configurationPreviewSchema = z.strictObject({
   }
 });
 
+export const taskDetailBindingSchema = z.strictObject({
+  hostId: opaquePlanningIdSchema,
+  projectId: opaquePlanningIdSchema,
+  workspaceId: opaquePlanningIdSchema,
+  taskId: opaquePlanningIdSchema,
+  taskVersion: uint64DecimalSchema,
+  runId: opaquePlanningIdSchema.nullable(),
+  runNumber: uint64DecimalSchema.nullable(),
+  runVersion: uint64DecimalSchema.nullable(),
+  candidateId: opaquePlanningIdSchema.nullable(),
+  candidateSha: gitCommitShaSchema.nullable(),
+  paseoWorkspaceId: opaquePlanningIdSchema.nullable(),
+  paseoAgentId: opaquePlanningIdSchema.nullable(),
+  agentNavigation: z.enum(["available", "unavailable"]),
+  unavailableReason: explanationSchema.nullable(),
+}).superRefine((value, context) => {
+  const runAbsent = value.runId === null && value.runNumber === null && value.runVersion === null;
+  const runPresent = value.runId !== null && value.runNumber !== null && value.runVersion !== null;
+  if (!runAbsent && !runPresent) {
+    context.addIssue({ code: "custom", message: "Run identity must be complete or absent", path: ["runId"] });
+  }
+  if ((value.candidateId === null) !== (value.candidateSha === null)) {
+    context.addIssue({ code: "custom", message: "Candidate identity must be complete or absent", path: ["candidateId"] });
+  }
+  const navigationBound = value.paseoWorkspaceId !== null && value.paseoAgentId !== null;
+  if ((value.agentNavigation === "available") !== navigationBound) {
+    context.addIssue({ code: "custom", message: "Agent navigation requires exact native bindings", path: ["agentNavigation"] });
+  }
+  if ((value.agentNavigation === "available") === (value.unavailableReason !== null)) {
+    context.addIssue({ code: "custom", message: "Unavailable navigation requires one bounded reason", path: ["unavailableReason"] });
+  }
+});
+
 export const taskDetailSchema = z.strictObject({
+  binding: taskDetailBindingSchema,
   summary: taskSummarySchema,
   objective: boundedPlanningTextSchema,
   acceptanceCriteria: z.array(z.strictObject({
@@ -544,23 +580,45 @@ export const taskDetailSchema = z.strictObject({
   configurationPreview: configurationPreviewSchema.nullable(),
   activity: z.array(z.strictObject({
     id: opaquePlanningIdSchema,
-    occurredAt: z.iso.datetime(),
+    sequence: uint64DecimalSchema,
+    occurredAt: z.iso.datetime().nullable(),
     kind: z.enum(["planning", "execution", "validation", "review", "human"]),
+    code: opaquePlanningIdSchema,
     message: boundedPlanningTextSchema,
   })).max(100).readonly(),
 });
 
 export const taskDetailQueryInputSchema = z.strictObject({
-  taskId: opaquePlanningIdSchema,
+  hostId: opaquePlanningIdSchema,
+  context: z.enum(["board", "agent"]),
+  taskId: opaquePlanningIdSchema.nullable(),
+  paseoWorkspaceId: opaquePlanningIdSchema.nullable(),
+  paseoAgentId: opaquePlanningIdSchema.nullable(),
   afterCursor: uint64DecimalSchema.nullable(),
+}).superRefine((value, context) => {
+  const board = value.context === "board" && value.taskId !== null && value.paseoWorkspaceId === null && value.paseoAgentId === null;
+  const agent = value.context === "agent" && value.taskId === null && value.paseoWorkspaceId !== null && value.paseoAgentId !== null;
+  if (!board && !agent) {
+    context.addIssue({ code: "custom", message: "Task detail context binding is incomplete", path: ["context"] });
+  }
 });
 
 export const taskDetailSnapshotSchema = z.strictObject({
   schemaVersion: z.literal(PLANNING_SCHEMA_VERSION),
   contractVersion: z.literal(PLANNING_CONTRACT_VERSION),
   contractHash: z.literal(PLANNING_CONTRACT_SHA256),
+  hostId: opaquePlanningIdSchema,
   cursor: uint64DecimalSchema,
-  detail: taskDetailSchema,
+  query: taskDetailQueryInputSchema,
+  detail: taskDetailSchema.nullable(),
+  unavailableReason: explanationSchema.nullable(),
+}).superRefine((value, context) => {
+  if (value.hostId !== value.query.hostId) {
+    context.addIssue({ code: "custom", message: "Task detail host binding does not match", path: ["hostId"] });
+  }
+  if ((value.detail === null) === (value.unavailableReason === null)) {
+    context.addIssue({ code: "custom", message: "Task detail must be available or explain why it is unavailable", path: ["detail"] });
+  }
 });
 
 const labelsSchema = z.array(opaquePlanningIdSchema).max(64).readonly();

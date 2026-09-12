@@ -17,6 +17,7 @@
     "session": "x-director-actor-session"
   },
   "queryPath": "/v1/planning/query",
+  "taskDetailQueryPath": "/v1/planning/task-detail",
   "homeQueryPath": "/v1/planning/home",
   "maximumRequestBytes": 65536,
   "maximumResponseBytes": 4194304,
@@ -130,6 +131,10 @@
     "sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "gitCommitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
     },
     "pageCursor": {
       "type": "string",
@@ -841,10 +846,47 @@
         }
       }
     },
+    "taskDetailBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hostId",
+        "projectId",
+        "workspaceId",
+        "taskId",
+        "taskVersion",
+        "runId",
+        "runNumber",
+        "runVersion",
+        "candidateId",
+        "candidateSha",
+        "paseoWorkspaceId",
+        "paseoAgentId",
+        "agentNavigation",
+        "unavailableReason"
+      ],
+      "properties": {
+        "hostId": { "$ref": "#/$defs/opaqueId" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "workspaceId": { "$ref": "#/$defs/opaqueId" },
+        "taskId": { "$ref": "#/$defs/opaqueId" },
+        "taskVersion": { "$ref": "#/$defs/uint64Decimal" },
+        "runId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
+        "runNumber": { "anyOf": [{ "$ref": "#/$defs/uint64Decimal" }, { "type": "null" }] },
+        "runVersion": { "anyOf": [{ "$ref": "#/$defs/uint64Decimal" }, { "type": "null" }] },
+        "candidateId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
+        "candidateSha": { "anyOf": [{ "$ref": "#/$defs/gitCommitSha" }, { "type": "null" }] },
+        "paseoWorkspaceId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
+        "paseoAgentId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
+        "agentNavigation": { "enum": ["available", "unavailable"] },
+        "unavailableReason": { "anyOf": [{ "$ref": "#/$defs/explanation" }, { "type": "null" }] }
+      }
+    },
     "taskDetail": {
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "binding",
         "summary",
         "objective",
         "acceptanceCriteria",
@@ -855,6 +897,7 @@
         "activity"
       ],
       "properties": {
+        "binding": { "$ref": "#/$defs/taskDetailBinding" },
         "summary": { "$ref": "#/$defs/taskSummary" },
         "objective": { "$ref": "#/$defs/boundedText" },
         "acceptanceCriteria": {
@@ -907,11 +950,13 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "occurredAt", "kind", "message"],
+            "required": ["id", "sequence", "occurredAt", "kind", "code", "message"],
             "properties": {
               "id": { "$ref": "#/$defs/opaqueId" },
-              "occurredAt": { "type": "string", "format": "date-time" },
+              "sequence": { "$ref": "#/$defs/uint64Decimal" },
+              "occurredAt": { "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
               "kind": { "enum": ["planning", "execution", "validation", "review", "human"] },
+              "code": { "$ref": "#/$defs/opaqueId" },
               "message": { "$ref": "#/$defs/boundedText" }
             }
           }
@@ -921,27 +966,52 @@
     "taskDetailQueryInput": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["taskId", "afterCursor"],
+      "required": ["hostId", "context", "taskId", "paseoWorkspaceId", "paseoAgentId", "afterCursor"],
       "properties": {
-        "taskId": { "$ref": "#/$defs/opaqueId" },
+        "hostId": { "$ref": "#/$defs/opaqueId" },
+        "context": { "enum": ["board", "agent"] },
+        "taskId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
+        "paseoWorkspaceId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
+        "paseoAgentId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
         "afterCursor": {
           "anyOf": [
             { "$ref": "#/$defs/uint64Decimal" },
             { "type": "null" }
           ]
         }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "context": { "const": "board" },
+            "taskId": { "$ref": "#/$defs/opaqueId" },
+            "paseoWorkspaceId": { "type": "null" },
+            "paseoAgentId": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "context": { "const": "agent" },
+            "taskId": { "type": "null" },
+            "paseoWorkspaceId": { "$ref": "#/$defs/opaqueId" },
+            "paseoAgentId": { "$ref": "#/$defs/opaqueId" }
+          }
+        }
+      ]
     },
     "taskDetailSnapshot": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "contractVersion", "contractHash", "cursor", "detail"],
+      "required": ["schemaVersion", "contractVersion", "contractHash", "hostId", "cursor", "query", "detail", "unavailableReason"],
       "properties": {
         "schemaVersion": { "const": 1 },
         "contractVersion": { "const": "director-planning/v1" },
         "contractHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "hostId": { "$ref": "#/$defs/opaqueId" },
         "cursor": { "$ref": "#/$defs/uint64Decimal" },
-        "detail": { "$ref": "#/$defs/taskDetail" }
+        "query": { "$ref": "#/$defs/taskDetailQueryInput" },
+        "detail": { "anyOf": [{ "$ref": "#/$defs/taskDetail" }, { "type": "null" }] },
+        "unavailableReason": { "anyOf": [{ "$ref": "#/$defs/explanation" }, { "type": "null" }] }
       }
     },
     "planningMutationInput": {

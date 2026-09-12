@@ -168,6 +168,7 @@ function connector(client: ConnectorClient): PaseoHostConnector {
     { async load() { throw new Error("unused"); } },
     {
       async query() { throw new Error("unused"); },
+      async taskDetail() { throw new Error("unused"); },
       async mutate() { throw new Error("unused"); },
     },
   );

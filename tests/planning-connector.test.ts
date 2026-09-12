@@ -10,9 +10,11 @@ import {
   PLANNING_MUTATION_ACTOR_HEADERS,
   PLANNING_MUTATION_PATH,
   PLANNING_QUERY_PATH,
+  PLANNING_TASK_DETAIL_QUERY_PATH,
   bindPlanningMutation,
   type PlanningMutationInput,
   type PlanningQueryInput,
+  type TaskDetailQueryInput,
 } from "../generated/planning-contract.shared.ts";
 import {
   createPlanningTransport,
@@ -77,6 +79,70 @@ test("the connector posts and validates one engine-owned planning query", async 
   });
   assert.deepEqual(await transport.query(query), snapshot);
   assert.equal(calls, 1);
+});
+
+test("the connector binds Task detail to the exact host and Board context", async () => {
+  const fixture = new DeterministicPlanningFixture();
+  const input: TaskDetailQueryInput = {
+    hostId: "host-a",
+    context: "board",
+    taskId: "task-0",
+    paseoWorkspaceId: null,
+    paseoAgentId: null,
+    afterCursor: null,
+  };
+  const snapshot = await fixture.taskDetail(input);
+  const transport = createPlanningTransport({
+    baseUrl: "http://127.0.0.1:7041",
+    fetch: async (url, init) => {
+      assert.equal(String(url), `http://127.0.0.1:7041${PLANNING_TASK_DETAIL_QUERY_PATH}`);
+      assert.deepEqual(JSON.parse(String(init?.body)), input);
+      return responseAt(
+        `http://127.0.0.1:7041${PLANNING_TASK_DETAIL_QUERY_PATH}`,
+        JSON.stringify(snapshot),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-director-contract-version": PLANNING_CONTRACT_VERSION,
+            "x-director-contract-hash": PLANNING_CONTRACT_SHA256,
+          },
+        },
+      );
+    },
+  });
+  const result = await transport.taskDetail(input);
+  assert.equal(result.hostId, "host-a");
+  assert.equal(result.detail?.binding.taskId, "task-0");
+  assert.equal(result.detail?.binding.paseoAgentId, "paseo-agent-task-0");
+});
+
+test("the connector fails closed on Task detail host and cursor drift", async () => {
+  const input: TaskDetailQueryInput = {
+    hostId: "host-a",
+    context: "agent",
+    taskId: null,
+    paseoWorkspaceId: "paseo-workspace-task-0",
+    paseoAgentId: "paseo-agent-task-0",
+    afterCursor: null,
+  };
+  for (const [responseCode, expectedCode] of [
+    ["TASK_DETAIL_HOST_MISMATCH", "ENGINE_TASK_DETAIL_HOST_MISMATCH"],
+    ["TASK_DETAIL_CURSOR_INVALIDATED", "ENGINE_TASK_DETAIL_CURSOR_INVALIDATED"],
+  ] as const) {
+    const transport = createPlanningTransport({
+      baseUrl: "http://127.0.0.1:7041",
+      fetch: async () => responseAt(
+        `http://127.0.0.1:7041${PLANNING_TASK_DETAIL_QUERY_PATH}`,
+        JSON.stringify({ code: responseCode }),
+        { status: 409 },
+      ),
+    });
+    await assert.rejects(
+      transport.taskDetail(input),
+      (error: unknown) => error instanceof PlanningTransportError && error.code === expectedCode,
+    );
+  }
 });
 
 test("the connector forwards a control mutation without actor or policy fields", async () => {
