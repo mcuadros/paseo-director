@@ -44,6 +44,9 @@ type OperationalSource = homeport.OperationalSource
 
 const (
 	SyncCurrent       = homeport.SyncCurrent
+	SyncLocalAhead    = homeport.SyncLocalAhead
+	SyncRemoteAhead   = homeport.SyncRemoteAhead
+	SyncDiverged      = homeport.SyncDiverged
 	SyncFailed        = homeport.SyncFailed
 	SyncNotConfigured = homeport.SyncNotConfigured
 	SyncUnavailable   = homeport.SyncUnavailable
@@ -82,22 +85,39 @@ func NewReader(store Store, tasks TaskProjectionSource, source OperationalSource
 type StaticSource struct {
 	hostID, label, instanceID string
 	now                       func() int64
+	logs                      homeport.TechnicalLogSource
 }
 
 func NewStaticSource(hostID, label, instanceID string, now func() int64) *StaticSource {
 	return &StaticSource{hostID: hostID, label: label, instanceID: instanceID, now: now}
 }
 
-func (source *StaticSource) Observe(_ context.Context, requested string, projectIDs []string) (HostObservation, error) {
+func (source *StaticSource) WithTechnicalLogs(logs homeport.TechnicalLogSource) *StaticSource {
+	source.logs = logs
+	return source
+}
+
+func (source *StaticSource) Observe(ctx context.Context, requested string, projectIDs []string) (HostObservation, error) {
 	if requested != source.hostID {
 		return HostObservation{}, ErrHostMismatch
 	}
 	projects := make(map[string]ProjectObservation, len(projectIDs))
 	for _, projectID := range projectIDs {
+		var logs []homeport.TechnicalLogObservation
+		logsAvailable := false
+		if source.logs != nil {
+			var err error
+			logs, err = source.logs.ReadTechnicalLogs(ctx, projectID, source.now())
+			if err != nil {
+				return HostObservation{}, ErrHostFacts
+			}
+			logsAvailable = true
+		}
 		projects[projectID] = ProjectObservation{
 			GitSync: SyncUnavailable, TaskStoreSync: SyncUnavailable,
-			Workspaces: map[string]WorkspaceObservation{},
-			Operations: OperationAvailability{Doctor: true, Control: true},
+			Workspaces:    map[string]WorkspaceObservation{},
+			Operations:    OperationAvailability{Doctor: true, Control: true},
+			TechnicalLogs: logs, TechnicalLogsAvailable: logsAvailable,
 		}
 	}
 	return HostObservation{
@@ -161,6 +181,16 @@ func validObservation(value HostObservation, requested string, projectIDs []stri
 			(project.SyncObservedAtMillis == 0 && project.SyncMaximumAgeMillis != 0) ||
 			(project.SyncObservedAtMillis > 0 && (project.SyncMaximumAgeMillis <= 0 || project.SyncMaximumAgeMillis > 5*60*1000)) {
 			return false
+		}
+		if (project.GitSyncDetail.State != "" && !validSyncDetail(project.GitSyncDetail, now)) ||
+			(project.TaskStoreSyncDetail.State != "" && !validSyncDetail(project.TaskStoreSyncDetail, now)) ||
+			(project.Reconciliation.State != "" && !validReconciliation(project.Reconciliation, now)) {
+			return false
+		}
+		for _, entry := range project.TechnicalLogs {
+			if !validLog(entry, now) {
+				return false
+			}
 		}
 		for _, workspace := range project.Workspaces {
 			if workspace.Health != "healthy" && workspace.Health != "degraded" && workspace.Health != "disconnected" && workspace.Health != "stale" && workspace.Health != "unknown" {
@@ -297,6 +327,12 @@ func engineAction(kind, label, target string, version uint64, approval *string, 
 
 func syncState(observation ProjectObservation, now int64) planningport.HomeSync {
 	git, taskStore := string(observation.GitSync), string(observation.TaskStoreSync)
+	if observation.GitSyncDetail.State != "" {
+		git = string(observation.GitSyncDetail.State)
+	}
+	if observation.TaskStoreSyncDetail.State != "" {
+		taskStore = string(observation.TaskStoreSyncDetail.State)
+	}
 	if observation.SyncObservedAtMillis > 0 && now-observation.SyncObservedAtMillis > observation.SyncMaximumAgeMillis {
 		git, taskStore = string(SyncStale), string(SyncStale)
 	}
@@ -312,7 +348,11 @@ func syncState(observation ProjectObservation, now int64) planningport.HomeSync 
 		state = "failed"
 	case (git == string(SyncCurrent) || taskStore == string(SyncCurrent)) && git != taskStore:
 		state = "partial"
-	case git == string(SyncFailed) || taskStore == string(SyncFailed):
+	case git == string(SyncFailed) || taskStore == string(SyncFailed) ||
+		git == string(SyncLocalAhead) || taskStore == string(SyncLocalAhead) ||
+		git == string(SyncRemoteAhead) || taskStore == string(SyncRemoteAhead) ||
+		git == string(SyncDiverged) || taskStore == string(SyncDiverged) ||
+		git == string(homeport.SyncIdentityMismatch) || taskStore == string(homeport.SyncIdentityMismatch):
 		state = "failed"
 	}
 	var observed *string
@@ -441,7 +481,7 @@ func workspaceRows(workspaces []domain.Workspace, observation ProjectObservation
 	return result
 }
 
-func health(project domain.Project, host HostObservation, organizer planningport.HomeOrganizer, lease planningport.HomeLease, sync planningport.HomeSync, tasks taskAggregate, workspaces []planningport.HomeWorkspace) (string, []planningport.Explanation) {
+func health(project domain.Project, host HostObservation, observation ProjectObservation, organizer planningport.HomeOrganizer, lease planningport.HomeLease, sync planningport.HomeSync, tasks taskAggregate, workspaces []planningport.HomeWorkspace, now int64) (string, []planningport.Explanation) {
 	reasons := []planningport.Explanation{}
 	state := host.State
 	if state == "disconnected" {
@@ -469,7 +509,27 @@ func health(project domain.Project, host HostObservation, organizer planningport
 		reasons = append(reasons, explanation("project_lease_"+lease.State, "Project execution lease is not current and dispatchable", false))
 	}
 	if sync.State != "current" && sync.State != "not_configured" {
-		reasons = append(reasons, explanation("project_sync_"+sync.State, "Organizer Git and TaskStore synchronization is not fully current", false))
+		precise := false
+		for _, value := range []struct {
+			kind   string
+			detail homeport.SyncStreamObservation
+			legacy homeport.SyncStreamState
+		}{
+			{"organizer_git", observation.GitSyncDetail, observation.GitSync},
+			{"taskstore_dolt", observation.TaskStoreSyncDetail, observation.TaskStoreSync},
+		} {
+			if value.detail.State == "" {
+				continue
+			}
+			stream, err := streamDetail(value.kind, value.detail, value.legacy, observation.SyncObservedAtMillis, observation.SyncMaximumAgeMillis, now)
+			if err == nil && stream.State != "current" && stream.State != "not_configured" {
+				reasons = append(reasons, explanation(value.kind+"_"+stream.ReasonCode, stream.Detail, stream.State == "identity_mismatch" || stream.State == "diverged"))
+				precise = true
+			}
+		}
+		if !precise {
+			reasons = append(reasons, explanation("project_sync_"+sync.State, "Organizer Git and TaskStore synchronization is not fully current", false))
+		}
 	}
 	for _, workspace := range workspaces {
 		if workspace.Health != "healthy" {
@@ -479,6 +539,11 @@ func health(project domain.Project, host HostObservation, organizer planningport
 	}
 	if host.State == "degraded" {
 		reasons = append(reasons, explanation("host_degraded", "The exact Director host reports degraded service", false))
+	}
+	for _, reason := range reasons {
+		if reason.HumanActionRequired {
+			return "needs_you", reasons
+		}
 	}
 	if len(reasons) > 0 {
 		return "degraded", reasons
@@ -497,6 +562,7 @@ func projectActions(project domain.Project, host HostObservation, observation Pr
 		homeAction("open_board", "Board", host.HostID, project.ID, boardWorkspaceID != "", unavailable, boardWorkspaceID, nil, "primary"),
 		homeAction("open_organizer", "Organizer", host.HostID, project.ID, organizerWorkspaceID != "", unavailable, organizerWorkspaceID, nil, "secondary"),
 		homeAction("open_needs_you", "Needs you", host.HostID, project.ID, hostCurrent && needsYou > 0, unavailable, "", nil, "secondary"),
+		homeAction("operations", "Operations", host.HostID, project.ID, hostCurrent, unavailable, "", nil, "secondary"),
 	}
 	for _, item := range []struct {
 		kind, label string
@@ -535,7 +601,7 @@ func buildProject(project domain.Project, workspaces []domain.Workspace, inputs 
 	lease := leaseState(project, now)
 	sync := syncState(observation, now)
 	workspaceValues := workspaceRows(workspaces, observation)
-	healthState, reasons := health(project, host, organizer, lease, sync, tasks, workspaceValues)
+	healthState, reasons := health(project, host, observation, organizer, lease, sync, tasks, workspaceValues, now)
 	active := tasks.building + tasks.validating + tasks.inReview + tasks.ready
 	return planningport.HomeProject{
 		ID: project.ID, Version: strconv.FormatUint(project.Version, 10), Name: project.Name, State: project.State,

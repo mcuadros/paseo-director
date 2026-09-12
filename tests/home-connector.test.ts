@@ -11,12 +11,17 @@ import {
   PLANNING_MUTATION_ACTOR_HEADERS,
   PLANNING_ORGANIZER_MUTATION_PATH,
   PLANNING_REPAIR_MUTATION_PATH,
+  PLANNING_OPERATIONS_QUERY_PATH,
+  PLANNING_OPERATIONS_MUTATION_PATH,
   doctorReportSchema,
   homeSnapshotSchema,
+  operationsReportSchema,
   type HomeQueryInput,
   type DoctorQueryInput,
   type OrganizerBootstrapInput,
   type RepairInput,
+  type OperationsQueryInput,
+  type OperationsMutationInput,
 } from "../generated/planning-contract.shared.ts";
 import {
   createPlanningTransport,
@@ -256,4 +261,59 @@ test("Repair transport attaches only server human identity and preserves exact P
 
   const unauthenticated = createPlanningTransport({ baseUrl: "http://127.0.0.1:7041", fetch: async () => { throw new Error("must not fetch"); } });
   await assert.rejects(unauthenticated.repair!(input), (error: unknown) => error instanceof PlanningTransportError && error.code === "ENGINE_REPAIR_ACTOR");
+});
+
+function operationsReport(hostId = "host-a", projectId = "project-a") {
+  return operationsReportSchema.parse({
+    schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION, contractHash: PLANNING_CONTRACT_SHA256,
+    cursor: "12", hostId, hostInstanceId: "engine-a", projectId, projectName: "Project A", projectVersion: "3",
+    observationId: "a".repeat(64), observedAt: "2026-09-12T01:00:00Z", maximumAgeMillis: "30000", status: "healthy", reasons: [],
+    hybrid: { mode: "hybrid", state: "current", reasonCode: "observed", detail: "Current authoritative facts were reconciled.", terminalEventDispatch: "synchronous_wake_only", terminalTargetMillis: "1000", activeIntervalMillis: "30000", idleIntervalMillis: "300000", lostEventWatchdogMillis: "300000", lastCompletedAt: "2026-09-12T01:00:00Z", pendingWakeups: "0" },
+    sync: { state: "current", streams: [
+      { kind: "organizer_git", state: "current", reasonCode: "aligned", detail: "Exact revisions align.", localRevisionFingerprint: "b".repeat(64), remoteRevisionFingerprint: "b".repeat(64), observedAt: "2026-09-12T01:00:00Z", lastSuccessAt: "2026-09-12T01:00:00Z", retryable: false },
+      { kind: "taskstore_dolt", state: "current", reasonCode: "aligned", detail: "Exact revisions align.", localRevisionFingerprint: "c".repeat(64), remoteRevisionFingerprint: "c".repeat(64), observedAt: "2026-09-12T01:00:00Z", lastSuccessAt: "2026-09-12T01:00:00Z", retryable: false },
+    ], automaticEnabled: true, debounceMillis: "60000", flushAtCriticalTransitions: true },
+    audit: { entries: [], entryLimit: "64", truncated: false, payloadsIncluded: false, pathsIncluded: false },
+    logs: { state: "current", reason: null, entries: [], entryLimit: "128", returnedBytes: "0", retentionDays: "14", retentionBytes: "104857600", truncated: false, rawOutputIncluded: false },
+    controls: { syncAvailable: true, reconcileAvailable: true, reason: null },
+    support: { previewAvailable: true, reason: null, uploadPolicy: "never" },
+  });
+}
+
+test("Operations transport binds query and human mutation to the exact host without retry or fallback", async () => {
+  const queryInput: OperationsQueryInput = { hostId: "host-a", projectId: "project-a", expectedProjectVersion: "3" };
+  const mutationInput: OperationsMutationInput = { schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION, contractHash: PLANNING_CONTRACT_SHA256,
+    hostId: "host-a", requestId: "operations-request-0001", kind: "sync.now", projectId: "project-a", expectedProjectVersion: "3", previewId: null, confirmed: true };
+  let calls = 0;
+  const transport = createPlanningTransport({
+    baseUrl: "http://127.0.0.1:7041",
+    mutationActor: { kind: "human", id: "server-owner", sessionId: "server-session" },
+    fetch: async (url, init) => {
+      calls++;
+      const headers = init?.headers as Record<string, string>;
+      if (String(url).endsWith(PLANNING_OPERATIONS_QUERY_PATH)) {
+        assert.deepEqual(JSON.parse(String(init?.body)), queryInput);
+        assert.equal(headers[PLANNING_MUTATION_ACTOR_HEADERS.kind], undefined);
+        return responseAt(String(url), JSON.stringify(operationsReport()), { status: 200, headers: { "x-director-contract-version": PLANNING_CONTRACT_VERSION, "x-director-contract-hash": PLANNING_CONTRACT_SHA256 } });
+      }
+      assert.equal(String(url), `http://127.0.0.1:7041${PLANNING_OPERATIONS_MUTATION_PATH}`);
+      assert.deepEqual(JSON.parse(String(init?.body)), mutationInput);
+      assert.equal(headers[PLANNING_MUTATION_ACTOR_HEADERS.kind], "human");
+      assert.equal(headers[PLANNING_MUTATION_ACTOR_HEADERS.id], "server-owner");
+      const result = { schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION, contractHash: PLANNING_CONTRACT_SHA256,
+        hostId: "host-a", projectId: "project-a", cursor: "13", requestId: mutationInput.requestId, status: "applied", message: "Two effects observed.",
+        supportPreview: null, bundle: null, effect: { kind: "sync.now", effectClass: "conditional_update", outcome: "observed", gitState: "current", dynamicState: "failed", successfulHalfRetried: false }, refusalCode: null };
+      return responseAt(String(url), JSON.stringify(result), { status: 200, headers: { "x-director-contract-version": PLANNING_CONTRACT_VERSION, "x-director-contract-hash": PLANNING_CONTRACT_SHA256 } });
+    },
+  });
+  assert.deepEqual(await transport.operations!(queryInput), operationsReport());
+  const result = await transport.mutateOperations!(mutationInput);
+  assert.equal(result.effect?.successfulHalfRetried, false);
+  assert.equal(calls, 2);
+
+  const unauthenticated = createPlanningTransport({ baseUrl: "http://127.0.0.1:7041", fetch: async () => { throw new Error("must not fetch"); } });
+  await assert.rejects(unauthenticated.mutateOperations!(mutationInput), (error: unknown) => error instanceof PlanningTransportError && error.code === "ENGINE_OPERATIONS_ACTOR");
+
+  const drift = createPlanningTransport({ baseUrl: "http://127.0.0.1:7041", fetch: async (url) => responseAt(String(url), JSON.stringify(operationsReport("host-b")), { status: 200, headers: { "x-director-contract-version": PLANNING_CONTRACT_VERSION, "x-director-contract-hash": PLANNING_CONTRACT_SHA256 } }) });
+  await assert.rejects(drift.operations!(queryInput), (error: unknown) => error instanceof PlanningTransportError && error.code === "ENGINE_OPERATIONS_BINDING");
 });

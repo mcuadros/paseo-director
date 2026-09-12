@@ -28,6 +28,10 @@ import {
   organizerBootstrapResultSchema,
   repairInputSchema,
   repairResultSchema,
+  operationsQueryInputSchema,
+  operationsReportSchema,
+  operationsMutationInputSchema,
+  operationsMutationResultSchema,
   type AllowedAction,
 } from "../generated/planning-contract.shared.ts";
 import {
@@ -38,6 +42,8 @@ import {
   doctorQueryRpc,
   organizerBootstrapRpc,
   repairProjectRpc,
+  operationsQueryRpc,
+  operationsMutationRpc,
 } from "../rpc/planning.shared.ts";
 import { DeterministicPlanningFixture } from "./fixtures/planning-fixture.ts";
 
@@ -88,6 +94,36 @@ test("planning identity and vocabularies are closed and versioned", () => {
   assert.equal(PLANNING_ATTENTION_CODES.length, 12);
   assert.equal(PLANNING_CONFIGURATION_KEYS.length, 8);
   assert.ok(PLANNING_CONFIGURATION_KEYS.includes("requireDifferentReviewerModel"));
+});
+
+test("operations contract fixes exact host scope, manual support confirmation, and closed safe output", () => {
+  const queryInput = { hostId: "host-a", projectId: "project-a", expectedProjectVersion: "3" };
+  assert.equal(operationsQueryInputSchema.safeParse(queryInput).success, true);
+  assert.equal(operationsQueryRpc.input.safeParse(queryInput).success, true);
+  assert.equal(operationsQueryInputSchema.safeParse({ ...queryInput, path: "/home/private" }).success, false);
+  assert.equal(operationsReportSchema.safeParse({}).success, false);
+
+  const base = {
+    schemaVersion: PLANNING_SCHEMA_VERSION,
+    contractVersion: PLANNING_CONTRACT_VERSION,
+    contractHash: PLANNING_CONTRACT_SHA256,
+    hostId: "host-a",
+    requestId: "operations-request-0001",
+    projectId: "project-a",
+    expectedProjectVersion: "3",
+  };
+  const preview = { ...base, kind: "support.preview", previewId: null, confirmed: false };
+  const previewId = "a".repeat(64);
+  const generate = { ...base, kind: "support.generate", previewId, confirmed: true };
+  const sync = { ...base, kind: "sync.now", previewId: null, confirmed: true };
+  assert.equal(operationsMutationInputSchema.safeParse(preview).success, true);
+  assert.equal(operationsMutationInputSchema.safeParse(generate).success, true);
+  assert.equal(operationsMutationRpc.input.safeParse(sync).success, true);
+  assert.equal(operationsMutationInputSchema.safeParse({ ...generate, confirmed: false }).success, false);
+  assert.equal(operationsMutationInputSchema.safeParse({ ...sync, previewId }).success, false);
+  assert.equal(operationsMutationResultSchema.safeParse({}).success, false);
+  assert.equal(operationsQueryRpc.output, operationsReportSchema);
+  assert.equal(operationsMutationRpc.output, operationsMutationResultSchema);
 });
 
 test("generated query, detail, and mutation RPC schemas reject drift", async () => {

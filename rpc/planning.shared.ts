@@ -14,6 +14,10 @@ import {
   homeSnapshotSchema,
   doctorQueryInputSchema,
   doctorReportSchema,
+  operationsQueryInputSchema,
+  operationsReportSchema,
+  operationsMutationInputSchema,
+  operationsMutationResultSchema,
   organizerBootstrapInputSchema,
   organizerBootstrapResultSchema,
   repairInputSchema,
@@ -36,6 +40,18 @@ export const doctorQueryRpc = defineRpc({
   name: "director.doctor-query",
   input: doctorQueryInputSchema,
   output: doctorReportSchema,
+});
+
+export const operationsQueryRpc = defineRpc({
+  name: "director.operations-query",
+  input: operationsQueryInputSchema,
+  output: operationsReportSchema,
+});
+
+export const operationsMutationRpc = defineRpc({
+  name: "director.operations-mutate",
+  input: operationsMutationInputSchema,
+  output: operationsMutationResultSchema,
 });
 
 export const repairProjectRpc = defineRpc({

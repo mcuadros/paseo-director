@@ -178,6 +178,7 @@ test("accessibility preferences and announcements work without web-only APIs", a
 test("integrated product surfaces keep compact, native, reflow, and host-owned boundaries", () => {
   const sources = [
     "ui/director-home.client.tsx",
+    "ui/project-operations.client.tsx",
     "ui/planning-surface.client.tsx",
     "ui/task-detail-view.client.tsx",
     "ui/task-inspector.client.tsx",

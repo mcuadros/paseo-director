@@ -182,6 +182,21 @@ func syncCheck(id, title, value string) planningport.DoctorCheck {
 		title, "Restore this stream's configured authentication and destination, then use an exact Repair preview to reconcile only this stream.")
 }
 
+func observedSyncStates(value ProjectObservation, now int64) (SyncStreamState, SyncStreamState, bool) {
+	gitSync, taskStoreSync := value.GitSync, value.TaskStoreSync
+	if value.GitSyncDetail.State != "" {
+		gitSync = value.GitSyncDetail.State
+	}
+	if value.TaskStoreSyncDetail.State != "" {
+		taskStoreSync = value.TaskStoreSyncDetail.State
+	}
+	stale := value.SyncObservedAtMillis > 0 && value.SyncMaximumAgeMillis > 0 && now-value.SyncObservedAtMillis > value.SyncMaximumAgeMillis
+	if stale {
+		gitSync, taskStoreSync = SyncStale, SyncStale
+	}
+	return gitSync, taskStoreSync, stale
+}
+
 type capabilityPresentation struct {
 	category, title, current, missing string
 	guidance                          []string
@@ -283,12 +298,7 @@ func observationDigest(facts doctorFacts, checks []planningport.DoctorCheck) str
 }
 
 func (service *DoctorRepairService) report(facts doctorFacts) planningport.DoctorReport {
-	gitSync, taskStoreSync := facts.operational.GitSync, facts.operational.TaskStoreSync
-	syncStale := facts.operational.SyncObservedAtMillis > 0 && facts.operational.SyncMaximumAgeMillis > 0 &&
-		facts.now-facts.operational.SyncObservedAtMillis > facts.operational.SyncMaximumAgeMillis
-	if syncStale {
-		gitSync, taskStoreSync = SyncStale, SyncStale
-	}
+	gitSync, taskStoreSync, syncStale := observedSyncStates(facts.operational, facts.now)
 	checks := []planningport.DoctorCheck{
 		hostCheck(facts.host),
 		check("engine-contract", "contract", "passed", "engine_contract_current", "Director Engine contract", "The request reached the exact engine contract and schema hash accepted by this host.", false, ""),
@@ -339,10 +349,11 @@ func (service *DoctorRepairService) report(facts doctorFacts) planningport.Docto
 
 func repairTargetAvailable(facts doctorFacts) bool {
 	capabilities := facts.operational.RepairCapabilities
-	if capabilities.GitSync && facts.operational.GitSync != SyncCurrent && facts.operational.GitSync != SyncNotConfigured {
+	gitSync, taskStoreSync, _ := observedSyncStates(facts.operational, facts.now)
+	if capabilities.GitSync && gitSync != SyncCurrent && gitSync != SyncNotConfigured {
 		return true
 	}
-	if capabilities.DynamicState && facts.operational.TaskStoreSync != SyncCurrent && facts.operational.TaskStoreSync != SyncNotConfigured {
+	if capabilities.DynamicState && taskStoreSync != SyncCurrent && taskStoreSync != SyncNotConfigured {
 		return true
 	}
 	if capabilities.Lease && leaseState(facts.project, facts.now).State != "current" {
@@ -380,10 +391,11 @@ func (service *DoctorRepairService) Doctor(ctx context.Context, input planningpo
 func repairOperations(facts doctorFacts) []planningport.RepairOperation {
 	capabilities := facts.operational.RepairCapabilities
 	operations := []planningport.RepairOperation{}
-	if capabilities.GitSync && facts.operational.GitSync != SyncCurrent && facts.operational.GitSync != SyncNotConfigured {
+	gitSync, taskStoreSync, _ := observedSyncStates(facts.operational, facts.now)
+	if capabilities.GitSync && gitSync != SyncCurrent && gitSync != SyncNotConfigured {
 		operations = append(operations, planningport.RepairOperation{ID: "repair-git-sync", Kind: "reconcile_git_sync", Description: "Reconcile only the configured Organizer Git synchronization stream against its current expected ref.", AffectedResource: "Organizer Git synchronization stream", EffectClass: "conditional_update"})
 	}
-	if capabilities.DynamicState && facts.operational.TaskStoreSync != SyncCurrent && facts.operational.TaskStoreSync != SyncNotConfigured {
+	if capabilities.DynamicState && taskStoreSync != SyncCurrent && taskStoreSync != SyncNotConfigured {
 		operations = append(operations, planningport.RepairOperation{ID: "repair-dynamic-state", Kind: "reconcile_dynamic_state", Description: "Reconcile only the configured TaskStore/Dolt synchronization stream from durable event facts.", AffectedResource: "TaskStore/Dolt synchronization stream", EffectClass: "conditional_update"})
 	}
 	lease := leaseState(facts.project, facts.now)

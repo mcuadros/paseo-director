@@ -7,12 +7,15 @@
     "planning.query",
     "planning.task-detail",
     "planning.home",
-    "planning.doctor"
+    "planning.doctor",
+    "planning.operations"
   ],
   "mutationName": "planning.mutate",
   "mutationPath": "/v1/planning/mutate",
   "organizerMutationPath": "/v1/planning/organizer-bootstrap",
   "doctorQueryPath": "/v1/planning/doctor",
+  "operationsQueryPath": "/v1/planning/operations",
+  "operationsMutationPath": "/v1/planning/operations-mutate",
   "repairMutationPath": "/v1/planning/repair",
   "mutationActorHeaders": {
     "kind": "x-director-actor-kind",
@@ -44,6 +47,7 @@
     "open_board",
     "open_organizer",
     "open_needs_you",
+    "operations",
     "sync_now",
     "reconcile_now",
     "doctor",
@@ -1264,7 +1268,7 @@
       "enum": ["healthy", "degraded", "paused", "needs_you", "disconnected", "stale", "unknown"]
     },
     "homeActionKind": {
-      "enum": ["create_project", "adopt_organizer", "open_board", "open_organizer", "open_needs_you", "sync_now", "reconcile_now", "doctor", "repair", "pause", "resume", "emergency_stop"]
+      "enum": ["create_project", "adopt_organizer", "open_board", "open_organizer", "open_needs_you", "operations", "sync_now", "reconcile_now", "doctor", "repair", "pause", "resume", "emergency_stop"]
     },
     "homeQueryInput": {
       "type": "object",
@@ -1331,8 +1335,8 @@
       "required": ["state", "git", "dynamicState", "observedAt"],
       "properties": {
         "state": { "enum": ["current", "partial", "failed", "not_configured", "unavailable", "stale"] },
-        "git": { "enum": ["current", "failed", "not_configured", "unavailable", "stale"] },
-        "dynamicState": { "enum": ["current", "failed", "not_configured", "unavailable", "stale"] },
+        "git": { "enum": ["current", "local_ahead", "remote_ahead", "diverged", "failed", "identity_mismatch", "not_configured", "unavailable", "stale"] },
+        "dynamicState": { "enum": ["current", "local_ahead", "remote_ahead", "diverged", "failed", "identity_mismatch", "not_configured", "unavailable", "stale"] },
         "observedAt": { "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] }
       }
     },
@@ -1430,6 +1434,263 @@
         "contractHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "cursor": { "$ref": "#/$defs/uint64Decimal" },
         "page": { "$ref": "#/$defs/homePage" }
+      }
+    },
+    "operationsQueryInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostId", "projectId", "expectedProjectVersion"],
+      "properties": {
+        "hostId": { "$ref": "#/$defs/opaqueId" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "expectedProjectVersion": { "$ref": "#/$defs/uint64Decimal" }
+      }
+    },
+    "syncStreamDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "state", "reasonCode", "detail", "localRevisionFingerprint", "remoteRevisionFingerprint", "observedAt", "lastSuccessAt", "retryable"],
+      "properties": {
+        "kind": { "enum": ["organizer_git", "taskstore_dolt"] },
+        "state": { "enum": ["current", "local_ahead", "remote_ahead", "diverged", "failed", "identity_mismatch", "not_configured", "unavailable", "stale"] },
+        "reasonCode": { "enum": ["aligned", "local_ahead", "remote_ahead", "diverged", "operation_failed", "identity_mismatch", "authentication_unavailable", "remote_unavailable", "observation_stale", "not_configured"] },
+        "detail": { "$ref": "#/$defs/boundedText" },
+        "localRevisionFingerprint": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "remoteRevisionFingerprint": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "observedAt": { "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
+        "lastSuccessAt": { "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "operationsSync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "streams", "automaticEnabled", "debounceMillis", "flushAtCriticalTransitions"],
+      "properties": {
+        "state": { "enum": ["current", "partial", "failed", "not_configured", "unavailable", "stale"] },
+        "streams": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/syncStreamDetail" } },
+        "automaticEnabled": { "type": "boolean" },
+        "debounceMillis": { "$ref": "#/$defs/uint64Decimal" },
+        "flushAtCriticalTransitions": { "const": true }
+      }
+    },
+    "operationsReconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "state", "reasonCode", "detail", "terminalEventDispatch", "terminalTargetMillis", "activeIntervalMillis", "idleIntervalMillis", "lostEventWatchdogMillis", "lastCompletedAt", "pendingWakeups"],
+      "properties": {
+        "mode": { "const": "hybrid" },
+        "state": { "enum": ["current", "running", "waiting_external", "degraded", "unavailable", "stale"] },
+        "reasonCode": { "enum": ["observed", "event_wake_pending", "external_wait", "fact_mismatch", "source_offline", "observation_stale"] },
+        "detail": { "$ref": "#/$defs/boundedText" },
+        "terminalEventDispatch": { "const": "synchronous_wake_only" },
+        "terminalTargetMillis": { "$ref": "#/$defs/uint64Decimal" },
+        "activeIntervalMillis": { "$ref": "#/$defs/uint64Decimal" },
+        "idleIntervalMillis": { "$ref": "#/$defs/uint64Decimal" },
+        "lostEventWatchdogMillis": { "$ref": "#/$defs/uint64Decimal" },
+        "lastCompletedAt": { "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
+        "pendingWakeups": { "$ref": "#/$defs/uint64Decimal" }
+      }
+    },
+    "operationsAuditEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sequence", "category", "action", "outcome", "actorKind", "actorFingerprint", "subjectFingerprint", "runFingerprint", "payloadIncluded"],
+      "properties": {
+        "id": { "$ref": "#/$defs/sha256" },
+        "sequence": { "$ref": "#/$defs/uint64Decimal" },
+        "category": { "enum": ["system", "project", "organizer", "workspace", "task", "run", "candidate", "validation", "review", "feedback", "delivery", "cleanup", "control"] },
+        "action": { "enum": ["unclassified_event", "lease_changed", "project_control_changed", "project_changed", "organizer_changed", "workspace_changed", "dependency_override_recorded", "attention_requested", "task_changed", "run_changed", "candidate_correction_recorded", "candidate_changed", "validation_recorded", "review_recorded", "feedback_recorded", "publication_recorded", "integration_recorded", "cleanup_recorded"] },
+        "outcome": { "enum": ["recorded", "completed", "attention"] },
+        "actorKind": { "enum": ["human", "agent", "connector", "system", "unavailable"] },
+        "actorFingerprint": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "subjectFingerprint": { "$ref": "#/$defs/sha256" },
+        "runFingerprint": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "payloadIncluded": { "const": false }
+      }
+    },
+    "operationsAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entries", "entryLimit", "truncated", "payloadsIncluded", "pathsIncluded"],
+      "properties": {
+        "entries": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/operationsAuditEntry" } },
+        "entryLimit": { "$ref": "#/$defs/uint64Decimal" },
+        "truncated": { "type": "boolean" },
+        "payloadsIncluded": { "const": false },
+        "pathsIncluded": { "const": false }
+      }
+    },
+    "operationsLogEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "occurredAt", "level", "component", "code", "message", "occurrences"],
+      "properties": {
+        "sequence": { "$ref": "#/$defs/uint64Decimal" },
+        "occurredAt": { "type": "string", "format": "date-time" },
+        "level": { "enum": ["info", "warning", "error"] },
+        "component": { "enum": ["engine", "dynamic_state", "git", "dolt", "coordination", "security", "support"] },
+        "code": { "enum": ["engine_started", "fact_scan_completed", "fact_scan_waiting_external", "git_sync_current", "git_sync_failed", "dolt_sync_current", "dolt_sync_failed", "taskstore_unhealthy", "support_bundle_generated", "unsafe_output_suppressed"] },
+        "message": { "$ref": "#/$defs/boundedText" },
+        "occurrences": { "$ref": "#/$defs/uint64Decimal" }
+      }
+    },
+    "operationsLogs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reason", "entries", "entryLimit", "returnedBytes", "retentionDays", "retentionBytes", "truncated", "rawOutputIncluded"],
+      "properties": {
+        "state": { "enum": ["current", "unavailable"] },
+        "reason": { "anyOf": [{ "$ref": "#/$defs/explanation" }, { "type": "null" }] },
+        "entries": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/operationsLogEntry" } },
+        "entryLimit": { "$ref": "#/$defs/uint64Decimal" },
+        "returnedBytes": { "$ref": "#/$defs/uint64Decimal" },
+        "retentionDays": { "$ref": "#/$defs/uint64Decimal" },
+        "retentionBytes": { "$ref": "#/$defs/uint64Decimal" },
+        "truncated": { "type": "boolean" },
+        "rawOutputIncluded": { "const": false }
+      }
+    },
+    "supportAvailability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["previewAvailable", "reason", "uploadPolicy"],
+      "properties": {
+        "previewAvailable": { "type": "boolean" },
+        "reason": { "anyOf": [{ "$ref": "#/$defs/explanation" }, { "type": "null" }] },
+        "uploadPolicy": { "const": "never" }
+      }
+    },
+    "operationsControlAvailability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["syncAvailable", "reconcileAvailable", "reason"],
+      "properties": {
+        "syncAvailable": { "type": "boolean" },
+        "reconcileAvailable": { "type": "boolean" },
+        "reason": { "anyOf": [{ "$ref": "#/$defs/explanation" }, { "type": "null" }] }
+      }
+    },
+    "operationsReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "contractVersion", "contractHash", "cursor", "hostId", "hostInstanceId", "projectId", "projectName", "projectVersion", "observationId", "observedAt", "maximumAgeMillis", "status", "reasons", "hybrid", "sync", "audit", "logs", "controls", "support"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "contractVersion": { "const": "director-planning/v1" },
+        "contractHash": { "$ref": "#/$defs/sha256" },
+        "cursor": { "$ref": "#/$defs/uint64Decimal" },
+        "hostId": { "$ref": "#/$defs/opaqueId" },
+        "hostInstanceId": { "$ref": "#/$defs/opaqueId" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "projectName": { "$ref": "#/$defs/boundedText" },
+        "projectVersion": { "$ref": "#/$defs/uint64Decimal" },
+        "observationId": { "$ref": "#/$defs/sha256" },
+        "observedAt": { "type": "string", "format": "date-time" },
+        "maximumAgeMillis": { "$ref": "#/$defs/uint64Decimal" },
+        "status": { "enum": ["healthy", "degraded", "partial_sync", "offline", "stale", "needs_you"] },
+        "reasons": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/explanation" } },
+        "hybrid": { "$ref": "#/$defs/operationsReconciliation" },
+        "sync": { "$ref": "#/$defs/operationsSync" },
+        "audit": { "$ref": "#/$defs/operationsAudit" },
+        "logs": { "$ref": "#/$defs/operationsLogs" },
+        "controls": { "$ref": "#/$defs/operationsControlAvailability" },
+        "support": { "$ref": "#/$defs/supportAvailability" }
+      }
+    },
+    "operationsMutationInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "contractVersion", "contractHash", "hostId", "requestId", "kind", "projectId", "expectedProjectVersion", "previewId", "confirmed"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "contractVersion": { "const": "director-planning/v1" },
+        "contractHash": { "$ref": "#/$defs/sha256" },
+        "hostId": { "$ref": "#/$defs/opaqueId" },
+        "requestId": { "$ref": "#/$defs/opaqueId" },
+        "kind": { "enum": ["sync.now", "reconcile.now", "support.preview", "support.generate"] },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "expectedProjectVersion": { "$ref": "#/$defs/uint64Decimal" },
+        "previewId": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "confirmed": { "type": "boolean" }
+      }
+    },
+    "supportBundleItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description"],
+      "properties": {
+        "name": { "enum": ["manifest.json", "health.json", "audit.json", "logs.json"] },
+        "description": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "supportBundlePreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "requestId", "projectFingerprint", "cursor", "projectVersion", "items", "excluded", "estimatedBytes", "scanStatus", "localOnly", "uploadPolicy", "outputFileName", "valid", "issues", "confirmation"],
+      "properties": {
+        "id": { "$ref": "#/$defs/sha256" },
+        "requestId": { "$ref": "#/$defs/opaqueId" },
+        "projectFingerprint": { "$ref": "#/$defs/sha256" },
+        "cursor": { "$ref": "#/$defs/uint64Decimal" },
+        "projectVersion": { "$ref": "#/$defs/uint64Decimal" },
+        "items": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "$ref": "#/$defs/supportBundleItem" } },
+        "excluded": { "type": "array", "minItems": 8, "maxItems": 8, "items": { "$ref": "#/$defs/boundedText" } },
+        "estimatedBytes": { "$ref": "#/$defs/uint64Decimal" },
+        "scanStatus": { "enum": ["allowlist_safe", "refused"] },
+        "localOnly": { "const": true },
+        "uploadPolicy": { "const": "never" },
+        "outputFileName": { "type": "string", "pattern": "^director-support-[0-9a-f]{12}-[0-9a-f]{12}\\.zip$" },
+        "valid": { "type": "boolean" },
+        "issues": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/explanation" } },
+        "confirmation": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "supportBundleResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundleId", "fileName", "sha256", "bytes", "permission", "generatedAt", "uploadAttempted"],
+      "properties": {
+        "bundleId": { "$ref": "#/$defs/sha256" },
+        "fileName": { "type": "string", "pattern": "^director-support-[0-9a-f]{12}-[0-9a-f]{12}\\.zip$" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "$ref": "#/$defs/uint64Decimal" },
+        "permission": { "const": "0600" },
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "uploadAttempted": { "const": false }
+      }
+    },
+    "operationsEffectResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "effectClass", "outcome", "gitState", "dynamicState", "successfulHalfRetried"],
+      "properties": {
+        "kind": { "enum": ["sync.now", "reconcile.now"] },
+        "effectClass": { "enum": ["store_only", "conditional_update"] },
+        "outcome": { "const": "observed" },
+        "gitState": { "enum": ["current", "local_ahead", "remote_ahead", "diverged", "failed", "identity_mismatch", "not_configured", "unavailable", "stale"] },
+        "dynamicState": { "enum": ["current", "local_ahead", "remote_ahead", "diverged", "failed", "identity_mismatch", "not_configured", "unavailable", "stale"] },
+        "successfulHalfRetried": { "const": false }
+      }
+    },
+    "operationsMutationResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "contractVersion", "contractHash", "hostId", "projectId", "cursor", "requestId", "status", "message", "supportPreview", "bundle", "effect", "refusalCode"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "contractVersion": { "const": "director-planning/v1" },
+        "contractHash": { "$ref": "#/$defs/sha256" },
+        "hostId": { "$ref": "#/$defs/opaqueId" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "cursor": { "$ref": "#/$defs/uint64Decimal" },
+        "requestId": { "$ref": "#/$defs/opaqueId" },
+        "status": { "enum": ["preview", "applied", "refused"] },
+        "message": { "$ref": "#/$defs/boundedText" },
+        "supportPreview": { "anyOf": [{ "$ref": "#/$defs/supportBundlePreview" }, { "type": "null" }] },
+        "bundle": { "anyOf": [{ "$ref": "#/$defs/supportBundleResult" }, { "type": "null" }] },
+        "effect": { "anyOf": [{ "$ref": "#/$defs/operationsEffectResult" }, { "type": "null" }] },
+        "refusalCode": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] }
       }
     },
     "doctorQueryInput": {

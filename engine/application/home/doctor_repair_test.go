@@ -155,6 +155,30 @@ func TestDoctorKeepsHealthyDegradedBlockingOfflineAndStaleStatesDistinct(t *test
 	}
 }
 
+func TestDoctorAndRepairUseDetailedGitDoltStateInsteadOfCoarseFallback(t *testing.T) {
+	store, source, _, service := doctorRepairFixture(10_000)
+	project := source.value.Projects["project-00"]
+	project.GitSync = SyncCurrent
+	project.GitSyncDetail = detailedSync(SyncCurrent, homeport.SyncReasonAligned, strings.Repeat("a", 64), strings.Repeat("a", 64), 10_000, false)
+	project.TaskStoreSync = SyncCurrent
+	project.TaskStoreSyncDetail = detailedSync(SyncDiverged, homeport.SyncReasonDiverged, strings.Repeat("b", 64), strings.Repeat("c", 64), 10_000, false)
+	project.RepairCapabilities.DynamicState = true
+	source.value.Projects["project-00"] = project
+	report, err := service.Doctor(context.Background(), planningport.DoctorQueryInput{HostID: "host-a", ProjectID: "project-00", ExpectedProjectVersion: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, check := range report.Checks {
+		if check.ID == "dynamic-state-sync" {
+			found = check.Status == "blocking" && check.Code == "dynamic-state-sync_diverged"
+		}
+	}
+	if !found || !repairTargetAvailable(doctorFacts{project: store.projects[0], operational: project, now: 10_000}) {
+		t.Fatalf("Doctor did not use detailed Dolt state: %#v", report.Checks)
+	}
+}
+
 func TestRepairPreviewHasExactNonInstallingEffectsAndApplyIsHumanServerEnforced(t *testing.T) {
 	store, _, executor, service := doctorRepairFixture(10_000)
 	previewResult, err := service.Repair(context.Background(), repairInput("repair.preview", "1", nil, false), AuthenticatedRepairActor{})

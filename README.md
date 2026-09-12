@@ -80,6 +80,13 @@ server-confirmed Repair Preview/Apply. It keeps offline cached facts visibly
 stale and disabled and never selects another host.
 See [Director Home and Project health](docs/director-home.md).
 
+Project Operations adds engine-owned hybrid reconciliation status, independent
+Organizer Git and TaskStore/Dolt partial-sync reasons, payload/path-free audit,
+14-day/100-MiB code-only technical logs, and a two-press local redacted support
+bundle flow. Bundles are mode `0600`, contain only four allowlisted JSON files,
+and are never uploaded automatically. See
+[Sync, reconciliation, audit, logs, and support bundles](docs/operations-diagnostics.md).
+
 ## Development
 
 Requirements are Linux, Node.js 22 or newer, npm with lockfile support, Go

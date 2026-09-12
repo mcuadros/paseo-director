@@ -130,7 +130,10 @@ exact host and engine instance. Organizer Create/Adopt uses the authenticated
 `POST /v1/planning/organizer-bootstrap` Preview/Apply endpoint. Doctor uses the
 read-only exact-host/version `POST /v1/planning/doctor` endpoint, and Repair
 uses authenticated `POST /v1/planning/repair` Preview/Apply with a recomputed
-SHA-256 Preview and durable readback. Task detail uses the same boundary at
+SHA-256 Preview and durable readback. Project Operations uses the read-only
+`POST /v1/planning/operations` report and the server-human-authenticated
+`POST /v1/planning/operations-mutate` manual control and support-bundle
+Preview/Generate contract. Task detail uses the same boundary at
 `POST /v1/planning/task-detail`. Its disjoint Board versus native-agent
 contexts and echoed response bind the exact host, Task, Run, Candidate, native
 Execution Workspace, and agent or return a bounded unavailable reason; the

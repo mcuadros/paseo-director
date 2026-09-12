@@ -17,6 +17,8 @@ import {
   doctorQueryRpc,
   homeQueryRpc,
   organizerBootstrapRpc,
+  operationsMutationRpc,
+  operationsQueryRpc,
   planningQueryRpc,
   planningTaskDetailRpc,
   repairProjectRpc,
@@ -103,6 +105,8 @@ export default function contribute(plugin: PluginContext) {
   plugin.handle(planningQueryRpc, (input) => connector.queryPlanning(input));
   plugin.handle(homeQueryRpc, (input) => connector.queryHome(input));
   plugin.handle(doctorQueryRpc, (input) => connector.queryDoctor(input));
+  plugin.handle(operationsQueryRpc, (input) => connector.queryOperations(input));
+  plugin.handle(operationsMutationRpc, (input) => connector.mutateOperations(input));
   plugin.handle(repairProjectRpc, (input) => connector.repairProject(input));
   plugin.handle(organizerBootstrapRpc, (input) => connector.bootstrapOrganizer(input));
   plugin.handle(planningTaskDetailRpc, (input) =>

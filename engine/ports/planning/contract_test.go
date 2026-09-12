@@ -19,7 +19,8 @@ func TestEmbeddedPlanningContract(t *testing.T) {
 		t.Fatalf("planning identity = %#v", definition)
 	}
 	if definition.QueryPath != QueryPath || definition.HomeQueryPath != HomeQueryPath ||
-		definition.DoctorQueryPath != DoctorQueryPath || definition.RepairMutationPath != RepairMutationPath ||
+		definition.DoctorQueryPath != DoctorQueryPath || definition.OperationsQueryPath != OperationsQueryPath ||
+		definition.OperationsMutationPath != OperationsMutationPath || definition.RepairMutationPath != RepairMutationPath ||
 		definition.OrganizerMutationPath != OrganizerMutationPath || definition.MaximumRequestBytes != MaximumRequestBytes ||
 		definition.MaximumResponseBytes != MaximumResponseBytes || definition.MaximumPageSize != MaximumPageSize ||
 		definition.MaximumHomePageSize != MaximumHomePageSize {
@@ -27,7 +28,7 @@ func TestEmbeddedPlanningContract(t *testing.T) {
 	}
 	if len(definition.DerivedStates) != 7 || len(definition.AttentionCodes) != 12 ||
 		len(definition.AllowedActions) != 17 || len(definition.ConfigurationKeys) != 8 ||
-		len(definition.HomeHealthStates) != 7 || len(definition.HomeActionKinds) != 12 {
+		len(definition.HomeHealthStates) != 7 || len(definition.HomeActionKinds) != 13 {
 		t.Fatalf("planning closed vocabularies = %#v", definition)
 	}
 	hash, err := SchemaSHA256()

@@ -12,6 +12,8 @@ import {
   PLANNING_MUTATION_PATH,
   PLANNING_DOCTOR_QUERY_PATH,
   PLANNING_HOME_QUERY_PATH,
+  PLANNING_OPERATIONS_QUERY_PATH,
+  PLANNING_OPERATIONS_MUTATION_PATH,
   PLANNING_ORGANIZER_MUTATION_PATH,
   PLANNING_QUERY_PATH,
   PLANNING_TASK_DETAIL_QUERY_PATH,
@@ -26,12 +28,20 @@ import {
   homeSnapshotSchema,
   doctorQueryInputSchema,
   doctorReportSchema,
+  operationsQueryInputSchema,
+  operationsReportSchema,
+  operationsMutationInputSchema,
+  operationsMutationResultSchema,
   organizerBootstrapInputSchema,
   organizerBootstrapResultSchema,
   repairInputSchema,
   repairResultSchema,
   type DoctorQueryInput,
   type DoctorReport,
+  type OperationsQueryInput,
+  type OperationsReport,
+  type OperationsMutationInput,
+  type OperationsMutationResult,
   type HomeQueryInput,
   type HomeSnapshot,
   type OrganizerBootstrapInput,
@@ -53,6 +63,8 @@ export type PlanningTransport = {
   taskDetail(input: TaskDetailQueryInput): Promise<TaskDetailSnapshot>;
   home?(input: HomeQueryInput): Promise<HomeSnapshot>;
   doctor?(input: DoctorQueryInput): Promise<DoctorReport>;
+  operations?(input: OperationsQueryInput): Promise<OperationsReport>;
+  mutateOperations?(input: OperationsMutationInput): Promise<OperationsMutationResult>;
   repair?(input: RepairInput): Promise<RepairResult>;
   bootstrapOrganizer?(input: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult>;
   mutate(input: PlanningMutationInput): Promise<PlanningMutationResult>;
@@ -167,10 +179,120 @@ export function createPlanningTransport(options: {
   const taskDetailUrl = new URL(PLANNING_TASK_DETAIL_QUERY_PATH, baseUrl);
   const homeUrl = new URL(PLANNING_HOME_QUERY_PATH, baseUrl);
   const doctorUrl = new URL(PLANNING_DOCTOR_QUERY_PATH, baseUrl);
+  const operationsUrl = new URL(PLANNING_OPERATIONS_QUERY_PATH, baseUrl);
+  const operationsMutationUrl = new URL(PLANNING_OPERATIONS_MUTATION_PATH, baseUrl);
   const organizerUrl = new URL(PLANNING_ORGANIZER_MUTATION_PATH, baseUrl);
   const mutationUrl = new URL(PLANNING_MUTATION_PATH, baseUrl);
   const repairUrl = new URL(PLANNING_REPAIR_MUTATION_PATH, baseUrl);
   return {
+    async operations(rawInput: OperationsQueryInput): Promise<OperationsReport> {
+      const input = operationsQueryInputSchema.parse(rawInput);
+      const body = JSON.stringify(input);
+      if (new TextEncoder().encode(body).byteLength > PLANNING_MAXIMUM_REQUEST_BYTES) {
+        throw new PlanningTransportError("ENGINE_OPERATIONS_INPUT", "Operations query exceeds the contract bound");
+      }
+      let response: Response;
+      try {
+        response = await fetchPlanning(operationsUrl, {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            "content-type": "application/json",
+            "x-director-contract-version": PLANNING_CONTRACT_VERSION,
+            "x-director-contract-hash": PLANNING_CONTRACT_SHA256,
+          },
+          body,
+          signal: AbortSignal.timeout(requestTimeoutMilliseconds),
+        });
+      } catch {
+        throw new PlanningTransportError("ENGINE_OPERATIONS_UNAVAILABLE", "Operations are unavailable on this exact host");
+      }
+      if (response.url !== operationsUrl.href) {
+        throw new PlanningTransportError("ENGINE_OPERATIONS_ORIGIN", "Operations response origin does not match");
+      }
+      if (!response.ok) {
+        let responseCode: string | undefined;
+        try {
+          const value = await boundedResponseValue(response);
+          if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && typeof (value as { code?: unknown }).code === "string") {
+            responseCode = (value as { code: string }).code;
+          }
+        } catch {
+          responseCode = undefined;
+        }
+        const code = responseCode === "OPERATIONS_HOST_MISMATCH" ? "ENGINE_OPERATIONS_HOST_MISMATCH"
+          : responseCode === "OPERATIONS_FACTS_STALE" ? "ENGINE_OPERATIONS_FACTS_STALE"
+            : "ENGINE_OPERATIONS_RESPONSE";
+        throw new PlanningTransportError(code, code === "ENGINE_OPERATIONS_FACTS_STALE"
+          ? "Operations facts changed; refresh this exact Project"
+          : code === "ENGINE_OPERATIONS_HOST_MISMATCH" ? "Operations refused a different host identity" : "Director Engine rejected Operations");
+      }
+      if (response.headers.get("x-director-contract-version") !== PLANNING_CONTRACT_VERSION ||
+        response.headers.get("x-director-contract-hash") !== PLANNING_CONTRACT_SHA256) {
+        throw new PlanningTransportError("ENGINE_OPERATIONS_CONTRACT", "Operations contract does not match");
+      }
+      try {
+        const report = operationsReportSchema.parse(await boundedResponseValue(response));
+        if (report.hostId !== input.hostId || report.projectId !== input.projectId || report.projectVersion !== input.expectedProjectVersion) {
+          throw new PlanningTransportError("ENGINE_OPERATIONS_BINDING", "Operations response binding does not match");
+        }
+        return report;
+      } catch (error) {
+        if (error instanceof PlanningTransportError) throw error;
+        throw new PlanningTransportError("ENGINE_OPERATIONS_PAYLOAD", "Operations response is invalid");
+      }
+    },
+    async mutateOperations(rawInput: OperationsMutationInput): Promise<OperationsMutationResult> {
+      const actor = options.mutationActor;
+      const identityPattern = /^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,127}$/u;
+      if (!actor || actor.kind !== "human" || !identityPattern.test(actor.id) || !identityPattern.test(actor.sessionId)) {
+        throw new PlanningTransportError("ENGINE_OPERATIONS_ACTOR", "Manual Operations require a server-authenticated human session");
+      }
+      const input = operationsMutationInputSchema.parse(rawInput);
+      const body = JSON.stringify(input);
+      if (new TextEncoder().encode(body).byteLength > PLANNING_MAXIMUM_REQUEST_BYTES) {
+        throw new PlanningTransportError("ENGINE_OPERATIONS_INPUT", "Operations mutation exceeds the contract bound");
+      }
+      let response: Response;
+      try {
+        response = await fetchPlanning(operationsMutationUrl, {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            "content-type": "application/json",
+            "x-director-contract-version": PLANNING_CONTRACT_VERSION,
+            "x-director-contract-hash": PLANNING_CONTRACT_SHA256,
+            [PLANNING_MUTATION_ACTOR_HEADERS.kind]: actor.kind,
+            [PLANNING_MUTATION_ACTOR_HEADERS.id]: actor.id,
+            [PLANNING_MUTATION_ACTOR_HEADERS.session]: actor.sessionId,
+          },
+          body,
+          signal: AbortSignal.timeout(requestTimeoutMilliseconds),
+        });
+      } catch {
+        throw new PlanningTransportError("ENGINE_OPERATIONS_UNAVAILABLE", "Manual Operations are unavailable on this exact host");
+      }
+      if (response.url !== operationsMutationUrl.href) {
+        throw new PlanningTransportError("ENGINE_OPERATIONS_ORIGIN", "Operations mutation origin does not match");
+      }
+      if (!response.ok) {
+        throw new PlanningTransportError("ENGINE_OPERATIONS_RESPONSE", "Director Engine rejected the Operations mutation");
+      }
+      if (response.headers.get("x-director-contract-version") !== PLANNING_CONTRACT_VERSION ||
+        response.headers.get("x-director-contract-hash") !== PLANNING_CONTRACT_SHA256) {
+        throw new PlanningTransportError("ENGINE_OPERATIONS_CONTRACT", "Operations mutation contract does not match");
+      }
+      try {
+        const result = operationsMutationResultSchema.parse(await boundedResponseValue(response));
+        if (result.hostId !== input.hostId || result.projectId !== input.projectId || result.requestId !== input.requestId) {
+          throw new PlanningTransportError("ENGINE_OPERATIONS_BINDING", "Operations mutation response binding does not match");
+        }
+        return result;
+      } catch (error) {
+        if (error instanceof PlanningTransportError) throw error;
+        throw new PlanningTransportError("ENGINE_OPERATIONS_PAYLOAD", "Operations mutation response is invalid");
+      }
+    },
     async doctor(rawInput: DoctorQueryInput): Promise<DoctorReport> {
       const input = doctorQueryInputSchema.parse(rawInput);
       const body = JSON.stringify(input);

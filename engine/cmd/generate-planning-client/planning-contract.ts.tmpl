@@ -19,6 +19,8 @@ export const PLANNING_QUERY_PATH = {{quote .QueryPath}} as const;
 export const PLANNING_TASK_DETAIL_QUERY_PATH = {{quote .TaskDetailQueryPath}} as const;
 export const PLANNING_HOME_QUERY_PATH = {{quote .HomeQueryPath}} as const;
 export const PLANNING_DOCTOR_QUERY_PATH = {{quote .DoctorQueryPath}} as const;
+export const PLANNING_OPERATIONS_QUERY_PATH = {{quote .OperationsQueryPath}} as const;
+export const PLANNING_OPERATIONS_MUTATION_PATH = {{quote .OperationsMutationPath}} as const;
 export const PLANNING_MUTATION_PATH = {{quote .MutationPath}} as const;
 export const PLANNING_ORGANIZER_MUTATION_PATH = {{quote .OrganizerMutationPath}} as const;
 export const PLANNING_REPAIR_MUTATION_PATH = {{quote .RepairMutationPath}} as const;
@@ -317,8 +319,8 @@ export const homeLeaseSchema = z.strictObject({
 
 export const homeSyncSchema = z.strictObject({
   state: z.enum(["current", "partial", "failed", "not_configured", "unavailable", "stale"]),
-  git: z.enum(["current", "failed", "not_configured", "unavailable", "stale"]),
-  dynamicState: z.enum(["current", "failed", "not_configured", "unavailable", "stale"]),
+  git: z.enum(["current", "local_ahead", "remote_ahead", "diverged", "failed", "identity_mismatch", "not_configured", "unavailable", "stale"]),
+  dynamicState: z.enum(["current", "local_ahead", "remote_ahead", "diverged", "failed", "identity_mismatch", "not_configured", "unavailable", "stale"]),
   observedAt: z.iso.datetime().nullable(),
 });
 
@@ -411,6 +413,247 @@ export const homeSnapshotSchema = z.strictObject({
   contractHash: z.literal(PLANNING_CONTRACT_SHA256),
   cursor: uint64DecimalSchema,
   page: homePageSchema,
+});
+
+export const operationsQueryInputSchema = z.strictObject({
+  hostId: opaquePlanningIdSchema,
+  projectId: opaquePlanningIdSchema,
+  expectedProjectVersion: uint64DecimalSchema,
+});
+
+export const syncStreamDetailSchema = z.strictObject({
+  kind: z.enum(["organizer_git", "taskstore_dolt"]),
+  state: z.enum(["current", "local_ahead", "remote_ahead", "diverged", "failed", "identity_mismatch", "not_configured", "unavailable", "stale"]),
+  reasonCode: z.enum(["aligned", "local_ahead", "remote_ahead", "diverged", "operation_failed", "identity_mismatch", "authentication_unavailable", "remote_unavailable", "observation_stale", "not_configured"]),
+  detail: boundedPlanningTextSchema,
+  localRevisionFingerprint: sha256Schema.nullable(),
+  remoteRevisionFingerprint: sha256Schema.nullable(),
+  observedAt: z.iso.datetime().nullable(),
+  lastSuccessAt: z.iso.datetime().nullable(),
+  retryable: z.boolean(),
+}).superRefine((value, context) => {
+  const current = value.state === "current";
+  const compared = value.state === "local_ahead" || value.state === "remote_ahead" || value.state === "diverged";
+  if (current && (value.reasonCode !== "aligned" || value.localRevisionFingerprint === null || value.localRevisionFingerprint !== value.remoteRevisionFingerprint)) {
+    context.addIssue({ code: "custom", message: "Current Sync requires equal exact revision fingerprints", path: ["state"] });
+  }
+  if (compared && (value.localRevisionFingerprint === null || value.remoteRevisionFingerprint === null || value.localRevisionFingerprint === value.remoteRevisionFingerprint)) {
+    context.addIssue({ code: "custom", message: "Unaligned Sync requires two different exact revision fingerprints", path: ["state"] });
+  }
+  const exactReason: Partial<Record<typeof value.state, typeof value.reasonCode>> = {
+    local_ahead: "local_ahead", remote_ahead: "remote_ahead", diverged: "diverged", identity_mismatch: "identity_mismatch",
+    not_configured: "not_configured", stale: "observation_stale",
+  };
+  if (exactReason[value.state] && exactReason[value.state] !== value.reasonCode) {
+    context.addIssue({ code: "custom", message: "Sync state and reason do not match", path: ["reasonCode"] });
+  }
+});
+
+export const operationsSyncSchema = z.strictObject({
+  state: z.enum(["current", "partial", "failed", "not_configured", "unavailable", "stale"]),
+  streams: z.array(syncStreamDetailSchema).length(2).readonly(),
+  automaticEnabled: z.boolean(),
+  debounceMillis: uint64DecimalSchema,
+  flushAtCriticalTransitions: z.literal(true),
+}).superRefine((value, context) => {
+  if (value.streams[0]?.kind !== "organizer_git" || value.streams[1]?.kind !== "taskstore_dolt") {
+    context.addIssue({ code: "custom", message: "Sync streams must preserve the fixed Git/Dolt order", path: ["streams"] });
+  }
+});
+
+export const operationsHybridFactsSchema = z.strictObject({
+  mode: z.literal("hybrid"),
+  state: z.enum(["current", "running", "waiting_external", "degraded", "unavailable", "stale"]),
+  reasonCode: z.enum(["observed", "event_wake_pending", "external_wait", "fact_mismatch", "source_offline", "observation_stale"]),
+  detail: boundedPlanningTextSchema,
+  terminalEventDispatch: z.literal("synchronous_wake_only"),
+  terminalTargetMillis: uint64DecimalSchema,
+  activeIntervalMillis: uint64DecimalSchema,
+  idleIntervalMillis: uint64DecimalSchema,
+  lostEventWatchdogMillis: uint64DecimalSchema,
+  lastCompletedAt: z.iso.datetime().nullable(),
+  pendingWakeups: uint64DecimalSchema,
+});
+
+export const operationsAuditEntrySchema = z.strictObject({
+  id: sha256Schema,
+  sequence: uint64DecimalSchema,
+  category: z.enum(["system", "project", "organizer", "workspace", "task", "run", "candidate", "validation", "review", "feedback", "delivery", "cleanup", "control"]),
+  action: z.enum(["unclassified_event", "lease_changed", "project_control_changed", "project_changed", "organizer_changed", "workspace_changed", "dependency_override_recorded", "attention_requested", "task_changed", "run_changed", "candidate_correction_recorded", "candidate_changed", "validation_recorded", "review_recorded", "feedback_recorded", "publication_recorded", "integration_recorded", "cleanup_recorded"]),
+  outcome: z.enum(["recorded", "completed", "attention"]),
+  actorKind: z.enum(["human", "agent", "connector", "system", "unavailable"]),
+  actorFingerprint: sha256Schema.nullable(),
+  subjectFingerprint: sha256Schema,
+  runFingerprint: sha256Schema.nullable(),
+  payloadIncluded: z.literal(false),
+});
+
+export const operationsAuditSchema = z.strictObject({
+  entries: z.array(operationsAuditEntrySchema).max(64).readonly(),
+  entryLimit: uint64DecimalSchema,
+  truncated: z.boolean(),
+  payloadsIncluded: z.literal(false),
+  pathsIncluded: z.literal(false),
+});
+
+export const operationsLogEntrySchema = z.strictObject({
+  sequence: uint64DecimalSchema,
+  occurredAt: z.iso.datetime(),
+  level: z.enum(["info", "warning", "error"]),
+  component: z.enum(["engine", "dynamic_state", "git", "dolt", "coordination", "security", "support"]),
+  code: z.enum(["engine_started", "fact_scan_completed", "fact_scan_waiting_external", "git_sync_current", "git_sync_failed", "dolt_sync_current", "dolt_sync_failed", "taskstore_unhealthy", "support_bundle_generated", "unsafe_output_suppressed"]),
+  message: boundedPlanningTextSchema,
+  occurrences: uint64DecimalSchema,
+});
+
+export const operationsLogsSchema = z.strictObject({
+  state: z.enum(["current", "unavailable"]),
+  reason: explanationSchema.nullable(),
+  entries: z.array(operationsLogEntrySchema).max(128).readonly(),
+  entryLimit: uint64DecimalSchema,
+  returnedBytes: uint64DecimalSchema,
+  retentionDays: uint64DecimalSchema,
+  retentionBytes: uint64DecimalSchema,
+  truncated: z.boolean(),
+  rawOutputIncluded: z.literal(false),
+}).superRefine((value, context) => {
+  if ((value.state === "current") === (value.reason !== null)) {
+    context.addIssue({ code: "custom", message: "Technical log availability must be explicit", path: ["reason"] });
+  }
+});
+
+export const supportAvailabilitySchema = z.strictObject({
+  previewAvailable: z.boolean(),
+  reason: explanationSchema.nullable(),
+  uploadPolicy: z.literal("never"),
+}).superRefine((value, context) => {
+  if (value.previewAvailable === (value.reason !== null)) {
+    context.addIssue({ code: "custom", message: "Support availability must be explicit", path: ["reason"] });
+  }
+});
+
+export const operationsControlAvailabilitySchema = z.strictObject({
+  syncAvailable: z.boolean(),
+  reconcileAvailable: z.boolean(),
+  reason: explanationSchema.nullable(),
+}).superRefine((value, context) => {
+  const bothAvailable = value.syncAvailable && value.reconcileAvailable;
+  if (bothAvailable === (value.reason !== null)) {
+    context.addIssue({ code: "custom", message: "Operations control availability must be explicit", path: ["reason"] });
+  }
+});
+
+export const operationsReportSchema = z.strictObject({
+  schemaVersion: z.literal(PLANNING_SCHEMA_VERSION),
+  contractVersion: z.literal(PLANNING_CONTRACT_VERSION),
+  contractHash: z.literal(PLANNING_CONTRACT_SHA256),
+  cursor: uint64DecimalSchema,
+  hostId: opaquePlanningIdSchema,
+  hostInstanceId: opaquePlanningIdSchema,
+  projectId: opaquePlanningIdSchema,
+  projectName: boundedPlanningTextSchema,
+  projectVersion: uint64DecimalSchema,
+  observationId: sha256Schema,
+  observedAt: z.iso.datetime(),
+  maximumAgeMillis: uint64DecimalSchema,
+  status: z.enum(["healthy", "degraded", "partial_sync", "offline", "stale", "needs_you"]),
+  reasons: z.array(explanationSchema).max(16).readonly(),
+  hybrid: operationsHybridFactsSchema,
+  sync: operationsSyncSchema,
+  audit: operationsAuditSchema,
+  logs: operationsLogsSchema,
+  controls: operationsControlAvailabilitySchema,
+  support: supportAvailabilitySchema,
+});
+
+export const operationsMutationInputSchema = z.strictObject({
+  schemaVersion: z.literal(PLANNING_SCHEMA_VERSION),
+  contractVersion: z.literal(PLANNING_CONTRACT_VERSION),
+  contractHash: z.literal(PLANNING_CONTRACT_SHA256),
+  hostId: opaquePlanningIdSchema,
+  requestId: opaquePlanningIdSchema.refine((value) => value.length >= 16),
+  kind: z.enum(["sync.now", "reconcile.now", "support.preview", "support.generate"]),
+  projectId: opaquePlanningIdSchema,
+  expectedProjectVersion: uint64DecimalSchema,
+  previewId: sha256Schema.nullable(),
+  confirmed: z.boolean(),
+}).superRefine((value, context) => {
+  const supportPreview = value.kind === "support.preview";
+  const supportGenerate = value.kind === "support.generate";
+  if ((supportPreview && (value.previewId !== null || value.confirmed)) ||
+    (supportGenerate && (value.previewId === null || !value.confirmed)) ||
+    (!supportPreview && !supportGenerate && (value.previewId !== null || !value.confirmed))) {
+    context.addIssue({ code: "custom", message: "Operations mutation confirmation does not match its kind", path: ["confirmed"] });
+  }
+});
+
+export const supportBundleItemSchema = z.strictObject({
+  name: z.enum(["manifest.json", "health.json", "audit.json", "logs.json"]),
+  description: boundedPlanningTextSchema,
+});
+
+export const supportBundlePreviewSchema = z.strictObject({
+  id: sha256Schema,
+  requestId: opaquePlanningIdSchema,
+  projectFingerprint: sha256Schema,
+  cursor: uint64DecimalSchema,
+  projectVersion: uint64DecimalSchema,
+  items: z.array(supportBundleItemSchema).length(4).readonly(),
+  excluded: z.array(boundedPlanningTextSchema).length(8).readonly(),
+  estimatedBytes: uint64DecimalSchema,
+  scanStatus: z.enum(["allowlist_safe", "refused"]),
+  localOnly: z.literal(true),
+  uploadPolicy: z.literal("never"),
+  outputFileName: z.string().regex(/^director-support-[0-9a-f]{12}-[0-9a-f]{12}\.zip$/),
+  valid: z.boolean(),
+  issues: z.array(explanationSchema).max(8).readonly(),
+  confirmation: boundedPlanningTextSchema,
+}).superRefine((value, context) => {
+  if (value.valid !== (value.scanStatus === "allowlist_safe" && value.issues.length === 0)) {
+    context.addIssue({ code: "custom", message: "Support Preview validity must match its safety scan", path: ["valid"] });
+  }
+});
+
+export const supportBundleResultSchema = z.strictObject({
+  bundleId: sha256Schema,
+  fileName: z.string().regex(/^director-support-[0-9a-f]{12}-[0-9a-f]{12}\.zip$/),
+  sha256: sha256Schema,
+  bytes: uint64DecimalSchema,
+  permission: z.literal("0600"),
+  generatedAt: z.iso.datetime(),
+  uploadAttempted: z.literal(false),
+});
+
+export const operationsEffectResultSchema = z.strictObject({
+  kind: z.enum(["sync.now", "reconcile.now"]),
+  effectClass: z.enum(["store_only", "conditional_update"]),
+  outcome: z.literal("observed"),
+  gitState: syncStreamDetailSchema.shape.state,
+  dynamicState: syncStreamDetailSchema.shape.state,
+  successfulHalfRetried: z.literal(false),
+});
+
+export const operationsMutationResultSchema = z.strictObject({
+  schemaVersion: z.literal(PLANNING_SCHEMA_VERSION),
+  contractVersion: z.literal(PLANNING_CONTRACT_VERSION),
+  contractHash: z.literal(PLANNING_CONTRACT_SHA256),
+  hostId: opaquePlanningIdSchema,
+  projectId: opaquePlanningIdSchema,
+  cursor: uint64DecimalSchema,
+  requestId: opaquePlanningIdSchema,
+  status: z.enum(["preview", "applied", "refused"]),
+  message: boundedPlanningTextSchema,
+  supportPreview: supportBundlePreviewSchema.nullable(),
+  bundle: supportBundleResultSchema.nullable(),
+  effect: operationsEffectResultSchema.nullable(),
+  refusalCode: opaquePlanningIdSchema.nullable(),
+}).superRefine((value, context) => {
+  const shapes = Number(value.supportPreview !== null) + Number(value.bundle !== null) + Number(value.effect !== null) + Number(value.refusalCode !== null);
+  if ((value.status === "preview" && (value.supportPreview === null || shapes !== 1)) ||
+    (value.status === "refused" && (value.refusalCode === null || shapes !== 1)) ||
+    (value.status === "applied" && (shapes !== 1 || value.refusalCode !== null || value.supportPreview !== null))) {
+    context.addIssue({ code: "custom", message: "Operations result payload does not match status", path: ["status"] });
+  }
 });
 
 export const doctorQueryInputSchema = z.strictObject({
@@ -909,6 +1152,12 @@ export type HomeQueryInput = z.output<typeof homeQueryInputSchema>;
 export type HomeAction = z.output<typeof homeActionSchema>;
 export type HomeProject = z.output<typeof homeProjectSchema>;
 export type HomeSnapshot = z.output<typeof homeSnapshotSchema>;
+export type OperationsQueryInput = z.output<typeof operationsQueryInputSchema>;
+export type OperationsReport = z.output<typeof operationsReportSchema>;
+export type OperationsMutationInput = z.output<typeof operationsMutationInputSchema>;
+export type OperationsMutationResult = z.output<typeof operationsMutationResultSchema>;
+export type SupportBundlePreview = z.output<typeof supportBundlePreviewSchema>;
+export type SupportBundleResult = z.output<typeof supportBundleResultSchema>;
 export type DoctorQueryInput = z.output<typeof doctorQueryInputSchema>;
 export type DoctorCheck = z.output<typeof doctorCheckSchema>;
 export type DoctorReport = z.output<typeof doctorReportSchema>;
@@ -938,6 +1187,8 @@ export interface PlanningClient {
 
 export interface HomeClient {
   home(input: HomeQueryInput): Promise<HomeSnapshot>;
+  operations(input: OperationsQueryInput): Promise<OperationsReport>;
+  mutateOperations(input: OperationsMutationInput): Promise<OperationsMutationResult>;
   doctor(input: DoctorQueryInput): Promise<DoctorReport>;
   repair(input: RepairInput): Promise<RepairResult>;
   bootstrapOrganizer(input: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult>;
