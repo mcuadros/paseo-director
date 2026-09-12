@@ -8,12 +8,13 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   architectureErrors,
@@ -28,6 +29,25 @@ import {
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const modulePath = "github.com/mcuadros/director-engine";
+
+async function loadMutatedArchitectureCheck(mutate) {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "director-architecture-mutant-"));
+  const sourcePath = resolve(repositoryRoot, "tools/ci/architecture-check.mjs");
+  const destinationPath = resolve(temporaryRoot, "tools/ci/architecture-check.mjs");
+  mkdirSync(dirname(destinationPath), { recursive: true });
+  copyFileSync(
+    resolve(repositoryRoot, "tools/ci/scaffold-check.mjs"),
+    resolve(temporaryRoot, "tools/ci/scaffold-check.mjs"),
+  );
+  const source = readFileSync(sourcePath, "utf8");
+  const mutated = mutate(source);
+  assert.notEqual(mutated, source, "mutation must change the architecture checker");
+  writeFileSync(destinationPath, mutated, { mode: 0o600 });
+  return {
+    checker: await import(pathToFileURL(destinationPath).href),
+    temporaryRoot,
+  };
+}
 
 test("the repository satisfies the complete modular architecture contract", () => {
   assert.deepEqual(architectureErrors(repositoryRoot), []);
@@ -566,6 +586,13 @@ test("policy-shaped paths are rejected symmetrically across every boundary layer
     "connector/retry/attempt.server.ts",
     "engine/adapters/projection/reader.go",
     "engine/agent-runtime/closure/claim.go",
+    "ui/projections/board.client.tsx",
+    "rpc/projections/status.shared.ts",
+    "connector/retries/attempt.server.ts",
+    "ui/closures/card.client.tsx",
+    "ui/schedulers/card.client.tsx",
+    "connector/policies/transport.server.ts",
+    "engine/adapters/projections/reader.go",
   ]) {
     assert.equal(policyPathErrors(path).length, 1, `admitted policy path ${path}`);
   }
@@ -577,9 +604,39 @@ test("policy-shaped paths are rejected symmetrically across every boundary layer
     "connector/paseo.server.ts",
     "engine/adapters/dolt/store.go",
     "engine/agent-runtime/claim.go",
+    "ui/projectors/board.client.tsx",
+    "rpc/schedules/status.shared.ts",
+    "connector/retrievals/transport.server.ts",
   ]) {
     assert.deepEqual(policyPathErrors(path), [], `rejected legitimate path ${path}`);
   }
+});
+
+test("runtime suffix diagnostics name the Director repository convention", () => {
+  const errors = typescriptBoundaryErrors([
+    { path: "ui/board.tsx", source: "export function BoardView() {}\n" },
+  ]);
+  assert.deepEqual(errors, [
+    "ui/board.tsx: ui runtime filename does not follow the Director repository convention",
+  ]);
+  assert.doesNotMatch(errors.join("\n"), /Paseo 0\.7 suffix/u);
+});
+
+test("the integrated Board/List and current M5 host sources remain admitted", () => {
+  const paths = [
+    "index.ts",
+    "ui/board-view.client.ts",
+    "ui/planning-surface.client.tsx",
+    "ui/task-detail-view.client.tsx",
+    "ui/task-inspector.client.tsx",
+  ];
+  assert.deepEqual(
+    typescriptBoundaryErrors(paths.map((path) => ({
+      path,
+      source: readFileSync(resolve(repositoryRoot, path), "utf8"),
+    }))),
+    [],
+  );
 });
 
 test("TypeScript boundaries reject host SDK escape, reverse imports, policy, and mixed suffixes", () => {
@@ -724,6 +781,33 @@ test("configuration revision policy guards cover every TypeScript host boundary"
   }
 });
 
+test("the composition root uses the broad configuration and projection declaration guard", () => {
+  for (const identifier of [
+    "OrganizerRevisionState",
+    "ConfigurationRevisionState",
+    "RunConfigurationSnapshot",
+    "TaskProjection",
+  ]) {
+    const errors = typescriptBoundaryErrors([
+      { path: "index.ts", source: `export interface ${identifier} {}\n` },
+    ]);
+    assert.ok(
+      errors.some((error) => error.includes(`policy-shaped symbol ${identifier}`)),
+      `admitted ${identifier} in the composition root`,
+    );
+  }
+
+  assert.deepEqual(
+    typescriptBoundaryErrors([
+      {
+        path: "index.ts",
+        source: "export default function contribute() {}\n",
+      },
+    ]),
+    [],
+  );
+});
+
 test("Organizer Create and Adopt orchestration paths stay out of host boundaries", () => {
   for (const role of ["ui", "rpc", "generated", "connector"]) {
     for (const boundary of ["organizer-bootstrap", "create-project", "adopt-organizer"]) {
@@ -746,13 +830,30 @@ test("only the exact canonical engine host contract is admitted", () => {
     hostContractErrors([{ path: canonicalPath, source: canonicalSource }]),
     [],
   );
+  assert.deepEqual(hostContractErrors([]), [
+    `${canonicalPath}: exactly one engine-owned versioned host interface is required (found 0)`,
+  ]);
+  assert.deepEqual(
+    hostContractErrors([
+      { path: canonicalPath, source: canonicalSource },
+      { path: canonicalPath, source: canonicalSource },
+    ]),
+    [
+      `${canonicalPath}: exactly one engine-owned versioned host interface is required (found 2)`,
+    ],
+  );
 
   for (const alternative of [
     { path: "engine/host-interface.v2.json", source: "{}" },
     { path: "engine/adapters/nested/host-interface.v2.json", source: "{}" },
     { path: "engine/ports/host2/host-contract.v1.json", source: "{}" },
+    { path: "rpc/host-interface.v2.json", source: "{}" },
     {
       path: "engine/ports/alternate/schema.v2.json",
+      source: canonicalSource,
+    },
+    {
+      path: "ui/assets/transport.v2.json",
       source: canonicalSource,
     },
   ]) {
@@ -762,10 +863,92 @@ test("only the exact canonical engine host contract is admitted", () => {
         alternative,
       ]),
       [
-        "engine/ports/host: exactly one engine-owned versioned host interface is required",
+        `${alternative.path}: duplicate or misplaced host interface contract; only ${canonicalPath} is permitted`,
       ],
       `admitted alternative host contract ${alternative.path}`,
     );
+  }
+
+  assert.deepEqual(
+    hostContractErrors([
+      { path: canonicalPath, source: canonicalSource },
+      {
+        path: "engine/ports/planning/planning-surface.v1.json",
+        source: readFileSync(
+          resolve(repositoryRoot, "engine/ports/planning/planning-surface.v1.json"),
+          "utf8",
+        ),
+      },
+      {
+        path: "package.json",
+        source: readFileSync(resolve(repositoryRoot, "package.json"), "utf8"),
+      },
+    ]),
+    [],
+    "legitimate non-host JSON must remain admitted",
+  );
+
+  assert.deepEqual(
+    hostContractErrors([
+      { path: canonicalPath, source: canonicalSource },
+      { path: "rpc/z-host-interface.v2.json", source: "{}" },
+      { path: "connector/a-host-contract.v2.json", source: "{}" },
+    ]),
+    [
+      `connector/a-host-contract.v2.json: duplicate or misplaced host interface contract; only ${canonicalPath} is permitted`,
+      `rpc/z-host-interface.v2.json: duplicate or misplaced host interface contract; only ${canonicalPath} is permitted`,
+    ],
+    "offending paths must be named in deterministic order",
+  );
+});
+
+test("standalone checks diagnose a content-shaped host contract outside engine", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "director-host-contract-copy-"));
+  const checkout = resolve(temporaryRoot, "checkout");
+  const duplicatePath = "rpc/transport.v2.json";
+  try {
+    const clone = spawnSync(
+      "git",
+      ["clone", "--quiet", "--no-hardlinks", repositoryRoot, checkout],
+      { encoding: "utf8" },
+    );
+    assert.equal(clone.status, 0, clone.stderr);
+    copyFileSync(
+      resolve(repositoryRoot, "tools/ci/architecture-check.mjs"),
+      resolve(checkout, "tools/ci/architecture-check.mjs"),
+    );
+    writeFileSync(
+      resolve(checkout, duplicatePath),
+      readFileSync(
+        resolve(repositoryRoot, "engine/ports/host/host-interface.v1.json"),
+        "utf8",
+      ),
+      { mode: 0o600 },
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [resolve(checkout, "tools/ci/architecture-check.mjs")],
+      {
+        cwd: checkout,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GOCACHE: resolve(temporaryRoot, "go-cache"),
+          GOWORK: "off",
+        },
+      },
+    );
+    assert.equal(result.status, 1);
+    assert.equal(
+      result.stderr.trim(),
+      [
+        "Architecture boundary checks failed:",
+        `- ${duplicatePath}: duplicate or misplaced host interface contract; only engine/ports/host/host-interface.v1.json is permitted`,
+      ].join("\n"),
+    );
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
   }
 });
 
@@ -841,12 +1024,29 @@ test("a missing or failing go toolchain fails closed with a bounded reason", () 
 
   assert.equal(
     goListFailureMessage({ status: 1, stderr: "  engine/x: broken import  " }),
-    "engine/x: broken import",
+    "go list failed: engine/x: broken import",
+  );
+
+  assert.equal(
+    goListFailureMessage({
+      status: 1,
+      stderr: "z/package: later\na/package: first\nz/package: later\n",
+    }),
+    "go list failed: a/package: first | z/package: later",
   );
 
   const flood = goListFailureMessage({ status: 1, stderr: "e".repeat(9_000) });
-  assert.ok(flood.length < 2_100, "the diagnostic must stay bounded");
+  assert.ok(flood.length <= 2_000, "the diagnostic must stay bounded");
   assert.match(flood, /\(truncated\)$/u);
+
+  assert.equal(
+    goListFailureMessage({
+      status: null,
+      stderr: null,
+      error: Object.assign(new Error("host-specific detail"), { code: "EPERM" }),
+    }),
+    "go list failed to start: EPERM",
+  );
 
   assert.equal(
     goListFailureMessage({ status: 2, stderr: "", error: undefined }),
@@ -858,4 +1058,118 @@ test("a missing or failing go toolchain fails closed with a bounded reason", () 
   );
   assert.equal(goListFailureMessage({}), "go list failed");
   assert.equal(goListFailureMessage(undefined), "go list failed");
+});
+
+test("standalone architecture checks report go list failure without a Node stack", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "director-architecture-golist-"));
+  try {
+    for (const path of [
+      "tools/ci/architecture-check.mjs",
+      "tools/ci/scaffold-check.mjs",
+    ]) {
+      const destination = resolve(temporaryRoot, path);
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(resolve(repositoryRoot, path), destination);
+    }
+    mkdirSync(resolve(temporaryRoot, "engine"), { recursive: true });
+    writeFileSync(
+      resolve(temporaryRoot, "engine/go.mod"),
+      "module example.com/director-architecture-fixture\n\ngo 1.22\n",
+      { mode: 0o600 },
+    );
+    mkdirSync(resolve(temporaryRoot, "engine/ports/host"), { recursive: true });
+    writeFileSync(
+      resolve(temporaryRoot, "engine/ports/host/contract.go"),
+      [
+        "package host",
+        "",
+        'import _ "embed"',
+        "",
+        "//go:embed host-interface.v1.json",
+        "var schema []byte",
+        "",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+    for (const args of [
+      ["init", "--quiet"],
+      ["add", "--all"],
+    ]) {
+      const result = spawnSync("git", args, {
+        cwd: temporaryRoot,
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, result.stderr);
+    }
+
+    const result = spawnSync(
+      process.execPath,
+      [resolve(temporaryRoot, "tools/ci/architecture-check.mjs")],
+      {
+        cwd: temporaryRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GOCACHE: resolve(temporaryRoot, ".go-cache"),
+          GOWORK: "off",
+        },
+      },
+    );
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /^Architecture boundary checks failed:\n- engine: go list failed: /u,
+    );
+    assert.match(result.stderr, /host-interface\.v1\.json/u);
+    assert.doesNotMatch(result.stderr, /node:|file:\/\/|\n\s+at\s/u);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("focused architecture mutations are killed by their adversarial probes", async () => {
+  const canonicalPath = "engine/ports/host/host-interface.v1.json";
+  const canonicalSource = readFileSync(resolve(repositoryRoot, canonicalPath), "utf8");
+  const mutations = [
+    {
+      name: "composition root declaration guard",
+      mutate: (source) => source.replace(
+        'path === "index.ts" ||',
+        "false ||",
+      ),
+      killed: (checker) => checker.policyOwnershipErrors(
+        "index.ts",
+        "export interface TaskProjection {}\n",
+        "typescript",
+      ).length !== 1,
+    },
+    {
+      name: "plural projection path guard",
+      mutate: (source) => source.replace("projections?", "projection"),
+      killed: (checker) =>
+        checker.policyPathErrors("ui/projections/board.client.tsx").length !== 1,
+    },
+    {
+      name: "whole-tree host contract content sweep",
+      mutate: (source) => source.replace(
+        '(path.endsWith(".json") && hasHostContractContentShape(source))',
+        '(path.startsWith("engine/") && path.endsWith(".json") && hasHostContractContentShape(source))',
+      ),
+      killed: (checker) => checker.hostContractErrors([
+        { path: canonicalPath, source: canonicalSource },
+        { path: "rpc/transport.v2.json", source: canonicalSource },
+      ]).length !== 1,
+    },
+  ];
+
+  for (const mutation of mutations) {
+    const { checker, temporaryRoot } = await loadMutatedArchitectureCheck(
+      mutation.mutate,
+    );
+    try {
+      assert.equal(mutation.killed(checker), true, `${mutation.name} survived`);
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  }
 });

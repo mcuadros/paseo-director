@@ -100,7 +100,7 @@ const ADAPTER_RUNTIME_DATA_DECLARATIONS = new Set([
   "ProjectionReader",
   "DomainEventRow",
 ]);
-const POLICY_PATH = /(?:^|\/)(?:domain|application|orchestration|eligibility|scheduler|scheduling|retry|escalation|routing|reconciliation|state-transition|taskstore|projection|closure|reducers?|policy|organizer-revision|organizer-bootstrap|create-project|adopt-organizer|configuration-revision|revision-state|run-configuration-snapshot)(?:[./_-]|$)/i;
+const POLICY_PATH = /(?:^|\/)(?:domains?|applications?|orchestrations?|eligibilit(?:y|ies)|schedulers?|schedulings?|retr(?:y|ies)|escalations?|routings?|reconciliations?|state-transitions?|taskstores?|projections?|closures?|reducers?|polic(?:y|ies)|organizer-revisions?|organizer-bootstraps?|create-projects?|adopt-organizers?|configuration-revisions?|revision-states?|run-configuration-snapshots?)(?:[./_-]|$)/i;
 const CANONICAL_HOST_CONTRACT = "engine/ports/host/host-interface.v1.json";
 const POLICY_GUARDED_PATH_PREFIXES = [
   ["ui", "ui/"],
@@ -145,7 +145,10 @@ function declarations(source, language) {
 
 export function policyOwnershipErrors(path, source, language) {
   const adapter = path.startsWith("engine/adapters/");
-  const declarationPattern = /^(?:engine\/(?:adapters|agent-runtime)|ui|rpc|generated|connector)\//.test(path)
+  const usesBroadPolicyDeclarationGuard =
+    path === "index.ts" ||
+    /^(?:engine\/(?:adapters|agent-runtime)|ui|rpc|generated|connector)\//.test(path);
+  const declarationPattern = usesBroadPolicyDeclarationGuard
     ? ADAPTER_RUNTIME_POLICY_DECLARATION
     : POLICY_DECLARATION;
   return declarations(source, language)
@@ -295,7 +298,7 @@ function relativeTypescriptRole(path, specifier) {
   return classifyTypescriptPath(target);
 }
 
-function validRuntimeSuffix(path, role) {
+function followsDirectorRuntimeConvention(path, role) {
   if (role === "composition") return path === "index.ts";
   if (role === "ui") return /\.client\.tsx?$/.test(path);
   if (role === "rpc" || role === "generated") return /\.shared\.ts$/.test(path);
@@ -310,8 +313,10 @@ export function typescriptBoundaryErrors(files) {
       errors.push(`${path}: TypeScript runtime is outside ui/rpc/generated/connector boundaries`);
       continue;
     }
-    if (!validRuntimeSuffix(path, role)) {
-      errors.push(`${path}: ${role} runtime filename has the wrong Paseo 0.7 suffix`);
+    if (!followsDirectorRuntimeConvention(path, role)) {
+      errors.push(
+        `${path}: ${role} runtime filename does not follow the Director repository convention`,
+      );
     }
     errors.push(...policyPathErrors(path));
     errors.push(...policyOwnershipErrors(path, source, "typescript"));
@@ -351,11 +356,11 @@ export function typescriptBoundaryErrors(files) {
 }
 
 function hasHostContractPathShape(path) {
-  if (!path.startsWith("engine/") || !path.endsWith(".json")) return false;
-  const relativePath = path.slice("engine/".length).toLowerCase();
-  const tokens = relativePath.split(/[\/._-]+/);
+  if (!path.endsWith(".json")) return false;
+  const normalizedPath = path.toLowerCase();
+  const tokens = normalizedPath.split(/[\/._-]+/);
   return (
-    relativePath.startsWith("ports/host/") ||
+    normalizedPath.startsWith("engine/ports/host/") ||
     (tokens.includes("host") &&
       (tokens.includes("interface") || tokens.includes("contract")))
   );
@@ -381,19 +386,28 @@ export function hostContractErrors(files) {
     ({ path, source }) =>
       path === CANONICAL_HOST_CONTRACT ||
       hasHostContractPathShape(path) ||
-      (path.startsWith("engine/") &&
-        path.endsWith(".json") &&
-        hasHostContractContentShape(source)),
+      (path.endsWith(".json") && hasHostContractContentShape(source)),
   );
-  if (
-    hostContracts.length === 1 &&
-    hostContracts[0].path === CANONICAL_HOST_CONTRACT
-  ) {
-    return [];
+  const errors = [];
+  const canonicalCount = hostContracts.filter(
+    ({ path }) => path === CANONICAL_HOST_CONTRACT,
+  ).length;
+  if (canonicalCount !== 1) {
+    errors.push(
+      `${CANONICAL_HOST_CONTRACT}: exactly one engine-owned versioned host interface is required (found ${canonicalCount})`,
+    );
   }
-  return [
-    "engine/ports/host: exactly one engine-owned versioned host interface is required",
-  ];
+  const misplacedPaths = [...new Set(
+    hostContracts
+      .map(({ path }) => path)
+      .filter((path) => path !== CANONICAL_HOST_CONTRACT),
+  )].sort();
+  for (const path of misplacedPaths) {
+    errors.push(
+      `${path}: duplicate or misplaced host interface contract; only ${CANONICAL_HOST_CONTRACT} is permitted`,
+    );
+  }
+  return errors;
 }
 
 export function structureErrors(paths, packagePaths, fileSources = new Map()) {
@@ -481,22 +495,37 @@ export function structureErrors(paths, packagePaths, fileSources = new Map()) {
 
 const GO_LIST_DIAGNOSTIC_MAXIMUM_CHARACTERS = 2_000;
 
+function boundedGoListFailure(detail) {
+  const prefix = "go list failed: ";
+  const truncation = " (truncated)";
+  const available =
+    GO_LIST_DIAGNOSTIC_MAXIMUM_CHARACTERS - prefix.length - truncation.length;
+  return detail.length > available
+    ? `${prefix}${detail.slice(0, available)}${truncation}`
+    : `${prefix}${detail}`;
+}
+
 // A missing or failing toolchain must fail closed with an actionable reason.
 // spawnSync reports ENOENT as a null status and null stderr, so reading stderr
-// directly would replace the real cause with an opaque TypeError.
+// directly would replace the real cause with an opaque TypeError. Tool output
+// is normalized, deduplicated, sorted, and bounded before it becomes a diagnostic.
 export function goListFailureMessage(result) {
   const stderr = typeof result?.stderr === "string" ? result.stderr.trim() : "";
   if (stderr.length > 0) {
-    return stderr.length > GO_LIST_DIAGNOSTIC_MAXIMUM_CHARACTERS
-      ? `${stderr.slice(0, GO_LIST_DIAGNOSTIC_MAXIMUM_CHARACTERS)} (truncated)`
-      : stderr;
+    const detail = [...new Set(
+      stderr
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    )].sort().join(" | ");
+    return boundedGoListFailure(detail);
   }
   if (result?.error?.code === "ENOENT") {
     return "go list failed: go is required but was not found on PATH";
   }
-  const spawnMessage =
-    typeof result?.error?.message === "string" ? result.error.message.trim() : "";
-  if (spawnMessage.length > 0) return `go list failed: ${spawnMessage}`;
+  if (typeof result?.error?.code === "string" && result.error.code.length > 0) {
+    return `go list failed to start: ${result.error.code}`;
+  }
   if (typeof result?.signal === "string" && result.signal.length > 0) {
     return `go list failed: terminated by signal ${result.signal}`;
   }
@@ -524,32 +553,37 @@ function listGoPackages(repositoryRoot) {
     },
   );
   if (result.status !== 0) {
-    throw new Error(goListFailureMessage(result));
+    return { error: goListFailureMessage(result), packages: [] };
   }
-  return result.stdout
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      const [importPath, imports = "", testImports = "", externalTestImports = ""] =
-        line.split("\t");
-      return {
-        importPath,
-        imports: imports.split(",").filter(Boolean),
-        testImports: testImports.split(",").filter(Boolean),
-        xTestImports: externalTestImports.split(",").filter(Boolean),
-      };
-    });
+  return {
+    error: null,
+    packages: result.stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [importPath, imports = "", testImports = "", externalTestImports = ""] =
+          line.split("\t");
+        return {
+          importPath,
+          imports: imports.split(",").filter(Boolean),
+          testImports: testImports.split(",").filter(Boolean),
+          xTestImports: externalTestImports.split(",").filter(Boolean),
+        };
+      }),
+  };
 }
 
 export function architectureErrors(repositoryRoot) {
   const paths = repositoryFiles(repositoryRoot);
   const symlinkErrors = repositorySymlinkErrors(repositoryRoot, paths);
   if (symlinkErrors.length > 0) return symlinkErrors;
-  const packages = listGoPackages(repositoryRoot);
+  const goList = listGoPackages(repositoryRoot);
+  if (goList.error !== null) return [`engine: ${goList.error}`];
+  const packages = goList.packages;
   const fileSources = new Map(
     paths
-      .filter((path) => path.startsWith("engine/") && path.endsWith(".json"))
+      .filter((path) => path.endsWith(".json"))
       .map((path) => [
         path,
         readFileSync(resolve(repositoryRoot, path), "utf8"),
