@@ -34,12 +34,17 @@ fails closed with a bounded code and never falls back to another connector.
 
 ## Install and update
 
+Before installation, create the owner-only runtime file documented below and
+its separately protected credential. This is candidate-preparation input, not
+daemon-start environment.
+
 After the release coordinator publishes the protected `stable` channel:
 
 ```text
 paseo plugin add mcuadros/paseo-director --ref stable
 paseo plugin status director
 paseo plugin update director
+paseo plugin reload director
 ```
 
 Paseo clones a candidate first. Its declared preparation is exactly:
@@ -60,10 +65,70 @@ An update is an explicit trust decision. Paseo reports the prior and resolved
 commits, serializes concurrent requests, prepares and compiles outside the
 active checkout, and replaces its managed record only after validation. A tag
 or exact commit is an immutable pin and does not advance through `update`.
+`update` also activates a changed Candidate. If no Git commit changed, it
+correctly reports zero changes and is not a configuration repair; use the
+public plugin-scoped `reload` command after a runtime-file edit.
+
+## Restart-free runtime configuration
+
+Director reads `$XDG_CONFIG_HOME/director/runtime.json`, or
+`~/.config/director/runtime.json` when `XDG_CONFIG_HOME` is unset. Its directory
+must be mode `0700`; the regular non-symlink runtime file and its separate
+canonicalized credential file must be owned by the daemon user and mode `0600`. The credential file is
+the only required private authority input for release mode:
+
+```json
+{
+  "schemaVersion": 1,
+  "paseo": {
+    "credentialFile": "/absolute/private/connector.password"
+  },
+  "engine": {}
+}
+```
+
+The connector defaults to the same-host exact-0.7.2 public SDK at
+`ws://127.0.0.1:6767/ws`, release engine mode, and the loopback engine endpoint
+`http://127.0.0.1:7041`. XDG supplies the engine-cache base; otherwise the
+standard user cache is used. These defaults select no Project, repository,
+Workspace, Organizer, provider, delivery mode, or execution authority.
+
+`engine.mode` (`release` or `development`) and `engine.url` (origin-only
+loopback HTTP with an explicit port) are the only non-secret runtime overrides.
+Development mode also requires an explicit absolute `engine.sourceRoot` and
+may override `engine.moduleCache`; those private development paths have no
+release default. Release mode rejects development fields. Unknown, missing,
+trailing, non-loopback, relative, overlapping, broadly readable, or replaced
+state fails closed.
+
+Project ID/name, repository root, Organizer path, Workspace identity/name, and
+working directory never appear in daemon environment or this JSON. M6.10
+exposes a strict resolver over one current public Paseo Project/workspace pair;
+the M6.11 native selector supplies that pair and owns its UI.
+
+Legacy `DIRECTOR_PASEO_*` and `DIRECTOR_ENGINE_*` process values are ignored so
+an installed daemon never needs a restart to remove or change them. The
+secret/path-free startup record marks only `legacyEnvironment=ignored`. After
+creating or editing the runtime file, activate and verify it live:
+
+```text
+paseo plugin reload director
+paseo plugin ls --json
+paseo plugin logs director --json
+```
+
+Success requires plugin status `running` and the latest bounded log record
+`code=DIRECTOR_ACTIVATION_READY`, `result=running-current`, the expected exact
+connector commit, and the intended configuration SHA-256. The record reports
+only `defaulted` versus `overridden` for non-secret settings; it never reports
+their values. A full Paseo restart or machine reboot is neither a supported
+activation step nor a troubleshooting remedy, and reload does not stop
+unrelated agents or workspaces.
 
 ## Engine modes and release assets
 
-`DIRECTOR_ENGINE_MODE` must be literally `release` or `development`.
+Runtime `engine.mode` defaults to `release` and, when present, must be literally
+`release` or `development`.
 
 In release mode, schema-2 `release/engine.json` (defined by
 `release/engine.schema.json`) pins the semantic version,
@@ -84,7 +149,7 @@ refused and preserved for inspection. An owned interrupted staging directory
 is recovered only after its Linux process identity is absent. Release failure
 never compiles and never executes an unverified product path.
 
-Development mode requires `DIRECTOR_ENGINE_SOURCE_ROOT`, resolves one exact
+Development mode requires `engine.sourceRoot`, resolves one exact
 clean local Git Candidate, uses the local Go toolchain with `GOTOOLCHAIN=local`
 and `GOWORK=off`, and atomically caches that Candidate. It never downloads a
 release or falls back to release mode.
@@ -94,7 +159,7 @@ target, executable/notices SHA-256, connector commit, and contract version/hash,
 plus the bounded host tuple. They contain no credential, credential path,
 repository path, cache path, URL, or raw tool output. Director has no telemetry.
 
-## Failure, rollback, and restart
+## Failure, rollback, and live recovery
 
 Registry/network failure, corrupt or stale package/lock state, dependency or
 lifecycle audit failure, incompatible host, partial download/write, digest or
@@ -105,7 +170,8 @@ request adopts the exact verified state; a conflicting or unsafe state fails
 closed.
 
 After correcting the channel with a new reviewed fast-forward commit, rerun
-`paseo plugin update director`. To deliberately roll back, first record the
+`paseo plugin update director`. After correcting only runtime configuration,
+run `paseo plugin reload director`; repeating reload is safe. To deliberately roll back, first record the
 current commit and confirm external state is healthy, then remove the connector
 and install a previously reviewed immutable tag or exact commit:
 
@@ -119,6 +185,15 @@ cache, owner-managed credential, engine configuration, TaskStore, Organizer,
 Project configuration, and recovery material are preserved; no hidden data
 migration is required. If their identity cannot be proved, stop instead of
 deleting or overwriting them.
+
+For pre-load or activation failure, use `paseo plugin ls --json` and
+`paseo plugin logs director --json`. `DIRECTOR_RUNTIME_CONFIG_*`,
+`DIRECTOR_RUNTIME_CREDENTIAL_*`, `ENGINE_INSTALL_NOT_PREPARED`, and
+`DIRECTOR_ACTIVATION_FAILED` are bounded path-free causes. Fix the private file
+or publish a corrected Candidate, then invoke only the public plugin-scoped
+reload/update command. Director Home, Doctor, and Repair are unavailable until
+the connector loads; once available, Doctor remains read-only and Repair does
+not install, reload, restart, signal, or rewrite plugin state.
 
 ## Removal
 

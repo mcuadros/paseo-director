@@ -44,6 +44,7 @@ const REQUIRED_SCRIPTS = [
   "smoke",
   "test",
   "test:baseline",
+  "test:activation:real",
   "test:engine",
   "test:host",
   "test:packaging",

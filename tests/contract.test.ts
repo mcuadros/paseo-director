@@ -38,6 +38,18 @@ test("the Paseo startup RPC is strict and exposes no credential field", () => {
     state: "board-ready",
     engineMode: "development",
     productBehavior: true,
+    activation: {
+      lifecycle: "plugin-reload",
+      result: "running-current",
+      configurationSchemaVersion: 1,
+      configurationSha256: "6".repeat(64),
+      legacyEnvironment: "absent",
+      settings: [
+        { name: "paseo.url", source: "defaulted" },
+        { name: "engine.mode", source: "overridden" },
+        { name: "engine.url", source: "defaulted" },
+      ],
+    },
     compatibility: {
       paseoVersion: "0.7.2",
       nodeVersion: "26.7.0",

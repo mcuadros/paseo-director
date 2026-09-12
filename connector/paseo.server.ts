@@ -10,8 +10,7 @@ import {
   type PaseoClientConfig,
 } from "@getpaseo/client";
 import { createHash } from "node:crypto";
-import { dirname, isAbsolute, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute } from "node:path";
 
 import {
   assertHostDescriptor,
@@ -50,7 +49,10 @@ import type {
   RepairResult,
 } from "../generated/planning-contract.shared.ts";
 import type { ConnectorStartupStatus } from "../rpc/startup.shared.ts";
-import { loadConnectorCredential } from "./credential.server.ts";
+import {
+  assertConnectorCredentialOutsideCheckout,
+  loadConnectorCredential,
+} from "./credential.server.ts";
 import { createPaseoSessionMCPInjection } from "./agent-mcp.server.ts";
 import {
   createBoardTransport,
@@ -67,15 +69,21 @@ import {
 } from "./engine-distribution.server.ts";
 import {
   selectEngine,
+  selectInstalledEngine,
   type EngineSelection,
 } from "./engine-selection.server.ts";
 import {
   assertHostCompatibility,
   type HostCompatibility,
 } from "./compatibility.server.ts";
+import { INSTALLED_CONNECTOR_METADATA } from "./install-metadata.server.ts";
+import {
+  loadRuntimeConfiguration,
+  type RuntimeConfiguration,
+} from "./runtime-configuration.server.mjs";
 
 export type ConnectorClient = Pick<PaseoClient, "close"> &
-  Partial<Pick<PaseoClient, "connect" | "workspaces" | "agents">>;
+  Partial<Pick<PaseoClient, "connect" | "workspaces" | "agents" | "config">>;
 
 export class PaseoHostEffectError extends Error {
   readonly code: string;
@@ -247,6 +255,7 @@ export class PaseoHostConnector implements DirectorHost {
   readonly #boardTransport: BoardTransport;
   readonly #planningTransport: PlanningTransport;
   readonly #ready: Promise<void>;
+  readonly #activation: ConnectorStartupStatus["activation"];
   readonly #inflight = new Map<string, { digest: string; promise: Promise<HostObservation> }>();
   #cursor = 0;
 
@@ -275,6 +284,15 @@ export class PaseoHostConnector implements DirectorHost {
       architecture: "x64",
       target: "linux-amd64",
     },
+    clientReady?: Promise<void>,
+    activation: ConnectorStartupStatus["activation"] = {
+      lifecycle: "plugin-reload",
+      result: "running-current",
+      configurationSchemaVersion: 1,
+      configurationSha256: "0".repeat(64),
+      legacyEnvironment: "absent",
+      settings: [],
+    },
   ) {
     this.#client = client;
     this.#selection = selection;
@@ -282,9 +300,10 @@ export class PaseoHostConnector implements DirectorHost {
     this.#planningTransport = planningTransport;
     this.#engine = engine;
     this.#compatibility = compatibility;
+    this.#activation = activation;
     assertHostDescriptor(EXPECTED_HOST_DESCRIPTOR);
     this.#ready = Promise.all([
-      client.connect ? client.connect() : Promise.resolve(),
+      clientReady ?? (client.connect ? client.connect() : Promise.resolve()),
       engine,
     ]).then(
       () => undefined,
@@ -918,6 +937,7 @@ export class PaseoHostConnector implements DirectorHost {
       state: "board-ready",
       engineMode: this.#selection.mode,
       productBehavior: true,
+      activation: this.#activation,
       compatibility: this.#compatibility,
       engine: {
         mode: engine.mode,
@@ -1063,9 +1083,106 @@ export function startConnectorShell(options: {
   );
 }
 
-export function startConnectorShellFromEnvironment(): PaseoHostConnector {
-  return startConnectorShell({
-    environment: process.env,
-    checkoutRoot: resolve(dirname(fileURLToPath(import.meta.url)), ".."),
+export function startInstalledConnectorShell(options: {
+  environment?: NodeJS.ProcessEnv;
+  dependencies?: ConnectorDependencies;
+  installation?: typeof INSTALLED_CONNECTOR_METADATA | {
+    readonly schemaVersion: 1;
+    readonly state: "prepared";
+    readonly connectorCommit: string;
+    readonly releaseMetadata: Readonly<Record<string, unknown>>;
+  };
+  reportActivation?: boolean;
+} = {}): PaseoHostConnector {
+  const environment = options.environment ?? process.env;
+  const loaded = loadRuntimeConfiguration(environment);
+  const configuration: RuntimeConfiguration = loaded.configuration;
+  const compatibility = (options.dependencies?.hostCompatibility ?? assertHostCompatibility)();
+  const selection = selectInstalledEngine(
+    configuration,
+    options.installation ?? INSTALLED_CONNECTOR_METADATA,
+    environment,
+  );
+  const credential = loadConnectorCredential({
+    credentialPath: configuration.paseo.credentialFile,
+    disjointEnginePaths: engineBoundaryPaths(selection),
   });
+  const boardTransport = options.dependencies?.boardTransport ??
+    createBoardTransport({ baseUrl: configuration.engine.url });
+  const planningTransport = options.dependencies?.planningTransport ??
+    createPlanningTransport({
+      baseUrl: configuration.engine.url,
+      mutationActor: {
+        kind: "human",
+        id: "local-project-owner",
+        sessionId: `paseo-connector-${process.pid}`,
+      },
+    });
+  const createClient = options.dependencies?.createClient ?? createPaseoClient;
+  const client = createClient({
+    url: configuration.paseo.url,
+    password: credential,
+    clientId: `director-connector-${process.pid}`,
+    reconnect: { enabled: false },
+  });
+  if (!client.connect || !client.config) {
+    throw new PaseoHostEffectError("HOST_PUBLIC_SDK_UNAVAILABLE");
+  }
+  const configActions = client.config;
+  const connected = client.connect();
+  const deploymentReady = connected.then(async () => {
+    const snapshot = await configActions.get(`director-activation-${process.pid}`);
+    const source = snapshot.config.plugins?.director;
+    if (!source || source.source !== "directory" || !isAbsolute(source.path)) {
+      throw new PaseoHostEffectError("HOST_PLUGIN_SOURCE_UNAVAILABLE");
+    }
+    assertConnectorCredentialOutsideCheckout(
+      configuration.paseo.credentialFile,
+      source.path,
+    );
+  });
+  const engine = deploymentReady.then(() =>
+    (options.dependencies?.resolveEngine ?? resolveEngine)(selection));
+  const activation: ConnectorStartupStatus["activation"] = {
+    lifecycle: "plugin-reload",
+    result: "running-current",
+    configurationSchemaVersion: configuration.schemaVersion,
+    configurationSha256: configuration.diagnostics.sha256,
+    legacyEnvironment: configuration.diagnostics.legacyEnvironment,
+    settings: configuration.diagnostics.settings,
+  };
+  const connector = new PaseoHostConnector(
+    client,
+    selection,
+    boardTransport,
+    planningTransport,
+    engine,
+    compatibility,
+    deploymentReady,
+    activation,
+  );
+  if (options.reportActivation !== false) void connector.status().then(
+    (status) => {
+      console.log(JSON.stringify({
+        code: "DIRECTOR_ACTIVATION_READY",
+        lifecycle: status.activation.lifecycle,
+        result: status.activation.result,
+        configurationSchemaVersion: status.activation.configurationSchemaVersion,
+        configurationSha256: status.activation.configurationSha256,
+        legacyEnvironment: status.activation.legacyEnvironment,
+        settings: status.activation.settings,
+        connectorCommit: status.engine.connectorCommit,
+      }));
+    },
+    (error: unknown) => {
+      const candidate = error && typeof error === "object"
+        ? Reflect.get(error, "code")
+        : undefined;
+      const code = typeof candidate === "string" && /^[A-Z0-9_]{3,96}$/u.test(candidate)
+        ? candidate
+        : "DIRECTOR_ACTIVATION_FAILED";
+      console.error(JSON.stringify({ code, lifecycle: "plugin-reload", result: "failed" }));
+    },
+  );
+  return connector;
 }

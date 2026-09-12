@@ -22,6 +22,16 @@ The TypeScript connector only validates, transports, and revalidates exact
 bindings. It does not classify health, combine sync streams, redact output,
 choose retries, or write bundles.
 
+Plugin activation is an earlier, plugin-scoped operator boundary. Installation
+and Git updates prepare and compile the exact Candidate; a runtime-file change
+is applied with `paseo plugin reload director`. The operator verifies
+`running` through `paseo plugin ls --json` and the latest bounded
+`DIRECTOR_ACTIVATION_READY` record through
+`paseo plugin logs director --json`. Update reporting zero changed commits does
+not reload configuration. No activation or troubleshooting path restarts the
+Paseo daemon, reboots the machine, signals a PID, edits Paseo state, or
+interrupts another agent/workspace.
+
 ## Hybrid reconciliation
 
 Director Engine projects the accepted hybrid model explicitly:

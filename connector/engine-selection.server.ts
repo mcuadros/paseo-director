@@ -3,29 +3,37 @@
 
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { existsSync, realpathSync } from "node:fs";
 import {
-  basename,
-  dirname,
   isAbsolute,
   join,
-  relative,
   resolve,
 } from "node:path";
 
+import {
+  canonicalProspectivePath,
+  pathIsWithin,
+  pathsAreDisjoint,
+  type RuntimeConfiguration,
+} from "./runtime-configuration.server.mjs";
+
+export { canonicalProspectivePath, pathIsWithin, pathsAreDisjoint };
+
 export type ReleaseEngineSelection = {
   mode: "release";
+  cacheRoot: string;
   checkoutRoot: string;
   metadataPath: string;
-  cacheRoot: string;
+  releaseMetadata?: Uint8Array;
+  connectorCommit?: string;
 };
 
 export type DevelopmentEngineSelection = {
   mode: "development";
-  checkoutRoot: string;
   sourceRoot: string;
   cacheRoot: string;
   moduleCache: string;
+  checkoutRoot: string;
+  connectorCommit?: string;
 };
 
 export type EngineSelection =
@@ -40,33 +48,6 @@ export class EngineSelectionError extends Error {
     this.name = "EngineSelectionError";
     this.code = code;
   }
-}
-
-export function canonicalProspectivePath(path: string): string {
-  let existing = resolve(path);
-  const missing: string[] = [];
-  while (!existsSync(existing)) {
-    const parent = dirname(existing);
-    if (parent === existing) break;
-    missing.unshift(basename(existing));
-    existing = parent;
-  }
-  return resolve(realpathSync(existing), ...missing);
-}
-
-export function pathIsWithin(candidate: string, parent: string): boolean {
-  const pathFromParent = relative(
-    canonicalProspectivePath(parent),
-    canonicalProspectivePath(candidate),
-  );
-  return (
-    pathFromParent === "" ||
-    (!pathFromParent.startsWith("..") && !pathFromParent.startsWith("/"))
-  );
-}
-
-export function pathsAreDisjoint(left: string, right: string): boolean {
-  return !pathIsWithin(left, right) && !pathIsWithin(right, left);
 }
 
 export function developmentEnginePaths(
@@ -92,6 +73,62 @@ export function developmentEnginePaths(
       "director-engine",
     ),
     goCache: join(developmentRoot, "go-build-cache"),
+  };
+}
+
+export type InstalledConnectorMetadata = {
+  readonly schemaVersion: 1;
+  readonly state: "prepared" | "unprepared";
+  readonly connectorCommit: string;
+  readonly releaseMetadata: Readonly<Record<string, unknown>>;
+};
+
+export function selectInstalledEngine(
+  configuration: RuntimeConfiguration,
+  installation: InstalledConnectorMetadata,
+  environment: NodeJS.ProcessEnv,
+): EngineSelection {
+  if (
+    installation.schemaVersion !== 1 ||
+    installation.state !== "prepared" ||
+    !/^[0-9a-f]{40}$/u.test(installation.connectorCommit)
+  ) {
+    throw new EngineSelectionError(
+      "ENGINE_INSTALL_NOT_PREPARED",
+      "the connector was not prepared by the declared Paseo install boundary",
+    );
+  }
+  const cacheBase = environment.XDG_CACHE_HOME
+    ? absolutePath(environment.XDG_CACHE_HOME, "ENGINE_CACHE_PATH")
+    : canonicalProspectivePath(join(homedir(), ".cache"));
+  const cacheRoot = canonicalProspectivePath(join(cacheBase, "director", "engines"));
+  if (configuration.engine.mode === "release") {
+    return {
+      mode: "release",
+      cacheRoot,
+      checkoutRoot: "",
+      metadataPath: "",
+      connectorCommit: installation.connectorCommit,
+      releaseMetadata: Buffer.from(JSON.stringify(installation.releaseMetadata)),
+    };
+  }
+  const sourceRoot = configuration.engine.sourceRoot;
+  if (!sourceRoot) {
+    throw new EngineSelectionError(
+      "ENGINE_SOURCE_REQUIRED",
+      "development mode requires an explicit engine source",
+    );
+  }
+  const moduleCache = configuration.engine.moduleCache
+    ? absolutePath(configuration.engine.moduleCache, "ENGINE_MODULE_CACHE_PATH")
+    : canonicalProspectivePath(join(homedir(), "go", "pkg", "mod"));
+  return {
+    mode: "development",
+    sourceRoot: absolutePath(sourceRoot, "ENGINE_SOURCE_REQUIRED"),
+    cacheRoot,
+    moduleCache,
+    checkoutRoot: "",
+    connectorCommit: installation.connectorCommit,
   };
 }
 

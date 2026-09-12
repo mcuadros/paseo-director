@@ -85,7 +85,7 @@ function loopbackBaseUrl(value: string | undefined): URL {
   } catch {
     throw new BoardTransportError(
       "ENGINE_BOARD_URL",
-      "DIRECTOR_ENGINE_URL must be an absolute loopback HTTP URL",
+      "engine.url must be an absolute loopback HTTP URL",
     );
   }
   const hostname = parsed.hostname.startsWith("[")
@@ -105,7 +105,7 @@ function loopbackBaseUrl(value: string | undefined): URL {
   ) {
     throw new BoardTransportError(
       "ENGINE_BOARD_URL",
-      "DIRECTOR_ENGINE_URL must be an origin-only loopback HTTP URL with an explicit port",
+      "engine.url must be an origin-only loopback HTTP URL with an explicit port",
     );
   }
   return parsed;
