@@ -73,6 +73,12 @@ is durably verified. `retain` terminates the owned agents but retains the
 workspace, worktree, and refs. Disk pressure stops preservation and routes a
 path-free Needs-you reason; it never selects deletion of unintegrated work.
 
+TaskStore backup expiry and technical-log compaction use the independent
+[TaskStore maintenance contract](taskstore-maintenance.md). That boundary has
+no access to Git refs, worktrees, host views, agents, or retained recovery
+artifacts. Disk pressure therefore cannot broaden this cleanup state machine's
+exact integration/ownership authority or remove unintegrated recoverable work.
+
 After seven days, expiry first verifies and removes the exact private artifact,
 then atomically compare-deletes the recovery refs. Before the boundary the
 state is scheduled `retained`, not Needs you. A changed, partial, foreign,

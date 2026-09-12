@@ -812,8 +812,19 @@ func validateRun(run domain.Run) error {
 }
 
 func validateCandidate(candidate domain.Candidate) error {
-	if !safeIdentifier(candidate.ID, 128) || !safeIdentifier(candidate.RunID, 128) ||
-		candidate.SchemaVersion != domain.CandidateSchemaVersion || candidate.Sequence == 0 || !validSHA(candidate.CommitSHA) ||
+	if !safeIdentifier(candidate.ID, 128) || !safeIdentifier(candidate.RunID, 128) || candidate.Sequence == 0 || !validSHA(candidate.CommitSHA) {
+		return fmt.Errorf("%w: invalid Candidate", storeport.ErrInvalidRecord)
+	}
+	if candidate.LegacyMigration != nil {
+		legacy := candidate.LegacyMigration
+		if candidate.SchemaVersion != domain.LegacyCandidateSchemaVersion || !safeIdentifier(legacy.MigrationID, 128) ||
+			legacy.SourceSchemaVersion != 1 || legacy.Authoritative || candidate.Claim != (candidatedomain.Claim{}) ||
+			candidate.Manifest != (candidatedomain.Manifest{}) || candidate.AdmittedAtMillis != 0 {
+			return fmt.Errorf("%w: invalid legacy Candidate", storeport.ErrInvalidRecord)
+		}
+		return nil
+	}
+	if candidate.SchemaVersion != domain.CandidateSchemaVersion ||
 		!candidatedomain.ValidClaim(candidate.Claim) || !candidatedomain.ValidManifest(candidate.Manifest) ||
 		candidate.Claim.RunID != candidate.RunID || candidate.Claim.CandidateSHA != candidate.CommitSHA ||
 		candidate.Manifest.CandidateSHA != candidate.CommitSHA || candidate.Manifest.BaseSHA != candidate.Claim.BaseSHA ||
@@ -1741,6 +1752,9 @@ func (store *DoltTaskStore) AppendCandidate(
 ) (domain.CommandResult, error) {
 	if err := validateCandidate(candidate); err != nil {
 		return domain.CommandResult{}, err
+	}
+	if candidate.LegacyMigration != nil {
+		return domain.CommandResult{}, fmt.Errorf("%w: legacy Candidate is non-authoritative", storeport.ErrInvalidRecord)
 	}
 	if err := validateUpdateCommand(command, candidate.RunID); err != nil {
 		return domain.CommandResult{}, err

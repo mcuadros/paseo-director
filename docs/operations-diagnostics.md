@@ -57,6 +57,12 @@ successful half, force-overwrites the newer side, selects another remote, or
 presents the pair as an atomic transaction. Automatic synchronization retains
 the approved one-minute debounce and flushes at critical transitions.
 
+TaskStore backup/migration/retention is a separate engine-owned maintenance
+state machine documented in [TaskStore maintenance](taskstore-maintenance.md).
+Its recurring failures reuse the bounded `taskstore_unhealthy` technical-log
+code. Below the fixed free-space floor, maintenance appends no diagnostic log:
+bounded cleanup runs first and a continuing violation consumes no more disk.
+
 ## Structured audit
 
 The audit view scans a bounded recent window of immutable TaskStore Events and

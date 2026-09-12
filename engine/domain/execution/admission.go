@@ -265,7 +265,7 @@ type OperationalObservation struct {
 }
 
 func finitePolicy(policy OperationalPolicy) bool {
-	return policy.MinimumFreeDiskBasisPoints > 0 && policy.MinimumFreeDiskBasisPoints <= 10_000 &&
+	return policy.MinimumFreeDiskBasisPoints >= 1_000 && policy.MinimumFreeDiskBasisPoints <= 10_000 &&
 		policy.MaximumWorktreeBytes > 0 && policy.MaximumProcesses > 0 &&
 		policy.MaximumMemoryBytes > 0 && policy.MaximumElapsedMilliseconds > 0 &&
 		policy.MaximumOutputBytes > 0 && policy.MaximumTemporaryBytes > 0 &&

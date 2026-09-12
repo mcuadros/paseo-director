@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sync"
 
 	"github.com/go-sql-driver/mysql"
 
@@ -70,8 +71,10 @@ type DoltTaskStore struct {
 	control       *sql.DB
 	writer        *sql.DB
 	database      string
+	address       string
 	storeID       string
 	testNowMillis func() int64
+	maintenance   sync.RWMutex
 }
 
 var _ storeport.TaskStore = (*DoltTaskStore)(nil)
@@ -436,6 +439,8 @@ func (store *DoltTaskStore) apply(
 	event domain.Event,
 	mutation transactionMutation,
 ) (domain.CommandResult, error) {
+	store.maintenance.RLock()
+	defer store.maintenance.RUnlock()
 	command, err := prepareCommand(request)
 	if err != nil {
 		return store.rejectInvalidCommandReplay(ctx, request, err)

@@ -45,6 +45,28 @@ func operationalPolicyFixture() OperationalPolicy {
 	}
 }
 
+func TestOperationalPolicyCannotReduceTenPercentFreeSpaceFloor(t *testing.T) {
+	policy := operationalPolicyFixture()
+	observation := atOperationalBoundary()
+	for _, minimum := range []uint64{0, 1, 999} {
+		policy.MinimumFreeDiskBasisPoints = minimum
+		result := EvaluateOperationalLimits(policy, observation, 1_000)
+		if result.Kind != AdmissionPark || result.Code != NeedOperationalPolicyInvalid || result.CleanupAuthorized {
+			t.Fatalf("minimum %d admitted: %#v", minimum, result)
+		}
+	}
+	policy.MinimumFreeDiskBasisPoints = 1_000
+	observation.FreeDiskBasisPoints = measurement(999)
+	below := EvaluateOperationalLimits(policy, observation, 1_000)
+	if below.Kind != AdmissionPark || below.Code != NeedFreeDiskFloor || below.CleanupAuthorized {
+		t.Fatalf("below hard floor = %#v", below)
+	}
+	observation.FreeDiskBasisPoints = measurement(1_000)
+	if atFloor := EvaluateOperationalLimits(policy, observation, 1_000); atFloor.Kind != AdmissionAllow {
+		t.Fatalf("exact hard floor = %#v", atFloor)
+	}
+}
+
 func atOperationalBoundary() OperationalObservation {
 	return OperationalObservation{
 		ID:                  "observation-1",

@@ -102,18 +102,30 @@ type Run struct {
 
 const CandidateSchemaVersion = "director.candidate/v1"
 
+const LegacyCandidateSchemaVersion = "director.candidate-legacy/v1"
+
+// LegacyCandidateMigration preserves a schema-v1 Candidate as explicitly
+// non-authoritative history. A fresh exact Candidate is required after the
+// migration before any downstream work can proceed.
+type LegacyCandidateMigration struct {
+	MigrationID         string `json:"migrationId"`
+	SourceSchemaVersion int    `json:"sourceSchemaVersion"`
+	Authoritative       bool   `json:"authoritative"`
+}
+
 // Candidate is an immutable exact Git commit and its complete admitted claim
 // and manifest. Later evidence may refer only to Manifest.BindingSHA256; it
 // cannot reinterpret this record after Candidate, base, or context changes.
 type Candidate struct {
-	SchemaVersion    string                   `json:"schemaVersion"`
-	ID               string                   `json:"id"`
-	RunID            string                   `json:"runId"`
-	Sequence         uint64                   `json:"sequence"`
-	CommitSHA        string                   `json:"commitSha"`
-	Claim            candidatedomain.Claim    `json:"claim"`
-	Manifest         candidatedomain.Manifest `json:"manifest"`
-	AdmittedAtMillis int64                    `json:"admittedAtMillis"`
+	SchemaVersion    string                    `json:"schemaVersion"`
+	ID               string                    `json:"id"`
+	RunID            string                    `json:"runId"`
+	Sequence         uint64                    `json:"sequence"`
+	CommitSHA        string                    `json:"commitSha"`
+	Claim            candidatedomain.Claim     `json:"claim"`
+	Manifest         candidatedomain.Manifest  `json:"manifest"`
+	AdmittedAtMillis int64                     `json:"admittedAtMillis"`
+	LegacyMigration  *LegacyCandidateMigration `json:"legacyMigration,omitempty"`
 }
 
 // Command is the immutable request and durable outcome stored for one

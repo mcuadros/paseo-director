@@ -30,7 +30,10 @@ import (
 	executionapp "github.com/mcuadros/director-engine/application/execution"
 	homeapp "github.com/mcuadros/director-engine/application/home"
 	organizerapp "github.com/mcuadros/director-engine/application/organizer"
+	maintenanceapp "github.com/mcuadros/director-engine/application/taskstoremaintenance"
+	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
+	domainmaintenance "github.com/mcuadros/director-engine/domain/taskstoremaintenance"
 	homeport "github.com/mcuadros/director-engine/ports/home"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 )
@@ -153,6 +156,51 @@ func validServerHostIdentity(id, label string) bool {
 		utf8.ValidString(label) && label == strings.TrimSpace(label) && strings.IndexFunc(label, unicode.IsControl) < 0
 }
 
+type maintenanceProjectSource interface {
+	Projects(context.Context) ([]domain.Project, error)
+}
+
+func appendMaintenanceFailure(ctx context.Context, projects maintenanceProjectSource, logs *diagnostics.LogStore, nowMillis int64) {
+	values, err := projects.Projects(ctx)
+	if err != nil {
+		return
+	}
+	for _, project := range values {
+		_ = logs.Append(ctx, project.ID, nowMillis, homeport.TechnicalLogError, homeport.TechnicalLogTaskStore,
+			homeport.TechnicalLogTaskStoreUnhealthy, 1)
+	}
+}
+
+func reconcileTaskStoreMaintenance(ctx context.Context, service *maintenanceapp.Service, projects maintenanceProjectSource,
+	logs *diagnostics.LogStore, now func() int64,
+) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cycleContext, cancel := context.WithTimeout(ctx, 3*time.Minute)
+			observedAt := now()
+			disk, err := service.ReconcileDisk(cycleContext, maintenanceapp.Command{ID: "engine-hourly-disk-" + strconv.FormatInt(observedAt/3_600_000, 10), NowMillis: observedAt})
+			if err == nil && disk.Disk.Phase == domainmaintenance.DiskReady {
+				_, err = service.ExpireBackups(cycleContext, maintenanceapp.Command{ID: "engine-hourly-retention-" + strconv.FormatInt(observedAt/3_600_000, 10), NowMillis: observedAt})
+			}
+			if err == nil && disk.Disk.Phase == domainmaintenance.DiskReady {
+				_, err = service.ReconcileDaily(cycleContext, maintenanceapp.Command{ID: "engine-hourly-daily-" + strconv.FormatInt(observedAt/3_600_000, 10), NowMillis: observedAt})
+			}
+			// A low-space cycle intentionally appends nothing: after bounded
+			// cleanup the Engine must consume no more disk. Other failures use
+			// the existing bounded, path-free TaskStore health code.
+			if err != nil && disk.Disk.Phase != domainmaintenance.DiskDegraded && disk.Disk.Phase != domainmaintenance.DiskCleanupRequired {
+				appendMaintenanceFailure(cycleContext, projects, logs, observedAt)
+			}
+			cancel()
+		}
+	}
+}
+
 func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("serve-board", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -175,13 +223,76 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer store.Close()
-	startupContext, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
-	_, schemaError := store.SchemaVersion(startupContext)
-	cancelStartup()
-	if schemaError != nil {
+	logRoot, err := diagnostics.DefaultLogRoot()
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: TaskStore maintenance is unavailable")
+		return 1
+	}
+	logs, err := diagnostics.NewLogStore(logRoot)
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: TaskStore maintenance is unavailable")
+		return 1
+	}
+	maintenanceRoot, err := dolt.DefaultMaintenanceRoot(config.StoreID)
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: TaskStore maintenance is unavailable")
+		return 1
+	}
+	maintenance, err := dolt.NewMaintenance(store, maintenanceRoot, logs)
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: TaskStore maintenance is unavailable")
+		return 1
+	}
+	maintenanceService, err := maintenanceapp.NewService(maintenance, maintenance)
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: TaskStore maintenance is unavailable")
+		return 1
+	}
+	startupContext, cancelStartup := context.WithTimeout(context.Background(), 3*time.Minute)
+	startupNow := time.Now().UnixMilli()
+	disk, diskError := maintenanceService.ReconcileDisk(startupContext, maintenanceapp.Command{ID: "engine-startup-disk", NowMillis: startupNow})
+	if diskError != nil || disk.Disk.Phase != domainmaintenance.DiskReady {
+		cancelStartup()
+		fmt.Fprintln(stderr, "director-engine: free-space launch gate refused startup")
+		return 1
+	}
+	maintenanceState, observationError := maintenance.Load(startupContext)
+	storeObservation := domainmaintenance.StoreObservation{}
+	if observationError == nil {
+		storeObservation, observationError = maintenance.ObserveStore(startupContext)
+	}
+	if observationError == nil && maintenanceState.Migration != nil && maintenanceState.Migration.Phase != domainmaintenance.MigrationComplete {
+		persisted := maintenanceState.Migration
+		_, observationError = maintenanceService.Migrate(startupContext, maintenanceapp.MigrationCommand{
+			ID: persisted.ID, FromVersion: persisted.FromVersion, ToVersion: persisted.ToVersion, NowMillis: startupNow,
+		})
+	} else if observationError == nil && storeObservation.Exact && storeObservation.SchemaVersion == 1 {
+		_, observationError = maintenanceService.Migrate(startupContext, maintenanceapp.MigrationCommand{
+			ID: "taskstore-schema-1-to-2", FromVersion: 1, ToVersion: 2, NowMillis: startupNow,
+		})
+	}
+	if observationError != nil {
+		cancelStartup()
 		fmt.Fprintln(stderr, "director-engine: TaskStore is unavailable")
 		return 1
 	}
+	storeObservation, observationError = maintenance.ObserveStore(startupContext)
+	if observationError != nil || !storeObservation.Exact || storeObservation.SchemaVersion != 2 {
+		cancelStartup()
+		fmt.Fprintln(stderr, "director-engine: TaskStore is unavailable")
+		return 1
+	}
+	if _, err := maintenanceService.ExpireBackups(startupContext, maintenanceapp.Command{ID: "engine-startup-retention", NowMillis: startupNow}); err != nil {
+		cancelStartup()
+		fmt.Fprintln(stderr, "director-engine: TaskStore maintenance is unavailable")
+		return 1
+	}
+	if _, err := maintenanceService.ReconcileDaily(startupContext, maintenanceapp.Command{ID: "engine-startup-daily", NowMillis: startupNow}); err != nil {
+		cancelStartup()
+		fmt.Fprintln(stderr, "director-engine: TaskStore maintenance is unavailable")
+		return 1
+	}
+	cancelStartup()
 	listener, err := net.Listen("tcp", *listenAddress)
 	if err != nil {
 		fmt.Fprintln(stderr, "director-engine: Board listener is unavailable")
@@ -210,23 +321,22 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 	instanceDigest := sha256.Sum256([]byte(*hostID + "\x1f" + strconv.Itoa(os.Getpid()) + "\x1f" + strconv.FormatInt(startedAt, 10)))
 	now := func() int64 { return time.Now().UnixMilli() }
 	homeSource := homeapp.NewStaticSource(*hostID, *hostLabel, "engine-"+hex.EncodeToString(instanceDigest[:16]), now)
-	if logRoot, logRootError := diagnostics.DefaultLogRoot(); logRootError == nil {
-		if logs, logError := diagnostics.NewLogStore(logRoot); logError == nil {
-			logContext, cancelLogs := context.WithTimeout(context.Background(), 5*time.Second)
-			projects, projectsError := store.Projects(logContext)
-			logsCurrent := projectsError == nil
-			for _, project := range projects {
-				if logs.Append(logContext, project.ID, now(), homeport.TechnicalLogInfo, homeport.TechnicalLogEngine, homeport.TechnicalLogEngineStarted, 1) != nil {
-					logsCurrent = false
-					break
-				}
-			}
-			cancelLogs()
-			if logsCurrent {
-				homeSource.WithTechnicalLogs(logs)
-			}
+	logContext, cancelLogs := context.WithTimeout(context.Background(), 5*time.Second)
+	projects, projectsError := store.Projects(logContext)
+	logsCurrent := projectsError == nil
+	for _, project := range projects {
+		if logs.Append(logContext, project.ID, now(), homeport.TechnicalLogInfo, homeport.TechnicalLogEngine, homeport.TechnicalLogEngineStarted, 1) != nil {
+			logsCurrent = false
+			break
 		}
 	}
+	cancelLogs()
+	if logsCurrent {
+		homeSource.WithTechnicalLogs(logs)
+	}
+	maintenanceContext, cancelMaintenance := context.WithCancel(context.Background())
+	defer cancelMaintenance()
+	go reconcileTaskStoreMaintenance(maintenanceContext, maintenanceService, store, logs, now)
 	handler.Handle(planningport.HomeQueryPath, newHomeHandler(homeapp.NewReader(store, board.NewTaskStoreFactSource(store), homeSource, now)))
 	doctorRepair := homeapp.NewDoctorRepairService(store, homeSource, nil, now)
 	handler.Handle(planningport.DoctorQueryPath, newDoctorHandler(doctorRepair))

@@ -87,6 +87,15 @@ bundle flow. Bundles are mode `0600`, contain only four allowlisted JSON files,
 and are never uploaded automatically. See
 [Sync, reconciliation, audit, logs, and support bundles](docs/operations-diagnostics.md).
 
+The standalone engine reconciles an exact daily direct-Dolt backup, proves
+every backup through a fresh restore, expires validated backups after seven
+days, recovers the schema-1-to-schema-2 migration around audited Project
+pause/resume commands, and refuses startup or Run launch below the fixed
+10-percent free-space floor. Low-space cleanup can expire only eligible backups
+and compact known bounded logs; it cannot address Git refs, worktrees, or other
+unintegrated recovery material. See
+[TaskStore backup, migration, retention, and disk safety](docs/taskstore-maintenance.md).
+
 ## Development
 
 Requirements are Linux, Node.js 22 or newer, npm with lockfile support, Go
@@ -147,8 +156,9 @@ falls back to release mode. A missing or conflicting mode fails closed.
 
 ## Director Home and Board/List runtime
 
-The separately supervised engine opens an existing, already bootstrapped
-direct-Dolt TaskStore and serves the host-bound Home plus Board/List contracts
+The separately supervised engine opens an existing exact schema-1 or schema-2
+direct-Dolt TaskStore, performs gated startup maintenance (including automatic
+schema-1 migration), and serves the host-bound Home plus Board/List contracts
 on an explicit loopback address. The public host identity and label must match
 the exact Paseo host passed by the client surface; a mismatch is rejected and
 never selects another host.
