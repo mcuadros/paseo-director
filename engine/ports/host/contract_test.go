@@ -4,6 +4,7 @@ package host
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 
@@ -34,6 +35,10 @@ func TestEmbeddedContractAndDescriptor(t *testing.T) {
 	}
 	if definition.BoardQuery.Name != "board.snapshot" || definition.BoardQuery.Path != "/v1/board" || len(definition.BoardQuery.States) != 6 {
 		t.Fatalf("Board query definition = %#v", definition.BoardQuery)
+	}
+	if !slices.Equal(definition.Command.Arguments.EffectKinds, engineHostEffectKinds()) ||
+		!slices.Equal(definition.Observation.Result.Statuses, engineHostObservationStatuses()) {
+		t.Fatal("embedded host vocabularies drifted from Go")
 	}
 }
 
@@ -138,7 +143,7 @@ func TestParseDefinitionRejectsDuplicateCapabilities(t *testing.T) {
 }
 
 func TestParseDefinitionRequiresTheExactWorkerRegistry(t *testing.T) {
-	const prefix = `{"schemaVersion":1,"contractVersion":"v1","credentialScope":"scope","capabilities":["one"],"boardQuery":{"name":"board.snapshot","method":"GET","path":"/v1/board","schemaVersion":1,"maximumTasks":1000,"maximumBytes":2097152,"states":["needs_you","queued","building","validating","in_review","ready"]}`
+	const prefix = `{"schemaVersion":1,"contractVersion":"v1","credentialScope":"scope","capabilities":["one"],"boardQuery":{"name":"board.snapshot","method":"GET","path":"/v1/board","schemaVersion":1,"maximumTasks":1000,"maximumBytes":2097152,"states":["needs_you","queued","building","validating","in_review","ready"]},"command":{"arguments":{"effectKinds":["host_view.create","task_agent.create_with_bootstrap","reviewer_agent.create_with_bootstrap","agent.send_prompt","primary_recovery.observe","helper_agent.observe","helper_agent.archive","control_agent.observe_safe_boundary","control_agent.archive","task_agent.archive","reviewer_agent.archive","host_view.archive"]}},"observation":{"result":{"statuses":["desired","absent","owned_present","errored","permission","different","ambiguous","unavailable"]}}`
 	const labels = `"labels":{"project":"director.project","rootWorkspace":"director.root-workspace","workspace":"director.workspace","executionWorkspace":"director.execution-workspace","task":"director.task","run":"director.run","role":"director.role","phase":"director.phase","candidate":"director.candidate","base":"director.base","effect":"director.effect","profile":"director.profile","session":"director.session","registeredAt":"director.registered-at","startedAt":"director.started-at"}`
 
 	for name, registry := range map[string]string{
@@ -161,6 +166,22 @@ func TestParseDefinitionRequiresTheExactWorkerRegistry(t *testing.T) {
 	}
 	if definition.WorkerRegistry.Labels.RootWorkspace != "director.root-workspace" {
 		t.Fatalf("worker registry labels = %#v", definition.WorkerRegistry.Labels)
+	}
+}
+
+func TestParseDefinitionRejectsGoAndSchemaVocabularyDrift(t *testing.T) {
+	for name, changed := range map[string][]byte{
+		"missing effect": bytes.Replace(embeddedSchema, []byte("        \"host_view.archive\"\n"), nil, 1),
+		"reordered effects": bytes.Replace(embeddedSchema,
+			[]byte("        \"host_view.create\",\n        \"task_agent.create_with_bootstrap\","),
+			[]byte("        \"task_agent.create_with_bootstrap\",\n        \"host_view.create\","), 1),
+		"unknown status": bytes.Replace(embeddedSchema, []byte(`"unavailable"`), []byte(`"unknown"`), 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseDefinition(changed); err == nil {
+				t.Fatal("ParseDefinition accepted schema vocabulary drift from Go")
+			}
+		})
 	}
 }
 

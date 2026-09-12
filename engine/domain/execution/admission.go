@@ -278,7 +278,7 @@ func EvaluateOperationalLimits(policy OperationalPolicy, observation Operational
 	if !finitePolicy(policy) {
 		return park(NeedOperationalPolicyInvalid)
 	}
-	if observation.ID == "" || observation.ObservedAtMillis > nowMillis ||
+	if observation.ID == "" || observation.ObservedAtMillis < 0 || observation.ObservedAtMillis > nowMillis ||
 		nowMillis-observation.ObservedAtMillis > policy.MaximumObservationAgeMillis ||
 		!observation.FreeDiskBasisPoints.Present || !observation.WorktreeBytes.Present ||
 		!observation.Processes.Present || !observation.MemoryBytes.Present ||

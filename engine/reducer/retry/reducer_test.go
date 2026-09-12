@@ -80,6 +80,26 @@ func TestReduceRequiresFreshBoundFactsAndFiniteAttempts(t *testing.T) {
 	}
 }
 
+func TestReduceParksWhenPriorDispatcherIsNotAbsent(t *testing.T) {
+	facts := Facts{
+		SchemaVersion: SchemaVersion, BindingUnchanged: true,
+		PriorDispatcherAbsent: false, BudgetAvailable: true, TaskStoreNowMillis: 1_001,
+		Effect: execution.Effect{
+			ID: "effect-1", Kind: execution.EffectWorktreeCreate,
+			Phase: execution.EffectDispatching, Attempt: 1, AttemptLimit: 2,
+		},
+		Observation: execution.EffectObservation{
+			ID: "observation-1", EffectID: "effect-1", Status: execution.ObservationAbsent,
+			PriorDispatcherAbsent: false, ObservedAtMillis: 1_000, MaximumAgeMillis: 30_000,
+		},
+	}
+	facts.Observation.FactHash = execution.EffectObservationHash(facts.Observation)
+	decision := Reduce(facts)
+	if decision.Kind != DecisionEscalate || decision.Code != "prior_dispatcher_not_absent" || decision.CleanupAuthorized {
+		t.Fatalf("prior dispatcher decision = %#v", decision)
+	}
+}
+
 func TestReduceNeverRepeatsARealPromptAfterPossibleHandoff(t *testing.T) {
 	facts := Facts{
 		SchemaVersion: SchemaVersion, BindingUnchanged: true,

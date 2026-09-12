@@ -78,10 +78,22 @@ func render(schema []byte) ([]byte, error) {
 		fmt.Fprintf(&output, "  %s: %s,\n", entry.key, strconv.Quote(entry.value))
 	}
 	output.WriteString("} as const;\n\n")
+	output.WriteString("export const HOST_EFFECT_KINDS = [\n")
+	for _, effectKind := range definition.Command.Arguments.EffectKinds {
+		fmt.Fprintf(&output, "  %s,\n", strconv.Quote(effectKind))
+	}
+	output.WriteString("] as const;\n\n")
+	output.WriteString("export const HOST_OBSERVATION_STATUSES = [\n")
+	for _, status := range definition.Observation.Result.Statuses {
+		fmt.Fprintf(&output, "  %s,\n", strconv.Quote(status))
+	}
+	output.WriteString("] as const;\n\n")
 	output.WriteString(`export type HostCapability = (typeof HOST_CAPABILITIES)[number];
 export type BoardState = (typeof BOARD_STATES)[number];
 export type WorkerRole = (typeof WORKER_ROLES)[number];
 export type WorkerLabelKey = keyof typeof WORKER_LABEL;
+export type HostEffectKind = (typeof HOST_EFFECT_KINDS)[number];
+export type HostObservationStatus = (typeof HOST_OBSERVATION_STATUSES)[number];
 
 export interface BoardTask {
   id: string;
@@ -112,20 +124,6 @@ export interface HostScope {
   taskId: string;
   runId: string;
 }
-
-export type HostEffectKind =
-  | "host_view.create"
-  | "task_agent.create_with_bootstrap"
-  | "reviewer_agent.create_with_bootstrap"
-  | "agent.send_prompt"
-  | "primary_recovery.observe"
-  | "helper_agent.observe"
-  | "helper_agent.archive"
-  | "control_agent.observe_safe_boundary"
-  | "control_agent.archive"
-  | "task_agent.archive"
-  | "reviewer_agent.archive"
-  | "host_view.archive";
 
 export interface HostProviderOption {
   name: string;
@@ -194,16 +192,6 @@ export interface HostCommand {
   capability: HostCapability;
   arguments: Readonly<HostCommandArguments>;
 }
-
-export type HostObservationStatus =
-  | "desired"
-  | "absent"
-  | "owned_present"
-  | "errored"
-  | "permission"
-  | "different"
-  | "ambiguous"
-  | "unavailable";
 
 export type HostUsageState = "current" | "unavailable" | "ambiguous";
 

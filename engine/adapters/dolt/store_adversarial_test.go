@@ -1196,6 +1196,18 @@ func TestRunIdentityFieldsStayConsistent(t *testing.T) {
 		t.Fatalf("UpdateRun accepted a changed Run number: %v", err)
 	}
 
+	changedBase := current
+	changedBase.BaseSHA = "1111111111111111111111111111111111111111"
+	changedBase.Version = 2
+	if _, err := store.UpdateRun(
+		ctx,
+		command("change-run-base", "run.update", current.ID, 1, `{"baseSha":"1111111111111111111111111111111111111111"}`),
+		changedBase,
+		event("change-run-base-event", current.ID, 3, current.ID, 2, "run.updated"),
+	); !errors.Is(err, storeport.ErrInvalidRecord) {
+		t.Fatalf("UpdateRun accepted a changed Run base SHA: %v", err)
+	}
+
 	dangling := current
 	dangling.CurrentCandidateID = "candidate-does-not-exist"
 	dangling.Version = 2
@@ -1238,11 +1250,10 @@ func TestRunIdentityFieldsStayConsistent(t *testing.T) {
 	}
 
 	valid := current
-	valid.BaseSHA = "1111111111111111111111111111111111111111"
 	valid.Version = 2
 	result, err = store.UpdateRun(
 		ctx,
-		command("valid-run-update", "run.update", current.ID, 1, `{"baseSha":"1111111111111111111111111111111111111111"}`),
+		command("valid-run-update", "run.update", current.ID, 1, `{}`),
 		valid,
 		event("valid-run-update-event", current.ID, 3, current.ID, 2, "run.updated"),
 	)
@@ -1252,8 +1263,78 @@ func TestRunIdentityFieldsStayConsistent(t *testing.T) {
 		t.Fatalf("reload updated Run: %v", err)
 	}
 	if reloaded.Number != current.Number || reloaded.CurrentCandidateID != current.CurrentCandidateID ||
-		reloaded.BaseSHA != valid.BaseSHA || reloaded.Version != 2 {
+		reloaded.BaseSHA != current.BaseSHA || reloaded.Version != 2 {
 		t.Fatalf("valid Run update changed identity fields: %#v", reloaded)
+	}
+}
+
+func TestConcurrentRunUpdateCannotRaceBaseSHAImmutability(t *testing.T) {
+	fixture := startDoltFixture(t)
+	store := openContractStore(t, fixture, faultStoreID, true)
+	t.Cleanup(func() { _ = store.Close() })
+	seedFaultStore(t, store)
+	ctx := context.Background()
+	current, err := store.Run(ctx, "fault-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := current
+	valid.Version = 2
+	changedBase := valid
+	changedBase.BaseSHA = strings.Repeat("1", 40)
+
+	type updateResult struct {
+		result domain.CommandResult
+		err    error
+	}
+	results := make(chan updateResult, 2)
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	for _, input := range []struct {
+		key string
+		run domain.Run
+	}{
+		{"concurrent-valid-run-update", valid},
+		{"concurrent-base-change", changedBase},
+	} {
+		input := input
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			result, updateErr := store.UpdateRun(
+				ctx,
+				command(input.key, "run.update", current.ID, 1, `{}`),
+				input.run,
+				event(input.key+"-event", current.ID, 3, current.ID, 2, "run.updated"),
+			)
+			results <- updateResult{result: result, err: updateErr}
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+
+	applied, refused := 0, 0
+	for result := range results {
+		switch {
+		case result.err == nil && result.result.Outcome == domain.CommandApplied:
+			applied++
+		case errors.Is(result.err, storeport.ErrInvalidRecord):
+			refused++
+		default:
+			t.Fatalf("unexpected concurrent update result: %#v, %v", result.result, result.err)
+		}
+	}
+	if applied != 1 || refused != 1 {
+		t.Fatalf("concurrent outcomes applied=%d refused=%d", applied, refused)
+	}
+	reloaded, err := store.Run(ctx, current.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.BaseSHA != current.BaseSHA || reloaded.Version != 2 {
+		t.Fatalf("concurrent update changed immutable Run base: %#v", reloaded)
 	}
 }
 

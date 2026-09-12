@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mcuadros/director-engine/domain/execution"
+	"github.com/mcuadros/director-engine/ports/host"
 	runtimeport "github.com/mcuadros/director-engine/ports/runtime"
 )
 
@@ -82,5 +83,24 @@ func TestHelperCapacityReservationReplayAndScopedRelease(t *testing.T) {
 	}
 	if environment.HelperReservationCount() != 0 {
 		t.Fatal("idempotent release retained reservation")
+	}
+}
+
+func TestFakeObservationsReportPriorDispatcherPresence(t *testing.T) {
+	environment := NewEnvironment(Options{PriorDispatcherPresent: true})
+	effect := execution.Effect{
+		ID: "effect-1", Kind: execution.EffectWorktreeCreate,
+		Phase: execution.EffectDispatching, Attempt: 1, AttemptLimit: 2,
+	}
+	observation := environment.effectObservation(effect, execution.ObservationAbsent, "", "binding", 1, 1_000)
+	if observation.PriorDispatcherAbsent || observation.FactHash != execution.EffectObservationHash(observation) {
+		t.Fatalf("runtime observation = %#v", observation)
+	}
+	hostObservation := environment.hostObservation(host.Command{
+		RequestID: "request-1",
+		Arguments: host.Arguments{EffectID: effect.ID, EffectKind: effect.Kind, BindingHash: "binding"},
+	}, execution.ObservationAbsent, "", 2, 1_000)
+	if hostObservation.Result.PriorDispatcherAbsent || hostObservation.Result.FactHash != host.ObservationResultHash(hostObservation.Result) {
+		t.Fatalf("host observation = %#v", hostObservation.Result)
 	}
 }

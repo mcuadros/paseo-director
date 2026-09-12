@@ -194,6 +194,8 @@ func TestOperationalLimitsAcceptExactBoundaryAndParkEveryMissingOrExceededFact(t
 		obs  OperationalObservation
 	}{
 		{"missing-id", 1_001, func() OperationalObservation { value := boundary; value.ID = ""; return value }()},
+		{"negative", 1_001, func() OperationalObservation { value := boundary; value.ObservedAtMillis = -1; return value }()},
+		{"minimum-int", 1_001, func() OperationalObservation { value := boundary; value.ObservedAtMillis = -1 << 63; return value }()},
 		{"future", 999, boundary},
 		{"stale", 31_001, boundary},
 	} {

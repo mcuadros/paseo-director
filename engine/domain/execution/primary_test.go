@@ -4,6 +4,7 @@ package execution
 
 import (
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -179,6 +180,37 @@ func TestRepositoryBindingPropertyMatrixBindsEveryRunAndTarget(t *testing.T) {
 		if RepositoryBindingSHA256(changed) == first {
 			t.Fatalf("binding %d ignored a cross-Run worktree change", index)
 		}
+		insideSource := binding
+		insideSource.WorktreePath = filepath.Join(binding.SourcePath, "run")
+		if RepositoryBindingSHA256(insideSource) != "" {
+			t.Fatalf("binding %d admitted a worktree inside its source", index)
+		}
+		sourceInsideWorktree := binding
+		sourceInsideWorktree.WorktreePath = filepath.Dir(binding.SourcePath)
+		if RepositoryBindingSHA256(sourceInsideWorktree) != "" {
+			t.Fatalf("binding %d admitted a worktree containing its source", index)
+		}
+	}
+}
+
+func TestDisjointRepositoryPathsRejectsContainmentInBothDirections(t *testing.T) {
+	for name, fixture := range map[string]struct {
+		source   string
+		worktree string
+		want     bool
+	}{
+		"same":                  {"/srv/source/repo", "/srv/source/repo", false},
+		"worktree in source":    {"/srv/source/repo", "/srv/source/repo/runs/one", false},
+		"source in worktree":    {"/srv/runs/one/source", "/srv/runs/one", false},
+		"prefix sibling":        {"/srv/source/repo", "/srv/source/repository-run", true},
+		"ordinary sibling":      {"/srv/source/repo", "/srv/runs/one", true},
+		"noncanonical worktree": {"/srv/source/repo", "/srv/runs/../runs/one", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := DisjointRepositoryPaths(fixture.source, fixture.worktree); got != fixture.want {
+				t.Fatalf("DisjointRepositoryPaths(%q, %q) = %v", fixture.source, fixture.worktree, got)
+			}
+		})
 	}
 }
 
