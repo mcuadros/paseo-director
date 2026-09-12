@@ -142,6 +142,23 @@ func ValidLeaseBinding(binding LeaseBinding) bool {
 // primary lifecycle evidence records.
 func ValidPrimaryDigest(value string) bool { return primarySHA256Pattern.MatchString(value) }
 
+// DisjointRepositoryPaths requires two canonical absolute paths with neither
+// path equal to or containing the other. Prefix siblings remain distinct.
+func DisjointRepositoryPaths(sourcePath, worktreePath string) bool {
+	if !filepath.IsAbs(sourcePath) || filepath.Clean(sourcePath) != sourcePath ||
+		!filepath.IsAbs(worktreePath) || filepath.Clean(worktreePath) != worktreePath {
+		return false
+	}
+	contains := func(parent, child string) bool {
+		relative, err := filepath.Rel(parent, child)
+		if err != nil || filepath.IsAbs(relative) {
+			return false
+		}
+		return relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	}
+	return !contains(sourcePath, worktreePath) && !contains(worktreePath, sourcePath)
+}
+
 // RepositoryBindingSHA256 returns an identity only for a complete canonical
 // binding. It performs no I/O; adapters must re-observe the stored facts.
 func RepositoryBindingSHA256(binding RepositoryBinding) string {
@@ -153,7 +170,7 @@ func RepositoryBindingSHA256(binding RepositoryBinding) string {
 		!filepath.IsAbs(binding.GitCommonDirectory) || filepath.Clean(binding.GitCommonDirectory) != binding.GitCommonDirectory ||
 		binding.GitCommonDevice == 0 || binding.GitCommonInode == 0 ||
 		!filepath.IsAbs(binding.WorktreePath) || filepath.Clean(binding.WorktreePath) != binding.WorktreePath ||
-		binding.SourcePath == binding.WorktreePath || !validPrimaryBranch(binding.Branch) ||
+		!DisjointRepositoryPaths(binding.SourcePath, binding.WorktreePath) || !validPrimaryBranch(binding.Branch) ||
 		!primaryGitOIDPattern.MatchString(binding.BaseSHA) {
 		return ""
 	}

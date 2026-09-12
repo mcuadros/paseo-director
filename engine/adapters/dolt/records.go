@@ -1704,6 +1704,9 @@ func (store *DoltTaskStore) UpdateRun(
 		if current.Number != run.Number {
 			return mutationResult{}, fmt.Errorf("%w: Run number is immutable", storeport.ErrInvalidRecord)
 		}
+		if current.BaseSHA != run.BaseSHA {
+			return mutationResult{}, fmt.Errorf("%w: Run base SHA is immutable", storeport.ErrInvalidRecord)
+		}
 		if current.Execution.DeliveryMode != run.Execution.DeliveryMode ||
 			!reflect.DeepEqual(current.Execution.PublicationPolicy, run.Execution.PublicationPolicy) ||
 			!reflect.DeepEqual(current.Execution.ValidationPolicy, run.Execution.ValidationPolicy) ||

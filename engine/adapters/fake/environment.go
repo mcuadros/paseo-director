@@ -44,6 +44,7 @@ type Options struct {
 	BaseSHA                     string
 	Operational                 execution.OperationalObservation
 	LoseEveryMutationResponse   bool
+	PriorDispatcherPresent      bool
 	GlobalActiveAgents          uint32
 	RecoveryFailureSignals      []execution.ProviderFailureSignal
 	RecoveryDuplicateAgents     uint32
@@ -316,11 +317,12 @@ func sourceStatusSys(status os.FileInfo) ([2]uint64, bool) {
 	return [2]uint64{uint64(identity.Dev), identity.Ino}, true
 }
 
-func effectObservation(effect execution.Effect, status execution.ObservationStatus, external, bindingHash string, sequence uint64, observedAtMillis int64) execution.EffectObservation {
+func (environment *Environment) effectObservation(effect execution.Effect, status execution.ObservationStatus, external, bindingHash string, sequence uint64, observedAtMillis int64) execution.EffectObservation {
 	observation := execution.EffectObservation{
 		ID: fmt.Sprintf("observation-%d", sequence), EffectID: effect.ID,
 		Status: status, ExternalID: external, BindingHash: bindingHash,
-		PriorDispatcherAbsent: true, ObservedAtMillis: observedAtMillis, MaximumAgeMillis: 30_000,
+		PriorDispatcherAbsent: !environment.options.PriorDispatcherPresent,
+		ObservedAtMillis:      observedAtMillis, MaximumAgeMillis: 30_000,
 	}
 	observation.FactHash = digest(observation)
 	return observation
@@ -332,34 +334,34 @@ func (environment *Environment) ObserveEffect(_ context.Context, request runtime
 	defer environment.mu.Unlock()
 	environment.observationSeq++
 	if !environment.exactRequest(request) {
-		return effectObservation(request.Effect, execution.ObservationDifferent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.effectObservation(request.Effect, execution.ObservationDifferent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	}
 	switch request.Effect.Kind {
 	case execution.EffectWorktreeCreate:
 		if !pathPresent(environment.options.WorktreePath) {
-			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, environment.world.worktreeID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.effectObservation(request.Effect, execution.ObservationDesired, environment.world.worktreeID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case execution.EffectBoundaryMaterialize:
 		if !environment.world.boundaryReady {
-			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, environment.world.boundaryID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.effectObservation(request.Effect, execution.ObservationDesired, environment.world.boundaryID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case execution.EffectSetupRun:
 		if !environment.world.setupComplete {
-			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, externalID("setup", request.Effect.ID), request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.effectObservation(request.Effect, execution.ObservationDesired, externalID("setup", request.Effect.ID), request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case execution.EffectWorktreeRemove:
 		if pathPresent(environment.options.WorktreePath) {
-			return effectObservation(request.Effect, execution.ObservationOwnedPresent, environment.world.worktreeID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.effectObservation(request.Effect, execution.ObservationOwnedPresent, environment.world.worktreeID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, environment.world.worktreeID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.effectObservation(request.Effect, execution.ObservationDesired, environment.world.worktreeID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case execution.EffectRecoverySnapshot:
 		if !environment.world.recoveryReady {
-			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, environment.world.recoveryID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.effectObservation(request.Effect, execution.ObservationDesired, environment.world.recoveryID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	default:
 		return execution.EffectObservation{}, fmt.Errorf("unsupported fake runtime observation %q", request.Effect.Kind)
 	}
@@ -548,7 +550,7 @@ func (environment *Environment) Describe(_ context.Context) (host.Descriptor, er
 	return host.ExpectedDescriptor()
 }
 
-func hostObservation(command host.Command, status execution.ObservationStatus, external string, sequence uint64, observedAtMillis int64) host.Observation {
+func (environment *Environment) hostObservation(command host.Command, status execution.ObservationStatus, external string, sequence uint64, observedAtMillis int64) host.Observation {
 	correlation := ""
 	if command.Arguments.EffectKind == execution.EffectAgentCreate {
 		if registration, err := host.ParseWorkerLabels(command.Arguments.Labels); err == nil {
@@ -563,7 +565,7 @@ func hostObservation(command host.Command, status execution.ObservationStatus, e
 	result := host.ObservationResult{
 		EffectID: command.Arguments.EffectID, Status: status, ExternalID: external,
 		BindingHash: command.Arguments.BindingHash, CorrelationHash: correlation,
-		PriorDispatcherAbsent: true,
+		PriorDispatcherAbsent: !environment.options.PriorDispatcherPresent,
 		MaximumAgeMillis:      30_000,
 	}
 	if (command.Arguments.EffectKind == execution.EffectAgentCreate ||
@@ -679,23 +681,23 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 			if helper.agentArchived {
 				status = execution.ObservationDesired
 			}
-			return hostObservation(command, status, helper.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.hostObservation(command, status, helper.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case host.CapabilityWorkspaceObserve:
 		if arguments.EffectKind == execution.EffectHostViewArchive {
 			if environment.world.hostViewArchived {
-				return hostObservation(command, execution.ObservationDesired, environment.world.hostViewID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				return environment.hostObservation(command, execution.ObservationDesired, environment.world.hostViewID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
 			if environment.world.hostViewActive {
-				return hostObservation(command, execution.ObservationOwnedPresent, environment.world.hostViewID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				return environment.hostObservation(command, execution.ObservationOwnedPresent, environment.world.hostViewID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
-			return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
 		if environment.world.hostViewActive {
-			return hostObservation(command, execution.ObservationDesired, environment.world.hostViewID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.hostObservation(command, execution.ObservationDesired, environment.world.hostViewID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case host.CapabilityWorkspaceCreate:
 		if !pathPresent(arguments.WorktreePath) || arguments.WorktreeID != environment.world.worktreeID || arguments.LifecycleDigest == "" {
 			return host.Observation{}, errors.New("fake host view registration lacks the admitted Director worktree")
@@ -743,7 +745,7 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 		return host.Observation{}, environment.recordMutation(arguments.EffectKind)
 	case host.CapabilityAgentObserve:
 		if arguments.EffectKind == execution.EffectPrimaryRecoveryObserve {
-			observation := hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis)
+			observation := environment.hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis)
 			inventory := environment.recoveryInventory()
 			observation.Result.Inventory = &inventory
 			observation.Result.FactHash = host.ObservationResultHash(observation.Result)
@@ -757,74 +759,74 @@ func (environment *Environment) Invoke(_ context.Context, command host.Command) 
 					continue
 				}
 				if helper.agentArchived {
-					return hostObservation(command, execution.ObservationDesired, helper.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+					return environment.hostObservation(command, execution.ObservationDesired, helper.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 				}
 				if helper.agentActive {
-					observation := hostObservation(command, execution.ObservationOwnedPresent, helper.agentID, environment.observationSeq, environment.operational.ObservedAtMillis)
+					observation := environment.hostObservation(command, execution.ObservationOwnedPresent, helper.agentID, environment.observationSeq, environment.operational.ObservedAtMillis)
 					observation.Result.PriorDispatcherAbsent = false
 					observation.Result.FactHash = host.ObservationResultHash(observation.Result)
 					return observation, nil
 				}
-				return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				return environment.hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
-			return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
 		if arguments.EffectKind == execution.EffectControlAgentBoundary {
 			if arguments.AgentID != environment.world.agentID {
-				return hostObservation(command, execution.ObservationDifferent, arguments.AgentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				return environment.hostObservation(command, execution.ObservationDifferent, arguments.AgentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
 			if environment.world.agentArchived || environment.world.promptStatus == execution.ObservationDesired ||
 				environment.world.promptStatus == execution.ObservationErrored || environment.world.promptStatus == execution.ObservationPermission {
-				return hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				return environment.hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
 			if environment.world.agentActive {
-				observation := hostObservation(command, execution.ObservationOwnedPresent, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis)
+				observation := environment.hostObservation(command, execution.ObservationOwnedPresent, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis)
 				observation.Result.PriorDispatcherAbsent = false
 				observation.Result.FactHash = host.ObservationResultHash(observation.Result)
 				return observation, nil
 			}
-			return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
 		if arguments.EffectKind == execution.EffectControlAgentArchive {
 			if arguments.AgentID != environment.world.agentID {
-				return hostObservation(command, execution.ObservationDifferent, arguments.AgentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				return environment.hostObservation(command, execution.ObservationDifferent, arguments.AgentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
 			if environment.world.agentArchived {
-				return hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				return environment.hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
 			if environment.world.agentActive {
-				return hostObservation(command, execution.ObservationOwnedPresent, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				return environment.hostObservation(command, execution.ObservationOwnedPresent, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
-			return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
 		if arguments.EffectKind == execution.EffectAgentArchive {
 			if environment.world.agentArchived {
-				return hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				return environment.hostObservation(command, execution.ObservationDesired, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
 			if environment.world.agentActive {
-				return hostObservation(command, execution.ObservationOwnedPresent, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				return environment.hostObservation(command, execution.ObservationOwnedPresent, environment.world.agentID, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
-			return hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.hostObservation(command, execution.ObservationAmbiguous, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
 		if arguments.EffectKind == execution.EffectAgentCreate {
 			if !environment.world.agentActive {
-				return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				return environment.hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
 			observedAt := environment.operational.ObservedAtMillis
 			if environment.world.bootstrapObservedAtMillis > observedAt {
 				observedAt = environment.world.bootstrapObservedAtMillis
 			}
-			return hostObservation(command, environment.world.bootstrapStatus, environment.world.agentID, environment.observationSeq, observedAt), nil
+			return environment.hostObservation(command, environment.world.bootstrapStatus, environment.world.agentID, environment.observationSeq, observedAt), nil
 		}
 		if arguments.EffectKind == execution.EffectAgentPrompt {
 			if environment.world.promptEffectID == "" {
-				return hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
+				return environment.hostObservation(command, execution.ObservationAbsent, "", environment.observationSeq, environment.operational.ObservedAtMillis), nil
 			}
 			observedAt := environment.operational.ObservedAtMillis
 			if environment.world.promptObservedAtMillis > observedAt {
 				observedAt = environment.world.promptObservedAtMillis
 			}
-			return hostObservation(command, environment.world.promptStatus, environment.world.agentID, environment.observationSeq, observedAt), nil
+			return environment.hostObservation(command, environment.world.promptStatus, environment.world.agentID, environment.observationSeq, observedAt), nil
 		}
 		return host.Observation{}, errors.New("fake agent observation effect is unsupported")
 	case host.CapabilityAgentArchive:

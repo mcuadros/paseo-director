@@ -374,7 +374,7 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 		command.BaseSHA != "" && shaPattern.MatchString(command.BaseSHA) &&
 		command.SourcePath == workspace.Repository.SourcePath && len(command.SourcePath) <= 4_096 && filepath.IsAbs(command.SourcePath) && filepath.Clean(command.SourcePath) == command.SourcePath &&
 		len(command.WorktreePath) <= 4_096 && filepath.IsAbs(command.WorktreePath) && filepath.Clean(command.WorktreePath) == command.WorktreePath &&
-		command.SourcePath != command.WorktreePath && identifierPattern.MatchString(command.Branch) &&
+		domainexecution.DisjointRepositoryPaths(command.SourcePath, command.WorktreePath) && identifierPattern.MatchString(command.Branch) &&
 		!strings.Contains(command.Branch, "..") && !strings.Contains(command.Branch, "//") &&
 		command.TaskTitle == task.Title && strings.TrimSpace(command.InitialPrompt) != "" && len(command.InitialPrompt) <= 16*1_024 &&
 		command.EffectiveProfiles.Valid() && runtimebudget.ValidPolicy(command.BudgetPolicy) &&

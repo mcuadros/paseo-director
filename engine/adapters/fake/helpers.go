@@ -138,37 +138,37 @@ func (environment *Environment) ObserveHelperEffect(_ context.Context, request r
 	defer environment.mu.Unlock()
 	environment.observationSeq++
 	if !environment.exactHelperRequest(request) {
-		return effectObservation(request.Effect, execution.ObservationDifferent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.effectObservation(request.Effect, execution.ObservationDifferent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	}
 	world := environment.helperWorld(request.Helper)
 	switch request.Effect.Kind {
 	case execution.EffectHelperCheckoutCreate:
 		if !pathPresent(request.Helper.WorktreePath) {
-			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
 		head, err := runGit(request.Helper.WorktreePath, "rev-parse", "HEAD")
 		if err != nil || head != request.Repository.BaseSHA {
-			return effectObservation(request.Effect, execution.ObservationDifferent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.effectObservation(request.Effect, execution.ObservationDifferent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, world.checkoutID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.effectObservation(request.Effect, execution.ObservationDesired, world.checkoutID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case execution.EffectHelperBoundary:
 		if !world.boundaryReady {
-			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, world.boundaryID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.effectObservation(request.Effect, execution.ObservationDesired, world.boundaryID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case execution.EffectHelperCommitHandoff:
 		if request.Helper.Contribution == nil || world.importedCommit != request.Helper.Contribution.CommitSHA {
-			return effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.effectObservation(request.Effect, execution.ObservationAbsent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
 		if _, err := runGit(environment.options.SourcePath, "cat-file", "-e", world.importedCommit+"^{commit}"); err != nil {
-			return effectObservation(request.Effect, execution.ObservationDifferent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.effectObservation(request.Effect, execution.ObservationDifferent, "", request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, world.importedCommit, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.effectObservation(request.Effect, execution.ObservationDesired, world.importedCommit, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	case execution.EffectHelperCheckoutRemove:
 		if pathPresent(request.Helper.WorktreePath) {
-			return effectObservation(request.Effect, execution.ObservationOwnedPresent, world.checkoutID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+			return environment.effectObservation(request.Effect, execution.ObservationOwnedPresent, world.checkoutID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 		}
-		return effectObservation(request.Effect, execution.ObservationDesired, world.checkoutID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
+		return environment.effectObservation(request.Effect, execution.ObservationDesired, world.checkoutID, request.BindingHash, environment.observationSeq, environment.operational.ObservedAtMillis), nil
 	default:
 		return execution.EffectObservation{}, errors.New("fake helper effect is unsupported")
 	}

@@ -57,10 +57,38 @@ export const WORKER_LABEL = {
   startedAt: "director.started-at",
 } as const;
 
+export const HOST_EFFECT_KINDS = [
+  "host_view.create",
+  "task_agent.create_with_bootstrap",
+  "reviewer_agent.create_with_bootstrap",
+  "agent.send_prompt",
+  "primary_recovery.observe",
+  "helper_agent.observe",
+  "helper_agent.archive",
+  "control_agent.observe_safe_boundary",
+  "control_agent.archive",
+  "task_agent.archive",
+  "reviewer_agent.archive",
+  "host_view.archive",
+] as const;
+
+export const HOST_OBSERVATION_STATUSES = [
+  "desired",
+  "absent",
+  "owned_present",
+  "errored",
+  "permission",
+  "different",
+  "ambiguous",
+  "unavailable",
+] as const;
+
 export type HostCapability = (typeof HOST_CAPABILITIES)[number];
 export type BoardState = (typeof BOARD_STATES)[number];
 export type WorkerRole = (typeof WORKER_ROLES)[number];
 export type WorkerLabelKey = keyof typeof WORKER_LABEL;
+export type HostEffectKind = (typeof HOST_EFFECT_KINDS)[number];
+export type HostObservationStatus = (typeof HOST_OBSERVATION_STATUSES)[number];
 
 export interface BoardTask {
   id: string;
@@ -91,20 +119,6 @@ export interface HostScope {
   taskId: string;
   runId: string;
 }
-
-export type HostEffectKind =
-  | "host_view.create"
-  | "task_agent.create_with_bootstrap"
-  | "reviewer_agent.create_with_bootstrap"
-  | "agent.send_prompt"
-  | "primary_recovery.observe"
-  | "helper_agent.observe"
-  | "helper_agent.archive"
-  | "control_agent.observe_safe_boundary"
-  | "control_agent.archive"
-  | "task_agent.archive"
-  | "reviewer_agent.archive"
-  | "host_view.archive";
 
 export interface HostProviderOption {
   name: string;
@@ -173,16 +187,6 @@ export interface HostCommand {
   capability: HostCapability;
   arguments: Readonly<HostCommandArguments>;
 }
-
-export type HostObservationStatus =
-  | "desired"
-  | "absent"
-  | "owned_present"
-  | "errored"
-  | "permission"
-  | "different"
-  | "ambiguous"
-  | "unavailable";
 
 export type HostUsageState = "current" | "unavailable" | "ambiguous";
 

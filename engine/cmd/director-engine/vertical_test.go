@@ -660,6 +660,35 @@ func TestPrimaryLifecycleRefusesStaleLeaseAndWrongRepositoryBeforeMutation(t *te
 	}
 }
 
+func TestPrimaryLifecycleRejectsSourceWorktreeContainmentBeforeAnyEffect(t *testing.T) {
+	for name, worktreePath := range map[string]func(string) string{
+		"worktree inside source": func(source string) string { return filepath.Join(source, "nested-worktree") },
+		"source inside worktree": func(source string) string { return filepath.Dir(source) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := startVerticalDolt(t)
+			store := openVerticalStore(t, fixture)
+			suffix := "containment-" + strings.ReplaceAll(name, " ", "-")
+			source, base := initializeRepository(t, suffix)
+			project, task := createVerticalRecords(t, store, suffix, source)
+			worktree := worktreePath(source)
+			scope := execution.Scope{ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0], TaskID: task.ID, RunID: "run-" + suffix}
+			environment := fake.NewEnvironment(fake.Options{
+				SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID,
+				BaseSHA: base, Operational: operationalObservation(suffix),
+			})
+			controller := executionapp.NewController(store, environment, environment, environment)
+			command := startCommand(t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}))
+			if _, err := controller.Start(context.Background(), command); err == nil {
+				t.Fatal("overlapping source and worktree entered a Run")
+			}
+			if environment.TotalMutationCount() != 0 || environment.HostCallCount() != 0 {
+				t.Fatalf("overlapping paths reached effects: mutations=%d host=%d", environment.TotalMutationCount(), environment.HostCallCount())
+			}
+		})
+	}
+}
+
 func TestPrimaryLifecycleParksWrongWorktreePathBranchAndBaseBeforeDispatch(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -693,6 +722,56 @@ func TestPrimaryLifecycleParksWrongWorktreePathBranchAndBaseBeforeDispatch(t *te
 				t.Fatalf("wrong target reached a side effect: needs=%#v mutations=%d host=%d", parked.Execution.NeedsYou, environment.TotalMutationCount(), environment.HostCallCount())
 			}
 		})
+	}
+}
+
+func TestPrimaryLifecycleParksWhenPriorDispatcherRemainsPresent(t *testing.T) {
+	fixture := startVerticalDolt(t)
+	store := openVerticalStore(t, fixture)
+	source, base := initializeRepository(t, "prior-dispatcher")
+	project, task := createVerticalRecords(t, store, "prior-dispatcher", source)
+	worktree := filepath.Join(filepath.Dir(source), "prior-dispatcher-worktree")
+	scope := execution.Scope{ProjectID: project.ID, WorkspaceID: task.WorkspaceIDs[0], TaskID: task.ID, RunID: "run-prior-dispatcher"}
+	environment := fake.NewEnvironment(fake.Options{
+		SourcePath: source, WorktreePath: worktree, Branch: "task/" + task.ID, BaseSHA: base,
+		Operational: operationalObservation("prior-dispatcher"), PriorDispatcherPresent: true,
+	})
+	t.Cleanup(environment.RemoveFixture)
+	controller := executionapp.NewController(store, environment, environment, environment)
+	started, err := controller.Start(context.Background(), startCommand(
+		t, task, scope, source, worktree, base, eligibilityFacts(scope, execution.LifecycleSurfaces{}),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Run(context.Background(), started.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := run
+	next.Version++
+	next.Execution.Worktree.Phase = execution.EffectDispatching
+	next.Execution.Worktree.Attempt = 1
+	result, err := store.UpdateRun(context.Background(), domain.CommandRequest{
+		IdempotencyKey: "simulate-prior-dispatcher-crash", Type: "run.effect_dispatching",
+		AggregateID: run.ID, ExpectedVersion: run.Version, Payload: json.RawMessage(`{}`),
+	}, next, domain.Event{
+		ID: "simulate-prior-dispatcher-crash-event", RunID: run.ID, Sequence: run.Version + 2,
+		AggregateID: run.ID, AggregateVersion: next.Version, Type: "run.effect_dispatching", Payload: json.RawMessage(`{}`),
+	})
+	if err != nil || result.Outcome != domain.CommandApplied {
+		t.Fatalf("persist simulated possible handoff: %#v, %v", result, err)
+	}
+	parked := runSteps(t, store, environment, run.ID, func(current domain.Run) bool {
+		return current.Execution.NeedsYou != nil
+	})
+	if parked.Execution.NeedsYou.Code != execution.NeedCode("prior_dispatcher_not_absent") ||
+		parked.Execution.NeedsYou.CleanupAuthorized {
+		t.Fatalf("prior dispatcher park = %#v", parked.Execution.NeedsYou)
+	}
+	if environment.TotalMutationCount() != 0 || environment.HostCallCount() != 0 || environment.WorktreePresent() {
+		t.Fatalf("prior dispatcher observation authorized effects: mutations=%d host=%d worktree=%v",
+			environment.TotalMutationCount(), environment.HostCallCount(), environment.WorktreePresent())
 	}
 }
 
@@ -825,6 +904,9 @@ func TestLifecycleAndPeriodicFactsParkWithoutSDKOrCleanupAuthority(t *testing.T)
 		{"missing launch fact", execution.NeedOperationalFactMissing, func(facts *eligibility.Facts) {
 			facts.OperationalObservation.FreeDiskBasisPoints.Present = false
 		}},
+		{"negative launch timestamp", execution.NeedOperationalFactMissing, func(facts *eligibility.Facts) {
+			facts.OperationalObservation.ObservedAtMillis = -1
+		}},
 		{"exceeded launch fact", execution.NeedMemoryLimit, func(facts *eligibility.Facts) {
 			facts.OperationalObservation.MemoryBytes.Value = (256 << 20) + 1
 		}},
@@ -865,6 +947,9 @@ func TestLifecycleAndPeriodicFactsParkWithoutSDKOrCleanupAuthority(t *testing.T)
 	}{
 		{"missing periodic fact", execution.NeedOperationalFactMissing, func(observation *execution.OperationalObservation) {
 			observation.MemoryBytes.Present = false
+		}},
+		{"negative periodic timestamp", execution.NeedOperationalFactMissing, func(observation *execution.OperationalObservation) {
+			observation.ObservedAtMillis = -1
 		}},
 		{"exceeded periodic fact", execution.NeedProcessLimit, func(observation *execution.OperationalObservation) {
 			observation.Processes.Value = 33

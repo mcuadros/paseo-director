@@ -30,6 +30,28 @@ type Definition struct {
 	Capabilities    []string                 `json:"capabilities"`
 	BoardQuery      BoardQueryDefinition     `json:"boardQuery"`
 	WorkerRegistry  WorkerRegistryDefinition `json:"workerRegistry"`
+	Command         CommandDefinition        `json:"command"`
+	Observation     ObservationDefinition    `json:"observation"`
+}
+
+// CommandDefinition contains the schema-owned host effect vocabulary.
+type CommandDefinition struct {
+	Arguments CommandArgumentsDefinition `json:"arguments"`
+}
+
+// CommandArgumentsDefinition is the generated command-union metadata.
+type CommandArgumentsDefinition struct {
+	EffectKinds []string `json:"effectKinds"`
+}
+
+// ObservationDefinition contains the schema-owned normalized result metadata.
+type ObservationDefinition struct {
+	Result ObservationResultDefinition `json:"result"`
+}
+
+// ObservationResultDefinition is the generated observation-union metadata.
+type ObservationResultDefinition struct {
+	Statuses []string `json:"statuses"`
 }
 
 // BoardQueryDefinition is the transport metadata for the engine-computed
@@ -72,6 +94,36 @@ type WorkerRegistryLabels struct {
 	Session            string `json:"session"`
 	RegisteredAt       string `json:"registeredAt"`
 	StartedAt          string `json:"startedAt"`
+}
+
+func engineHostEffectKinds() []string {
+	return []string{
+		string(execution.EffectHostViewCreate),
+		string(execution.EffectAgentCreate),
+		string(execution.EffectReviewerAgentCreate),
+		string(execution.EffectAgentPrompt),
+		string(execution.EffectPrimaryRecoveryObserve),
+		string(execution.EffectHelperAgentObserve),
+		string(execution.EffectHelperAgentArchive),
+		string(execution.EffectControlAgentBoundary),
+		string(execution.EffectControlAgentArchive),
+		string(execution.EffectAgentArchive),
+		string(execution.EffectReviewerAgentArchive),
+		string(execution.EffectHostViewArchive),
+	}
+}
+
+func engineHostObservationStatuses() []string {
+	return []string{
+		string(execution.ObservationDesired),
+		string(execution.ObservationAbsent),
+		string(execution.ObservationOwnedPresent),
+		string(execution.ObservationErrored),
+		string(execution.ObservationPermission),
+		string(execution.ObservationDifferent),
+		string(execution.ObservationAmbiguous),
+		string(execution.ObservationUnavailable),
+	}
 }
 
 // ProviderOption is one already-authorized non-secret provider-native value.
@@ -362,6 +414,12 @@ func ParseDefinition(schema []byte) (Definition, error) {
 	if definition.WorkerRegistry.Labels != expectedLabels {
 		return Definition{}, errors.New("host worker registry labels do not match")
 	}
+	if !slices.Equal(definition.Command.Arguments.EffectKinds, engineHostEffectKinds()) {
+		return Definition{}, errors.New("host effect kinds do not match the Go execution vocabulary")
+	}
+	if !slices.Equal(definition.Observation.Result.Statuses, engineHostObservationStatuses()) {
+		return Definition{}, errors.New("host observation statuses do not match the Go execution vocabulary")
+	}
 	return definition, nil
 }
 
@@ -374,6 +432,8 @@ func EmbeddedDefinition() (Definition, error) {
 	definition.Capabilities = slices.Clone(definition.Capabilities)
 	definition.BoardQuery.States = slices.Clone(definition.BoardQuery.States)
 	definition.WorkerRegistry.Roles = slices.Clone(definition.WorkerRegistry.Roles)
+	definition.Command.Arguments.EffectKinds = slices.Clone(definition.Command.Arguments.EffectKinds)
+	definition.Observation.Result.Statuses = slices.Clone(definition.Observation.Result.Statuses)
 	return definition, nil
 }
 
