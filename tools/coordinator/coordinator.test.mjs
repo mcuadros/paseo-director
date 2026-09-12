@@ -71,8 +71,10 @@ function createRepositoryFixture({ ownership = OWNERSHIP } = {}) {
   const root = mkdtempSync(join(tmpdir(), "director-coordinator-test-"));
   const origin = join(root, "origin.git");
   const control = join(root, "control");
-  const checkout = join(root, "task-checkout");
+  const worktreeRoot = join(root, "worktrees");
+  const checkout = join(worktreeRoot, "task-checkout");
   mkdirSync(control);
+  mkdirSync(worktreeRoot);
   git(root, ["init", "--bare", "--quiet", origin]);
   git(control, ["init", "--quiet", "--initial-branch=main"]);
   git(control, ["config", "user.name", "Director Test"]);
@@ -292,6 +294,7 @@ function createRepositoryFixture({ ownership = OWNERSHIP } = {}) {
     origin,
     control,
     checkout,
+    worktreeRoot,
     base,
     candidate,
     ownership,
@@ -770,6 +773,31 @@ test("snapshot batches Beads, Git, GitHub, and documented Paseo CLI facts", asyn
     assert.equal(output.result.repository.id, REPOSITORY_ID);
     assert.equal(output.result.paseo.agent.id, "agent-0001");
     assert.equal(output.result.paseo.workspace.id, "workspace-0001");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("owned pull request enumeration refuses a saturated bounded page", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, {
+      historicalPulls: Array.from({ length: 100 }, (_, index) => ({
+        number: index + 1,
+        body: marker(fixture),
+        closed: true,
+        draft: false,
+        headSha: fixture.candidate,
+        merged: false,
+        mergeCommit: null,
+      })),
+    });
+    await assert.rejects(
+      execute("snapshot", fixture.options, { run: fake.runner }),
+      (error) =>
+        error instanceof CoordinatorError &&
+        error.code === "PULL_REQUESTS_INCOMPLETE",
+    );
   } finally {
     fixture.cleanup();
   }
@@ -2394,7 +2422,7 @@ test("completed remote and local ref deletion remains terminal after reappearanc
   }
 });
 
-test("post-handoff commands operate from exact refs after the Task checkout is reclaimed", async () => {
+test("post-handoff commands operate from exact refs after the Task checkout and parent are reclaimed", async () => {
   const fixture = createRepositoryFixture();
   try {
     const fake = fakeExternalCommands(fixture);
@@ -2416,6 +2444,8 @@ test("post-handoff commands operate from exact refs after the Task checkout is r
       (call) => call.executable === "paseo",
     ).length;
     git(fixture.control, ["worktree", "remove", "--", fixture.checkout]);
+    rmSync(fixture.worktreeRoot, { recursive: true, force: true });
+    assert.equal(existsSync(fixture.worktreeRoot), false);
     Object.assign(fixture.options, {
       "agent-id": "agent-0001",
       "checkout-state": "reclaimed",

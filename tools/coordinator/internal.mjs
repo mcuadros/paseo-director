@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash, randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   openSync,
+  readSync,
   readFileSync,
   realpathSync,
   renameSync,
   statSync,
   unlinkSync,
+  writeSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
@@ -148,11 +153,39 @@ export function canonicalExistingDirectory(path, label) {
   return canonical;
 }
 
-export function canonicalPath(path, label, { mustExist = true } = {}) {
+export function canonicalPath(
+  path,
+  label,
+  { mustExist = true, allowMissingParents = false } = {},
+) {
   refuse(!isAbsolute(path), "PATH_NOT_ABSOLUTE", `${label} must be absolute`);
   if (mustExist) return canonicalExistingDirectory(path, label);
-  const parent = canonicalExistingDirectory(dirname(path), `${label} parent`);
-  return resolve(parent, basename(path));
+  const absolute = resolve(path);
+  let ancestor = dirname(absolute);
+  if (!allowMissingParents) {
+    const parent = canonicalExistingDirectory(ancestor, `${label} parent`);
+    return resolve(parent, basename(absolute));
+  }
+  while (!existsSync(ancestor)) {
+    const next = dirname(ancestor);
+    refuse(
+      next === ancestor,
+      "PATH_UNAVAILABLE",
+      `${label} has no existing ancestor`,
+    );
+    ancestor = next;
+  }
+  const canonicalAncestor = canonicalExistingDirectory(
+    ancestor,
+    `${label} ancestor`,
+  );
+  const suffix = relative(ancestor, absolute);
+  refuse(
+    suffix === "" || suffix.startsWith("..") || isAbsolute(suffix),
+    "PATH_IDENTITY_INVALID",
+    `${label} cannot be resolved below its existing ancestor`,
+  );
+  return resolve(canonicalAncestor, suffix);
 }
 
 export function pathIsWithin(root, path) {
@@ -258,42 +291,143 @@ export async function withProcessIdentityLock(
     bindingHash,
     ...acceptedBindingHashes,
   ]);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (existsSync(lockPath)) {
-      const status = lstatSync(lockPath);
-      refuse(
-        !status.isFile() ||
-          status.isSymbolicLink() ||
-          (status.mode & 0o077) !== 0 ||
-          (typeof process.getuid === "function" && status.uid !== process.getuid()),
+  const guardPath = `${lockPath}.guard`;
+  let guardDescriptor;
+  let temporary;
+  try {
+    try {
+      guardDescriptor = openSync(
+        guardPath,
+        fsConstants.O_RDWR |
+          fsConstants.O_CREAT |
+          fsConstants.O_NOFOLLOW,
+        0o600,
+      );
+    } catch {
+      throw new CoordinatorError(
         invalidCode,
-        `${label} is not an exact private owned file`,
+        `${label} guard is unavailable`,
       );
-      const existing = readJsonFile(lockPath, label);
-      assertExactKeys(
-        existing,
-        ["schemaVersion", "pid", "processStartTime", "nonce", "bindingHash"],
-        label,
-        invalidCode,
-      );
-      refuse(
-        existing.schemaVersion !== 1 ||
-          !recognizedBindingHashes.has(existing.bindingHash) ||
-          !Number.isSafeInteger(existing.pid) ||
-          typeof existing.processStartTime !== "string" ||
-          !/^[0-9a-f]{32}$/u.test(existing.nonce ?? ""),
-        invalidCode,
-        `${label} is invalid or bound to different inputs`,
-      );
-      refuse(
-        linuxProcessStartTime(existing.pid, processCode) ===
-          existing.processStartTime,
-        busyCode,
-        `another process owns ${label}`,
-      );
-      unlinkSync(lockPath);
-      flushDirectory(parent);
     }
+    const guardStatus = fstatSync(guardDescriptor);
+    const visibleGuard = lstatSync(guardPath);
+    refuse(
+      !guardStatus.isFile() ||
+        visibleGuard.isSymbolicLink() ||
+        guardStatus.dev !== visibleGuard.dev ||
+        guardStatus.ino !== visibleGuard.ino ||
+        guardStatus.nlink !== 1 ||
+        guardStatus.size !== 0 ||
+        (guardStatus.mode & 0o077) !== 0 ||
+        (typeof process.getuid === "function" &&
+          guardStatus.uid !== process.getuid()),
+      invalidCode,
+      `${label} guard is not an exact private owned file`,
+    );
+    // The guard inode is stable and never renamed. Linux flock is attached to
+    // the inherited open-file description, so it remains held by this
+    // descriptor after the short flock subprocess exits and is released on
+    // close or process death.
+    const flock = spawnSync(
+      "/usr/bin/flock",
+      ["--exclusive", "--nonblock", "--conflict-exit-code", "75", "3"],
+      {
+        encoding: "utf8",
+        env: {},
+        stdio: ["ignore", "ignore", "ignore", guardDescriptor],
+      },
+    );
+    if (flock.status === 75) {
+      throw new CoordinatorError(busyCode, `another process owns ${label}`);
+    }
+    refuse(
+      flock.error || flock.status !== 0,
+      processCode,
+      `${label} kernel lock is unavailable`,
+    );
+    const lockedGuard = lstatSync(guardPath);
+    refuse(
+      lockedGuard.dev !== guardStatus.dev ||
+        lockedGuard.ino !== guardStatus.ino,
+      invalidCode,
+      `${label} guard changed during acquisition`,
+    );
+
+    if (existsSync(lockPath)) {
+      let existingDescriptor;
+      try {
+        existingDescriptor = openSync(
+          lockPath,
+          fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+        );
+        const status = fstatSync(existingDescriptor);
+        const visible = lstatSync(lockPath);
+        refuse(
+          !status.isFile() ||
+            visible.isSymbolicLink() ||
+            status.dev !== visible.dev ||
+            status.ino !== visible.ino ||
+            status.nlink !== 1 ||
+            (status.mode & 0o077) !== 0 ||
+            (typeof process.getuid === "function" &&
+              status.uid !== process.getuid()),
+          invalidCode,
+          `${label} is not an exact private owned file`,
+        );
+        refuse(
+          status.size < 1 || status.size > DEFAULT_MAX_JSON_BYTES,
+          invalidCode,
+          `${label} has an invalid size`,
+        );
+        const bytes = Buffer.alloc(status.size);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const count = readSync(
+            existingDescriptor,
+            bytes,
+            offset,
+            bytes.length - offset,
+            offset,
+          );
+          refuse(count === 0, invalidCode, `${label} changed while reading`);
+          offset += count;
+        }
+        const existing = parseBoundedJson(bytes.toString("utf8"), label, {
+          invalidCode,
+          oversizeCode: invalidCode,
+        });
+        assertExactKeys(
+          existing,
+          ["schemaVersion", "pid", "processStartTime", "nonce", "bindingHash"],
+          label,
+          invalidCode,
+        );
+        refuse(
+          existing.schemaVersion !== 1 ||
+            !recognizedBindingHashes.has(existing.bindingHash) ||
+            !Number.isSafeInteger(existing.pid) ||
+            typeof existing.processStartTime !== "string" ||
+            !/^[0-9a-f]{32}$/u.test(existing.nonce ?? ""),
+          invalidCode,
+          `${label} is invalid or bound to different inputs`,
+        );
+        refuse(
+          linuxProcessStartTime(existing.pid, processCode) ===
+            existing.processStartTime,
+          busyCode,
+          `another process owns ${label}`,
+        );
+        const current = lstatSync(lockPath);
+        refuse(
+          current.dev !== status.dev || current.ino !== status.ino,
+          replacedCode,
+          `${label} changed before stale reclamation`,
+        );
+      } finally {
+        if (existingDescriptor !== undefined) closeSync(existingDescriptor);
+      }
+    }
+
     const token = {
       schemaVersion: 1,
       pid: process.pid,
@@ -306,36 +440,47 @@ export async function withProcessIdentityLock(
       processCode,
       "current process identity is unavailable",
     );
-    let descriptor;
+    temporary = `${lockPath}.next-${process.pid}-${token.nonce}`;
+    let tokenDescriptor;
     try {
-      descriptor = openSync(lockPath, "wx", 0o600);
-      writeFileSync(descriptor, `${canonicalJson(token)}\n`, "utf8");
-      fsyncSync(descriptor);
-      closeSync(descriptor);
-      descriptor = undefined;
-      flushDirectory(parent);
-    } catch (error) {
-      if (descriptor !== undefined) closeSync(descriptor);
-      if (error?.code === "EEXIST" && attempt === 0) continue;
-      if (error?.code === "EEXIST") {
-        throw new CoordinatorError(busyCode, `another process won ${label}`);
-      }
-      throw error;
+      tokenDescriptor = openSync(temporary, "wx", 0o600);
+      const serialized = `${canonicalJson(token)}\n`;
+      const written = writeSync(tokenDescriptor, serialized, 0, "utf8");
+      refuse(
+        written !== Buffer.byteLength(serialized),
+        invalidCode,
+        `${label} token write was incomplete`,
+      );
+      fsyncSync(tokenDescriptor);
+    } finally {
+      if (tokenDescriptor !== undefined) closeSync(tokenDescriptor);
     }
+    // The kernel guard serializes this atomic replacement with every current
+    // coordinator. The descriptor checks above bind stale reclamation to the
+    // exact private inode and PID/start-time token that was observed.
+    renameSync(temporary, lockPath);
+    temporary = undefined;
+    flushDirectory(parent);
+
     try {
       return await operation();
     } finally {
-      if (existsSync(lockPath)) {
-        const current = readJsonFile(lockPath, label);
-        refuse(
-          canonicalJson(current) !== canonicalJson(token),
-          replacedCode,
-          `${label} changed during the operation`,
-        );
-        unlinkSync(lockPath);
-        flushDirectory(parent);
-      }
+      refuse(
+        !existsSync(lockPath),
+        replacedCode,
+        `${label} disappeared during the operation`,
+      );
+      const current = readJsonFile(lockPath, label);
+      refuse(
+        canonicalJson(current) !== canonicalJson(token),
+        replacedCode,
+        `${label} changed during the operation`,
+      );
+      unlinkSync(lockPath);
+      flushDirectory(parent);
     }
+  } finally {
+    if (temporary !== undefined && existsSync(temporary)) unlinkSync(temporary);
+    if (guardDescriptor !== undefined) closeSync(guardDescriptor);
   }
-  throw new CoordinatorError(busyCode, `another process won ${label}`);
 }

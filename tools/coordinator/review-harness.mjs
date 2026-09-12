@@ -26,6 +26,7 @@ import {
 } from "./internal.mjs";
 
 const HARNESS_VERSION = 2;
+const REVIEW_STATE_SCHEMA_VERSION = 2;
 const MAX_JSON_BYTES = 1_048_576;
 const ACTOR_PATTERN = /^paseo:[a-zA-Z0-9-]{8,128}$/u;
 const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{2,199}$/u;
@@ -346,8 +347,261 @@ function statePath(path, checkout) {
   return canonical;
 }
 
-function loadReviewState(path) {
-  if (!existsSync(path)) return { schemaVersion: 1, reviews: {} };
+function emptyReviewState() {
+  return {
+    schemaVersion: REVIEW_STATE_SCHEMA_VERSION,
+    budgets: {},
+    legacyReviews: {},
+  };
+}
+
+function newCandidateBudget(candidate, base) {
+  return {
+    binding: { candidate, base },
+    reviewIds: [],
+    remoteObservationIds: [],
+    observedManifestHashes: [],
+    exceptions: [],
+    manifests: {},
+  };
+}
+
+function appendUnique(values, value) {
+  if (!values.includes(value)) values.push(value);
+}
+
+function legacyReviewBinding(key, review, manifest) {
+  const result = review?.output?.result;
+  if (
+    /^[0-9a-f]{40}$/u.test(result?.candidate ?? "") &&
+    /^[0-9a-f]{40}$/u.test(result?.base ?? "") &&
+    /^[0-9a-f]{64}$/u.test(result?.manifestHash ?? "") &&
+    key === digest({
+      candidate: result.candidate,
+      base: result.base,
+      manifestHash: result.manifestHash,
+    })
+  ) {
+    return {
+      candidate: result.candidate,
+      base: result.base,
+      manifestHash: result.manifestHash,
+    };
+  }
+  const current = {
+    candidate: manifest.candidate.sha,
+    base: manifest.base.sha,
+    manifestHash: manifest.manifestHash,
+  };
+  return key === digest(current) ? current : null;
+}
+
+function acceptedLegacyLockBindings(path, manifest) {
+  const current = digest({
+    candidate: manifest.candidate.sha,
+    base: manifest.base.sha,
+    manifestHash: manifest.manifestHash,
+  });
+  if (!existsSync(path)) return [current];
+  const state = readJsonFile(path, "review state", {
+    maximum: MAX_JSON_BYTES,
+    identityCode: "REVIEW_STATE_INVALID",
+    invalidCode: "HARNESS_JSON_INVALID",
+  });
+  if (state?.schemaVersion !== 1 || !isObject(state.reviews)) return [current];
+  const accepted = [current];
+  for (const [legacyKey, review] of Object.entries(state.reviews)) {
+    const binding = legacyReviewBinding(legacyKey, review, manifest);
+    if (
+      binding?.candidate === manifest.candidate.sha &&
+      binding.base === manifest.base.sha
+    ) {
+      appendUnique(accepted, legacyKey);
+    }
+  }
+  return accepted;
+}
+
+function migrateLegacyReviewState(state, manifest) {
+  const migrated = emptyReviewState();
+  migrated.legacyReviews = structuredClone(state.reviews);
+  for (const [legacyKey, review] of Object.entries(state.reviews)) {
+    const binding = legacyReviewBinding(legacyKey, review, manifest);
+    if (binding === null) continue;
+    refuse(
+      !isObject(review) || !Array.isArray(review.attempts),
+      "REVIEW_STATE_INVALID",
+      "bound legacy review state is invalid",
+    );
+    const budgetKey = digest({
+      candidate: binding.candidate,
+      base: binding.base,
+    });
+    const budget = migrated.budgets[budgetKey] ??
+      newCandidateBudget(binding.candidate, binding.base);
+    appendUnique(budget.observedManifestHashes, binding.manifestHash);
+    for (const attempt of review.attempts) {
+      if (typeof attempt?.reviewId === "string") {
+        appendUnique(budget.reviewIds, attempt.reviewId);
+      }
+      if (typeof attempt?.remoteObservationId === "string") {
+        appendUnique(
+          budget.remoteObservationIds,
+          attempt.remoteObservationId,
+        );
+      }
+      if (attempt?.reason !== undefined && attempt.reason !== "initial") {
+        budget.exceptions.push({
+          manifestHash: binding.manifestHash,
+          attempt: attempt.number ?? null,
+          reason: attempt.reason,
+          reasonRecordHash:
+            attempt.reasonRecord === null || attempt.reasonRecord === undefined
+              ? null
+              : digest(attempt.reasonRecord),
+        });
+      }
+    }
+    if (
+      review.attempts.length === 1 &&
+      review.attempts[0]?.source === "authoritative-remote"
+    ) {
+      const [attempt] = review.attempts;
+      const output =
+        review.output === undefined
+          ? undefined
+          : structuredClone(review.output);
+      if (isObject(output?.result)) output.result.reviewKey = budgetKey;
+      budget.manifests[binding.manifestHash] = {
+        manifestHash: binding.manifestHash,
+        reviewId: attempt.reviewId,
+        remoteObservationId: attempt.remoteObservationId,
+        reason: attempt.reason,
+        reasonRecord: attempt.reasonRecord,
+        phase: attempt.phase,
+        ...(attempt.results === undefined ? {} : { results: attempt.results }),
+        ...(output === undefined ? {} : { output }),
+      };
+    }
+    migrated.budgets[budgetKey] = budget;
+  }
+  return migrated;
+}
+
+function validateCandidateBudget(budget, budgetKey) {
+  assertExactKeys(
+    budget,
+    [
+      "binding",
+      "reviewIds",
+      "remoteObservationIds",
+      "observedManifestHashes",
+      "exceptions",
+      "manifests",
+    ],
+    "review Candidate budget",
+    "HARNESS_SCHEMA_INVALID",
+  );
+  if (isObject(budget.binding)) {
+    assertExactKeys(
+      budget.binding,
+      ["candidate", "base"],
+      "review Candidate binding",
+      "HARNESS_SCHEMA_INVALID",
+    );
+  }
+  refuse(
+    !isObject(budget.binding) ||
+      !/^[0-9a-f]{40}$/u.test(budget.binding.candidate ?? "") ||
+      !/^[0-9a-f]{40}$/u.test(budget.binding.base ?? "") ||
+      digest(budget.binding) !== budgetKey ||
+      !Array.isArray(budget.reviewIds) ||
+      !Array.isArray(budget.remoteObservationIds) ||
+      !Array.isArray(budget.observedManifestHashes) ||
+      !Array.isArray(budget.exceptions) ||
+      !isObject(budget.manifests) ||
+      budget.reviewIds.some(
+        (reviewId) =>
+          typeof reviewId !== "string" || !ID_PATTERN.test(reviewId),
+      ) ||
+      budget.remoteObservationIds.some(
+        (observationId) =>
+          typeof observationId !== "string" ||
+          observationId.length < 1 ||
+          observationId.length > 200,
+      ) ||
+      budget.observedManifestHashes.some(
+        (manifestHash) => !/^[0-9a-f]{64}$/u.test(manifestHash),
+      ) ||
+      new Set(budget.reviewIds).size !== budget.reviewIds.length ||
+      new Set(budget.remoteObservationIds).size !==
+        budget.remoteObservationIds.length ||
+      new Set(budget.observedManifestHashes).size !==
+        budget.observedManifestHashes.length,
+    "REVIEW_STATE_INVALID",
+    "review Candidate budget is invalid",
+  );
+  for (const [manifestHash, attempt] of Object.entries(budget.manifests)) {
+    if (isObject(attempt)) {
+      assertExactKeys(
+        attempt,
+        [
+          "manifestHash",
+          "reviewId",
+          "remoteObservationId",
+          "reason",
+          "reasonRecord",
+          "phase",
+          "results",
+          "output",
+        ],
+        "review manifest attempt",
+        "HARNESS_SCHEMA_INVALID",
+      );
+    }
+    refuse(
+      !isObject(attempt) ||
+        attempt.manifestHash !== manifestHash ||
+        !budget.observedManifestHashes.includes(manifestHash) ||
+        !ID_PATTERN.test(attempt.reviewId ?? "") ||
+        typeof attempt.remoteObservationId !== "string" ||
+        !budget.remoteObservationIds.includes(attempt.remoteObservationId) ||
+        attempt.reason !== "initial" ||
+        attempt.reasonRecord !== null ||
+        !["running", "complete"].includes(attempt.phase) ||
+        (attempt.results !== undefined && !Array.isArray(attempt.results)) ||
+        (attempt.output !== undefined && !isObject(attempt.output)),
+      "REVIEW_STATE_INVALID",
+      "review manifest attempt is invalid",
+    );
+  }
+  for (const exception of budget.exceptions) {
+    if (isObject(exception)) {
+      assertExactKeys(
+        exception,
+        ["manifestHash", "attempt", "reason", "reasonRecordHash"],
+        "review budget exception",
+        "HARNESS_SCHEMA_INVALID",
+      );
+    }
+    refuse(
+      !isObject(exception) ||
+        !/^[0-9a-f]{64}$/u.test(exception.manifestHash ?? "") ||
+        (exception.attempt !== null &&
+          !Number.isSafeInteger(exception.attempt)) ||
+        typeof exception.reason !== "string" ||
+        exception.reason.length < 1 ||
+        exception.reason.length > 100 ||
+        (exception.reasonRecordHash !== null &&
+          !/^[0-9a-f]{64}$/u.test(exception.reasonRecordHash ?? "")),
+      "REVIEW_STATE_INVALID",
+      "review budget exception is invalid",
+    );
+  }
+}
+
+function loadReviewState(path, manifest) {
+  if (!existsSync(path)) return emptyReviewState();
   const status = lstatSync(path);
   refuse(
     !status.isFile() || status.isSymbolicLink() || (status.mode & 0o077) !== 0,
@@ -361,11 +615,26 @@ function loadReviewState(path) {
   });
   assertExactKeys(
     state,
-    ["schemaVersion", "reviews"],
+    state.schemaVersion === 1
+      ? ["schemaVersion", "reviews"]
+      : ["schemaVersion", "budgets", "legacyReviews"],
     "review state",
     "HARNESS_SCHEMA_INVALID",
   );
-  refuse(state.schemaVersion !== 1 || !isObject(state.reviews), "REVIEW_STATE_INVALID", "review state schema is invalid");
+  if (state.schemaVersion === 1) {
+    refuse(!isObject(state.reviews), "REVIEW_STATE_INVALID", "legacy review state is invalid");
+    return migrateLegacyReviewState(state, manifest);
+  }
+  refuse(
+    state.schemaVersion !== REVIEW_STATE_SCHEMA_VERSION ||
+      !isObject(state.budgets) ||
+      !isObject(state.legacyReviews),
+    "REVIEW_STATE_INVALID",
+    "review state schema is invalid",
+  );
+  for (const [budgetKey, budget] of Object.entries(state.budgets)) {
+    validateCandidateBudget(budget, budgetKey);
+  }
   return state;
 }
 
@@ -376,11 +645,17 @@ function persistReviewState(path, state) {
   });
 }
 
-async function withReviewStateLock(stateFile, reviewKey, operation) {
+async function withReviewStateLock(
+  stateFile,
+  reviewKey,
+  acceptedBindingHashes,
+  operation,
+) {
   return withProcessIdentityLock(
     {
       lockPath: `${stateFile}.lock`,
       bindingHash: reviewKey,
+      acceptedBindingHashes,
       label: "review state lock",
       busyCode: "REVIEW_HARNESS_BUSY",
       invalidCode: "REVIEW_STATE_LOCK_INVALID",
@@ -426,8 +701,11 @@ export async function runReviewHarness(rawOptions, dependencies = {}) {
   const reviewKey = digest({
     candidate: manifest.candidate.sha,
     base: manifest.base.sha,
-    manifestHash: manifest.manifestHash,
   });
+  const acceptedBindingHashes = acceptedLegacyLockBindings(
+    options.stateFile,
+    manifest,
+  );
   const run = dependencies.run ?? defaultCommandRunner;
   const remoteCi = (dependencies.remoteCiResult ?? remoteCiResult)(
     options.remoteCiFile,
@@ -436,27 +714,37 @@ export async function runReviewHarness(rawOptions, dependencies = {}) {
   const environment = (
     dependencies.preflightRemoteReviewEnvironment ?? preflightRemoteReviewEnvironment
   )(options.checkout, run);
-  return withReviewStateLock(options.stateFile, reviewKey, async () => {
-    const state = loadReviewState(options.stateFile);
-    const review = state.reviews[reviewKey] ?? { attempts: [] };
-    let attempt;
-    // The authoritative observation is consumed once per exact Candidate.
-    // Replay by the same Reviewer adopts the completed record; a different
-    // observation or Reviewer can never become another attempt.
+  return withReviewStateLock(
+    options.stateFile,
+    reviewKey,
+    acceptedBindingHashes,
+    async () => {
+    const state = loadReviewState(options.stateFile, manifest);
+    const budget = state.budgets[reviewKey] ??
+      newCandidateBudget(manifest.candidate.sha, manifest.base.sha);
+    validateCandidateBudget(budget, reviewKey);
+    // Complete-CI authority is budgeted by the immutable Candidate/base pair.
+    // Manifest hashes are history within that budget, not new budget keys.
     refuse(
-      typeof review.remoteObservationId === "string" &&
-        review.remoteObservationId !== remoteCi.observationId,
+      budget.remoteObservationIds.length > 1 ||
+        (budget.remoteObservationIds.length === 1 &&
+          budget.remoteObservationIds[0] !== remoteCi.observationId),
       "REVIEW_REMOTE_CI_CHANGED",
       "another authoritative remote CI observation was already consumed for this Candidate",
     );
     refuse(
-      review.attempts.length > 1 ||
-        review.attempts.some((item) => item.source !== "authoritative-remote"),
-      "REVIEW_REMOTE_CI_ALREADY_CONSUMED",
-      "the exact review already consumed another complete-CI source",
+      budget.reviewIds.length > 1 ||
+        (budget.reviewIds.length === 1 &&
+          budget.reviewIds[0] !== options.reviewId),
+      "REVIEWER_IDENTITY_CHANGED",
+      "another Reviewer already consumed the authoritative remote CI observation",
     );
-    if (review.attempts.length === 1) {
-      [attempt] = review.attempts;
+    appendUnique(budget.remoteObservationIds, remoteCi.observationId);
+    appendUnique(budget.reviewIds, options.reviewId);
+    appendUnique(budget.observedManifestHashes, manifest.manifestHash);
+    let attempt = budget.manifests[manifest.manifestHash];
+    state.budgets[reviewKey] = budget;
+    if (attempt !== undefined) {
       refuse(
         attempt.reviewId !== options.reviewId,
         "REVIEWER_IDENTITY_CHANGED",
@@ -468,28 +756,33 @@ export async function runReviewHarness(rawOptions, dependencies = {}) {
         "another authoritative remote CI observation was already consumed for this Candidate",
       );
       if (attempt.phase === "complete") {
+        if (isObject(attempt.output)) return attempt.output;
+        const failed = Array.isArray(attempt.results)
+          ? attempt.results.filter((result) => result.status !== "passed")
+          : [];
         refuse(
-          !isObject(review.output),
+          failed.length > 0,
+          "REVIEW_HARNESS_FAILED",
+          "one or more independent review checks did not pass",
+          { results: attempt.results },
+        );
+        throw new CoordinatorError(
           "REVIEW_STATE_INVALID",
           "completed remote review lacks its idempotent result",
         );
-        return review.output;
       }
     } else {
       attempt = {
-        number: 1,
+        manifestHash: manifest.manifestHash,
         reviewId: options.reviewId,
+        remoteObservationId: remoteCi.observationId,
         reason: options.reason,
         reasonRecord: options.reasonRecord,
-        source: "authoritative-remote",
-        remoteObservationId: remoteCi.observationId,
         phase: "running",
       };
-      review.attempts.push(attempt);
-      review.remoteObservationId = remoteCi.observationId;
-      state.reviews[reviewKey] = review;
-      persistReviewState(options.stateFile, state);
+      budget.manifests[manifest.manifestHash] = attempt;
     }
+    persistReviewState(options.stateFile, state);
 
     const ci = () => Promise.resolve(remoteCi.result);
     const verify = dependencies.verifyReviewManifest ?? verifyReviewManifest;
@@ -515,10 +808,12 @@ export async function runReviewHarness(rawOptions, dependencies = {}) {
     const results = [ciResult, identityResult].toSorted((left, right) =>
       compareText(left.id, right.id),
     );
+    const failed = results.filter((result) => result.status !== "passed");
     attempt.phase = "complete";
     attempt.results = results;
-    persistReviewState(options.stateFile, state);
-    const failed = results.filter((result) => result.status !== "passed");
+    if (failed.length > 0) {
+      persistReviewState(options.stateFile, state);
+    }
     refuse(
       failed.length > 0,
       "REVIEW_HARNESS_FAILED",
@@ -537,7 +832,7 @@ export async function runReviewHarness(rawOptions, dependencies = {}) {
         base: manifest.base.sha,
         reviewId: options.reviewId,
         reviewKey,
-        attempt: attempt.number,
+        attempt: 1,
         reason: attempt.reason,
         reasonRecordHash:
           attempt.reasonRecord === null ? null : digest(attempt.reasonRecord),
@@ -549,6 +844,7 @@ export async function runReviewHarness(rawOptions, dependencies = {}) {
         limits: { maxParallel: 2, maxOutputBytes: null, ciTimeoutMs: null },
         maintainedAdversarialHarness: [
           "tools/coordinator/coordinator.test.mjs",
+          "tools/coordinator/internal.test.mjs",
           "tools/coordinator/paseo-auth.test.mjs",
           "tools/coordinator/review-harness.test.mjs",
         ],
@@ -556,8 +852,15 @@ export async function runReviewHarness(rawOptions, dependencies = {}) {
         results,
       },
     };
-    review.output = output;
+    attempt.output = output;
     persistReviewState(options.stateFile, state);
+    if (typeof dependencies.afterPersist === "function") {
+      await dependencies.afterPersist({
+        candidate: manifest.candidate.sha,
+        base: manifest.base.sha,
+        manifestHash: manifest.manifestHash,
+      });
+    }
     return output;
   });
 }

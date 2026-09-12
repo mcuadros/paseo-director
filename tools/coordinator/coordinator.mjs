@@ -573,6 +573,7 @@ function validateOptions(command, rawOptions) {
   );
   const checkout = canonicalPath(rawOptions.checkout, "Task checkout", {
     mustExist: checkoutState === "present" && command !== "cleanup-apply",
+    allowMissingParents: checkoutState === "reclaimed",
   });
   refuse(
     checkoutState === "reclaimed" && existsSync(checkout),
@@ -1408,6 +1409,11 @@ function exactPullRequests(run, options) {
     `repos/${options.repo}/pulls?state=all&head=${encodeURIComponent(`${options.headOwner}:${options.branch}`)}&base=${encodeURIComponent(options.baseRef)}&per_page=100`,
   ]);
   refuse(!Array.isArray(pulls), "PULL_REQUEST_LIST_INVALID", "GitHub pull request list is invalid");
+  refuse(
+    pulls.length >= 100,
+    "PULL_REQUESTS_INCOMPLETE",
+    "GitHub pull requests exceeded the bounded page",
+  );
   const sameRefs = pulls.filter(
     (pull) =>
       pull?.head?.ref === options.branch &&
