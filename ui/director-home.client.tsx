@@ -11,7 +11,6 @@ import {
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -41,6 +40,13 @@ import {
   organizerBootstrapRpc,
   repairProjectRpc,
 } from "../rpc/planning.shared.ts";
+import {
+  AccessibilityProvider,
+  AccessiblePressable,
+  useAccessibilityAnnouncement,
+  useAccessibilityPreferences,
+  useResponsiveCompactLayout,
+} from "./accessibility.client.tsx";
 import {
   directorHomeScene,
   homeActionEnabled,
@@ -111,6 +117,7 @@ function mutationIntent(action: HomeAction): PlanningMutationIntent | null {
 }
 
 export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceProps) {
+  const accessibilityPreferences = useAccessibilityPreferences();
   const loadHome = useRpc(homeQueryRpc);
   const mutatePlanning = useRpc(planningMutationRpc);
   const bootstrapOrganizer = useRpc(organizerBootstrapRpc);
@@ -189,7 +196,45 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
   }, [host.id]);
   const snapshot = "snapshot" in scene ? scene.snapshot : null;
   const stale = scene.kind === "stale";
-  const metrics = shellMetrics(layout.compact);
+  const compact = useResponsiveCompactLayout(layout.compact);
+  const homeAnnouncement = scene.kind === "loading"
+    ? "Loading Director Home"
+    : scene.kind === "error"
+      ? "Director Home is unavailable for this exact host"
+      : scene.kind === "stale"
+        ? "Host offline or snapshot stale. Every action is disabled"
+        : scene.kind === "empty"
+          ? "No Projects on this host"
+          : scene.kind === "needs_you"
+            ? "One or more Projects need your attention"
+            : snapshot
+              ? `${snapshot.page.projects.length} Projects shown. ${snapshot.page.totals.activeWork} active work items`
+              : null;
+  useAccessibilityAnnouncement(homeAnnouncement);
+  useAccessibilityAnnouncement(
+    organizer.isPending
+      ? "Checking Organizer Preview"
+      : organizer.data?.message ?? control.data?.message ?? null,
+  );
+  useAccessibilityAnnouncement(
+    doctor.isPending
+      ? "Running read-only Doctor"
+      : doctor.isError
+        ? "Doctor is unavailable for this exact host"
+        : doctor.data
+          ? `Doctor ${readableCode(doctor.data.status)}. ${doctor.data.blockingCount} blocking checks`
+          : null,
+  );
+  useAccessibilityAnnouncement(
+    repair.isPending
+      ? repair.variables?.kind === "repair.apply"
+        ? "Applying the exact confirmed Repair"
+        : "Preparing the exact Repair Preview"
+      : repair.isError
+        ? "Repair is unavailable for this exact host"
+        : repair.data?.message ?? null,
+  );
+  const metrics = shellMetrics(compact);
   const styles = useMemo(
     () => StyleSheet.create({
       screen: {
@@ -199,19 +244,19 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
         backgroundColor: theme.colors.surface0,
       },
       toolbar: {
-        flexDirection: layout.compact ? "column" : "row",
+        flexDirection: compact ? "column" : "row",
         justifyContent: "space-between",
-        alignItems: layout.compact ? "flex-start" : "center",
+        alignItems: compact ? "flex-start" : "center",
         gap: metrics.gap,
       },
-      heading: { color: theme.colors.foreground, fontSize: layout.compact ? 18 : 20, fontWeight: "700" },
+      heading: { color: theme.colors.foreground, fontSize: compact ? 18 : 20, fontWeight: "700" },
       body: { color: theme.colors.foregroundMuted, lineHeight: 20 },
       operationalLine: { color: theme.colors.foregroundMuted, fontSize: 11 },
       banner: {
         paddingHorizontal: 14,
         paddingVertical: 10,
         gap: 4,
-        borderLeftWidth: 3,
+        borderLeftWidth: accessibilityPreferences.highContrast ? 5 : 3,
         borderLeftColor: theme.colors.statusWarning,
         backgroundColor: theme.colors.surface1,
       },
@@ -227,7 +272,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
         paddingHorizontal: 14,
         paddingVertical: 10,
         borderRadius: 9,
-        borderWidth: 1,
+        borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
         borderColor: theme.colors.border,
         backgroundColor: theme.colors.surface2,
       },
@@ -239,20 +284,20 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       totals: {
         flexDirection: "row",
         flexWrap: "wrap",
-        gap: layout.compact ? 12 : 24,
+        gap: compact ? 12 : 24,
         paddingVertical: 10,
-        borderTopWidth: 1,
-        borderBottomWidth: 1,
+        borderTopWidth: accessibilityPreferences.highContrast ? 2 : 1,
+        borderBottomWidth: accessibilityPreferences.highContrast ? 2 : 1,
         borderColor: theme.colors.border,
       },
       total: {
-        minWidth: layout.compact ? "28%" : 90,
+        minWidth: compact ? "28%" : 90,
         gap: 2,
       },
       totalValue: { color: theme.colors.foreground, fontSize: 18, fontWeight: "700" },
       totalLabel: { color: theme.colors.foregroundMuted, fontSize: 12 },
       grid: {
-        borderWidth: 1,
+        borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
         borderColor: theme.colors.border,
         borderRadius: 12,
         overflow: "hidden",
@@ -262,19 +307,19 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
         width: "100%",
         padding: 16,
         gap: 9,
-        borderBottomWidth: 1,
+        borderBottomWidth: accessibilityPreferences.highContrast ? 2 : 1,
         borderBottomColor: theme.colors.border,
       },
-      cardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 8 },
+      cardHeader: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-start", gap: 8 },
       cardTitle: { flex: 1, color: theme.colors.foreground, fontSize: 17, fontWeight: "700" },
-      health: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999, backgroundColor: theme.colors.surface2 },
+      health: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999, borderWidth: accessibilityPreferences.highContrast ? 2 : 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface2 },
       healthText: { color: theme.colors.foreground, fontSize: 12, fontWeight: "600" },
       warningText: { color: theme.colors.statusWarning },
       dangerText: { color: theme.colors.statusDanger },
       successText: { color: theme.colors.statusSuccess },
       facts: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
       fact: { color: theme.colors.foregroundMuted, fontSize: 12 },
-      projectDetails: { flexDirection: layout.compact ? "column" : "row", gap: layout.compact ? 8 : 24 },
+      projectDetails: { flexDirection: compact ? "column" : "row", gap: compact ? 8 : 24 },
       detailGroup: { flex: 1, gap: 3 },
       sectionTitle: { color: theme.colors.foreground, fontWeight: "600" },
       detailLabel: { color: theme.colors.foregroundMuted, fontSize: 11, fontWeight: "600", textTransform: "uppercase" },
@@ -284,7 +329,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       panel: {
         gap: 9,
       },
-      modalContent: { padding: layout.compact ? 16 : 20, gap: 12 },
+      modalContent: { padding: compact ? 16 : 20, gap: 12 },
       previewPanel: { padding: 12, gap: 7, borderLeftWidth: 3, borderLeftColor: theme.colors.accent, backgroundColor: theme.colors.surface1 },
       field: { gap: 5 },
       fieldLabel: { color: theme.colors.foreground, fontSize: 12, fontWeight: "600" },
@@ -293,7 +338,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
         paddingHorizontal: 12,
         paddingVertical: 10,
         borderRadius: 8,
-        borderWidth: 1,
+        borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
         borderColor: theme.colors.border,
         color: theme.colors.foreground,
         backgroundColor: theme.colors.surface2,
@@ -305,15 +350,15 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
         justifyContent: "center",
         gap: 10,
         padding: 22,
-        borderTopWidth: 1,
-        borderBottomWidth: 1,
+        borderTopWidth: accessibilityPreferences.highContrast ? 2 : 1,
+        borderBottomWidth: accessibilityPreferences.highContrast ? 2 : 1,
         borderColor: theme.colors.border,
         backgroundColor: theme.colors.surface1,
       },
       centered: { textAlign: "center" },
       more: { alignSelf: "center" },
     }),
-    [layout.compact, metrics, theme],
+    [accessibilityPreferences.highContrast, compact, metrics, theme],
   );
 
   function actionStyle(action: HomeAction, enabled: boolean) {
@@ -437,20 +482,32 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
   }
 
   function actionButton(action: HomeAction) {
-    const enabled = homeActionEnabled({ action, expectedHostId: host.id, stale, navigationAvailable: navigation !== undefined }) && !control.isPending;
+    const busy = control.isPending ||
+      ((action.kind === "doctor" || action.kind === "open_needs_you") && doctor.isPending) ||
+      (action.kind === "repair" && repair.isPending);
+    const enabled = homeActionEnabled({ action, expectedHostId: host.id, stale, navigationAvailable: navigation !== undefined }) && !busy;
     const hint = action.unavailableReason?.message ?? (navigation === undefined && (action.kind === "open_board" || action.kind === "open_organizer")
       ? "This Paseo host does not expose native navigation"
-      : undefined);
+      : action.kind === "create_project"
+        ? "Opens Paseo’s native dialog or compact bottom sheet to create a Project"
+        : action.kind === "adopt_organizer"
+          ? "Opens Paseo’s native dialog or compact bottom sheet to adopt an Organizer"
+          : action.kind === "open_board" || action.kind === "open_organizer"
+            ? "Opens the exact engine-projected Paseo workspace"
+            : action.kind === "doctor" || action.kind === "open_needs_you"
+              ? "Opens bounded current Project facts in Paseo’s native modal"
+              : "Submits this engine-issued Project intent for the exact host");
     const iconColor = action.emphasis === "primary"
       ? theme.colors.accentForeground
       : action.emphasis === "danger"
         ? theme.colors.statusDanger
         : theme.colors.foreground;
     return (
-      <Pressable
+      <AccessiblePressable
+        accessibilityLabel={action.label}
         accessibilityHint={hint}
         accessibilityRole="button"
-        accessibilityState={{ disabled: !enabled }}
+        accessibilityState={{ busy, disabled: !enabled }}
         disabled={!enabled}
         key={`${action.hostId}:${action.projectId ?? "home"}:${action.kind}`}
         onPress={() => runAction(action)}
@@ -458,7 +515,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       >
         <Icon color={iconColor} name={actionIcons[action.kind]} size={16} />
         <Text style={[styles.actionText, action.emphasis === "primary" && styles.primaryActionText]}>{action.label}</Text>
-      </Pressable>
+      </AccessiblePressable>
     );
   }
 
@@ -485,7 +542,11 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       <View key={homeProjectKey(host.id, project.id)} style={styles.card}>
         <View style={styles.cardHeader}>
           <Text accessibilityRole="header" style={styles.cardTitle}>{project.name}</Text>
-          <View accessibilityLabel={`Project health: ${healthLabels[project.health]}`} style={styles.health}>
+          <View
+            accessible
+            accessibilityLabel={`Project health: ${healthLabels[project.health]}`}
+            style={styles.health}
+          >
             <Text style={[styles.healthText, healthTextStyle(project)]}>{healthLabels[project.health]}</Text>
           </View>
         </View>
@@ -542,7 +603,11 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     : null;
 
   return (
-    <>
+    <AccessibilityProvider
+      focusColor={theme.colors.accent}
+      preferences={accessibilityPreferences}
+    >
+      <>
       <ScrollView contentContainerStyle={styles.screen}>
         <View style={styles.toolbar}>
           <View style={styles.panel}>
@@ -552,9 +617,17 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
           {snapshot ? <View style={styles.actions}>{snapshot.page.surfaceActions.map(actionButton)}</View> : (
             <View style={styles.actions}>
               {(["Create Project", "Adopt Organizer"] as const).map((label) => (
-                <Pressable accessibilityRole="button" accessibilityState={{ disabled: true }} disabled key={label} style={[styles.action, styles.disabledAction]}>
+                <AccessiblePressable
+                  accessibilityHint="Available after current exact-host Project facts load"
+                  accessibilityLabel={label}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: true }}
+                  disabled
+                  key={label}
+                  style={[styles.action, styles.disabledAction]}
+                >
                   <Text style={styles.actionText}>{label}</Text>
-                </Pressable>
+                </AccessiblePressable>
               ))}
             </View>
           )}
@@ -565,7 +638,11 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
 
       {scene.kind === "loading" ? (
         <View accessibilityLiveRegion="polite" style={styles.liveState}>
-          <ActivityIndicator color={theme.colors.accent} />
+          {accessibilityPreferences.reduceMotion ? (
+            <Icon color={theme.colors.accent} name="Clock3" size={24} />
+          ) : (
+            <ActivityIndicator color={theme.colors.accent} />
+          )}
           <Text style={styles.cardTitle}>Loading Director Home</Text>
           <Text style={[styles.body, styles.centered]}>Reading this exact host’s engine projection.</Text>
         </View>
@@ -574,22 +651,30 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
         <View accessibilityLiveRegion="polite" style={[styles.liveState, styles.bannerDanger]}>
           <Text style={styles.cardTitle}>{errorCopy[0]}</Text>
           <Text style={[styles.body, styles.centered]}>{errorCopy[1]}</Text>
-          <Pressable accessibilityRole="button" onPress={() => void home.refetch()} style={[styles.action, styles.primaryAction]}>
+          <AccessiblePressable
+            accessibilityHint="Retries Director Home on this exact host"
+            accessibilityLabel="Try loading Director Home again"
+            accessibilityRole="button"
+            onPress={() => void home.refetch()}
+            style={[styles.action, styles.primaryAction]}
+          >
             <Text style={[styles.actionText, styles.primaryActionText]}>Try again</Text>
-          </Pressable>
+          </AccessiblePressable>
         </View>
       ) : null}
       {scene.kind === "stale" ? (
         <View accessibilityLiveRegion="polite" style={[styles.banner, styles.bannerDanger]}>
           <Text style={styles.bannerTitle}>Host offline or snapshot stale</Text>
           <Text style={styles.body}>Showing last known facts for {scene.snapshot.page.host.id}. Every action is disabled until this exact host returns current data.</Text>
-          <Pressable
+          <AccessiblePressable
+            accessibilityHint="Clears only this host’s cached Home snapshot and loads it again"
+            accessibilityLabel="Refresh Director Home for this exact host"
             accessibilityRole="button"
             onPress={() => void queryClient.resetQueries({ queryKey: ["director", "home", host.id], exact: true })}
             style={[styles.action, styles.more]}
           >
             <Text style={styles.actionText}>Refresh exact host</Text>
-          </Pressable>
+          </AccessiblePressable>
         </View>
       ) : null}
       {scene.kind === "partial_sync" ? (
@@ -636,7 +721,9 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
             <View style={styles.grid}>{snapshot.page.projects.map(projectCard)}</View>
           )}
           {home.hasNextPage ? (
-            <Pressable
+            <AccessiblePressable
+              accessibilityHint="Loads the next Project page from this exact engine snapshot"
+              accessibilityLabel="Load more Director Projects"
               accessibilityRole="button"
               accessibilityState={{ busy: home.isFetchingNextPage, disabled: home.isFetchingNextPage || stale }}
               disabled={home.isFetchingNextPage || stale}
@@ -644,7 +731,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
               style={[styles.action, styles.primaryAction, styles.more, (home.isFetchingNextPage || stale) && styles.disabledAction]}
             >
               <Text style={[styles.actionText, styles.primaryActionText]}>{home.isFetchingNextPage ? "Loading…" : "Load more Projects"}</Text>
-            </Pressable>
+            </AccessiblePressable>
           ) : null}
         </>
       ) : null}
@@ -674,20 +761,20 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
                 ) : null}
                 <View style={styles.field}>
                   <Text style={styles.fieldLabel}>Project ID</Text>
-                  <TextInput accessibilityLabel="Project ID" autoCapitalize="none" autoCorrect={false} onChangeText={(value) => updateOrganizerEntry("projectId", value)} style={styles.input} value={entry.projectId} />
+                  <TextInput accessibilityHint="Enter the stable Director Project identifier" accessibilityLabel="Project ID" autoCapitalize="none" autoCorrect={false} onChangeText={(value) => updateOrganizerEntry("projectId", value)} style={styles.input} value={entry.projectId} />
                 </View>
                 <View style={styles.field}>
                   <Text style={styles.fieldLabel}>Project name</Text>
-                  <TextInput accessibilityLabel="Project name" onChangeText={(value) => updateOrganizerEntry("projectName", value)} style={styles.input} value={entry.projectName} />
+                  <TextInput accessibilityHint="Enter the human-readable Project name" accessibilityLabel="Project name" onChangeText={(value) => updateOrganizerEntry("projectName", value)} style={styles.input} value={entry.projectName} />
                 </View>
                 <View style={styles.field}>
                   <Text style={styles.fieldLabel}>Organizer path on this host</Text>
-                  <TextInput accessibilityLabel="Organizer path on this host" autoCapitalize="none" autoCorrect={false} onChangeText={(value) => updateOrganizerEntry("repositoryPath", value)} style={styles.input} value={entry.repositoryPath} />
+                  <TextInput accessibilityHint="Enter the exact Organizer repository path on this daemon" accessibilityLabel="Organizer path on this host" autoCapitalize="none" autoCorrect={false} onChangeText={(value) => updateOrganizerEntry("repositoryPath", value)} style={styles.input} value={entry.repositoryPath} />
                 </View>
                 {entry.mode === "create" ? (
                   <View style={styles.field}>
                     <Text style={styles.fieldLabel}>Exact paseo-director.json</Text>
-                    <TextInput accessibilityLabel="Exact paseo-director.json" autoCapitalize="none" autoCorrect={false} multiline onChangeText={(value) => updateOrganizerEntry("configurationJson", value)} style={[styles.input, styles.configurationInput]} value={entry.configurationJson} />
+                    <TextInput accessibilityHint="Enter the exact JSON configuration to include in the Preview" accessibilityLabel="Exact paseo-director.json" autoCapitalize="none" autoCorrect={false} multiline onChangeText={(value) => updateOrganizerEntry("configurationJson", value)} style={[styles.input, styles.configurationInput]} value={entry.configurationJson} />
                   </View>
                 ) : null}
                 <Text style={styles.body}>Nothing is applied without a fresh server-authenticated human confirmation of the exact Preview.</Text>
@@ -704,17 +791,21 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
                   <Text style={styles.dangerText}>{organizer.data?.message ?? "Organizer Preview/Apply is unavailable on this exact host."}</Text>
                 ) : null}
                 <View style={styles.actions}>
-                  <Pressable
+                  <AccessiblePressable
+                    accessibilityHint="Checks the entered Organizer facts without applying them"
+                    accessibilityLabel="Preview Organizer changes"
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: entryPreviewDisabled }}
+                    accessibilityState={{ busy: organizer.isPending, disabled: entryPreviewDisabled }}
                     disabled={entryPreviewDisabled}
                     onPress={() => submitOrganizerEntry(false)}
                     style={[styles.action, styles.primaryAction, entryPreviewDisabled && styles.disabledAction]}
                   >
                     <Icon color={theme.colors.accentForeground} name="ScanSearch" size={16} />
                     <Text style={[styles.actionText, styles.primaryActionText]}>{organizer.isPending ? "Checking…" : "Preview"}</Text>
-                  </Pressable>
-                  <Pressable
+                  </AccessiblePressable>
+                  <AccessiblePressable
+                    accessibilityHint="Applies only the unchanged exact Preview after confirmation"
+                    accessibilityLabel="Apply exact Organizer Preview"
                     accessibilityRole="button"
                     accessibilityState={{ disabled: entryApplyDisabled }}
                     disabled={entryApplyDisabled}
@@ -723,7 +814,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
                   >
                     <Icon color={theme.colors.foreground} name="CheckCircle2" size={16} />
                     <Text style={styles.actionText}>Apply exact Preview</Text>
-                  </Pressable>
+                  </AccessiblePressable>
                 </View>
               </>
             ) : null}
@@ -745,12 +836,16 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
           <ScrollView contentContainerStyle={styles.modalContent}>
             {doctor.isPending ? (
               <View accessibilityLiveRegion="polite" style={styles.liveState}>
-                <ActivityIndicator color={theme.colors.accent} />
+                {accessibilityPreferences.reduceMotion ? (
+                  <Icon color={theme.colors.accent} name="Clock3" size={24} />
+                ) : (
+                  <ActivityIndicator color={theme.colors.accent} />
+                )}
                 <Text style={styles.sectionTitle}>Running read-only Doctor…</Text>
                 <Text style={[styles.body, styles.centered]}>Reading one exact host-bound engine snapshot. No repair, install, dispatch, or write is attempted.</Text>
               </View>
             ) : doctor.isError ? (
-              <View accessibilityLiveRegion="polite" style={[styles.banner, styles.bannerDanger]}>
+              <View accessibilityLiveRegion="assertive" style={[styles.banner, styles.bannerDanger]}>
                 <Text style={[styles.bannerTitle, styles.dangerText]}>Doctor unavailable</Text>
                 <Text style={styles.body}>The exact host rejected or could not produce current diagnostic facts. No other host or cached report was used.</Text>
                 <Text style={styles.dangerText}>Missing capability: Current exact-host Doctor response</Text>
@@ -771,7 +866,12 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
                 <View style={styles.panel}>
                   <Text accessibilityRole="header" style={styles.sectionTitle}>Blocking preflight and capabilities</Text>
                   {doctor.data.checks.map((check) => (
-                    <View key={check.id} style={[styles.banner, diagnosticBannerStyle(check.status)]}>
+                    <View
+                      accessible
+                      accessibilityLabel={`${readableCode(check.status)}. ${check.title}. ${check.detail}${check.missingCapability ? `. Missing capability: ${check.missingCapability}` : ""}`}
+                      key={check.id}
+                      style={[styles.banner, diagnosticBannerStyle(check.status)]}
+                    >
                       <Text style={[styles.bannerTitle, diagnosticTextStyle(check.status)]}>
                         {readableCode(check.status)} · {check.title}
                       </Text>
@@ -784,8 +884,9 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
                 </View>
 
                 <View style={styles.actions}>
-                  <Pressable
-                    accessibilityHint={doctor.data.repair.reason?.message}
+                  <AccessiblePressable
+                    accessibilityHint={doctor.data.repair.reason?.message ?? "Opens an exact engine-computed Repair Preview for human confirmation"}
+                    accessibilityLabel="Preview Project Repair"
                     accessibilityRole="button"
                     accessibilityState={{ disabled: !doctor.data.repair.available || stale }}
                     disabled={!doctor.data.repair.available || stale}
@@ -799,8 +900,10 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
                   >
                     <Icon color={theme.colors.accentForeground} name="Wrench" size={16} />
                     <Text style={[styles.actionText, styles.primaryActionText]}>Preview Repair…</Text>
-                  </Pressable>
-                  <Pressable
+                  </AccessiblePressable>
+                  <AccessiblePressable
+                    accessibilityHint="Closes this read-only Doctor report"
+                    accessibilityLabel="Close Doctor"
                     accessibilityRole="button"
                     onPress={() => {
                       setInspectedProject(null);
@@ -809,7 +912,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
                     style={styles.action}
                   >
                     <Text style={styles.actionText}>Close</Text>
-                  </Pressable>
+                  </AccessiblePressable>
                 </View>
               </>
             ) : null}
@@ -841,11 +944,15 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
 
                 {repair.isPending ? (
                   <View accessibilityLiveRegion="polite" style={styles.liveState}>
-                    <ActivityIndicator color={theme.colors.accent} />
+                    {accessibilityPreferences.reduceMotion ? (
+                      <Icon color={theme.colors.accent} name="Clock3" size={24} />
+                    ) : (
+                      <ActivityIndicator color={theme.colors.accent} />
+                    )}
                     <Text style={styles.sectionTitle}>{repair.variables?.kind === "repair.apply" ? "Applying exact confirmed Repair…" : "Preparing exact Repair Preview…"}</Text>
                   </View>
                 ) : repair.isError ? (
-                  <View accessibilityLiveRegion="polite" style={[styles.banner, styles.bannerDanger]}>
+                  <View accessibilityLiveRegion="assertive" style={[styles.banner, styles.bannerDanger]}>
                     <Text style={[styles.bannerTitle, styles.dangerText]}>Repair error</Text>
                     <Text style={styles.body}>The exact host could not complete this request. No effect, retry, installation, or cross-host fallback is inferred.</Text>
                     <Text style={styles.dangerText}>Missing capability: Current exact-host Repair response</Text>
@@ -859,7 +966,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
                     <Text style={styles.operationalLine}>Success is engine readback, not client narration. Run Doctor again to verify health.</Text>
                   </View>
                 ) : repair.data?.status === "refused" ? (
-                  <View accessibilityLiveRegion="polite" style={[styles.banner, styles.bannerDanger]}>
+                  <View accessibilityLiveRegion="assertive" style={[styles.banner, styles.bannerDanger]}>
                     <Text style={[styles.bannerTitle, styles.dangerText]}>Repair refused</Text>
                     <Text style={styles.body}>{repair.data.message}</Text>
                     <Text style={styles.dangerText}>Reason {repair.data.refusalCode}</Text>
@@ -876,7 +983,12 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
                       </Text>
                       <Text style={[styles.detailLabel, { marginTop: 4 }]}>Exact effects</Text>
                       {repair.data.preview.operations.map((operation) => (
-                        <View key={operation.id} style={styles.field}>
+                        <View
+                          accessible
+                          accessibilityLabel={`${operation.description}. Affects ${operation.affectedResource}. ${readableCode(operation.effectClass)}. Non-destructive. No automatic installation`}
+                          key={operation.id}
+                          style={styles.field}
+                        >
                           <Text style={styles.sectionTitle}>{operation.description}</Text>
                           <Text style={styles.body}>Affects {operation.affectedResource} · {readableCode(operation.effectClass)}</Text>
                           <Text style={styles.operationalLine}>Non-destructive · no automatic installation</Text>
@@ -890,17 +1002,21 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
                     <Text style={styles.dangerText}>{repair.data.preview.confirmation}</Text>
 
                     <View style={styles.actions}>
-                      <Pressable
+                      <AccessiblePressable
+                        accessibilityHint="Applies only this unchanged engine-issued Repair Preview after server-authenticated human confirmation"
+                        accessibilityLabel="Confirm exact Repair"
                         accessibilityRole="button"
-                        accessibilityState={{ disabled: !repair.data.preview.valid || stale }}
+                        accessibilityState={{ busy: repair.isPending, disabled: !repair.data.preview.valid || stale }}
                         disabled={!repair.data.preview.valid || stale}
                         onPress={handleApplyRepair}
                         style={[styles.action, styles.primaryAction, (!repair.data.preview.valid || stale) && styles.disabledAction]}
                       >
                         <Icon color={theme.colors.accentForeground} name="CheckCircle2" size={16} />
                         <Text style={[styles.actionText, styles.primaryActionText]}>Confirm exact Repair</Text>
-                      </Pressable>
-                      <Pressable
+                      </AccessiblePressable>
+                      <AccessiblePressable
+                        accessibilityHint="Closes this Repair Preview without applying effects"
+                        accessibilityLabel="Cancel Repair"
                         accessibilityRole="button"
                         onPress={() => {
                           setRepairRequest(null);
@@ -909,7 +1025,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
                         style={styles.action}
                       >
                         <Text style={styles.actionText}>Cancel</Text>
-                      </Pressable>
+                      </AccessiblePressable>
                     </View>
                   </>
                 ) : null}
@@ -918,6 +1034,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
           </ScrollView>
         </Modal.Content>
       </Modal>
-    </>
+      </>
+    </AccessibilityProvider>
   );
 }

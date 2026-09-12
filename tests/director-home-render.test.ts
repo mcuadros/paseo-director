@@ -19,6 +19,10 @@ import * as PlanningContract from "../generated/planning-contract.shared.ts";
 import * as PlanningRpc from "../rpc/planning.shared.ts";
 import * as HomeModel from "../ui/director-home-model.client.ts";
 import * as ShellLayout from "../ui/shell-layout.client.ts";
+import {
+  loadClientModule,
+  testAccessibilityInfo,
+} from "./client-module-loader.ts";
 
 type Deferred = { resolve(value: unknown): void; reject(error: Error): void };
 
@@ -90,11 +94,13 @@ function loadHomeComponent(
       case "react": return reactModule;
       case "react/jsx-runtime": return JsxRuntime;
       case "react-native":
-        return { ActivityIndicator: "ActivityIndicator", Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", TextInput: "TextInput", View: "View", StyleSheet: { create: (styles: unknown) => styles } };
+        return { AccessibilityInfo: testAccessibilityInfo, ActivityIndicator: "ActivityIndicator", Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", TextInput: "TextInput", View: "View", StyleSheet: { create: (styles: unknown) => styles }, useWindowDimensions: () => ({ width: 1_440, height: 1_000, scale: 1, fontScale: 1 }) };
       case "../generated/planning-contract.shared.ts": return PlanningContract;
       case "../rpc/planning.shared.ts": return PlanningRpc;
       case "./director-home-model.client.ts": return HomeModel;
       case "./shell-layout.client.ts": return ShellLayout;
+      case "./accessibility.client.tsx":
+        return loadClientModule("ui/accessibility.client.tsx", require);
       default: throw new Error(`unexpected runtime import ${specifier}`);
     }
   };
@@ -165,7 +171,10 @@ test("DirectorHome renders current data, exact navigation, entry points, and sta
   });
   assert.match(renderedText(renderer), /Rendered Project/);
   const staleBoardText = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Board")[0]!;
-  assert.deepEqual(staleBoardText.parent!.props.accessibilityState, { disabled: true });
+  assert.deepEqual(staleBoardText.parent!.props.accessibilityState, {
+    busy: false,
+    disabled: true,
+  });
   await act(async () => staleBoardText.parent!.props.onPress?.());
   assert.deepEqual(opened, ["native-board"]);
 

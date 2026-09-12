@@ -10,7 +10,6 @@ import { Icon } from "@getpaseo/plugin/react-native";
 import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -27,6 +26,13 @@ import {
   type TaskDetail,
 } from "../generated/planning-contract.shared.ts";
 import { shellMetrics } from "./shell-layout.client.ts";
+import {
+  AccessibilityProvider,
+  AccessiblePressable,
+  useAccessibilityAnnouncement,
+  useAccessibilityPreferences,
+  useResponsiveCompactLayout,
+} from "./accessibility.client.tsx";
 
 export type TaskDetailTab = "details" | "execution" | "activity";
 
@@ -59,8 +65,6 @@ export type TaskDetailViewProps = {
   epicName?: string;
   onReturnToBoard?: () => void;
 };
-
-const touchHitSlop = 4;
 
 const stateLabels: Record<DerivedState, string> = {
   needs_you: "Needs you",
@@ -152,8 +156,27 @@ export function TaskDetailView({
   epicName,
   onReturnToBoard,
 }: TaskDetailViewProps) {
+  const accessibilityPreferences = useAccessibilityPreferences();
   const [internalTab, setInternalTab] = useState<TaskDetailTab>("details");
   const currentTab = controlledTab ?? internalTab;
+  const activityAnnouncement = currentTab !== "activity"
+    ? null
+    : activityState?.isOffline
+      ? "Activity is offline. Showing cached activity"
+      : activityState?.isError
+        ? "Activity refresh failed"
+        : activityState?.isPending
+          ? "Loading activity stream"
+          : activityState?.isStale
+            ? "Activity may be stale. Updating"
+            : task.activity.length === 0
+              ? "No activity recorded yet"
+              : `${task.activity.length} Activity events shown`;
+  useAccessibilityAnnouncement(
+    `${task.summary.key}, ${stateLabels[task.summary.derivedState]}, ${currentTab} tab selected`,
+  );
+  useAccessibilityAnnouncement(activityAnnouncement);
+  const compact = useResponsiveCompactLayout(layout.compact);
 
   function selectTab(tab: TaskDetailTab) {
     if (onTabChange) {
@@ -163,7 +186,7 @@ export function TaskDetailView({
     }
   }
 
-  const metrics = shellMetrics(layout.compact);
+  const metrics = shellMetrics(compact);
 
   const styles = useMemo(
     () =>
@@ -174,9 +197,9 @@ export function TaskDetailView({
         },
         headerCard: {
           gap: 10,
-          padding: layout.compact ? 12 : 16,
+          padding: compact ? 12 : 16,
           borderRadius: 10,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface1,
         },
@@ -198,7 +221,7 @@ export function TaskDetailView({
           paddingVertical: 3,
           borderRadius: 6,
           backgroundColor: theme.colors.surface2,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
         },
         keyText: {
@@ -210,7 +233,7 @@ export function TaskDetailView({
           paddingHorizontal: 8,
           paddingVertical: 3,
           borderRadius: 6,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
         },
         stateBadgeText: {
           fontSize: 12,
@@ -229,9 +252,9 @@ export function TaskDetailView({
         },
         title: {
           color: theme.colors.foreground,
-          fontSize: layout.compact ? 17 : 20,
+          fontSize: compact ? 17 : 20,
           fontWeight: "700",
-          lineHeight: layout.compact ? 22 : 26,
+          lineHeight: compact ? 22 : 26,
         },
         metaRow: {
           flexDirection: "row",
@@ -244,13 +267,14 @@ export function TaskDetailView({
           fontSize: 12,
         },
         actionRow: {
-          flexDirection: layout.compact ? "column" : "row",
-          alignItems: layout.compact ? "stretch" : "center",
+          flexDirection: compact ? "column" : "row",
+          alignItems: compact ? "stretch" : "center",
           gap: 8,
           paddingTop: 4,
         },
         tabBar: {
           flexDirection: "row",
+          flexWrap: "wrap",
           gap: 8,
           paddingHorizontal: 2,
         },
@@ -264,8 +288,11 @@ export function TaskDetailView({
           paddingVertical: 10,
           borderRadius: 8,
           backgroundColor: theme.colors.surface2,
-          borderWidth: 1,
-          borderColor: "transparent",
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
+          borderColor: theme.colors.surface2,
+          flexGrow: 1,
+          flexShrink: 1,
+          flexBasis: compact ? "28%" : "auto",
         },
         tabSelected: {
           backgroundColor: theme.colors.accent,
@@ -303,9 +330,9 @@ export function TaskDetailView({
         },
         section: {
           gap: 8,
-          padding: layout.compact ? 12 : 14,
+          padding: compact ? 12 : 14,
           borderRadius: 10,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface1,
         },
@@ -313,6 +340,7 @@ export function TaskDetailView({
           flexDirection: "row",
           justifyContent: "space-between",
           alignItems: "center",
+          flexWrap: "wrap",
           gap: 8,
         },
         sectionLabel: {
@@ -352,11 +380,11 @@ export function TaskDetailView({
           gap: 8,
         },
         gridCard: {
-          flex: layout.compact ? 1 : 1,
-          minWidth: layout.compact ? "100%" : 200,
+          flex: 1,
+          minWidth: compact ? "100%" : 200,
           padding: 10,
           borderRadius: 8,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface2,
           gap: 4,
@@ -371,6 +399,7 @@ export function TaskDetailView({
           color: theme.colors.foreground,
           fontSize: 14,
           fontWeight: "700",
+          flexShrink: 1,
         },
         gridCardMeta: {
           color: theme.colors.foregroundMuted,
@@ -392,7 +421,7 @@ export function TaskDetailView({
           gap: 6,
           padding: 10,
           borderRadius: 8,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface2,
         },
@@ -400,12 +429,13 @@ export function TaskDetailView({
           flexDirection: "row",
           justifyContent: "space-between",
           alignItems: "center",
+          flexWrap: "wrap",
           gap: 8,
         },
         configItem: {
           gap: 6,
           paddingVertical: 6,
-          borderBottomWidth: 1,
+          borderBottomWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderBottomColor: theme.colors.border,
         },
         wrapRow: {
@@ -419,7 +449,7 @@ export function TaskDetailView({
           paddingHorizontal: 12,
           paddingVertical: 6,
           borderRadius: 6,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface2,
           justifyContent: "center",
@@ -449,7 +479,7 @@ export function TaskDetailView({
         },
         primaryButtonDisabled: {
           backgroundColor: theme.colors.surface2,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
         },
         primaryButtonText: {
@@ -467,7 +497,7 @@ export function TaskDetailView({
           paddingHorizontal: 14,
           paddingVertical: 10,
           borderRadius: 8,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface2,
         },
@@ -483,7 +513,7 @@ export function TaskDetailView({
           gap: 4,
           padding: 10,
           borderRadius: 8,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface2,
         },
@@ -517,7 +547,7 @@ export function TaskDetailView({
           gap: 8,
           padding: 16,
           borderRadius: 8,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface2,
         },
@@ -536,15 +566,16 @@ export function TaskDetailView({
         staleBanner: {
           flexDirection: "row",
           alignItems: "center",
+          flexWrap: "wrap",
           gap: 8,
           padding: 8,
           borderRadius: 6,
           backgroundColor: theme.colors.surface2,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderColor: theme.colors.statusWarning,
         },
       }),
-    [layout.compact, metrics, theme],
+    [accessibilityPreferences.highContrast, compact, metrics, theme],
   );
 
   function stateAccent(state: DerivedState): string {
@@ -595,17 +626,16 @@ export function TaskDetailView({
             </View>
           </View>
           {onReturnToBoard ? (
-            <Pressable
+            <AccessiblePressable
               accessibilityHint="Navigates back to the Director Board"
               accessibilityLabel="Return to Director Board"
               accessibilityRole="button"
               focusable
-              hitSlop={touchHitSlop}
               onPress={onReturnToBoard}
               style={styles.secondaryButton}
             >
               <Text style={styles.secondaryButtonText}>Return to Board</Text>
-            </Pressable>
+            </AccessiblePressable>
           ) : null}
         </View>
 
@@ -627,7 +657,7 @@ export function TaskDetailView({
         </View>
 
         <View style={styles.actionRow}>
-          <Pressable
+          <AccessiblePressable
             accessibilityHint={agentCanOpen
               ? "Opens the exact Paseo agent bound by Director Engine"
               : task.binding.unavailableReason?.message ?? "Native Paseo navigation is unavailable"}
@@ -638,7 +668,6 @@ export function TaskDetailView({
             accessibilityState={{ disabled: !agentCanOpen }}
             disabled={!agentCanOpen}
             focusable={agentCanOpen}
-            hitSlop={touchHitSlop}
             onPress={() => {
               if (task.binding.paseoAgentId && agentCanOpen) {
                 navigation?.openAgent({ agentId: task.binding.paseoAgentId });
@@ -655,7 +684,7 @@ export function TaskDetailView({
             ]}>
               {agentCanOpen ? "Open agent" : "Open agent unavailable"}
             </Text>
-          </Pressable>
+          </AccessiblePressable>
           {!agentCanOpen ? (
             <Text style={styles.mutedText}>
               {task.binding.unavailableReason?.message ?? "Native Paseo navigation is unavailable on this host."}
@@ -678,16 +707,20 @@ export function TaskDetailView({
     ];
 
     return (
-      <View accessibilityRole="tablist" style={styles.tabBar}>
+      <View
+        accessibilityLabel="Task detail sections"
+        accessibilityRole="tablist"
+        style={styles.tabBar}
+      >
         {tabs.map((tab) => {
           const selected = currentTab === tab.id;
           return (
-            <Pressable
+            <AccessiblePressable
+              accessibilityHint={`Shows ${tab.label} for this exact Task`}
               accessibilityLabel={`Show ${tab.label} tab`}
               accessibilityRole="tab"
               accessibilityState={{ selected }}
               focusable
-              hitSlop={touchHitSlop}
               key={tab.id}
               onPress={() => selectTab(tab.id)}
               style={[styles.tab, selected && styles.tabSelected]}
@@ -717,7 +750,7 @@ export function TaskDetailView({
                   </Text>
                 </View>
               ) : null}
-            </Pressable>
+            </AccessiblePressable>
           );
         })}
       </View>
@@ -738,11 +771,11 @@ export function TaskDetailView({
           <Text style={styles.sectionLabel}>Objective</Text>
           <Text style={styles.bodyText}>{task.objective}</Text>
           {launchAction && onAction ? (
-            <Pressable
+            <AccessiblePressable
+              accessibilityHint="Submits the engine-issued launch intent without changing Task state locally"
               accessibilityLabel={launchAction.label}
               accessibilityRole="button"
               focusable
-              hitSlop={touchHitSlop}
               onPress={() =>
                 onAction(launchAction, {
                   type: "task.launch-now",
@@ -754,7 +787,7 @@ export function TaskDetailView({
               <Text style={styles.primaryButtonText}>
                 {launchAction.label}
               </Text>
-            </Pressable>
+            </AccessiblePressable>
           ) : null}
         </View>
 
@@ -773,7 +806,12 @@ export function TaskDetailView({
               const isSatisfied = criterion.status === "satisfied";
               const isUnsatisfied = criterion.status === "unsatisfied";
               return (
-                <View key={criterion.id} style={styles.criterionRow}>
+                <View
+                  accessible
+                  accessibilityLabel={`${criterion.status}: ${criterion.text}`}
+                  key={criterion.id}
+                  style={styles.criterionRow}
+                >
                   <Text
                     style={[
                       styles.criterionMark,
@@ -825,11 +863,11 @@ export function TaskDetailView({
                   </View>
                   <Text style={styles.mutedText}>{dep.explanation.message}</Text>
                   {overrideAction && onAction ? (
-                    <Pressable
+                    <AccessiblePressable
+                      accessibilityHint="Submits the engine-issued dependency override intent for confirmation"
                       accessibilityLabel={overrideAction.label}
                       accessibilityRole="button"
                       focusable
-                      hitSlop={touchHitSlop}
                       onPress={() =>
                         onAction(overrideAction, {
                           type: "dependency.override",
@@ -843,7 +881,7 @@ export function TaskDetailView({
                       <Text style={styles.secondaryButtonText}>
                         {overrideAction.label}
                       </Text>
-                    </Pressable>
+                    </AccessiblePressable>
                   ) : null}
                 </View>
               );
@@ -870,12 +908,12 @@ export function TaskDetailView({
                   Effective: {valueLabel(entry.effectiveValue)} (from {entry.effectiveSource})
                 </Text>
                 <View style={styles.wrapRow}>
-                  <Pressable
+                  <AccessiblePressable
+                    accessibilityHint={`Uses the inherited value for ${entry.key}`}
                     accessibilityLabel={`Inherit ${entry.key}`}
                     accessibilityRole="button"
                     accessibilityState={{ selected: configured.mode === "inherit" }}
                     focusable
-                    hitSlop={touchHitSlop}
                     onPress={() => {
                       if (onConfigurationDraftChange) {
                         const updated = [
@@ -898,17 +936,17 @@ export function TaskDetailView({
                     >
                       Inherit
                     </Text>
-                  </Pressable>
+                  </AccessiblePressable>
                   {entry.allowedValues.map((value) => {
                     const isSelected =
                       configured.mode === "value" && configured.value === value;
                     return (
-                      <Pressable
+                      <AccessiblePressable
+                        accessibilityHint={`Uses ${valueLabel(value)} for ${entry.key}`}
                         accessibilityLabel={`Set ${entry.key} to ${valueLabel(value)}`}
                         accessibilityRole="button"
                         accessibilityState={{ selected: isSelected }}
                         focusable
-                        hitSlop={touchHitSlop}
                         key={`${entry.key}-${String(value)}`}
                         onPress={() => {
                           if (onConfigurationDraftChange) {
@@ -935,7 +973,7 @@ export function TaskDetailView({
                         >
                           {valueLabel(value)}
                         </Text>
-                      </Pressable>
+                      </AccessiblePressable>
                     );
                   })}
                 </View>
@@ -944,11 +982,11 @@ export function TaskDetailView({
           })}
 
           {previewAction && onAction ? (
-            <Pressable
+            <AccessiblePressable
+              accessibilityHint="Requests an engine-computed Preview without applying changes"
               accessibilityLabel="Preview configuration changes"
               accessibilityRole="button"
               focusable
-              hitSlop={touchHitSlop}
               onPress={() =>
                 onAction(previewAction, {
                   type: "configuration.preview",
@@ -959,7 +997,7 @@ export function TaskDetailView({
               style={styles.secondaryButton}
             >
               <Text style={styles.secondaryButtonText}>Preview changes</Text>
-            </Pressable>
+            </AccessiblePressable>
           ) : null}
 
           {preview ? (
@@ -980,18 +1018,18 @@ export function TaskDetailView({
                 </Text>
               ))}
               {preview.applyAction && onPendingApplyChange ? (
-                <Pressable
+                <AccessiblePressable
+                  accessibilityHint="Opens explicit confirmation for this exact Preview"
                   accessibilityLabel={preview.applyAction.label}
                   accessibilityRole="button"
                   focusable
-                  hitSlop={touchHitSlop}
                   onPress={() => onPendingApplyChange(preview.applyAction)}
                   style={styles.primaryButton}
                 >
                   <Text style={styles.primaryButtonText}>
                     {preview.applyAction.label}
                   </Text>
-                </Pressable>
+                </AccessiblePressable>
               ) : null}
 
               {pendingApply &&
@@ -1007,21 +1045,21 @@ export function TaskDetailView({
                     Confirm the exact preview before Director Engine applies it to future Runs.
                   </Text>
                   <View style={styles.wrapRow}>
-                    <Pressable
+                    <AccessiblePressable
+                      accessibilityHint="Closes confirmation without applying the Preview"
                       accessibilityLabel="Cancel configuration apply"
                       accessibilityRole="button"
                       focusable
-                      hitSlop={touchHitSlop}
                       onPress={() => onPendingApplyChange(null)}
                       style={styles.secondaryButton}
                     >
                       <Text style={styles.secondaryButtonText}>Cancel</Text>
-                    </Pressable>
-                    <Pressable
+                    </AccessiblePressable>
+                    <AccessiblePressable
+                      accessibilityHint="Submits the unchanged engine-issued Apply ticket"
                       accessibilityLabel={`Confirm ${pendingApply.label}`}
                       accessibilityRole="button"
                       focusable
-                      hitSlop={touchHitSlop}
                       onPress={() =>
                         onAction(pendingApply, {
                           type: "configuration.apply",
@@ -1032,7 +1070,7 @@ export function TaskDetailView({
                       style={styles.primaryButton}
                     >
                       <Text style={styles.primaryButtonText}>Confirm Apply</Text>
-                    </Pressable>
+                    </AccessiblePressable>
                   </View>
                 </View>
               ) : null}
@@ -1201,7 +1239,11 @@ export function TaskDetailView({
     if (isPending && task.activity.length === 0) {
       return (
         <View accessibilityLiveRegion="polite" style={styles.liveStateContainer}>
-          <ActivityIndicator color={theme.colors.accent} />
+          {accessibilityPreferences.reduceMotion ? (
+            <Icon color={theme.colors.accent} name="Clock3" size={24} />
+          ) : (
+            <ActivityIndicator color={theme.colors.accent} />
+          )}
           <Text style={styles.liveStateTitle}>Loading activity stream</Text>
         </View>
       );
@@ -1217,16 +1259,16 @@ export function TaskDetailView({
               "Director Engine could not provide the task activity log."}
           </Text>
           {onReload ? (
-            <Pressable
+            <AccessiblePressable
+              accessibilityHint="Retries the Activity query for this exact Task and host"
               accessibilityLabel="Try loading activity stream again"
               accessibilityRole="button"
               focusable
-              hitSlop={touchHitSlop}
               onPress={onReload}
               style={styles.primaryButton}
             >
               <Text style={styles.primaryButtonText}>Try again</Text>
-            </Pressable>
+            </AccessiblePressable>
           ) : null}
         </View>
       );
@@ -1271,7 +1313,12 @@ export function TaskDetailView({
           </View>
         ) : (
           task.activity.map((event) => (
-            <View key={event.id} style={styles.activityItem}>
+            <View
+              accessible
+              accessibilityLabel={`${event.kind}, event ${event.sequence}, ${formatIsoTimestamp(event.occurredAt)}, ${event.message}`}
+              key={event.id}
+              style={styles.activityItem}
+            >
               <View style={styles.activityHeader}>
                 <View style={styles.activityKindBadge}>
                   <Text style={styles.activityKindText}>{event.kind}</Text>
@@ -1289,6 +1336,10 @@ export function TaskDetailView({
   }
 
   return (
+    <AccessibilityProvider
+      focusColor={theme.colors.accent}
+      preferences={accessibilityPreferences}
+    >
     <View style={styles.container}>
       {renderHeader()}
       {renderTabBar()}
@@ -1301,5 +1352,6 @@ export function TaskDetailView({
         {currentTab === "activity" ? renderActivityTab() : null}
       </ScrollView>
     </View>
+    </AccessibilityProvider>
   );
 }

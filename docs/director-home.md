@@ -162,3 +162,7 @@ payload bindings or terminal drift are refused without another effect.
 Unavailable Sync, Reconcile, Repair, Pause/Resume, or Emergency-stop actions
 remain visible with their engine reason and cannot be invoked. Pause, Resume,
 and Emergency stop submit only the exact engine-issued planning command ticket.
+
+The shared cross-platform focus, touch, announcement, reflow, contrast, and
+reduced-motion contract is documented in
+[Mobile and accessibility behavior](mobile-accessibility.md).

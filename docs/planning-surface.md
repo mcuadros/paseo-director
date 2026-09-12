@@ -144,3 +144,6 @@ It contains exactly 25 Workspaces, 500 open Tasks, and 10,000 historical Tasks,
 validates every request/response with the generated schemas, and never ships as
 runtime authority. These fixtures prove bounded presentation and cursor/query
 behavior, not the M5 TaskStore scale result deferred by ADR-0016.
+
+The integrated desktop/web/iOS/Android interaction and manual verification
+contract is in [Mobile and accessibility behavior](mobile-accessibility.md).

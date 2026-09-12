@@ -3,11 +3,11 @@
 
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin";
 import { usePaseo, useRpc } from "@getpaseo/plugin";
+import { Icon } from "@getpaseo/plugin/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useEffect, useMemo } from "react";
 import {
   ActivityIndicator,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -23,6 +23,13 @@ import {
   workerRoleLabel,
 } from "./director-workers-model.client.ts";
 import { shellMetrics } from "./shell-layout.client.ts";
+import {
+  AccessibilityProvider,
+  AccessiblePressable,
+  useAccessibilityAnnouncement,
+  useAccessibilityPreferences,
+  useResponsiveCompactLayout,
+} from "./accessibility.client.tsx";
 
 export function DirectorWorkers({
   theme,
@@ -30,10 +37,12 @@ export function DirectorWorkers({
   navigation,
   workspaceId,
 }: PluginWorkspacePanelProps) {
+  const accessibilityPreferences = useAccessibilityPreferences();
   const loadWorkers = useRpc(directorWorkersRpc);
   const queryClient = useQueryClient();
   const paseo = usePaseo();
-  const metrics = shellMetrics(layout.compact);
+  const compact = useResponsiveCompactLayout(layout.compact);
+  const metrics = shellMetrics(compact);
   const queryKey = workerQueryKey(workspaceId);
   const workers = useQuery({
     queryKey,
@@ -41,6 +50,15 @@ export function DirectorWorkers({
     retry: false,
     staleTime: Number.POSITIVE_INFINITY,
   });
+  useAccessibilityAnnouncement(
+    workers.isPending
+      ? "Loading Director workers"
+      : workers.isError
+        ? "Worker visibility unavailable"
+        : workers.data.workers.length === 0
+          ? "No registered Director workers"
+          : `${workers.data.workers.length} Director workers shown`,
+  );
 
   // Director re-reads the aggregate when Paseo reports agent movement. Nothing
   // here polls on a timer and no worker reports its own liveness: that belongs
@@ -77,7 +95,7 @@ export function DirectorWorkers({
           justifyContent: "center",
           gap: 10,
           padding: 20,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderRadius: 10,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface1,
@@ -85,13 +103,13 @@ export function DirectorWorkers({
         worker: {
           padding: 14,
           gap: 8,
-          borderWidth: 1,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
           borderRadius: 10,
           borderColor: theme.colors.border,
           backgroundColor: theme.colors.surface1,
         },
         workerHeader: {
-          flexDirection: layout.compact ? "column" : "row",
+          flexDirection: compact ? "column" : "row",
           justifyContent: "space-between",
           gap: 8,
         },
@@ -101,7 +119,9 @@ export function DirectorWorkers({
         label: { color: theme.colors.foregroundMuted, fontSize: 12 },
         value: { color: theme.colors.foreground, fontSize: 12 },
         action: {
-          alignSelf: layout.compact ? "stretch" : "flex-start",
+          minHeight: 44,
+          minWidth: 44,
+          alignSelf: compact ? "stretch" : "flex-start",
           paddingHorizontal: 14,
           paddingVertical: 10,
           borderRadius: 8,
@@ -115,10 +135,11 @@ export function DirectorWorkers({
         },
         actionTextDisabled: { color: theme.colors.foregroundMuted },
       }),
-    [layout.compact, metrics, theme],
+    [accessibilityPreferences.highContrast, compact, metrics, theme],
   );
 
   return (
+    <AccessibilityProvider focusColor={theme.colors.accent} preferences={accessibilityPreferences}>
     <ScrollView contentContainerStyle={styles.screen}>
       <Text accessibilityRole="header" style={styles.title}>
         Director Workers
@@ -129,7 +150,11 @@ export function DirectorWorkers({
       </Text>
       {workers.isPending ? (
         <View accessibilityLiveRegion="polite" style={styles.liveState}>
-          <ActivityIndicator color={theme.colors.accent} />
+          {accessibilityPreferences.reduceMotion ? (
+            <Icon color={theme.colors.accent} name="Clock3" size={24} />
+          ) : (
+            <ActivityIndicator color={theme.colors.accent} />
+          )}
           <Text style={styles.body}>Loading Director workers</Text>
         </View>
       ) : workers.isError ? (
@@ -185,7 +210,10 @@ export function DirectorWorkers({
                   </Text>
                 </Text>
               </View>
-              <Pressable
+              <AccessiblePressable
+                accessibilityHint={canOpen
+                  ? "Opens the exact Paseo agent registered for this Task"
+                  : "Native Paseo agent navigation is unavailable"}
                 accessibilityLabel={`Open agent for ${worker.taskId}`}
                 accessibilityRole="button"
                 accessibilityState={{ disabled: !canOpen }}
@@ -201,11 +229,12 @@ export function DirectorWorkers({
                 >
                   Open agent
                 </Text>
-              </Pressable>
+              </AccessiblePressable>
             </View>
           );
         })
       )}
     </ScrollView>
+    </AccessibilityProvider>
   );
 }
