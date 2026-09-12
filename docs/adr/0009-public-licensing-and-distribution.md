@@ -5,7 +5,7 @@
 - **Beads Task:** `dir-m0.9`
 - **Plan gate:** M0 public licensing and distribution compatibility
 - **Decision owner:** Project owner
-- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform
+- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform; project-owner decision `dir-m6.9` comment `01a09682-1168-70ca-841a-4ef6a4aabedb`, which requires deterministic locked npm preparation when compilation needs declared dependencies
 
 ## Context
 
@@ -71,7 +71,7 @@ This avoids nominative use but makes compatibility less clear. The selected name
 2. Director does not vendor or redistribute Paseo, `@getpaseo/plugin`, host-provided UI/runtime modules, `node_modules`, provider CLIs, Git, GitHub CLI, Beads, or Dolt.
 3. Any future shipped dependency, Git submodule, or generated bundle is audited from the exact release commit and lockfile. Required licenses, copyright notices, and upstream `NOTICE` content are included in a release-generated third-party notice file. An unknown, unlicensed, or incompatible shipped dependency blocks release.
 4. External prerequisites are declared by feature with tested capability/version bounds, official install source, license/terms owner, and clear responsibility for installation/authentication. Director never silently downloads them.
-5. Prefer an empty plugin `build` list. Any required build command is a reviewed direct-argv manifest entry, uses a committed lockfile, and is disclosed as trusted daemon-host execution.
+5. The plugin `build` list contains only reviewed direct argv. Director's supported exact-0.7.2 path runs `npm ci --omit=dev --ignore-scripts --no-audit --no-fund` from the committed lockfile and then its committed compatibility/dependency verifier before Paseo compiles or loads the candidate. It installs only the locked production closure needed to compile the connector, including exact `@getpaseo/client@0.7.2`; it does not vendor that package. CI rejects package/lock disagreement, non-registry or missing-integrity entries, dependency-edge drift, and any lifecycle-script set not explicitly audited. Package lifecycle scripts remain disabled.
 6. Release-time moving branches named `stable` and `beta` are the supported update channels. They are protected, fast-forward-only refs. Each promotion points to an independently reviewed Candidate that also has an immutable semantic-version tag. No channel ref is created by this M0 spike.
 7. Stable installation is documented as `paseo plugin add mcuadros/paseo-director --ref stable`; updates are explicit through `paseo plugin update director`. Tags and exact commits are documented as pinned installations that do not advance through update.
 8. **Director for Paseo** is described as an independent community plugin, not affiliated with, endorsed by, or maintained by Paseo. Public materials use no Paseo logo, copied trade dress, `official`, `certified`, or partnership claim without separate permission.
@@ -84,7 +84,7 @@ The missing license metadata/file in the published `@getpaseo/plugin@0.7.2` tarb
 
 - The M0 licensing/distribution stop condition is resolved once an independent reviewer approves the exact Candidate containing this ADR and evidence.
 - Director can remain Apache-2.0 without inheriting a copyleft license from separately executed prerequisites.
-- Public installation remains native to Paseo and does not require a Director npm package or bespoke updater.
+- Public installation remains native to Paseo and does not require a Director npm package or bespoke updater. Paseo candidate preparation requires npm registry availability for the locked production closure; failure preserves the prior installed commit.
 - A moving release channel is a trust boundary: users opt into future commits when they run update, and every promotion must satisfy release gates.
 - The initial root license/package metadata is part of `dir-m1.2`; dependency-license automation and final notices remain release work owned by `dir-m6.4`. The empty scaffold is not treated as a future dependency audit.
 - This licensing Go does not override ADR-0014's practical runtime boundary or authorize M1 by itself.

@@ -96,6 +96,30 @@ and compact known bounded logs; it cannot address Git refs, worktrees, or other
 unintegrated recovery material. See
 [TaskStore backup, migration, retention, and disk safety](docs/taskstore-maintenance.md).
 
+## Installation and updates
+
+Director uses Paseo's supported Git source lifecycle and targets only exact
+Paseo 0.7.2 on Linux amd64 with Node.js 22 or newer. Before Paseo compiles a
+candidate, the manifest installs only the production dependency closure with
+`npm ci --omit=dev --ignore-scripts --no-audit --no-fund` and runs the committed
+host/dependency verifier. The lock audit permits only integrity-pinned npm
+registry artifacts and executes no package lifecycle scripts. A registry,
+lock, dependency, compatibility, or compile failure leaves the prior installed
+commit active.
+
+Once a channel is published, install and update explicitly:
+
+```text
+paseo plugin add mcuadros/paseo-director --ref stable
+paseo plugin status director
+paseo plugin update director
+```
+
+Tags and exact commits are immutable pins and do not advance through update.
+See [installation, update, rollback, and compatibility](docs/installation-update.md)
+before installing; it includes the full-daemon-operator warning, release and
+development modes, diagnostics, failure recovery, and removal behavior.
+
 ## Development
 
 Requirements are Linux, Node.js 22 or newer, npm with lockfile support, Go
@@ -142,17 +166,21 @@ daemon-process environment values before installation or reload:
   the connector credential-disjointness boundary and only reaches the
   development compiler environment.
 
-The committed release descriptor explicitly marks `0.0.0-scaffold` as
+The schema-2 committed release descriptor explicitly marks `0.0.0-scaffold` as
 unpublished and declares no assets or digests. Release resolution rejects that
-state before any fetch. A later coordinator-owned release must replace it with
-normalized URLs under the exact
+state before any fetch. A later coordinator-owned release commit must pin the
+semantic engine version, `linux-amd64` target, exact reviewed source Candidate,
+canonical asset names, and non-empty binary/notices SHA-256 values under the exact
 `https://github.com/mcuadros/paseo-director/releases/download/` origin/path
-prefix and non-empty SHA-256 pins for both the engine and exact-source notices.
+prefix. The executable-reported version, mode, source, target, notices digest,
+and engine contract must match before the cache is published or product work runs.
 Dot-segment traversal that normalizes outside that prefix, another origin/path,
 URL credentials, query, or fragment is invalid. Empty-input digests are invalid.
 Release mode never compiles as a fallback.
-Development mode always compiles the selected Go source and never downloads or
-falls back to release mode. A missing or conflicting mode fails closed.
+Development mode compiles one exact clean selected Git Candidate with the local
+Go 1.26.5 contract and never downloads or falls back to release mode. A missing
+or conflicting mode fails closed. Both modes use content-addressed atomic cache
+directories outside the checkout and expose only bounded identity diagnostics.
 
 ## Director Home and Board/List runtime
 
@@ -241,11 +269,13 @@ fail explicitly instead of using fixture authority; deterministic fixtures are
 test-only. See the
 [M2 planning presentation contract](docs/planning-surface.md).
 
-The plugin manifest declares exact argv for its locked dependency preparation.
+The plugin manifest declares exact argv for its locked production dependency
+preparation and the subsequent compatibility/integrity verification.
 Paseo executes those commands as trusted, unsandboxed daemon-host code with the
 daemon user's access during installation and update. Review the source,
-lockfile, dependencies, and future updates before installing. Host modules and
-external executables are neither vendored nor redistributed.
+lockfile, dependencies, and future updates before installing. Package lifecycle
+scripts are disabled; `@getpaseo/client` is installed from the exact lock and is
+not vendored. Host modules and external executables are not redistributed.
 
 ## Organizer configuration
 

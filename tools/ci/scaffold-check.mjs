@@ -36,14 +36,18 @@ const REQUIRED_SCRIPTS = [
   "ci",
   "contract:check",
   "contract:generate",
+  "dependency:audit",
   "engine:check",
   "format:check",
   "lint",
+  "release:build",
   "smoke",
   "test",
   "test:baseline",
   "test:engine",
   "test:host",
+  "test:packaging",
+  "test:packaging:real",
   "typecheck",
 ];
 const REQUIRED_UI_REGISTRATIONS = [
@@ -467,7 +471,7 @@ function validReleaseSegment(value) {
   );
 }
 
-function releaseAssetValid(asset) {
+function releaseAssetValid(asset, version, name) {
   let parsed;
   try {
     parsed = new URL(asset?.url);
@@ -478,12 +482,13 @@ function releaseAssetValid(asset) {
     asset !== null &&
     typeof asset === "object" &&
     !Array.isArray(asset) &&
-    isDeepStrictEqual(Object.keys(asset).sort(), ["sha256", "url"]) &&
+    isDeepStrictEqual(Object.keys(asset).sort(), ["name", "sha256", "url"]) &&
+    asset.name === name &&
     typeof asset.url === "string" &&
     parsed.origin === RELEASE_ORIGIN &&
     parsed.username === "" &&
     parsed.password === "" &&
-    parsed.pathname.startsWith(RELEASE_PATH_PREFIX) &&
+    parsed.pathname === `${RELEASE_PATH_PREFIX}v${version}/${name}` &&
     parsed.search === "" &&
     parsed.hash === "" &&
     typeof asset.sha256 === "string" &&
@@ -498,7 +503,7 @@ export function releaseMetadataErrors(release) {
     release === null ||
     typeof release !== "object" ||
     Array.isArray(release) ||
-    release.schemaVersion !== 1 ||
+    release.schemaVersion !== 2 ||
     release.target !== "linux-amd64" ||
     !validReleaseSegment(release.version)
   ) {
@@ -511,7 +516,7 @@ export function releaseMetadataErrors(release) {
         "state",
         "target",
         "version",
-      ])
+      ]) || release.version !== "0.0.0-scaffold"
     ) {
       errors.push("unpublished release metadata must not declare assets");
     }
@@ -520,22 +525,26 @@ export function releaseMetadataErrors(release) {
   if (release.state !== "published") {
     return ["release state must be explicitly published or unpublished"];
   }
+  if (!/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$/.test(release.version)) {
+    errors.push("published release version must be semantic");
+  }
   if (
     !isDeepStrictEqual(Object.keys(release).sort(), [
       "binary",
       "notices",
       "schemaVersion",
+      "sourceCandidate",
       "state",
       "target",
       "version",
-    ])
+    ]) || !/^[0-9a-f]{40}$/.test(release.sourceCandidate ?? "")
   ) {
     errors.push("published release metadata fields do not match");
   }
-  if (!releaseAssetValid(release.binary)) {
+  if (!releaseAssetValid(release.binary, release.version, "director-engine-linux-amd64")) {
     errors.push("published release binary identity or digest is invalid");
   }
-  if (!releaseAssetValid(release.notices)) {
+  if (!releaseAssetValid(release.notices, release.version, "THIRD_PARTY_NOTICES.txt")) {
     errors.push("published release notices identity or digest is invalid");
   }
   return errors;
@@ -645,10 +654,13 @@ function scaffoldErrors(repositoryRoot, paths) {
   }
   const expectedManifest = {
     id: "director",
-    build: [["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"]],
+    build: [
+      ["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+      ["node", "tools/packaging/verify-install.mjs"],
+    ],
   };
   if (manifest && !isDeepStrictEqual(manifest, expectedManifest)) {
-    errors.push("paseo-plugin.json must use the exact stable ID and declared install argv");
+    errors.push("paseo-plugin.json must use the exact stable ID and locked install/verification argv");
   }
   if (
     lockfile &&

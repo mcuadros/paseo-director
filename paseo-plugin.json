@@ -4,9 +4,14 @@
     [
       "npm",
       "ci",
+      "--omit=dev",
       "--ignore-scripts",
       "--no-audit",
       "--no-fund"
+    ],
+    [
+      "node",
+      "tools/packaging/verify-install.mjs"
     ]
   ]
 }

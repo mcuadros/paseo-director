@@ -60,11 +60,19 @@ import {
   createPlanningTransport,
   type PlanningTransport,
 } from "./engine-planning.server.ts";
-import { engineBoundaryPaths } from "./engine-distribution.server.ts";
+import {
+  engineBoundaryPaths,
+  resolveEngine,
+  type ResolvedEngine,
+} from "./engine-distribution.server.ts";
 import {
   selectEngine,
   type EngineSelection,
 } from "./engine-selection.server.ts";
+import {
+  assertHostCompatibility,
+  type HostCompatibility,
+} from "./compatibility.server.ts";
 
 export type ConnectorClient = Pick<PaseoClient, "close"> &
   Partial<Pick<PaseoClient, "connect" | "workspaces" | "agents">>;
@@ -227,11 +235,15 @@ export type ConnectorDependencies = {
   createClient?: (configuration: PaseoClientConfig) => ConnectorClient;
   boardTransport?: BoardTransport;
   planningTransport?: PlanningTransport;
+  hostCompatibility?: () => HostCompatibility;
+  resolveEngine?: (selection: EngineSelection) => Promise<ResolvedEngine>;
 };
 
 export class PaseoHostConnector implements DirectorHost {
   readonly #client: ConnectorClient;
   readonly #selection: EngineSelection;
+  readonly #compatibility: HostCompatibility;
+  readonly #engine: Promise<ResolvedEngine>;
   readonly #boardTransport: BoardTransport;
   readonly #planningTransport: PlanningTransport;
   readonly #ready: Promise<void>;
@@ -243,16 +255,48 @@ export class PaseoHostConnector implements DirectorHost {
     selection: EngineSelection,
     boardTransport: BoardTransport,
     planningTransport: PlanningTransport,
+    engine: Promise<ResolvedEngine> = Promise.resolve({
+      mode: selection.mode,
+      version: "0.0.0-dev",
+      sourceCandidate: "0".repeat(40),
+      target: "linux-amd64",
+      binaryPath: "/not-exposed/director-engine",
+      noticesPath: "/not-exposed/THIRD_PARTY_NOTICES.txt",
+      binarySha256: "0".repeat(64),
+      noticesSha256: "0".repeat(64),
+      connectorCommit: "0".repeat(40),
+      contractVersion: "test",
+      contractSha256: "0".repeat(64),
+    }),
+    compatibility: HostCompatibility = {
+      paseoVersion: "0.7.2",
+      nodeVersion: "22.0.0",
+      platform: "linux",
+      architecture: "x64",
+      target: "linux-amd64",
+    },
   ) {
     this.#client = client;
     this.#selection = selection;
     this.#boardTransport = boardTransport;
     this.#planningTransport = planningTransport;
+    this.#engine = engine;
+    this.#compatibility = compatibility;
     assertHostDescriptor(EXPECTED_HOST_DESCRIPTOR);
-    this.#ready = client.connect ? client.connect() : Promise.resolve();
+    this.#ready = Promise.all([
+      client.connect ? client.connect() : Promise.resolve(),
+      engine,
+    ]).then(
+      () => undefined,
+      async (error: unknown) => {
+        await client.close().catch(() => undefined);
+        throw error;
+      },
+    );
   }
 
   async describe(): Promise<HostDescriptor> {
+    await this.#ready;
     return EXPECTED_HOST_DESCRIPTOR;
   }
 
@@ -867,11 +911,25 @@ export class PaseoHostConnector implements DirectorHost {
     }
   }
 
-  status(): ConnectorStartupStatus {
+  async status(): Promise<ConnectorStartupStatus> {
+    await this.#ready;
+    const engine = await this.#engine;
     return {
       state: "board-ready",
       engineMode: this.#selection.mode,
       productBehavior: true,
+      compatibility: this.#compatibility,
+      engine: {
+        mode: engine.mode,
+        version: engine.version,
+        sourceCandidate: engine.sourceCandidate,
+        target: engine.target,
+        binarySha256: engine.binarySha256,
+        noticesSha256: engine.noticesSha256,
+        connectorCommit: engine.connectorCommit,
+        contractVersion: engine.contractVersion,
+        contractSha256: engine.contractSha256,
+      },
       descriptor: {
         ...EXPECTED_HOST_DESCRIPTOR,
         capabilities: [...HOST_CAPABILITIES],
@@ -880,14 +938,17 @@ export class PaseoHostConnector implements DirectorHost {
   }
 
   async loadBoard() {
+    await this.#ready;
     return this.#boardTransport.load();
   }
 
   async queryPlanning(input: PlanningQueryInput): Promise<PlanningSnapshot> {
+    await this.#ready;
     return this.#planningTransport.query(input);
   }
 
   async queryHome(input: HomeQueryInput): Promise<HomeSnapshot> {
+    await this.#ready;
     if (!this.#planningTransport.home) {
       throw new Error("HOME_SURFACE_NOT_WIRED");
     }
@@ -895,6 +956,7 @@ export class PaseoHostConnector implements DirectorHost {
   }
 
   async queryDoctor(input: DoctorQueryInput): Promise<DoctorReport> {
+    await this.#ready;
     if (!this.#planningTransport.doctor) {
       throw new Error("DOCTOR_SURFACE_NOT_WIRED");
     }
@@ -902,6 +964,7 @@ export class PaseoHostConnector implements DirectorHost {
   }
 
   async queryOperations(input: OperationsQueryInput): Promise<OperationsReport> {
+    await this.#ready;
     if (!this.#planningTransport.operations) {
       throw new Error("OPERATIONS_SURFACE_NOT_WIRED");
     }
@@ -909,6 +972,7 @@ export class PaseoHostConnector implements DirectorHost {
   }
 
   async mutateOperations(input: OperationsMutationInput): Promise<OperationsMutationResult> {
+    await this.#ready;
     if (!this.#planningTransport.mutateOperations) {
       throw new Error("OPERATIONS_MUTATION_NOT_WIRED");
     }
@@ -916,6 +980,7 @@ export class PaseoHostConnector implements DirectorHost {
   }
 
   async repairProject(input: RepairInput): Promise<RepairResult> {
+    await this.#ready;
     if (!this.#planningTransport.repair) {
       throw new Error("REPAIR_SURFACE_NOT_WIRED");
     }
@@ -923,6 +988,7 @@ export class PaseoHostConnector implements DirectorHost {
   }
 
   async bootstrapOrganizer(input: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult> {
+    await this.#ready;
     if (!this.#planningTransport.bootstrapOrganizer) {
       throw new Error("ORGANIZER_BOOTSTRAP_NOT_WIRED");
     }
@@ -932,12 +998,14 @@ export class PaseoHostConnector implements DirectorHost {
   async queryPlanningTask(
     input: TaskDetailQueryInput,
   ): Promise<TaskDetailSnapshot> {
+    await this.#ready;
     return this.#planningTransport.taskDetail(input);
   }
 
   async mutatePlanning(
 	input: PlanningMutationInput,
   ): Promise<PlanningMutationResult> {
+	await this.#ready;
 	return this.#planningTransport.mutate(input);
   }
 
@@ -951,6 +1019,7 @@ export function startConnectorShell(options: {
   checkoutRoot: string;
   dependencies?: ConnectorDependencies;
 }): PaseoHostConnector {
+  const compatibility = (options.dependencies?.hostCompatibility ?? assertHostCompatibility)();
   const selection = selectEngine(options.environment, options.checkoutRoot);
   const credential = loadConnectorCredential({
     credentialPath: options.environment.DIRECTOR_PASEO_CREDENTIAL_FILE,
@@ -983,11 +1052,14 @@ export function startConnectorShell(options: {
     clientId: `director-connector-${process.pid}`,
     reconnect: { enabled: false },
   });
+  const engine = (options.dependencies?.resolveEngine ?? resolveEngine)(selection);
   return new PaseoHostConnector(
     client,
     selection,
     boardTransport,
     planningTransport,
+    engine,
+    compatibility,
   );
 }
 

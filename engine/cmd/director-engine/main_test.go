@@ -20,6 +20,12 @@ func TestVersionIdentity(t *testing.T) {
 	if result.Name != "director-engine" || result.Version == "" {
 		t.Fatalf("identity = %#v", result)
 	}
+	if len(result.NoticesSHA256) != 64 {
+		t.Fatalf("notices digest = %q", result.NoticesSHA256)
+	}
+	if len(result.ExecutableSHA256) != 64 {
+		t.Fatalf("executable digest = %q", result.ExecutableSHA256)
+	}
 	if !result.ProductBehavior {
 		t.Fatal("version does not report Board/List product behavior")
 	}

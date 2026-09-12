@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mcuadros/paseo-director/blob/main/release/engine.schema.json",
+  "title": "Director Engine release pin",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "state",
+        "version",
+        "target"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 2
+        },
+        "state": {
+          "const": "unpublished"
+        },
+        "version": {
+          "const": "0.0.0-scaffold"
+        },
+        "target": {
+          "const": "linux-amd64"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "state",
+        "version",
+        "target",
+        "sourceCandidate",
+        "binary",
+        "notices"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 2
+        },
+        "state": {
+          "const": "published"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$"
+        },
+        "target": {
+          "const": "linux-amd64"
+        },
+        "sourceCandidate": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "binary": {
+          "$ref": "#/$defs/binary"
+        },
+        "notices": {
+          "$ref": "#/$defs/notices"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "not": {
+        "const": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "binary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "url",
+        "sha256"
+      ],
+      "properties": {
+        "name": {
+          "const": "director-engine-linux-amd64"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https://github\\.com/mcuadros/paseo-director/releases/download/v[^/?#]+/director-engine-linux-amd64$"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "notices": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "url",
+        "sha256"
+      ],
+      "properties": {
+        "name": {
+          "const": "THIRD_PARTY_NOTICES.txt"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https://github\\.com/mcuadros/paseo-director/releases/download/v[^/?#]+/THIRD_PARTY_NOTICES\\.txt$"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

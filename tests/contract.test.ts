@@ -34,19 +34,35 @@ test("the generated host descriptor accepts only the exact engine contract", () 
 });
 
 test("the Paseo startup RPC is strict and exposes no credential field", () => {
-  const result = connectorStartupStatus.output.safeParse({
+  const startup = {
     state: "board-ready",
     engineMode: "development",
     productBehavior: true,
+    compatibility: {
+      paseoVersion: "0.7.2",
+      nodeVersion: "26.7.0",
+      platform: "linux",
+      architecture: "x64",
+      target: "linux-amd64",
+    },
+    engine: {
+      mode: "development",
+      version: "0.0.0-dev",
+      sourceCandidate: "1".repeat(40),
+      target: "linux-amd64",
+      binarySha256: "2".repeat(64),
+      noticesSha256: "3".repeat(64),
+      connectorCommit: "4".repeat(40),
+      contractVersion: "director.host/v1",
+      contractSha256: "5".repeat(64),
+    },
     descriptor: EXPECTED_HOST_DESCRIPTOR,
-  });
+  } as const;
+  const result = connectorStartupStatus.output.safeParse(startup);
   assert.equal(result.success, true);
 
   const credential = connectorStartupStatus.output.safeParse({
-    state: "board-ready",
-    engineMode: "development",
-    productBehavior: true,
-    descriptor: EXPECTED_HOST_DESCRIPTOR,
+    ...startup,
     credential: "must-not-cross",
   });
   assert.equal(credential.success, false);

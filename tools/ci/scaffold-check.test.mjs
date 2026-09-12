@@ -80,6 +80,10 @@ async function loadMutatedScaffoldCheck(mutate) {
   assert.notEqual(mutated, source, "mutation must change the scaffold checker");
   const destination = resolve(temporaryRoot, "scaffold-check.mjs");
   writeFileSync(destination, mutated, { mode: 0o600 });
+  copyFileSync(
+    resolve(repositoryRoot, "tools/ci/dependency-audit.mjs"),
+    resolve(temporaryRoot, "dependency-audit.mjs"),
+  );
   return {
     checker: await import(pathToFileURL(destination).href),
     temporaryRoot,
@@ -243,16 +247,25 @@ test("workflow validation rejects cancellation, unknown events, and job env or s
 
 test("release validation rejects empty digests, dot segments, and assets while unpublished", () => {
   const asset = {
+    name: "director-engine-linux-amd64",
     url: "https://github.com/mcuadros/paseo-director/releases/download/v1/director-engine",
     sha256: "1".repeat(64),
   };
   const published = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     state: "published",
-    version: "v1",
+    version: "1.0.0",
     target: "linux-amd64",
-    binary: asset,
-    notices: { ...asset, sha256: "2".repeat(64) },
+    sourceCandidate: "3".repeat(40),
+    binary: {
+      ...asset,
+      url: "https://github.com/mcuadros/paseo-director/releases/download/v1.0.0/director-engine-linux-amd64",
+    },
+    notices: {
+      name: "THIRD_PARTY_NOTICES.txt",
+      url: "https://github.com/mcuadros/paseo-director/releases/download/v1.0.0/THIRD_PARTY_NOTICES.txt",
+      sha256: "2".repeat(64),
+    },
   };
   assert.deepEqual(releaseMetadataErrors(published), []);
   assert.ok(
@@ -267,8 +280,8 @@ test("release validation rejects empty digests, dot segments, and assets while u
   );
   assert.ok(releaseMetadataErrors({ ...published, version: ".." }).length > 0);
   for (const url of [
-    "https://github.com/mcuadros/paseo-director/releases/download/../../../../attacker/evil/releases/download/v1/x",
-    "https://github.com/mcuadros/paseo-director/releases/download/%2e%2e/%2e%2e/%2e%2e/%2e%2e/attacker/x",
+    "https://github.com/mcuadros/paseo-director/releases/download/../../../../attacker/evil/releases/download/v1.0.0/director-engine-linux-amd64",
+    "https://github.com/mcuadros/paseo-director/releases/download/%2e%2e/%2e%2e/%2e%2e/%2e%2e/attacker/director-engine-linux-amd64",
     `${asset.url}?mirror=attacker`,
     `${asset.url}#attacker`,
   ]) {
@@ -282,7 +295,7 @@ test("release validation rejects empty digests, dot segments, and assets while u
   }
   assert.ok(
     releaseMetadataErrors({
-      schemaVersion: 1,
+      schemaVersion: 2,
       state: "unpublished",
       version: "0.0.0-scaffold",
       target: "linux-amd64",

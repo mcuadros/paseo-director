@@ -4,6 +4,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,17 +18,20 @@ var (
 	version         = "0.0.0-dev"
 	buildMode       = "development"
 	sourceCandidate = "uncommitted"
+	noticesSha      = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 )
 
 type identity struct {
-	Name            string `json:"name"`
-	Version         string `json:"version"`
-	BuildMode       string `json:"buildMode"`
-	SourceCandidate string `json:"sourceCandidate"`
-	Target          string `json:"target"`
-	ContractVersion string `json:"contractVersion"`
-	ContractSHA256  string `json:"contractSha256"`
-	ProductBehavior bool   `json:"productBehavior"`
+	Name             string `json:"name"`
+	Version          string `json:"version"`
+	BuildMode        string `json:"buildMode"`
+	SourceCandidate  string `json:"sourceCandidate"`
+	Target           string `json:"target"`
+	ExecutableSHA256 string `json:"executableSha256"`
+	NoticesSHA256    string `json:"noticesSha256"`
+	ContractVersion  string `json:"contractVersion"`
+	ContractSHA256   string `json:"contractSha256"`
+	ProductBehavior  bool   `json:"productBehavior"`
 }
 
 func currentIdentity() (identity, error) {
@@ -39,15 +43,26 @@ func currentIdentity() (identity, error) {
 	if err != nil {
 		return identity{}, err
 	}
+	executable, err := os.Executable()
+	if err != nil {
+		return identity{}, err
+	}
+	executableBytes, err := os.ReadFile(executable)
+	if err != nil {
+		return identity{}, err
+	}
+	executableDigest := sha256.Sum256(executableBytes)
 	return identity{
-		Name:            "director-engine",
-		Version:         version,
-		BuildMode:       buildMode,
-		SourceCandidate: sourceCandidate,
-		Target:          runtime.GOOS + "-" + runtime.GOARCH,
-		ContractVersion: definition.ContractVersion,
-		ContractSHA256:  contractHash,
-		ProductBehavior: true,
+		Name:             "director-engine",
+		Version:          version,
+		BuildMode:        buildMode,
+		SourceCandidate:  sourceCandidate,
+		Target:           runtime.GOOS + "-" + runtime.GOARCH,
+		ExecutableSHA256: fmt.Sprintf("%x", executableDigest),
+		NoticesSHA256:    noticesSha,
+		ContractVersion:  definition.ContractVersion,
+		ContractSHA256:   contractHash,
+		ProductBehavior:  true,
 	}, nil
 }
 
