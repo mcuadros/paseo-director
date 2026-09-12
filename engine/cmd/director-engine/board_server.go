@@ -25,7 +25,12 @@ import (
 
 	"github.com/mcuadros/director-engine/adapters/diagnostics"
 	"github.com/mcuadros/director-engine/adapters/dolt"
+	gitadapter "github.com/mcuadros/director-engine/adapters/git"
+	githubadapter "github.com/mcuadros/director-engine/adapters/github"
+	"github.com/mcuadros/director-engine/adapters/hostipc"
 	"github.com/mcuadros/director-engine/adapters/organizergit"
+	provideradapter "github.com/mcuadros/director-engine/adapters/provider"
+	runtimeadapter "github.com/mcuadros/director-engine/adapters/runtime"
 	"github.com/mcuadros/director-engine/application/board"
 	executionapp "github.com/mcuadros/director-engine/application/execution"
 	homeapp "github.com/mcuadros/director-engine/application/home"
@@ -156,6 +161,25 @@ func validServerHostIdentity(id, label string) bool {
 		utf8.ValidString(label) && label == strings.TrimSpace(label) && strings.IndexFunc(label, unicode.IsControl) < 0
 }
 
+func defaultProductionRuntimePaths() (string, string, error) {
+	base := os.Getenv("XDG_RUNTIME_DIR")
+	if base == "" {
+		base = os.Getenv("XDG_CACHE_HOME")
+	}
+	if base == "" {
+		var err error
+		base, err = os.UserCacheDir()
+		if err != nil {
+			return "", "", errors.New("production runtime base is unavailable")
+		}
+	}
+	if !filepath.IsAbs(base) || filepath.Clean(base) != base {
+		return "", "", errors.New("production runtime base is invalid")
+	}
+	root := filepath.Join(base, "director", "runtime")
+	return filepath.Join(root, "work"), filepath.Join(root, "host.sock"), nil
+}
+
 type maintenanceProjectSource interface {
 	Projects(context.Context) ([]domain.Project, error)
 }
@@ -201,15 +225,128 @@ func reconcileTaskStoreMaintenance(ctx context.Context, service *maintenanceapp.
 	}
 }
 
+type productionRunStore interface {
+	Projects(context.Context) ([]domain.Project, error)
+	Tasks(context.Context, string) ([]domain.Task, error)
+	Runs(context.Context, string) ([]domain.Run, error)
+}
+
+func reconcileProductionRun(ctx context.Context, production *Production, runID string) error {
+	for transition := 0; transition < 128; transition++ {
+		progressed, err := production.ReconcileRun(ctx, runID)
+		if err != nil || !progressed {
+			return err
+		}
+	}
+	return errors.New("production reconciliation transition bound exceeded")
+}
+
+func productionRuns(ctx context.Context, store productionRunStore, visit func(domain.Project, domain.Run) error) (bool, error) {
+	projects, err := store.Projects(ctx)
+	if err != nil {
+		return false, err
+	}
+	active := false
+	for _, project := range projects {
+		tasks, err := store.Tasks(ctx, project.ID)
+		if err != nil {
+			return false, err
+		}
+		for _, task := range tasks {
+			runs, err := store.Runs(ctx, task.ID)
+			if err != nil {
+				return false, err
+			}
+			for _, run := range runs {
+				if run.Execution.Terminal {
+					continue
+				}
+				active = true
+				if err := visit(project, run); err != nil {
+					return active, err
+				}
+			}
+		}
+	}
+	return active, nil
+}
+
+func reconcileProduction(ctx context.Context, store productionRunStore, production *Production,
+	launcher *Launcher, queue *WakeQueue, logs *diagnostics.LogStore, now func() int64,
+) {
+	cycle := func() bool {
+		cycleContext, cancel := context.WithTimeout(ctx, 4*time.Minute)
+		defer cancel()
+		_ = launcher.Schedule(cycleContext)
+		active, err := productionRuns(cycleContext, store, func(project domain.Project, run domain.Run) error {
+			if err := reconcileProductionRun(cycleContext, production, run.ID); err != nil {
+				_ = logs.Append(cycleContext, project.ID, now(), homeport.TechnicalLogWarning,
+					homeport.TechnicalLogReconciliation, homeport.TechnicalLogReconciliationWaiting, 1)
+			}
+			return nil
+		})
+		return err == nil && active
+	}
+	active := cycle()
+	timer := time.NewTimer(func() time.Duration {
+		if active {
+			return 30 * time.Second
+		}
+		return 5 * time.Minute
+	}())
+	defer timer.Stop()
+	resetTimer := func(delay time.Duration) {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(delay)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case wake := <-queue.Wakes():
+			wakeContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+			_ = reconcileProductionRun(wakeContext, production, wake.RunID)
+			cancel()
+			resetTimer(250 * time.Millisecond)
+		case runID := <-queue.Runs():
+			wakeContext, cancel := context.WithTimeout(ctx, 4*time.Minute)
+			_ = reconcileProductionRun(wakeContext, production, runID)
+			cancel()
+			resetTimer(250 * time.Millisecond)
+		case <-timer.C:
+			active = cycle()
+			delay := 5 * time.Minute
+			if active {
+				delay = 30 * time.Second
+			}
+			resetTimer(delay)
+		}
+	}
+}
+
 func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
+	defaultRuntimeRoot, defaultHostSocket, defaultErr := defaultProductionRuntimePaths()
+	if defaultErr != nil {
+		fmt.Fprintln(stderr, "director-engine: production runtime default is invalid")
+		return 2
+	}
 	flags := flag.NewFlagSet("serve-board", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	listenAddress := flags.String("listen", "", "explicit loopback listen address")
 	configPath := flags.String("taskstore-config", "", "absolute private TaskStore configuration path")
 	hostID := flags.String("host-id", "", "exact public Paseo host identity")
 	hostLabel := flags.String("host-label", "", "public Paseo host label")
-	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 || !loopbackListenAddress(*listenAddress) || *configPath == "" || !validServerHostIdentity(*hostID, *hostLabel) {
-		fmt.Fprintln(stderr, "usage: director-engine serve-board --listen <loopback:port> --taskstore-config <absolute-path> --host-id <id> --host-label <label>")
+	hostSocket := flags.String("host-socket", defaultHostSocket, "absolute owner-only Director for Paseo host socket")
+	runtimeRoot := flags.String("runtime-root", defaultRuntimeRoot, "absolute owner-only production runtime root")
+	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 || !loopbackListenAddress(*listenAddress) || *configPath == "" ||
+		!validServerHostIdentity(*hostID, *hostLabel) || !filepath.IsAbs(*hostSocket) || filepath.Clean(*hostSocket) != *hostSocket ||
+		!filepath.IsAbs(*runtimeRoot) || filepath.Clean(*runtimeRoot) != *runtimeRoot {
+		fmt.Fprintln(stderr, "usage: director-engine serve-board --listen <loopback:port> --taskstore-config <absolute-path> --host-id <id> --host-label <label> --host-socket <absolute-path> --runtime-root <absolute-path>")
 		return 2
 	}
 	config, err := readBoardServerConfig(*configPath)
@@ -304,14 +441,6 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "director-engine: identity is unavailable")
 		return 1
 	}
-	if err := writeJSON(stdout, struct {
-		Event    string   `json:"event"`
-		Address  string   `json:"address"`
-		Identity identity `json:"identity"`
-	}{Event: "director-engine.board-listening", Address: listener.Addr().String(), Identity: current}); err != nil {
-		fmt.Fprintln(stderr, "director-engine: Board readiness output failed")
-		return 1
-	}
 	handler := http.NewServeMux()
 	handler.Handle(boardQueryPath, newBoardHandler(board.NewReader(store)))
 	planningReader := board.NewPlanningReader(store)
@@ -320,7 +449,8 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 	startedAt := time.Now().UnixNano()
 	instanceDigest := sha256.Sum256([]byte(*hostID + "\x1f" + strconv.Itoa(os.Getpid()) + "\x1f" + strconv.FormatInt(startedAt, 10)))
 	now := func() int64 { return time.Now().UnixMilli() }
-	homeSource := homeapp.NewStaticSource(*hostID, *hostLabel, "engine-"+hex.EncodeToString(instanceDigest[:16]), now)
+	engineInstance := "engine-" + hex.EncodeToString(instanceDigest[:16])
+	homeSource := homeapp.NewStaticSource(*hostID, *hostLabel, engineInstance, now)
 	logContext, cancelLogs := context.WithTimeout(context.Background(), 5*time.Second)
 	projects, projectsError := store.Projects(logContext)
 	logsCurrent := projectsError == nil
@@ -337,23 +467,82 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 	maintenanceContext, cancelMaintenance := context.WithCancel(context.Background())
 	defer cancelMaintenance()
 	go reconcileTaskStoreMaintenance(maintenanceContext, maintenanceService, store, logs, now)
-	handler.Handle(planningport.HomeQueryPath, newHomeHandler(homeapp.NewReader(store, board.NewTaskStoreFactSource(store), homeSource, now)))
-	doctorRepair := homeapp.NewDoctorRepairService(store, homeSource, nil, now)
-	handler.Handle(planningport.DoctorQueryPath, newDoctorHandler(doctorRepair))
-	handler.Handle(planningport.RepairMutationPath, newRepairHandler(doctorRepair))
 	var supportBundles homeport.SupportBundleWriter
 	if supportRoot, supportError := diagnostics.DefaultSupportRoot(); supportError == nil {
 		if writer, writerError := diagnostics.NewBundleWriter(supportRoot); writerError == nil {
 			supportBundles = writer
 		}
 	}
-	operations := homeapp.NewOperationsService(store, homeSource, nil, supportBundles, now)
+	hostPort, err := hostipc.New(*hostSocket)
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: Paseo host transport configuration is invalid")
+		return 1
+	}
+	runtimePort, err := runtimeadapter.New(*runtimeRoot)
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: production runtime root is unavailable")
+		return 1
+	}
+	queue := NewWakeQueue(256)
+	gitPort, githubPort := gitadapter.New(), githubadapter.New()
+	controller := executionapp.NewControllerWithGit(store, runtimePort, gitPort, hostPort, queue)
+	executable, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: executable identity is unavailable")
+		return 1
+	}
+	engineURL := "http://" + listener.Addr().String()
+	organizerRepository := organizergit.New()
+	takeoverObserver, err := runtimeadapter.NewTakeoverObserver(store, hostPort)
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: production takeover observation is unavailable")
+		return 1
+	}
+	launcher, err := NewLauncher(store, controller, organizerRepository, provideradapter.Local{}, runtimePort, runtimePort,
+		takeoverObserver, queue, engineInstance, "pid-"+strconv.Itoa(os.Getpid())+":start-"+strconv.FormatInt(startedAt, 10), *runtimeRoot, engineURL, executable)
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: production launcher composition is unavailable")
+		return 1
+	}
+	production, err := NewProduction(store, controller, launcher, hostPort, githubPort, gitPort, queue, *runtimeRoot,
+		UUID("coordinator", *hostID, engineInstance))
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: production workflow composition is unavailable")
+		return 1
+	}
+	operationsExecutor := NewOperationsExecutor(store, production)
+	homeSource.WithProductionOperations().WithWorkspaceStore(store)
+	handler.Handle(planningport.HomeQueryPath, newHomeHandler(homeapp.NewReader(store, board.NewTaskStoreFactSource(store), homeSource, now)))
+	doctorRepair := homeapp.NewDoctorRepairService(store, homeSource, operationsExecutor, now)
+	handler.Handle(planningport.DoctorQueryPath, newDoctorHandler(doctorRepair))
+	handler.Handle(planningport.RepairMutationPath, newRepairHandler(doctorRepair))
+	operations := homeapp.NewOperationsService(store, homeSource, operationsExecutor, supportBundles, now)
 	handler.Handle(planningport.OperationsQueryPath, newOperationsHandler(operations))
 	handler.Handle(planningport.OperationsMutationPath, newOperationsMutationHandler(operations))
-	handler.Handle(planningport.OrganizerMutationPath, newOrganizerBootstrapHandler(organizerapp.New(store, organizergit.New(), nil), store, *hostID))
-	handler.Handle(planningport.MutationPath, newPlanningMutationHandler(
-		store, executionapp.NewController(store, nil, nil, nil),
-	))
+	startupContext, cancelProductionStartup := context.WithTimeout(context.Background(), 30*time.Second)
+	_, startupErr := controller.ReconcileStartup(startupContext, executionapp.StartupCommand{SchemaVersion: executionapp.StartupCommandSchemaVersion,
+		RequestID: "production-startup-" + hex.EncodeToString(instanceDigest[:16]), NowMillis: now()})
+	cancelProductionStartup()
+	if startupErr != nil {
+		fmt.Fprintln(stderr, "director-engine: production startup reconciliation refused readiness")
+		return 1
+	}
+	organizerService := organizerapp.New(store, organizerRepository, nil)
+	handler.Handle(planningport.OrganizerMutationPath, newOrganizerBootstrapHandler(organizerService, store, *hostID))
+	handler.Handle(planningport.MutationPath, newPlanningMutationHandler(store, controller, launcher, production))
+	handler.Handle(terminalEventPath, newTerminalEventHandler(store, controller, production))
+	handler.Handle(agentMCPPath, newAgentMCPHandler(store))
+	productionContext, cancelProduction := context.WithCancel(context.Background())
+	defer cancelProduction()
+	go reconcileProduction(productionContext, store, production, launcher, queue, logs, now)
+	if err := writeJSON(stdout, struct {
+		Event    string   `json:"event"`
+		Address  string   `json:"address"`
+		Identity identity `json:"identity"`
+	}{Event: "director-engine.production-listening", Address: listener.Addr().String(), Identity: current}); err != nil {
+		fmt.Fprintln(stderr, "director-engine: production readiness output failed")
+		return 1
+	}
 	server := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,

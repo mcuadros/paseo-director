@@ -139,11 +139,12 @@ type Project struct {
 // Workspace identifies one canonical product repository. SourcePath is the
 // absolute source checkout on the Project daemon, not an execution worktree.
 type Workspace struct {
-	ID                string `json:"id"`
-	Name              string `json:"name,omitempty"`
-	Remote            string `json:"remote"`
-	SourcePath        string `json:"sourcePath"`
-	DefaultBaseBranch string `json:"defaultBaseBranch"`
+	ID                     string `json:"id"`
+	Name                   string `json:"name,omitempty"`
+	NativePaseoWorkspaceID string `json:"nativePaseoWorkspaceId,omitempty"`
+	Remote                 string `json:"remote"`
+	SourcePath             string `json:"sourcePath"`
+	DefaultBaseBranch      string `json:"defaultBaseBranch"`
 }
 
 // ProviderOption is one bounded non-secret provider-native selection.
@@ -934,6 +935,9 @@ func validate(value Configuration) error {
 		workspaceIDs[workspace.ID] = struct{}{}
 		if workspace.Name != "" && !validBoundedName(workspace.Name, 128) {
 			issues = append(issues, issue("name_invalid", base+".name", "Workspace name must be trimmed and at most 128 bytes"))
+		}
+		if workspace.NativePaseoWorkspaceID != "" && (!validBoundedName(workspace.NativePaseoWorkspaceID, 128) || strings.ContainsAny(workspace.NativePaseoWorkspaceID, " \t\r\n")) {
+			issues = append(issues, issue("native_workspace_id_invalid", base+".nativePaseoWorkspaceId", "native Paseo Workspace id must be a bounded stable identity"))
 		}
 		if remote, code, message := validateRemote(workspace.Remote); code != "" {
 			issues = append(issues, issue(code, base+".remote", message))

@@ -50,9 +50,9 @@ This is a complete minimal document:
   "agentProfiles": {
     "organizer": {
       "provider": "codex",
-      "model": "gpt-5.6",
+      "model": "gpt-5.6-sol",
       "effort": "high",
-      "mode": "default",
+      "mode": "auto-review",
       "permissionMode": "read-only",
       "providerOptions": [],
       "mcpCapabilities": ["project.read", "planning.command.submit"],
@@ -60,21 +60,21 @@ This is a complete minimal document:
     },
     "worker": {
       "provider": "codex",
-      "model": "gpt-5.6",
+      "model": "gpt-5.6-sol",
       "effort": "high",
-      "mode": "default",
+      "mode": "auto-review",
       "permissionMode": "workspace-write",
       "providerOptions": [
         {"name": "networkAccess", "value": "disabled"}
       ],
-      "mcpCapabilities": ["project.read", "task.read", "task.outcome.submit", "task.helper.request"],
+      "mcpCapabilities": ["task.read", "task.outcome.submit"],
       "fallbackChain": []
     },
     "reviewer": {
-      "provider": "opencode",
-      "model": "reviewer-1",
+      "provider": "codex",
+      "model": "gpt-5.6-sol",
       "effort": "high",
-      "mode": "default",
+      "mode": "auto-review",
       "permissionMode": "read-only",
       "providerOptions": [],
       "mcpCapabilities": ["candidate.read", "review.verdict.submit"],
@@ -83,7 +83,7 @@ This is a complete minimal document:
   },
   "defaults": {
     "launchPolicy": "manual",
-    "deliveryMode": "pull_request",
+    "deliveryMode": "direct",
     "integrationMode": "manual",
     "limits": {
       "maxActiveTasks": 6,
@@ -105,21 +105,7 @@ This is a complete minimal document:
     "terminateOnCompletion": true,
     "cancellationCleanup": "snapshot_then_delete",
     "deleteRemoteTaskBranch": true,
-    "recoveryRetentionDays": 7,
-    "githubCi": {
-      "workflowId": 99,
-      "workflowName": "maintained-linux-ci",
-      "cycleRuntimeSeconds": 1800,
-      "requiredChecks": [
-        {
-          "id": "linux-ci",
-          "kind": "check_run",
-          "name": "Linux CI",
-          "appId": 15368,
-          "appSlug": "github-actions"
-        }
-      ]
-    }
+    "recoveryRetentionDays": 7
   },
   "workspaceOverrides": [],
   "skills": [
@@ -297,6 +283,13 @@ The M1 bootstrap application lives in the standalone Go Director Engine. The
 Paseo UI may render its projections and submit typed commands, but neither the
 TypeScript connector nor UI validates repositories, interprets approval,
 chooses effects, or projects active state.
+
+The standard production Create flow first selects an existing native Paseo
+Project. Its ID/name, repository root, derived sibling Organizer candidate,
+and exact visible Workspaces are authoritative connector facts. Director
+Engine derives the complete configuration and shows it in Preview; users do
+not repeat those fields or paste JSON. Importing an already configured
+Organizer remains the separately named advanced existing-setup flow.
 
 `PreviewCreate` is read-only. It validates Project identity, configuration,
 the absent canonical Organizer target, and every configured product Workspace

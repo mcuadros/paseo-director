@@ -81,14 +81,15 @@ type RepositoryIdentity struct {
 // source repository. ID and ProjectID are immutable; Name and checkout path
 // may change without changing identity.
 type Workspace struct {
-	ID                string             `json:"id"`
-	ProjectID         string             `json:"projectId"`
-	Key               string             `json:"key"`
-	Name              string             `json:"name"`
-	Repository        RepositoryIdentity `json:"repository"`
-	DefaultBaseBranch string             `json:"defaultBaseBranch"`
-	Policy            WorkspacePolicy    `json:"policy"`
-	Version           uint64             `json:"version"`
+	ID                     string             `json:"id"`
+	ProjectID              string             `json:"projectId"`
+	Key                    string             `json:"key"`
+	Name                   string             `json:"name"`
+	NativePaseoWorkspaceID string             `json:"nativePaseoWorkspaceId,omitempty"`
+	Repository             RepositoryIdentity `json:"repository"`
+	DefaultBaseBranch      string             `json:"defaultBaseBranch"`
+	Policy                 WorkspacePolicy    `json:"policy"`
+	Version                uint64             `json:"version"`
 }
 
 // ProjectLease is the one durable execution lease for a Project. A takeover
@@ -223,6 +224,7 @@ func ValidateProject(project Project) error {
 		project.Organizer == nil || project.Organizer.ID != OrganizerID(project.ID) || !validLease(project.Lease) ||
 		(project.Lease != nil && project.LastLeaseEpoch != project.Lease.Epoch) ||
 		!validLeaseObservation(project.ID, project.Lease, project.LeaseObservation) ||
+		!ValidSchedulingLedger(project.Scheduling) ||
 		!execution.ValidProjectControl(project.Control, project.ID) ||
 		!execution.ValidProjectControlState(project.Control, project.State) {
 		return ErrInvalidProject
@@ -269,7 +271,7 @@ func ValidateWorkspace(workspace Workspace) error {
 		remote.ID != workspace.Repository.ID || remote.Key != workspace.Repository.Key ||
 		!stableIdentity(workspace.ID, 128) || !stableIdentity(workspace.ProjectID, 128) ||
 		!stableIdentity(workspace.Key, 128) || workspace.ID != WorkspaceID(workspace.ProjectID, workspace.Key) ||
-		!boundedDisplayName(workspace.Name) || !validCanonicalPath(workspace.Repository.SourcePath) ||
+		!boundedDisplayName(workspace.Name) || (workspace.NativePaseoWorkspaceID != "" && !stableIdentity(workspace.NativePaseoWorkspaceID, 128)) || !validCanonicalPath(workspace.Repository.SourcePath) ||
 		workspace.Repository.SourceDevice == 0 || workspace.Repository.SourceInode == 0 ||
 		!validCanonicalPath(workspace.Repository.GitCommonDirectory) ||
 		workspace.Repository.GitCommonDevice == 0 || workspace.Repository.GitCommonInode == 0 ||

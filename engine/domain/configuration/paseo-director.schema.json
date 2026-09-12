@@ -77,6 +77,7 @@
       "properties": {
         "id": { "$ref": "#/$defs/identifier" },
         "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "nativePaseoWorkspaceId": { "type": "string", "minLength": 1, "maxLength": 128 },
         "remote": { "type": "string", "minLength": 1, "maxLength": 2048 },
         "sourcePath": {
           "type": "string",

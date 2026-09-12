@@ -928,39 +928,39 @@ type RepairResult struct {
 }
 
 type OrganizerBootstrapInput struct {
-	SchemaVersion     int     `json:"schemaVersion"`
-	ContractVersion   string  `json:"contractVersion"`
-	ContractHash      string  `json:"contractHash"`
-	HostID            string  `json:"hostId"`
-	RequestID         string  `json:"requestId"`
-	Kind              string  `json:"kind"`
-	ProjectID         string  `json:"projectId"`
-	ProjectName       string  `json:"projectName"`
-	RepositoryPath    string  `json:"repositoryPath"`
-	ConfigurationJSON *string `json:"configurationJson"`
-	PreviewID         *string `json:"previewId"`
+	SchemaVersion     int                 `json:"schemaVersion"`
+	ContractVersion   string              `json:"contractVersion"`
+	ContractHash      string              `json:"contractHash"`
+	HostID            string              `json:"hostId"`
+	RequestID         string              `json:"requestId"`
+	Kind              string              `json:"kind"`
+	NativeProject     *NativePaseoProject `json:"nativeProject"`
+	ProjectID         string              `json:"projectId"`
+	ProjectName       string              `json:"projectName"`
+	RepositoryPath    string              `json:"repositoryPath"`
+	ConfigurationJSON *string             `json:"configurationJson"`
+	PreviewID         *string             `json:"previewId"`
 }
 
 func ValidateOrganizerBootstrap(input OrganizerBootstrapInput) error {
 	hash, err := SchemaSHA256()
 	if err != nil || input.SchemaVersion != 1 || input.ContractVersion != "director-planning/v1" || input.ContractHash != hash ||
-		!validOpaque(input.HostID) || len(input.RequestID) < 16 || !validOpaque(input.RequestID) || !validOpaque(input.ProjectID) ||
-		input.ProjectName == "" || len(input.ProjectName) > 512 || input.ProjectName != strings.TrimSpace(input.ProjectName) ||
-		safedata.ClassifyText(input.ProjectName, true) != safedata.Safe || len(input.RepositoryPath) < 2 || len(input.RepositoryPath) > 4096 ||
-		input.RepositoryPath != strings.TrimSpace(input.RepositoryPath) || strings.IndexFunc(input.RepositoryPath, unicode.IsControl) >= 0 ||
-		safedata.ClassifyText(input.RepositoryPath, false) != safedata.Safe {
+		!validOpaque(input.HostID) || len(input.RequestID) < 16 || !validOpaque(input.RequestID) {
 		return ErrQueryInvalid
 	}
-	isCreate := input.Kind == "create.preview" || input.Kind == "create.apply"
-	isApply := input.Kind == "create.apply" || input.Kind == "adopt.apply"
-	if (!isCreate && input.Kind != "adopt.preview" && input.Kind != "adopt.apply") ||
-		isCreate != (input.ConfigurationJSON != nil) || (input.ConfigurationJSON != nil && (len(*input.ConfigurationJSON) < 2 || len(*input.ConfigurationJSON) > 60000)) ||
+	isNative := input.Kind == "native.create.preview" || input.Kind == "native.create.apply"
+	isAdvanced := input.Kind == "advanced.adopt.preview" || input.Kind == "advanced.adopt.apply"
+	isApply := input.Kind == "native.create.apply" || input.Kind == "advanced.adopt.apply"
+	if (!isNative && !isAdvanced) || isNative != (input.NativeProject != nil) ||
+		(isNative && (input.ProjectID != "" || input.ProjectName != "" || input.RepositoryPath != "" || input.ConfigurationJSON != nil)) ||
+		(isAdvanced && (!validOpaque(input.ProjectID) || input.ProjectName == "" || len(input.ProjectName) > 512 || input.ProjectName != strings.TrimSpace(input.ProjectName) ||
+			safedata.ClassifyText(input.ProjectName, true) != safedata.Safe || len(input.RepositoryPath) < 2 || len(input.RepositoryPath) > 4096 ||
+			input.RepositoryPath != strings.TrimSpace(input.RepositoryPath) || strings.IndexFunc(input.RepositoryPath, unicode.IsControl) >= 0 ||
+			safedata.ClassifyText(input.RepositoryPath, false) != safedata.Safe || input.ConfigurationJSON != nil)) ||
 		isApply != (input.PreviewID != nil) || (input.PreviewID != nil && !validSHA256(*input.PreviewID)) {
 		return ErrQueryInvalid
 	}
-	if input.ConfigurationJSON != nil && safedata.ClassifyJSON([]byte(*input.ConfigurationJSON), safedata.ScanRules{
-		MaximumBytes: 60000, RejectSensitiveKeys: true,
-	}) != safedata.Safe {
+	if isNative && ValidateNativePaseoProject(*input.NativeProject) != nil {
 		return ErrQueryInvalid
 	}
 	return nil
@@ -995,6 +995,7 @@ type OrganizerBootstrapPreview struct {
 	RepositoryPath      string                  `json:"repositoryPath"`
 	OrganizerRevision   *string                 `json:"organizerRevision"`
 	ConfigurationSHA256 *string                 `json:"configurationSha256"`
+	ConfigurationJSON   *string                 `json:"configurationJson"`
 	Files               []OrganizerPreviewFile  `json:"files"`
 	Operations          []string                `json:"operations"`
 	Valid               bool                    `json:"valid"`

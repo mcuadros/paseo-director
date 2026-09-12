@@ -152,7 +152,7 @@ func TestServeImplementsBoundedClosedStdioMCP(t *testing.T) {
 		`{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fixture"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		`{"jsonrpc":"2.0","id":"list","method":"tools/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":"read","method":"tools/call","params":{"name":"director_project_read","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":"read","method":"tools/call","params":{"name":"director_project_read","arguments":{},"_meta":{"progressToken":"codex"}}}`,
 		`{"jsonrpc":"2.0","id":"escape","method":"tools/call","params":{"name":"raw_taskstore_query","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":"unknown","method":"resources/list","params":{}}`,
 		`not-json`,
@@ -198,5 +198,19 @@ func TestServeRejectsOversizedAndUnknownFieldsWithoutEcho(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "forged") || !strings.Contains(output.String(), `"code":-32700`) {
 		t.Fatalf("unknown-field response = %s", output.String())
+	}
+}
+
+func TestMutableRequestIdentitySurvivesResponseLossWithoutJSONRPCCounterCollision(t *testing.T) {
+	first := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"director_task_outcome_submit","arguments":{"outcome":"completed"}}}`)
+	reordered := []byte(`{"method":"tools/call","params":{"arguments":{"outcome":"completed"},"name":"director_task_outcome_submit"},"id":1,"jsonrpc":"2.0"}`)
+	withMeta := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"director_task_outcome_submit","arguments":{"outcome":"completed"},"_meta":{"progressToken":"ignored"}}}`)
+	correction := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"director_task_outcome_submit","arguments":{"outcome":"needs_review"}}}`)
+	firstID := RequestIdentity(first)
+	if firstID == "" || firstID != RequestIdentity(reordered) || firstID != RequestIdentity(withMeta) {
+		t.Fatalf("canonical response-loss identity changed: %q / %q", firstID, RequestIdentity(reordered))
+	}
+	if firstID == RequestIdentity(correction) {
+		t.Fatal("a later call reusing JSON-RPC id 1 collided with the prior payload")
 	}
 }

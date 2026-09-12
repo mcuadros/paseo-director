@@ -49,6 +49,7 @@ export const connectorStartupStatus = defineRpc({
           "engine.mode",
           "engine.url",
           "engine.cache-base",
+          "engine.runtime-base",
           "engine.module-cache",
         ]),
         source: z.enum(["defaulted", "overridden"]),

@@ -28,7 +28,7 @@ The canonical schema hashes for this contract revision are:
 
 - provider discovery: `b24f996491a706c9a1da957dc802bc971f0cdbbd3f0b3d8214546832b03eba6e`;
 - frozen effective profiles: `c961897556e407ca8b817522f671b61265574f8a6eabb2ca09d5039528f4b384`;
-- Organizer configuration version 1: `c8fce2640c419a6f2473a4466ca4e1fd905ff14304975b0ddd685df0d5d980c8`.
+- Organizer configuration version 1: `cf0f2e1153a0f12f949494f654644e1caa97188dece3ae72b8e5388e9a6467a2`.
 
 Tests pin these canonical values. Any intentional schema change must update the
 version or its pinned hash and the corresponding contract documentation.

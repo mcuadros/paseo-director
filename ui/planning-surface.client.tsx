@@ -245,6 +245,13 @@ export function PlanningSurface({
   const [previousCursors, setPreviousCursors] = useState<
     readonly (string | null)[]
   >([]);
+  const [createKind, setCreateKind] = useState<"epic" | "task" | null>(null);
+  const [createDraft, setCreateDraft] = useState({
+    key: "", title: "", description: "", objective: "", acceptance: "",
+    priority: "normal" as "urgent" | "high" | "normal" | "low",
+    workspaceId: "", epicId: "",
+  });
+  const [dependencyDraft, setDependencyDraft] = useState<{ taskId: string; kind: "task" | "epic"; dependencyId: string } | null>(null);
 
   const planning = useQuery({
     queryKey: ["director", "planning", request, pageCursor],
@@ -753,9 +760,50 @@ export function PlanningSurface({
           setPreview(null);
         }
         void planning.refetch();
+        if (result.status === "accepted" && (intent.type === "epic.create" || intent.type === "task.create")) {
+          setCreateKind(null);
+          setCreateDraft({ key: "", title: "", description: "", objective: "", acceptance: "", priority: "normal", workspaceId: "", epicId: "" });
+        }
         if (selectedTaskId !== null) void detail.refetch();
       },
     });
+  }
+
+  function openCreate(kind: "epic" | "task") {
+    setCreateKind(kind);
+    setCreateDraft((current) => ({ ...current,
+      workspaceId: current.workspaceId || snapshot?.page.workspaces[0]?.id || "",
+    }));
+  }
+
+  function submitCreate() {
+    if (!snapshot || !selectedProject) return;
+    if (createKind === "epic") {
+      const action = selectedProject.allowedActions.find((candidate) => candidate.kind === "epic.create");
+      if (!action) return;
+      submitAction(action, { type: "epic.create", projectId: selectedProject.id, key: createDraft.key,
+        title: createDraft.title, description: createDraft.description, priority: createDraft.priority, labels: [] });
+      return;
+    }
+    if (createKind === "task") {
+      const workspace = snapshot.page.workspaces.find((candidate) => candidate.id === createDraft.workspaceId);
+      const action = workspace?.allowedActions.find((candidate) => candidate.kind === "task.create") ??
+        selectedProject.allowedActions.find((candidate) => candidate.kind === "task.create");
+      if (!action || !workspace) return;
+      const criteria = createDraft.acceptance.split("\n").map((value) => value.trim()).filter(Boolean);
+      submitAction(action, { type: "task.create", projectId: selectedProject.id, workspaceId: workspace.id,
+        epicId: createDraft.epicId || null, key: createDraft.key, title: createDraft.title,
+        objective: createDraft.objective, acceptanceCriteria: criteria, priority: createDraft.priority, labels: [] });
+    }
+  }
+
+  function submitDependency() {
+    if (!dependencyDraft || !detail.data?.detail) return;
+    const action = detail.data.detail.summary.allowedActions.find((candidate) => candidate.kind === "dependency.add");
+    if (!action) return;
+    submitAction(action, { type: "dependency.add", taskId: dependencyDraft.taskId,
+      dependencyKind: dependencyDraft.kind, dependencyId: dependencyDraft.dependencyId });
+    setDependencyDraft(null);
   }
 
   function replaceConfigurationDraft(next: ConfigurationOverride) {
@@ -1199,20 +1247,43 @@ export function PlanningSurface({
             </View>
           </View>
           {snapshot ? (
-            <AccessiblePressable
-              accessibilityHint="Opens Paseo’s native filter dialog or compact bottom sheet"
-              accessibilityLabel="Open task filters"
-              accessibilityRole="button"
-              accessibilityState={{ expanded: filtersExpanded }}
-              focusable
-              onPress={() => setFiltersExpanded(true)}
-              style={styles.filterButton}
-            >
-              <Icon color={theme.colors.foregroundMuted} name="ListFilter" size={16} />
-              <Text style={styles.filterButtonText}>
-                Filters{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ""}
-              </Text>
-            </AccessiblePressable>
+            <View style={styles.toolbarModes}>
+              <AccessiblePressable
+                accessibilityHint="Opens an engine-bound Epic creation form"
+                accessibilityLabel="Create Epic"
+                accessibilityRole="button"
+                disabled={!selectedProject?.allowedActions.some((action) => action.kind === "epic.create")}
+                onPress={() => openCreate("epic")}
+                style={styles.secondaryButton}
+              >
+                <Text style={styles.secondaryButtonText}>Create Epic</Text>
+              </AccessiblePressable>
+              <AccessiblePressable
+                accessibilityHint="Opens an engine-bound Task creation form"
+                accessibilityLabel="Create Task"
+                accessibilityRole="button"
+                disabled={!selectedProject?.allowedActions.some((action) => action.kind === "task.create") &&
+                  !snapshot.page.workspaces.some((workspace) => workspace.allowedActions.some((action) => action.kind === "task.create"))}
+                onPress={() => openCreate("task")}
+                style={styles.primaryButton}
+              >
+                <Text style={styles.primaryButtonText}>Create Task</Text>
+              </AccessiblePressable>
+              <AccessiblePressable
+                accessibilityHint="Opens Paseo’s native filter dialog or compact bottom sheet"
+                accessibilityLabel="Open task filters"
+                accessibilityRole="button"
+                accessibilityState={{ expanded: filtersExpanded }}
+                focusable
+                onPress={() => setFiltersExpanded(true)}
+                style={styles.filterButton}
+              >
+                <Icon color={theme.colors.foregroundMuted} name="ListFilter" size={16} />
+                <Text style={styles.filterButtonText}>
+                  Filters{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ""}
+                </Text>
+              </AccessiblePressable>
+            </View>
           ) : null}
         </View>
 
@@ -1624,6 +1695,86 @@ export function PlanningSurface({
       </ScrollView>
 
       <Modal
+        icon={<Icon color={theme.colors.foreground} name={createKind === "epic" ? "Layers3" : "ListPlus"} size={18} />}
+        open={createKind !== null}
+        onOpenChange={(open) => { if (!open) setCreateKind(null); }}
+        title={createKind === "epic" ? "Create Epic" : "Create Task"}
+      >
+        <Modal.Content>
+          <ScrollView contentContainerStyle={styles.filterContent}>
+            <Text style={styles.liveBody}>Director Engine validates the exact Project, Workspace, hierarchy, version, and dependency graph before recording this planning command.</Text>
+            <Text style={styles.sectionLabel}>Key</Text>
+            <TextInput accessibilityLabel={`${createKind === "epic" ? "Epic" : "Task"} key`} autoCapitalize="characters" autoCorrect={false}
+              onChangeText={(key) => setCreateDraft((current) => ({ ...current, key }))} style={styles.input} value={createDraft.key} />
+            <Text style={styles.sectionLabel}>Title</Text>
+            <TextInput accessibilityLabel={`${createKind === "epic" ? "Epic" : "Task"} title`}
+              onChangeText={(title) => setCreateDraft((current) => ({ ...current, title }))} style={styles.input} value={createDraft.title} />
+            {createKind === "epic" ? (
+              <>
+                <Text style={styles.sectionLabel}>Description</Text>
+                <TextInput accessibilityLabel="Epic description" multiline
+                  onChangeText={(description) => setCreateDraft((current) => ({ ...current, description }))}
+                  style={[styles.input, { minHeight: 96 }]} value={createDraft.description} />
+              </>
+            ) : (
+              <>
+                <Text style={styles.sectionLabel}>Workspace</Text>
+                <View style={styles.wrap}>{snapshot?.page.workspaces.map((workspace) => (
+                  <AccessiblePressable accessibilityLabel={`Task Workspace ${workspace.name}`} accessibilityRole="button"
+                    accessibilityState={{ selected: createDraft.workspaceId === workspace.id }} key={workspace.id}
+                    onPress={() => setCreateDraft((current) => ({ ...current, workspaceId: workspace.id }))}
+                    style={[styles.chip, createDraft.workspaceId === workspace.id && styles.chipSelected]}>
+                    <Text style={[styles.chipText, createDraft.workspaceId === workspace.id && styles.chipTextSelected]}>{workspace.name}</Text>
+                  </AccessiblePressable>
+                ))}</View>
+                <Text style={styles.sectionLabel}>Epic (optional)</Text>
+                <View style={styles.wrap}>
+                  <AccessiblePressable accessibilityLabel="No parent Epic" accessibilityRole="button"
+                    accessibilityState={{ selected: createDraft.epicId === "" }} onPress={() => setCreateDraft((current) => ({ ...current, epicId: "" }))}
+                    style={[styles.chip, createDraft.epicId === "" && styles.chipSelected]}>
+                    <Text style={[styles.chipText, createDraft.epicId === "" && styles.chipTextSelected]}>No Epic</Text>
+                  </AccessiblePressable>
+                  {snapshot?.page.epics.map((epic) => (
+                    <AccessiblePressable accessibilityLabel={`Parent Epic ${epic.key}`} accessibilityRole="button"
+                      accessibilityState={{ selected: createDraft.epicId === epic.id }} key={epic.id}
+                      onPress={() => setCreateDraft((current) => ({ ...current, epicId: epic.id }))}
+                      style={[styles.chip, createDraft.epicId === epic.id && styles.chipSelected]}>
+                      <Text style={[styles.chipText, createDraft.epicId === epic.id && styles.chipTextSelected]}>{epic.key}</Text>
+                    </AccessiblePressable>
+                  ))}
+                </View>
+                <Text style={styles.sectionLabel}>Objective</Text>
+                <TextInput accessibilityLabel="Task objective" multiline
+                  onChangeText={(objective) => setCreateDraft((current) => ({ ...current, objective }))}
+                  style={[styles.input, { minHeight: 96 }]} value={createDraft.objective} />
+                <Text style={styles.sectionLabel}>Acceptance criteria · one per line</Text>
+                <TextInput accessibilityLabel="Task acceptance criteria" multiline
+                  onChangeText={(acceptance) => setCreateDraft((current) => ({ ...current, acceptance }))}
+                  style={[styles.input, { minHeight: 120 }]} value={createDraft.acceptance} />
+              </>
+            )}
+            <View style={styles.wrap}>{PLANNING_PRIORITIES.map((priority) => (
+              <AccessiblePressable accessibilityLabel={`Priority ${priority}`} accessibilityRole="button"
+                accessibilityState={{ selected: createDraft.priority === priority }} key={priority}
+                onPress={() => setCreateDraft((current) => ({ ...current, priority }))}
+                style={[styles.chip, createDraft.priority === priority && styles.chipSelected]}>
+                <Text style={[styles.chipText, createDraft.priority === priority && styles.chipTextSelected]}>{priority}</Text>
+              </AccessiblePressable>
+            ))}</View>
+            <AccessiblePressable accessibilityLabel={createKind === "epic" ? "Submit Epic" : "Submit Task"} accessibilityRole="button"
+              accessibilityState={{ busy: mutation.isPending, disabled: mutation.isPending || createDraft.key.trim() === "" || createDraft.title.trim() === "" ||
+                (createKind === "epic" ? createDraft.description.trim() === "" : createDraft.workspaceId === "" || createDraft.objective.trim() === "" || createDraft.acceptance.trim() === "") }}
+              disabled={mutation.isPending || createDraft.key.trim() === "" || createDraft.title.trim() === "" ||
+                (createKind === "epic" ? createDraft.description.trim() === "" : createDraft.workspaceId === "" || createDraft.objective.trim() === "" || createDraft.acceptance.trim() === "")}
+              onPress={submitCreate} style={styles.primaryButton}>
+              <Text style={styles.primaryButtonText}>{mutation.isPending ? "Recording…" : createKind === "epic" ? "Create Epic" : "Create Task"}</Text>
+            </AccessiblePressable>
+            {mutation.data ? <Text style={mutation.data.status === "accepted" ? styles.success : styles.warning}>{mutation.data.message}</Text> : null}
+          </ScrollView>
+        </Modal.Content>
+      </Modal>
+
+      <Modal
         open={selectedTaskId !== null}
         onOpenChange={(open) => {
           if (!open) setSelectedTaskId(null);
@@ -1670,6 +1821,14 @@ export function PlanningSurface({
             </View>
           ) : null}
           {detail.data?.detail ? renderDetail(detail.data.detail) : null}
+          {detail.data?.detail?.summary.allowedActions.some((action) => action.kind === "dependency.add") ? (
+            <AccessiblePressable accessibilityHint="Selects another current Task or Epic as a prerequisite"
+              accessibilityLabel="Add Task dependency" accessibilityRole="button"
+              onPress={() => setDependencyDraft({ taskId: detail.data!.detail!.summary.id, kind: "task", dependencyId: "" })}
+              style={styles.secondaryButton}>
+              <Text style={styles.secondaryButtonText}>Add dependency</Text>
+            </AccessiblePressable>
+          ) : null}
           {detail.isError && detail.data?.detail ? (
             <Text accessibilityLiveRegion="polite" style={styles.warning}>
               Task detail refresh failed · showing the last exact-host snapshot
@@ -1700,6 +1859,35 @@ export function PlanningSurface({
               {mutation.data.message}
             </Text>
           ) : null}
+        </Modal.Content>
+      </Modal>
+      <Modal open={dependencyDraft !== null} onOpenChange={(open) => { if (!open) setDependencyDraft(null); }} title="Add dependency">
+        <Modal.Content>
+          <ScrollView contentContainerStyle={styles.filterContent}>
+            <Text style={styles.liveBody}>Select one exact current Task or Epic. Director Engine rejects self-links, missing endpoints, duplicate edges, and cycles transactionally.</Text>
+            <Text style={styles.sectionLabel}>Tasks</Text>
+            <View style={styles.wrap}>{snapshot?.page.tasks.filter((task) => task.id !== dependencyDraft?.taskId).map((task) => (
+              <AccessiblePressable accessibilityLabel={`Dependency Task ${task.key}`} accessibilityRole="button"
+                accessibilityState={{ selected: dependencyDraft?.kind === "task" && dependencyDraft.dependencyId === task.id }} key={task.id}
+                onPress={() => setDependencyDraft((current) => current ? { ...current, kind: "task", dependencyId: task.id } : null)}
+                style={[styles.chip, dependencyDraft?.kind === "task" && dependencyDraft.dependencyId === task.id && styles.chipSelected]}>
+                <Text style={[styles.chipText, dependencyDraft?.kind === "task" && dependencyDraft.dependencyId === task.id && styles.chipTextSelected]}>{task.key}</Text>
+              </AccessiblePressable>
+            ))}</View>
+            <Text style={styles.sectionLabel}>Epics</Text>
+            <View style={styles.wrap}>{snapshot?.page.epics.map((epic) => (
+              <AccessiblePressable accessibilityLabel={`Dependency Epic ${epic.key}`} accessibilityRole="button"
+                accessibilityState={{ selected: dependencyDraft?.kind === "epic" && dependencyDraft.dependencyId === epic.id }} key={epic.id}
+                onPress={() => setDependencyDraft((current) => current ? { ...current, kind: "epic", dependencyId: epic.id } : null)}
+                style={[styles.chip, dependencyDraft?.kind === "epic" && dependencyDraft.dependencyId === epic.id && styles.chipSelected]}>
+                <Text style={[styles.chipText, dependencyDraft?.kind === "epic" && dependencyDraft.dependencyId === epic.id && styles.chipTextSelected]}>{epic.key}</Text>
+              </AccessiblePressable>
+            ))}</View>
+            <AccessiblePressable accessibilityLabel="Confirm dependency" accessibilityRole="button"
+              disabled={!dependencyDraft?.dependencyId || mutation.isPending} onPress={submitDependency} style={styles.primaryButton}>
+              <Text style={styles.primaryButtonText}>{mutation.isPending ? "Recording…" : "Add dependency"}</Text>
+            </AccessiblePressable>
+          </ScrollView>
         </Modal.Content>
       </Modal>
     </View>

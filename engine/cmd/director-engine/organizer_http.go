@@ -83,9 +83,13 @@ func organizerPreview(value organizerapp.Preview) *planningport.OrganizerBootstr
 	if value.ConfigurationSHA256 != "" {
 		configuration = stringPointer(value.ConfigurationSHA256)
 	}
+	var configurationJSON *string
+	if value.ConfigurationJSON != "" {
+		configurationJSON = stringPointer(value.ConfigurationJSON)
+	}
 	return &planningport.OrganizerBootstrapPreview{ID: value.ID, Kind: value.Kind, RequestID: value.RequestID,
 		ProjectID: value.ProjectID, ProjectName: value.ProjectName, RepositoryPath: value.RepositoryPath,
-		OrganizerRevision: revision, ConfigurationSHA256: configuration, Files: files,
+		OrganizerRevision: revision, ConfigurationSHA256: configuration, ConfigurationJSON: configurationJSON, Files: files,
 		Operations: append([]string{}, value.Operations...), Valid: value.Valid, Issues: issues}
 }
 
@@ -108,15 +112,34 @@ func (handler *organizerBootstrapHandler) execute(ctx context.Context, input pla
 	if input.HostID != handler.hostID {
 		return planningport.OrganizerBootstrapResult{}, homeHostMismatchError{}
 	}
-	createRequest := organizerapp.CreateRequest{RequestID: input.RequestID, ProjectID: input.ProjectID,
-		ProjectName: input.ProjectName, RepositoryPath: input.RepositoryPath}
+	createRequest := organizerapp.CreateRequest{}
 	adoptRequest := organizerapp.AdoptRequest{RequestID: input.RequestID, ProjectID: input.ProjectID,
 		ProjectName: input.ProjectName, RepositoryPath: input.RepositoryPath}
-	if input.ConfigurationJSON != nil {
-		createRequest.ConfigurationJSON = []byte(*input.ConfigurationJSON)
+	if input.NativeProject != nil {
+		workspaces := make([]organizerapp.NativeWorkspaceFact, 0, len(input.NativeProject.Workspaces))
+		for _, workspace := range input.NativeProject.Workspaces {
+			remote, base := "", ""
+			if workspace.RemoteURL != nil {
+				remote = *workspace.RemoteURL
+			}
+			if workspace.BaseBranch != nil {
+				base = *workspace.BaseBranch
+			}
+			workspaces = append(workspaces, organizerapp.NativeWorkspaceFact{ID: workspace.ID, Name: workspace.Name,
+				ProjectRootPath: workspace.ProjectRootPath, WorkspaceDirectory: workspace.WorkspaceDirectory,
+				RemoteURL: remote, BaseBranch: base})
+		}
+		var nativeErr error
+		createRequest, nativeErr = organizerapp.NativeCreateRequest(input.RequestID, organizerapp.NativeProjectFact{
+			ID: input.NativeProject.ProjectID, Name: input.NativeProject.Name, ProjectRootPath: input.NativeProject.ProjectRootPath,
+			OrganizerCandidate: input.NativeProject.OrganizerCandidate, Workspaces: workspaces,
+		})
+		if nativeErr != nil {
+			return planningport.OrganizerBootstrapResult{}, nativeErr
+		}
 	}
 	switch input.Kind {
-	case "create.preview":
+	case "native.create.preview":
 		preview, err := handler.service.PreviewCreate(ctx, createRequest)
 		if err != nil {
 			return planningport.OrganizerBootstrapResult{}, err
@@ -126,7 +149,7 @@ func (handler *organizerBootstrapHandler) execute(ctx context.Context, input pla
 			message = "Create Preview contains blocking issues and cannot be applied"
 		}
 		return handler.result(ctx, input, "preview", message, organizerPreview(preview), nil)
-	case "adopt.preview":
+	case "advanced.adopt.preview":
 		preview, err := handler.service.PreviewAdopt(ctx, adoptRequest)
 		if err != nil {
 			return planningport.OrganizerBootstrapResult{}, err
@@ -136,7 +159,7 @@ func (handler *organizerBootstrapHandler) execute(ctx context.Context, input pla
 			message = "Adopt Preview contains blocking issues and cannot be applied"
 		}
 		return handler.result(ctx, input, "preview", message, organizerPreview(preview), nil)
-	case "create.apply":
+	case "native.create.apply":
 		projection, err := handler.service.ApplyCreate(ctx, organizerapp.ApplyCreateCommand{RequestID: input.RequestID,
 			PreviewID: *input.PreviewID, Request: createRequest, Confirmation: organizerapp.HumanConfirmation{ActorID: actorID, Confirmed: true}})
 		if err != nil {
@@ -146,7 +169,7 @@ func (handler *organizerBootstrapHandler) execute(ctx context.Context, input pla
 			return handler.result(ctx, input, "rejected", "Create Apply was rejected by current authoritative facts", nil, nil)
 		}
 		return handler.result(ctx, input, "applied", "Project and Organizer were applied at the exact Preview", nil, &projection.Version)
-	case "adopt.apply":
+	case "advanced.adopt.apply":
 		projection, err := handler.service.ApplyAdopt(ctx, organizerapp.ApplyAdoptCommand{RequestID: input.RequestID,
 			PreviewID: *input.PreviewID, Request: adoptRequest, Confirmation: organizerapp.HumanConfirmation{ActorID: actorID, Confirmed: true}})
 		if err != nil {

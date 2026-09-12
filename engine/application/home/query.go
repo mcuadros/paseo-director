@@ -86,6 +86,22 @@ type StaticSource struct {
 	hostID, label, instanceID string
 	now                       func() int64
 	logs                      homeport.TechnicalLogSource
+	production                bool
+	workspaces                interface {
+		Workspaces(context.Context, string) ([]domain.Workspace, error)
+	}
+}
+
+func (source *StaticSource) WithProductionOperations() *StaticSource {
+	source.production = true
+	return source
+}
+
+func (source *StaticSource) WithWorkspaceStore(store interface {
+	Workspaces(context.Context, string) ([]domain.Workspace, error)
+}) *StaticSource {
+	source.workspaces = store
+	return source
 }
 
 func NewStaticSource(hostID, label, instanceID string, now func() int64) *StaticSource {
@@ -113,12 +129,43 @@ func (source *StaticSource) Observe(ctx context.Context, requested string, proje
 			}
 			logsAvailable = true
 		}
-		projects[projectID] = ProjectObservation{
+		observation := ProjectObservation{
 			GitSync: SyncUnavailable, TaskStoreSync: SyncUnavailable,
 			Workspaces:    map[string]WorkspaceObservation{},
 			Operations:    OperationAvailability{Doctor: true, Control: true},
 			TechnicalLogs: logs, TechnicalLogsAvailable: logsAvailable,
 		}
+		if source.production {
+			observation.GitSync = SyncNotConfigured
+			observation.GitSyncDetail = homeport.SyncStreamObservation{State: homeport.SyncNotConfigured,
+				Reason: homeport.SyncReasonNotConfigured, ObservedAtMillis: source.now(), Retryable: false}
+			observation.TaskStoreSync = SyncCurrent
+			observation.TaskStoreSyncDetail = homeport.SyncStreamObservation{State: homeport.SyncCurrent,
+				Reason: homeport.SyncReasonAligned, ObservedAtMillis: source.now(), LastSuccessAtMillis: source.now(), Retryable: false}
+			observation.SyncObservedAtMillis = source.now()
+			observation.SyncMaximumAgeMillis = HostObservationMaximumAgeMillis
+			observation.Reconciliation = homeport.ReconciliationObservation{State: homeport.ReconciliationCurrent,
+				Reason: homeport.ReconciliationReasonObserved, ObservedAtMillis: source.now(), LastCompletedAtMillis: source.now()}
+			observation.Operations.Reconcile = true
+			observation.Operations.Repair = true
+			observation.RepairCapabilities.Lease = true
+			observation.RepairCapabilities.WorkspaceRecovery = true
+			if source.workspaces != nil {
+				workspaces, err := source.workspaces.Workspaces(ctx, projectID)
+				if err != nil {
+					return HostObservation{}, ErrHostFacts
+				}
+				for _, workspace := range workspaces {
+					if workspace.NativePaseoWorkspaceID != "" {
+						observation.Workspaces[workspace.ID] = WorkspaceObservation{Health: "healthy", PaseoWorkspaceID: workspace.NativePaseoWorkspaceID}
+						if observation.BoardWorkspaceID == "" {
+							observation.BoardWorkspaceID = workspace.NativePaseoWorkspaceID
+						}
+					}
+				}
+			}
+		}
+		projects[projectID] = observation
 	}
 	return HostObservation{
 		HostID: source.hostID, Label: source.label, InstanceID: source.instanceID,
@@ -616,7 +663,7 @@ func buildProject(project domain.Project, workspaces []domain.Workspace, inputs 
 func surfaceActions(host HostObservation) []planningport.HomeAction {
 	return []planningport.HomeAction{
 		homeAction("create_project", "Create Project", host.HostID, "", host.State == "current", disabledReason("host_not_current", "Create Project requires the exact current Director host"), "", nil, "primary"),
-		homeAction("adopt_organizer", "Adopt Organizer", host.HostID, "", host.State == "current", disabledReason("host_not_current", "Adopt Organizer requires the exact current Director host"), "", nil, "secondary"),
+		homeAction("adopt_organizer", "Advanced import", host.HostID, "", host.State == "current", disabledReason("host_not_current", "Advanced existing-setup import requires the exact current Director host"), "", nil, "secondary"),
 	}
 }
 

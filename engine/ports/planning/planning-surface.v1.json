@@ -108,7 +108,9 @@
     "project.resume",
     "project.emergency-stop.prepare",
     "project.emergency-stop.confirm",
-    "task.cancel"
+    "task.cancel",
+    "task.integrate",
+    "task.feedback"
   ],
   "configurationKeys": [
     "launchPolicy",
@@ -210,7 +212,9 @@
         "project.resume",
         "project.emergency-stop.prepare",
         "project.emergency-stop.confirm",
-        "task.cancel"
+        "task.cancel",
+        "task.integrate",
+        "task.feedback"
       ]
     },
     "explanation": {
@@ -1072,7 +1076,9 @@
             { "$ref": "#/$defs/projectResumeIntent" },
             { "$ref": "#/$defs/emergencyPrepareIntent" },
             { "$ref": "#/$defs/emergencyConfirmIntent" },
-            { "$ref": "#/$defs/taskCancelIntent" }
+            { "$ref": "#/$defs/taskCancelIntent" },
+            { "$ref": "#/$defs/taskIntegrateIntent" },
+            { "$ref": "#/$defs/taskFeedbackIntent" }
           ]
         }
       }
@@ -1262,6 +1268,30 @@
         "projectId": { "$ref": "#/$defs/opaqueId" },
         "taskId": { "$ref": "#/$defs/opaqueId" },
         "runId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "taskIntegrateIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "projectId", "taskId", "runId"],
+      "properties": {
+        "type": { "const": "task.integrate" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "taskId": { "$ref": "#/$defs/opaqueId" },
+        "runId": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "taskFeedbackIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "projectId", "taskId", "runId", "body", "severity"],
+      "properties": {
+        "type": { "const": "task.feedback" },
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "taskId": { "$ref": "#/$defs/opaqueId" },
+        "runId": { "$ref": "#/$defs/opaqueId" },
+        "body": { "$ref": "#/$defs/boundedText" },
+        "severity": { "enum": ["P0", "P1", "P2", "P3"] }
       }
     },
     "homeHealthState": {
@@ -1823,13 +1853,60 @@
         "refusalCode": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] }
       }
     },
+    "nativePaseoWorkspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "projectRootPath", "workspaceDirectory", "workspaceKind", "remoteUrl", "baseBranch"],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueId" },
+        "name": { "$ref": "#/$defs/boundedText" },
+        "projectRootPath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "workspaceDirectory": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "workspaceKind": { "enum": ["worktree", "directory", "checkout", "local_checkout"] },
+        "remoteUrl": { "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 4096 }, { "type": "null" }] },
+        "baseBranch": { "anyOf": [{ "type": "string", "minLength": 1, "maxLength": 512 }, { "type": "null" }] }
+      }
+    },
+    "nativePaseoProject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "name", "projectRootPath", "projectKind", "organizerCandidate", "workspaces", "factsRevision"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/opaqueId" },
+        "name": { "$ref": "#/$defs/boundedText" },
+        "projectRootPath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "projectKind": { "enum": ["git", "directory", "non_git"] },
+        "organizerCandidate": { "type": "string", "minLength": 2, "maxLength": 4096 },
+        "workspaces": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/nativePaseoWorkspace" } },
+        "factsRevision": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "nativePaseoProjectsInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostId"],
+      "properties": { "hostId": { "$ref": "#/$defs/opaqueId" } }
+    },
+    "nativePaseoProjectsSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "contractVersion", "contractHash", "hostId", "observedAt", "projects"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "contractVersion": { "const": "director-planning/v1" },
+        "contractHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "hostId": { "$ref": "#/$defs/opaqueId" },
+        "observedAt": { "type": "string", "format": "date-time" },
+        "projects": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/nativePaseoProject" } }
+      }
+    },
     "organizerBootstrapKind": {
-      "enum": ["create.preview", "create.apply", "adopt.preview", "adopt.apply"]
+      "enum": ["native.create.preview", "native.create.apply", "advanced.adopt.preview", "advanced.adopt.apply"]
     },
     "organizerBootstrapInput": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "contractVersion", "contractHash", "hostId", "requestId", "kind", "projectId", "projectName", "repositoryPath", "configurationJson", "previewId"],
+      "required": ["schemaVersion", "contractVersion", "contractHash", "hostId", "requestId", "kind", "nativeProject", "projectId", "projectName", "repositoryPath", "configurationJson", "previewId"],
       "properties": {
         "schemaVersion": { "const": 1 },
         "contractVersion": { "const": "director-planning/v1" },
@@ -1837,9 +1914,10 @@
         "hostId": { "$ref": "#/$defs/opaqueId" },
         "requestId": { "$ref": "#/$defs/opaqueId" },
         "kind": { "$ref": "#/$defs/organizerBootstrapKind" },
-        "projectId": { "$ref": "#/$defs/opaqueId" },
-        "projectName": { "$ref": "#/$defs/boundedText" },
-        "repositoryPath": { "type": "string", "minLength": 2, "maxLength": 4096 },
+        "nativeProject": { "anyOf": [{ "$ref": "#/$defs/nativePaseoProject" }, { "type": "null" }] },
+        "projectId": { "anyOf": [{ "$ref": "#/$defs/opaqueId" }, { "type": "null" }] },
+        "projectName": { "anyOf": [{ "$ref": "#/$defs/boundedText" }, { "type": "null" }] },
+        "repositoryPath": { "anyOf": [{ "type": "string", "minLength": 2, "maxLength": 4096 }, { "type": "null" }] },
         "configurationJson": { "anyOf": [{ "type": "string", "minLength": 2, "maxLength": 60000 }, { "type": "null" }] },
         "previewId": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] }
       }
@@ -1866,7 +1944,7 @@
     "organizerBootstrapPreview": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "requestId", "projectId", "projectName", "repositoryPath", "organizerRevision", "configurationSha256", "files", "operations", "valid", "issues"],
+      "required": ["id", "kind", "requestId", "projectId", "projectName", "repositoryPath", "organizerRevision", "configurationSha256", "configurationJson", "files", "operations", "valid", "issues"],
       "properties": {
         "id": { "$ref": "#/$defs/sha256" },
         "kind": { "enum": ["create", "adopt"] },
@@ -1876,6 +1954,7 @@
         "repositoryPath": { "type": "string", "minLength": 2, "maxLength": 4096 },
         "organizerRevision": { "anyOf": [{ "type": "string", "pattern": "^[0-9a-f]{40}$" }, { "type": "null" }] },
         "configurationSha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "configurationJson": { "anyOf": [{ "type": "string", "minLength": 2, "maxLength": 60000 }, { "type": "null" }] },
         "files": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/organizerPreviewFile" } },
         "operations": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/boundedText" } },
         "valid": { "type": "boolean" },

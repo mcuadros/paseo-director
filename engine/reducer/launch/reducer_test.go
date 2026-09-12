@@ -168,3 +168,17 @@ func TestReduceWaitsForTerminalEventsAndOrdersIdentityBeforeRealPrompt(t *testin
 		}
 	}
 }
+
+func TestReduceReobservesAValidStaleEffectButRejectsCorruptEvidence(t *testing.T) {
+	effect := execution.Effect{ID: "agent-intent", Kind: execution.EffectAgentCreate, Phase: execution.EffectDispatching,
+		Attempt: 1, AttemptLimit: 2, Observation: &execution.EffectObservation{ID: "agent-observation", EffectID: "agent-intent",
+			Status: execution.ObservationDesired, ExternalID: "agent-1", ObservedAtMillis: 1_000, MaximumAgeMillis: 30_000}}
+	effect.Observation.FactHash = execution.EffectObservationHash(*effect.Observation)
+	if decision := reduceEffect(effect, 31_001); decision.Kind != DecisionObserve || decision.EffectKind != execution.EffectAgentCreate {
+		t.Fatalf("stale exact observation decision = %#v", decision)
+	}
+	effect.Observation.FactHash = "changed"
+	if decision := reduceEffect(effect, 1_001); decision.Kind != DecisionEscalate || decision.Code != "launch_observation_binding_invalid" {
+		t.Fatalf("corrupt observation decision = %#v", decision)
+	}
+}

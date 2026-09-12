@@ -55,7 +55,7 @@ function snapshot() {
       totals: { projects: "1", healthy: "0", degraded: "1", paused: "0", needsYou: "0", activeWork: "1" },
       surfaceActions: [
         { kind: "create_project", label: "Create Project", hostId: "host-a", projectId: null, enabled: true, unavailableReason: null, paseoWorkspaceId: null, command: null, emphasis: "primary" },
-        { kind: "adopt_organizer", label: "Adopt Organizer", hostId: "host-a", projectId: null, enabled: true, unavailableReason: null, paseoWorkspaceId: null, command: null, emphasis: "secondary" },
+        { kind: "adopt_organizer", label: "Advanced import", hostId: "host-a", projectId: null, enabled: true, unavailableReason: null, paseoWorkspaceId: null, command: null, emphasis: "secondary" },
       ],
       totalProjects: "1",
       nextCursor: null,
@@ -69,6 +69,7 @@ function loadHomeComponent(
   organizerRpc: (input: unknown) => Promise<unknown> = mutationRpc,
   doctorRpc: (input: unknown) => Promise<unknown> = mutationRpc,
   repairRpc: (input: unknown) => Promise<unknown> = mutationRpc,
+  nativeProjectsRpc: () => Promise<unknown> = mutationRpc,
 ) {
   const source = readFileSync("ui/director-home.client.tsx", "utf8");
   const compiled = ts.transpileModule(source, {
@@ -86,6 +87,7 @@ function loadHomeComponent(
       case "@getpaseo/plugin":
         return { useRpc: (contract: unknown) => contract === PlanningRpc.homeQueryRpc ? homeRpc
           : contract === PlanningRpc.organizerBootstrapRpc ? organizerRpc
+            : contract === PlanningRpc.nativePaseoProjectsRpc ? nativeProjectsRpc
             : contract === PlanningRpc.doctorQueryRpc ? doctorRpc
               : contract === PlanningRpc.repairProjectRpc ? repairRpc
                 : mutationRpc };
@@ -156,7 +158,7 @@ test("DirectorHome renders current data, exact navigation, entry points, and sta
     (await takePending(pending)).resolve(snapshot());
     await waitForText(renderer, /Rendered Project/);
   });
-  assert.match(renderedText(renderer), /Project health Current work and attention.*Create Project Adopt Organizer Engine\s+engine-a.*Director is degraded/);
+  assert.match(renderedText(renderer), /Project health Current work and attention.*Create Project Advanced import Engine\s+engine-a.*Director is degraded/);
   const boardText = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Board")[0]!;
   await act(async () => boardText.parent!.props.onPress());
   assert.deepEqual(opened, ["native-board"]);
@@ -187,22 +189,22 @@ test("DirectorHome renders current data, exact navigation, entry points, and sta
   queryClient.clear();
 });
 
-test("DirectorHome Create entry submits Preview before exact confirmed Apply", async () => {
+test("DirectorHome native Paseo Project onboarding submits generated Preview before exact confirmed Apply", async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const calls: Record<string, unknown>[] = [];
   const previewId = "c".repeat(64);
   const organizerRpc = async (raw: unknown) => {
     const input = raw as Record<string, unknown>;
     calls.push(input);
-    if (input.kind === "create.preview") {
+    if (input.kind === "native.create.preview") {
       return {
         schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION, contractHash: PLANNING_CONTRACT_SHA256,
         hostId: "host-a", cursor: "10", requestId: input.requestId, status: "preview",
         message: "Create Preview is ready for explicit human confirmation",
         preview: {
-          id: previewId, kind: "create", requestId: input.requestId, projectId: input.projectId,
-          projectName: input.projectName, repositoryPath: input.repositoryPath,
-          organizerRevision: null, configurationSha256: "d".repeat(64), files: [],
+          id: previewId, kind: "create", requestId: input.requestId, projectId: "project-new",
+          projectName: "Native Project", repositoryPath: "/srv/.native-director-organizer",
+          organizerRevision: null, configurationSha256: "d".repeat(64), configurationJson: "{\"schemaVersion\":1}", files: [],
           operations: ["activate exact revision in TaskStore"], valid: true, issues: [],
         },
         projectVersion: null,
@@ -214,7 +216,13 @@ test("DirectorHome Create entry submits Preview before exact confirmed Apply", a
       message: "Project and Organizer were applied at the exact Preview", preview: null, projectVersion: "0",
     };
   };
-  const DirectorHome = loadHomeComponent(async () => snapshot(), async () => { throw new Error("unused"); }, organizerRpc);
+  const nativeProject = { projectId: "native-project", name: "Native Project", projectRootPath: "/srv/native", projectKind: "git",
+    organizerCandidate: "/srv/.native-director-organizer", factsRevision: "e".repeat(64),
+    workspaces: [{ id: "native-workspace", name: "Native Workspace", projectRootPath: "/srv/native", workspaceDirectory: "/srv/native",
+      workspaceKind: "directory", remoteUrl: "https://github.com/example/native.git", baseBranch: "main" }] };
+  const DirectorHome = loadHomeComponent(async () => snapshot(), async () => { throw new Error("unused"); }, organizerRpc,
+    undefined, undefined, async () => ({ schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION,
+      contractHash: PLANNING_CONTRACT_SHA256, hostId: "host-a", observedAt: "2026-09-12T19:30:00Z", projects: [nativeProject] }));
   const queryClient = new ReactQuery.QueryClient({ defaultOptions: { queries: { retry: false } } });
   const props = {
     host: { id: "host-a", label: "Client host label" },
@@ -228,12 +236,10 @@ test("DirectorHome Create entry submits Preview before exact confirmed Apply", a
   await act(async () => waitForText(renderer, /Rendered Project/));
   const create = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Create Project")[0]!;
   await act(async () => create.parent!.props.onPress());
-  await act(async () => {
-    renderer.root.findByProps({ accessibilityLabel: "Project ID" }).props.onChangeText("project-new");
-    renderer.root.findByProps({ accessibilityLabel: "Project name" }).props.onChangeText("New Project");
-    renderer.root.findByProps({ accessibilityLabel: "Organizer path on this host" }).props.onChangeText("/srv/director/project-new");
-    renderer.root.findByProps({ accessibilityLabel: "Exact paseo-director.json" }).props.onChangeText('{"schemaVersion":1}');
-  });
+  await act(async () => waitForText(renderer, /Native Project/));
+  await act(async () => renderer.root.findByProps({ accessibilityLabel: "Paseo Project Native Project" }).props.onPress());
+  assert.match(renderedText(renderer), /Paseo Project ID ·\s+native-project/);
+  assert.match(renderedText(renderer), /Workspace ·\s+Native Workspace\s+·\s+native-workspace\s+·\s+\/srv\/native/);
   const preview = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Preview")[0]!;
   await act(async () => {
     preview.parent!.props.onPress();
@@ -245,10 +251,10 @@ test("DirectorHome Create entry submits Preview before exact confirmed Apply", a
     await waitForText(renderer, /Rendered Project/);
   });
   assert.equal(calls.length, 2);
-  assert.equal(calls[0]!.kind, "create.preview");
+  assert.equal(calls[0]!.kind, "native.create.preview");
   assert.equal(calls[0]!.confirmed, undefined);
   assert.equal(calls[0]!.previewId, null);
-  assert.equal(calls[1]!.kind, "create.apply");
+  assert.equal(calls[1]!.kind, "native.create.apply");
   assert.equal(calls[1]!.confirmed, undefined);
   assert.equal(calls[1]!.previewId, previewId);
   assert.equal(calls[1]!.requestId, calls[0]!.requestId);

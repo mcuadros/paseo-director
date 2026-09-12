@@ -451,7 +451,8 @@ func (service *Service) invoke(ctx context.Context, command host.Command, nowMil
 		return host.Observation{}, ErrExternalAmbiguous
 	}
 	timestamp, err := time.Parse(time.RFC3339Nano, observation.ObservedAt)
-	if err != nil || timestamp.UnixMilli() > nowMillis || nowMillis-timestamp.UnixMilli() > observation.Result.MaximumAgeMillis {
+	if err != nil || timestamp.UnixMilli() > nowMillis+1_000 ||
+		timestamp.UnixMilli() <= nowMillis && nowMillis-timestamp.UnixMilli() > observation.Result.MaximumAgeMillis {
 		return host.Observation{}, ErrExternalAmbiguous
 	}
 	return observation, nil

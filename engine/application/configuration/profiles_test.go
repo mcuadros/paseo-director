@@ -141,6 +141,23 @@ func TestProfileServiceBindsDiscoveryToActiveOrganizerSnapshot(t *testing.T) {
 	}
 }
 
+func TestProfileServiceFreezesOneExistingDiscoveryWithoutRacingASecondRead(t *testing.T) {
+	snapshot := profileActiveSnapshot(t)
+	discovery := profileServiceDiscovery()
+	stub := &profileDiscoveryStub{err: errors.New("a redundant discovery read must not occur")}
+	service, err := NewProfileService(stub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := service.FreezeObservedProfiles(snapshot, snapshot.OrganizerRevision(), discovery, discovery.Revision, 1_001)
+	if err != nil || !frozen.Valid() || stub.calls != 0 {
+		t.Fatalf("observed freeze valid=%t calls=%d error=%v", frozen.Valid(), stub.calls, err)
+	}
+	if _, err := service.FreezeObservedProfiles(snapshot, snapshot.OrganizerRevision(), discovery, strings.Repeat("f", 64), 1_001); err == nil {
+		t.Fatal("observed freeze accepted a different Discovery revision")
+	}
+}
+
 func TestProfileServiceFailsClosedOnPortAndRevisionErrors(t *testing.T) {
 	if _, err := NewProfileService(nil); err == nil {
 		t.Fatal("NewProfileService accepted a nil discovery port")

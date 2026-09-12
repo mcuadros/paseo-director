@@ -6,6 +6,7 @@ import { Icon, Modal, useToast } from "@getpaseo/plugin/react-native";
 import {
   useInfiniteQuery,
   useMutation,
+  useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
 import React, { useEffect, useMemo, useState } from "react";
@@ -31,6 +32,7 @@ import {
   type PlanningMutationInput,
   type PlanningMutationIntent,
   type OrganizerBootstrapInput,
+  type NativePaseoProject,
   type RepairInput,
 } from "../generated/planning-contract.shared.ts";
 import {
@@ -38,6 +40,7 @@ import {
   homeQueryRpc,
   planningMutationRpc,
   organizerBootstrapRpc,
+  nativePaseoProjectsRpc,
   repairProjectRpc,
 } from "../rpc/planning.shared.ts";
 import {
@@ -59,12 +62,12 @@ const HOME_PAGE_SIZE = 25;
 
 type OrganizerEntry = {
   hostId: string;
-  mode: "create" | "adopt";
+  flow: "native" | "advanced";
   requestId: string | null;
+  nativeProject: NativePaseoProject | null;
   projectId: string;
   projectName: string;
   repositoryPath: string;
-  configurationJson: string;
 };
 
 function organizerRequestId(): string | null {
@@ -123,6 +126,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
   const loadHome = useRpc(homeQueryRpc);
   const mutatePlanning = useRpc(planningMutationRpc);
   const bootstrapOrganizer = useRpc(organizerBootstrapRpc);
+  const loadNativePaseoProjects = useRpc(nativePaseoProjectsRpc);
   const queryDoctor = useRpc(doctorQueryRpc);
   const repairProject = useRpc(repairProjectRpc);
   const toast = useToast();
@@ -153,6 +157,14 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     isPending: home.isPending,
     isError: home.isError || home.isRefetchError || home.isFetchNextPageError,
     error: home.error,
+  });
+  const nativeProjects = useQuery({
+    queryKey: ["director", "native-paseo-projects", host.id],
+    queryFn: () => loadNativePaseoProjects({ hostId: host.id }),
+    enabled: entry?.flow === "native",
+    retry: false,
+    staleTime: 0,
+    refetchOnMount: "always",
   });
   const control = useMutation({
     mutationFn: (input: PlanningMutationInput) => mutatePlanning(input),
@@ -375,20 +387,20 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     ];
   }
 
-  function openOrganizerEntry(mode: "create" | "adopt"): void {
+  function openOrganizerEntry(flow: "native" | "advanced"): void {
     organizer.reset();
     setEntry({
-      mode,
+      flow,
       hostId: host.id,
       requestId: organizerRequestId(),
+      nativeProject: null,
       projectId: "",
       projectName: "",
       repositoryPath: "",
-      configurationJson: "{}",
     });
   }
 
-  function updateOrganizerEntry(field: "projectId" | "projectName" | "repositoryPath" | "configurationJson", value: string): void {
+  function updateOrganizerEntry(field: "projectId" | "projectName" | "repositoryPath", value: string): void {
     organizer.reset();
     setEntry((current) => current ? { ...current, [field]: value } : null);
   }
@@ -403,11 +415,14 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       contractHash: PLANNING_CONTRACT_SHA256,
       hostId: host.id,
       requestId: entry.requestId,
-      kind: `${entry.mode}.${apply ? "apply" : "preview"}`,
-      projectId: entry.projectId,
-      projectName: entry.projectName,
-      repositoryPath: entry.repositoryPath,
-      configurationJson: entry.mode === "create" ? entry.configurationJson : null,
+      kind: entry.flow === "native"
+        ? `native.create.${apply ? "apply" : "preview"}`
+        : `advanced.adopt.${apply ? "apply" : "preview"}`,
+      nativeProject: entry.flow === "native" ? entry.nativeProject : null,
+      projectId: entry.flow === "advanced" ? entry.projectId : null,
+      projectName: entry.flow === "advanced" ? entry.projectName : null,
+      repositoryPath: entry.flow === "advanced" ? entry.repositoryPath : null,
+      configurationJson: null,
       previewId: apply ? preview!.id : null,
     });
   }
@@ -416,11 +431,11 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     const enabled = homeActionEnabled({ action, expectedHostId: host.id, stale, navigationAvailable: navigation !== undefined });
     if (!enabled) return;
     if (action.kind === "create_project") {
-      openOrganizerEntry("create");
+      openOrganizerEntry("native");
       return;
     }
     if (action.kind === "adopt_organizer") {
-      openOrganizerEntry("adopt");
+      openOrganizerEntry("advanced");
       return;
     }
     if ((action.kind === "open_board" || action.kind === "open_organizer") && action.paseoWorkspaceId) {
@@ -501,7 +516,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       : action.kind === "create_project"
         ? "Opens Paseo’s native dialog or compact bottom sheet to create a Project"
         : action.kind === "adopt_organizer"
-          ? "Opens Paseo’s native dialog or compact bottom sheet to adopt an Organizer"
+          ? "Opens the advanced existing Director setup import"
           : action.kind === "open_board" || action.kind === "open_organizer"
             ? "Opens the exact engine-projected Paseo workspace"
             : action.kind === "doctor" || action.kind === "open_needs_you"
@@ -599,7 +614,8 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
   }
 
   const entryPreviewDisabled = entry === null || entry.hostId !== host.id || stale || entry.requestId === null ||
-    entry.projectId === "" || entry.projectName === "" || entry.repositoryPath === "" || organizer.isPending;
+    (entry.flow === "native" ? entry.nativeProject === null :
+      entry.projectId === "" || entry.projectName === "" || entry.repositoryPath === "") || organizer.isPending;
   const entryApplyDisabled = entryPreviewDisabled || organizer.data?.status !== "preview" || organizer.data.preview?.valid !== true;
   const inspected = snapshot?.page.projects.find((project) => project.id === inspectedProject) ?? null;
   const repairTarget = snapshot?.page.projects.find((project) => project.id === repairRequest?.projectId) ?? null;
@@ -626,7 +642,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
           </View>
           {snapshot ? <View style={styles.actions}>{snapshot.page.surfaceActions.map(actionButton)}</View> : (
             <View style={styles.actions}>
-              {(["Create Project", "Adopt Organizer"] as const).map((label) => (
+              {(["Create Project", "Advanced import"] as const).map((label) => (
                 <AccessiblePressable
                   accessibilityHint="Available after current exact-host Project facts load"
                   accessibilityLabel={label}
@@ -747,7 +763,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       ) : null}
       </ScrollView>
       <Modal
-        icon={<Icon color={theme.colors.foreground} name={entry?.mode === "adopt" ? "FolderSearch" : "FolderPlus"} size={18} />}
+        icon={<Icon color={theme.colors.foreground} name={entry?.flow === "advanced" ? "FolderSearch" : "FolderPlus"} size={18} />}
         onOpenChange={(open) => {
           if (!open) {
             organizer.reset();
@@ -755,38 +771,74 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
           }
         }}
         open={entry !== null}
-        title={entry?.mode === "adopt" ? "Adopt Organizer" : "Create Project"}
+        title={entry?.flow === "advanced" ? "Advanced existing setup import" : "Set up from a Paseo Project"}
       >
         <Modal.Content>
           <ScrollView contentContainerStyle={styles.modalContent}>
             {entry ? (
               <>
                 <Text style={styles.body}>
-                  {entry.mode === "create"
-                    ? "Start with an Organizer repository and one or more exact Workspace identities. Director Engine will present the complete filesystem, Git, dynamic state, provider, and security Preview before Apply."
-                    : "Select an existing Organizer on this daemon. Director Engine will validate its marker, schema, Git state, dynamic state, and every Workspace identity before Apply."}
+                  {entry.flow === "native"
+                    ? "Select an existing native Paseo Project. Director derives its stable identity, repository root, candidate Organizer location, and exact visible Workspaces before generating paseo-director.json for Preview."
+                    : "Advanced import is only for an existing Director setup. Director Engine validates its marker, schema, Git state, dynamic state, and every Workspace identity before Apply."}
                 </Text>
                 {entry.requestId === null ? (
                   <Text style={styles.dangerText}>This client cannot mint the required secure request identity. Preview and Apply remain disabled.</Text>
                 ) : null}
-                <View style={styles.field}>
-                  <Text style={styles.fieldLabel}>Project ID</Text>
-                  <TextInput accessibilityHint="Enter the stable Director Project identifier" accessibilityLabel="Project ID" autoCapitalize="none" autoCorrect={false} onChangeText={(value) => updateOrganizerEntry("projectId", value)} style={styles.input} value={entry.projectId} />
-                </View>
-                <View style={styles.field}>
-                  <Text style={styles.fieldLabel}>Project name</Text>
-                  <TextInput accessibilityHint="Enter the human-readable Project name" accessibilityLabel="Project name" onChangeText={(value) => updateOrganizerEntry("projectName", value)} style={styles.input} value={entry.projectName} />
-                </View>
-                <View style={styles.field}>
-                  <Text style={styles.fieldLabel}>Organizer path on this host</Text>
-                  <TextInput accessibilityHint="Enter the exact Organizer repository path on this daemon" accessibilityLabel="Organizer path on this host" autoCapitalize="none" autoCorrect={false} onChangeText={(value) => updateOrganizerEntry("repositoryPath", value)} style={styles.input} value={entry.repositoryPath} />
-                </View>
-                {entry.mode === "create" ? (
-                  <View style={styles.field}>
-                    <Text style={styles.fieldLabel}>Exact paseo-director.json</Text>
-                    <TextInput accessibilityHint="Enter the exact JSON configuration to include in the Preview" accessibilityLabel="Exact paseo-director.json" autoCapitalize="none" autoCorrect={false} multiline onChangeText={(value) => updateOrganizerEntry("configurationJson", value)} style={[styles.input, styles.configurationInput]} value={entry.configurationJson} />
+                {entry.flow === "native" ? (
+                  <View style={styles.panel}>
+                    <Text accessibilityRole="header" style={styles.sectionTitle}>Native Paseo Projects</Text>
+                    {nativeProjects.isPending ? <Text style={styles.body}>Loading authoritative Paseo Projects…</Text> : null}
+                    {nativeProjects.isError ? <Text style={styles.dangerText}>Native Paseo Project facts are unavailable. No manual fallback was selected.</Text> : null}
+                    {nativeProjects.data?.projects.map((project) => {
+                      const selected = entry.nativeProject?.factsRevision === project.factsRevision;
+                      const selectable = project.projectKind === "git" && project.workspaces.some((workspace) => workspace.remoteUrl !== null);
+                      return (
+                        <AccessiblePressable
+                          accessibilityHint={selectable ? "Selects these exact native facts for engine-generated Organizer Preview" : "This Project has no current Git Workspace remote and cannot be selected"}
+                          accessibilityLabel={`Paseo Project ${project.name}`}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected, disabled: !selectable }}
+                          disabled={!selectable}
+                          key={project.projectId}
+                          onPress={() => {
+                            organizer.reset();
+                            setEntry((current) => current ? { ...current, nativeProject: project } : null);
+                          }}
+                          style={[styles.action, selected && styles.primaryAction, !selectable && styles.disabledAction]}
+                        >
+                          <Text style={[styles.actionText, selected && styles.primaryActionText]}>{project.name}</Text>
+                        </AccessiblePressable>
+                      );
+                    })}
+                    {entry.nativeProject ? (
+                      <View style={styles.previewPanel}>
+                        <Text style={styles.sectionTitle}>{entry.nativeProject.name}</Text>
+                        <Text selectable style={styles.body}>Paseo Project ID · {entry.nativeProject.projectId}</Text>
+                        <Text selectable style={styles.body}>Project root · {entry.nativeProject.projectRootPath}</Text>
+                        <Text selectable style={styles.body}>Organizer candidate · {entry.nativeProject.organizerCandidate}</Text>
+                        {entry.nativeProject.workspaces.map((workspace) => (
+                          <Text key={workspace.id} selectable style={styles.body}>Workspace · {workspace.name} · {workspace.id} · {workspace.workspaceDirectory}</Text>
+                        ))}
+                      </View>
+                    ) : null}
                   </View>
-                ) : null}
+                ) : (
+                  <>
+                    <View style={styles.field}>
+                      <Text style={styles.fieldLabel}>Existing Director Project ID</Text>
+                      <TextInput accessibilityHint="Enter the stable Director Project identifier from the existing setup" accessibilityLabel="Existing Director Project ID" autoCapitalize="none" autoCorrect={false} onChangeText={(value) => updateOrganizerEntry("projectId", value)} style={styles.input} value={entry.projectId} />
+                    </View>
+                    <View style={styles.field}>
+                      <Text style={styles.fieldLabel}>Existing Director Project name</Text>
+                      <TextInput accessibilityHint="Enter the existing Director Project name" accessibilityLabel="Existing Director Project name" onChangeText={(value) => updateOrganizerEntry("projectName", value)} style={styles.input} value={entry.projectName} />
+                    </View>
+                    <View style={styles.field}>
+                      <Text style={styles.fieldLabel}>Existing Organizer path on this host</Text>
+                      <TextInput accessibilityHint="Enter the exact existing Organizer repository path" accessibilityLabel="Existing Organizer path on this host" autoCapitalize="none" autoCorrect={false} onChangeText={(value) => updateOrganizerEntry("repositoryPath", value)} style={styles.input} value={entry.repositoryPath} />
+                    </View>
+                  </>
+                )}
                 <Text style={styles.body}>Nothing is applied without a fresh server-authenticated human confirmation of the exact Preview.</Text>
                 {organizer.data?.status === "preview" && organizer.data.preview ? (
                   <View accessibilityLiveRegion="polite" style={styles.previewPanel}>
@@ -794,6 +846,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
                     <Text selectable style={styles.body}>{organizer.data.preview.repositoryPath}</Text>
                     {organizer.data.preview.operations.map((operation) => <Text key={operation} style={styles.body}>• {operation}</Text>)}
                     {organizer.data.preview.files.map((file) => <Text key={file.path} style={styles.body}>{file.path} · {file.sha256.slice(0, 12)}</Text>)}
+                    {organizer.data.preview.configurationJson ? <Text selectable style={[styles.body, styles.configurationInput]}>{organizer.data.preview.configurationJson}</Text> : null}
                     {organizer.data.preview.issues.map((issue) => <Text key={`${issue.code}:${issue.field}`} style={styles.dangerText}>{issue.field}: {issue.message}</Text>)}
                   </View>
                 ) : null}

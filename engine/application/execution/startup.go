@@ -12,6 +12,7 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	cleanupdomain "github.com/mcuadros/director-engine/domain/cleanup"
+	domaincorrection "github.com/mcuadros/director-engine/domain/correction"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	gitport "github.com/mcuadros/director-engine/ports/git"
@@ -197,6 +198,11 @@ func validateExecutionGraph(run domain.Run) error {
 		!runtimebudget.ValidTurnDemand(state.Budget.Policy, state.TurnBudgetDemand) ||
 		state.Budget.Policy.Revision != state.EffectiveProfiles.ConfigurationSHA256() {
 		return errors.New("Run runtime budget is invalid")
+	}
+	if !state.FakeTerminalRung && (state.CorrectionPolicy == nil || state.CorrectionPolicy.AttemptLimit != domaincorrection.AttemptLimit) ||
+		state.Correction != nil && (state.CorrectionPolicy == nil || !domaincorrection.ValidState(*state.Correction) ||
+			state.Correction.Policy != *state.CorrectionPolicy) {
+		return errors.New("Run correction policy or state is invalid")
 	}
 	legacyRecovery := state.RecoveryPolicy.SchemaVersion == "" && state.PrimaryRecovery.SchemaVersion == ""
 	if (!legacyRecovery && !domainexecution.ValidPrimaryRecoveryPolicy(state.RecoveryPolicy)) ||

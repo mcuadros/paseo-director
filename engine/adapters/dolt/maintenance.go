@@ -551,6 +551,7 @@ func (maintenance *Maintenance) currentProjects(ctx context.Context, connection 
 		}
 		project.Name, project.State, project.Organizer = data.Name, data.State, reloadedOrganizer(data.Organizer)
 		project.LastLeaseEpoch, project.Lease, project.LeaseObservation, project.Control = data.LastLeaseEpoch, storedLease(data.Lease), storedLeaseObservation(data.LeaseObservation), data.Control
+		project.Scheduling = data.Scheduling
 		if validateProject(project) != nil {
 			return nil, ErrMaintenanceUnsafe
 		}

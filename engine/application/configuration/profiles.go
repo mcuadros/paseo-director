@@ -39,6 +39,22 @@ func (service *ProfileService) FreezeProfiles(
 	if err != nil {
 		return agentprofile.FrozenSet{}, err
 	}
+	return service.FreezeObservedProfiles(snapshot, expectedOrganizerRevision, discovery, expectedDiscoveryRevision, nowMillis)
+}
+
+// FreezeObservedProfiles freezes the caller's one already-observed Discovery
+// snapshot. Production scheduling and launch use this form so an exact
+// provider observation cannot race a redundant second clock-derived revision.
+func (service *ProfileService) FreezeObservedProfiles(
+	snapshot RunConfigurationSnapshot,
+	expectedOrganizerRevision string,
+	discovery agentprofile.DiscoverySnapshot,
+	expectedDiscoveryRevision string,
+	nowMillis int64,
+) (agentprofile.FrozenSet, error) {
+	if service == nil || service.discovery == nil {
+		return agentprofile.FrozenSet{}, errors.New("provider discovery port is required")
+	}
 	configuration := snapshot.Configuration()
 	return agentprofile.Freeze(agentprofile.FreezeRequest{
 		Profiles:                  configuration.AgentProfiles,

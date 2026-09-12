@@ -6,6 +6,7 @@ export type RuntimeSettingName =
   | "engine.mode"
   | "engine.url"
   | "engine.cache-base"
+  | "engine.runtime-base"
   | "engine.module-cache";
 
 export type RuntimeConfiguration = {
@@ -14,6 +15,8 @@ export type RuntimeConfiguration = {
   engine: {
     mode: "release" | "development";
     url: string;
+    hostSocket: string;
+    runtimeRoot: string;
     sourceRoot?: string;
     moduleCache?: string;
   };
@@ -32,12 +35,17 @@ export class RuntimeConfigurationError extends Error {
 export const DEFAULT_ENGINE_MODE: "release";
 export const DEFAULT_ENGINE_URL: "http://127.0.0.1:7041";
 export const DEFAULT_PASEO_URL: "ws://127.0.0.1:6767/ws";
+export function directorRuntimePaths(environment?: NodeJS.ProcessEnv, home?: string): {
+  root: string;
+  hostSocket: string;
+  workRoot: string;
+};
 export function canonicalProspectivePath(value: string): string;
 export function pathIsWithin(candidate: string, parent: string): boolean;
 export function pathsAreDisjoint(left: string, right: string): boolean;
 export function runtimeConfigurationPath(environment?: NodeJS.ProcessEnv, home?: string): string;
 export function legacyDirectorEnvironmentState(environment?: NodeJS.ProcessEnv): "absent" | "ignored";
-export function parseRuntimeConfiguration(bytes: Uint8Array, environment?: NodeJS.ProcessEnv): RuntimeConfiguration;
+export function parseRuntimeConfiguration(bytes: Uint8Array, environment?: NodeJS.ProcessEnv, home?: string): RuntimeConfiguration;
 export function loadRuntimeConfiguration(environment?: NodeJS.ProcessEnv, home?: string): {
   path: string;
   configuration: RuntimeConfiguration;

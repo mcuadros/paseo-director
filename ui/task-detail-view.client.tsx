@@ -13,6 +13,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
@@ -158,6 +159,8 @@ export function TaskDetailView({
 }: TaskDetailViewProps) {
   const accessibilityPreferences = useAccessibilityPreferences();
   const [internalTab, setInternalTab] = useState<TaskDetailTab>("details");
+  const [feedbackBody, setFeedbackBody] = useState("");
+  const [feedbackSeverity, setFeedbackSeverity] = useState<"P0" | "P1" | "P2" | "P3">("P1");
   const currentTab = controlledTab ?? internalTab;
   const activityAnnouncement = currentTab !== "activity"
     ? null
@@ -353,6 +356,17 @@ export function TaskDetailView({
           color: theme.colors.foreground,
           fontSize: 13,
           lineHeight: 20,
+        },
+        textInput: {
+          minHeight: 88,
+          paddingHorizontal: 12,
+          paddingVertical: 10,
+          borderRadius: 8,
+          borderWidth: accessibilityPreferences.highContrast ? 2 : 1,
+          borderColor: theme.colors.border,
+          color: theme.colors.foreground,
+          backgroundColor: theme.colors.surface2,
+          textAlignVertical: "top",
         },
         mutedText: {
           color: theme.colors.foregroundMuted,
@@ -761,6 +775,9 @@ export function TaskDetailView({
     const launchAction = task.summary.allowedActions.find(
       (action) => action.kind === "task.launch-now",
     );
+    const integrateAction = task.summary.allowedActions.find(
+      (action) => action.kind === "task.integrate",
+    );
     const previewAction = task.summary.allowedActions.find(
       (action) => action.kind === "configuration.preview",
     );
@@ -787,6 +804,19 @@ export function TaskDetailView({
               <Text style={styles.primaryButtonText}>
                 {launchAction.label}
               </Text>
+            </AccessiblePressable>
+          ) : null}
+          {integrateAction && task.binding.runId && onAction ? (
+            <AccessiblePressable
+              accessibilityHint="Authorizes only the current exact Candidate after fresh Review, CI, base, feedback, and mergeability checks"
+              accessibilityLabel={integrateAction.label}
+              accessibilityRole="button"
+              focusable
+              onPress={() => onAction(integrateAction, { type: "task.integrate", projectId: task.summary.projectId,
+                taskId: task.summary.id, runId: task.binding.runId! })}
+              style={styles.primaryButton}
+            >
+              <Text style={styles.primaryButtonText}>{integrateAction.label}</Text>
             </AccessiblePressable>
           ) : null}
         </View>
@@ -1086,6 +1116,9 @@ export function TaskDetailView({
     const budget = task.summary.runtimeBudget;
     const feedback = task.summary.feedback;
     const binding = task.binding;
+    const feedbackAction = task.summary.allowedActions.find(
+      (action) => action.kind === "task.feedback",
+    );
 
     return (
       <View style={styles.scrollContent}>
@@ -1224,6 +1257,50 @@ export function TaskDetailView({
           ) : (
             <Text style={styles.mutedText}>No review feedback recorded.</Text>
           )}
+          {feedbackAction && binding.runId && onAction ? (
+            <View style={{ gap: 8 }}>
+              <TextInput
+                accessibilityLabel="Feedback for the exact current Candidate"
+                multiline
+                onChangeText={setFeedbackBody}
+                placeholder="Describe the change needed"
+                placeholderTextColor={theme.colors.foregroundMuted}
+                style={styles.textInput}
+                value={feedbackBody}
+              />
+              <View accessibilityLabel="Feedback severity" accessibilityRole="radiogroup" style={styles.wrapRow}>
+                {(["P0", "P1", "P2", "P3"] as const).map((severity) => (
+                  <AccessiblePressable
+                    accessibilityLabel={`Feedback severity ${severity}`}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: feedbackSeverity === severity }}
+                    key={severity}
+                    onPress={() => setFeedbackSeverity(severity)}
+                    style={[styles.chip, feedbackSeverity === severity && styles.chipSelected]}
+                  >
+                    <Text style={[styles.chipText, feedbackSeverity === severity && styles.chipTextSelected]}>{severity}</Text>
+                  </AccessiblePressable>
+                ))}
+              </View>
+              <AccessiblePressable
+                accessibilityHint="Binds authenticated human feedback to the exact current Candidate and routes correction through Director Engine"
+                accessibilityLabel={feedbackAction.label}
+                accessibilityRole="button"
+                disabled={feedbackBody.trim().length === 0}
+                focusable
+                onPress={() => {
+                  const body = feedbackBody.trim();
+                  if (body.length === 0) return;
+                  onAction(feedbackAction, { type: "task.feedback", projectId: task.summary.projectId,
+                    taskId: task.summary.id, runId: binding.runId!, body, severity: feedbackSeverity });
+                  setFeedbackBody("");
+                }}
+                style={[styles.secondaryButton, feedbackBody.trim().length === 0 && styles.secondaryButtonDisabled]}
+              >
+                <Text style={styles.secondaryButtonText}>{feedbackAction.label}</Text>
+              </AccessiblePressable>
+            </View>
+          ) : null}
         </View>
       </View>
     );

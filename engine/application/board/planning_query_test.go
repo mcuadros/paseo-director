@@ -355,7 +355,7 @@ func TestControlBoardExplanationsAndActionsAreExact(t *testing.T) {
 			ExplanationCode: "project_paused_at_safe_boundary",
 		},
 	}
-	summaries := projectSummaries(planningFacts{projects: []planningProjectFacts{{project: project}}})
+	summaries := projectSummaries(planningFacts{projects: []planningProjectFacts{{project: project}}}, "1")
 	if len(summaries) != 1 || summaries[0].Control == nil ||
 		summaries[0].Control.Message != "Project is paused at a safe boundary; active turns were allowed to finish" ||
 		len(summaries[0].AllowedActions) != 2 || summaries[0].AllowedActions[0].Kind != "project.resume" ||
@@ -388,6 +388,21 @@ func TestControlBoardExplanationsAndActionsAreExact(t *testing.T) {
 	projected := projection.DeriveTaskProjection(taskStateFacts(project, task, false, &run, nil))
 	if projected.State != projection.StateQueued || !slices.Contains(projected.Blockers, projection.BlockerPolicyWait) {
 		t.Fatalf("cancelled Task relaunch projection = %#v", projected)
+	}
+}
+
+func TestPlanningCreateTicketsAdvanceWithSnapshotCursorWithoutChangingProjectVersion(t *testing.T) {
+	project := domain.Project{ID: "project-create", Name: "Create", State: "active", Version: 7}
+	facts := planningFacts{projects: []planningProjectFacts{{project: project}}}
+	first, second := projectSummaries(facts, "10"), projectSummaries(facts, "11")
+	for _, kind := range []string{"epic.create", "task.create"} {
+		left := slices.IndexFunc(first[0].AllowedActions, func(action planningport.AllowedAction) bool { return action.Kind == kind })
+		right := slices.IndexFunc(second[0].AllowedActions, func(action planningport.AllowedAction) bool { return action.Kind == kind })
+		if left < 0 || right < 0 || first[0].AllowedActions[left].RequestID == second[0].AllowedActions[right].RequestID ||
+			first[0].AllowedActions[left].ExpectedVersion != second[0].AllowedActions[right].ExpectedVersion {
+			t.Fatalf("%s tickets do not bind the changing planning cursor: %#v / %#v", kind,
+				first[0].AllowedActions, second[0].AllowedActions)
+		}
 	}
 }
 

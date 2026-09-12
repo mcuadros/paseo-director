@@ -24,6 +24,7 @@ import (
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	domainintegration "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
+	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 	domainvalidation "github.com/mcuadros/director-engine/domain/validation"
 	githubport "github.com/mcuadros/director-engine/ports/github"
 )
@@ -55,6 +56,40 @@ var _ githubport.ChecksPort = (*Connector)(nil)
 var _ githubport.FeedbackPort = (*Connector)(nil)
 var _ githubport.FeedbackObservationPort = (*Connector)(nil)
 var _ githubport.IntegrationPort = (*Connector)(nil)
+var _ githubport.RepositoryDiscoveryPort = (*Connector)(nil)
+
+func (connector *Connector) DiscoverRepository(ctx context.Context, request githubport.RepositoryDiscoveryRequest) (githubport.RepositoryFact, error) {
+	remote, err := repositorydomain.CanonicalRemote(request.CanonicalRemote)
+	if err != nil || remote.Canonical != request.CanonicalRemote || remote.Key != request.RepositoryKey || request.NowMillis < 0 {
+		return githubport.RepositoryFact{}, errors.New("GitHub repository identity is invalid")
+	}
+	parts := strings.Split(request.RepositoryKey, "/")
+	if len(parts) != 3 || parts[0] != "github.com" || parts[1] == "" || parts[2] == "" {
+		return githubport.RepositoryFact{}, errors.New("GitHub repository identity is invalid")
+	}
+	repository := connector.api(ctx, "GET", "repos/"+url.PathEscape(parts[1])+"/"+url.PathEscape(parts[2]), nil)
+	viewer := connector.api(ctx, "GET", "user", nil)
+	if repository.code != publicationdomain.CodeOK || viewer.code != publicationdomain.CodeOK {
+		return githubport.RepositoryFact{}, errors.New("GitHub repository facts are unavailable")
+	}
+	var value struct {
+		ID     int64  `json:"id"`
+		NodeID string `json:"node_id"`
+		Name   string `json:"name"`
+		Owner  struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+	}
+	var actor struct {
+		Login string `json:"login"`
+	}
+	if json.Unmarshal(repository.body, &value) != nil || json.Unmarshal(viewer.body, &actor) != nil || value.ID <= 0 ||
+		value.NodeID == "" || value.Name != parts[2] || !strings.EqualFold(value.Owner.Login, parts[1]) || actor.Login == "" {
+		return githubport.RepositoryFact{}, errors.New("GitHub repository facts are ambiguous")
+	}
+	return githubport.RepositoryFact{DatabaseID: value.ID, NodeID: value.NodeID, Owner: value.Owner.Login,
+		Name: value.Name, ViewerLogin: actor.Login, Authenticated: true, ObservedAtMillis: request.NowMillis}, nil
+}
 
 func New() *Connector { return &Connector{runner: commandRunner{}} }
 

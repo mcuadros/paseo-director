@@ -104,8 +104,21 @@ func TestBoardServerFailsBeforeListeningWithInvalidConfiguration(t *testing.T) {
 		"--taskstore-config", "/missing/private/director-engine.json",
 		"--host-id", "host-test",
 		"--host-label", "Test host",
+		"--host-socket", "/tmp/director-test-host.sock",
+		"--runtime-root", "/tmp/director-test-runtime",
 	}, &stdout, &stderr)
 	if status != 1 || stdout.Len() != 0 || stderr.String() != "director-engine: Board server configuration is invalid\n" {
 		t.Fatalf("status = %d, stdout bytes = %d, stderr = %q", status, stdout.Len(), stderr.String())
+	}
+}
+
+func TestBoardServerDerivesTheSameOwnerRuntimePathsAsInstalledConnector(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "runtime-base")
+	t.Setenv("XDG_RUNTIME_DIR", base)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache-base"))
+	runtimeRoot, socket, err := defaultProductionRuntimePaths()
+	if err != nil || runtimeRoot != filepath.Join(base, "director", "runtime", "work") ||
+		socket != filepath.Join(base, "director", "runtime", "host.sock") {
+		t.Fatalf("derived production runtime paths = %q / %q, %v", runtimeRoot, socket, err)
 	}
 }
