@@ -8,26 +8,37 @@ restart.
 
 ## 1. Let the plugin establish its managed runtime
 
-Install an exact published `alpha`, `beta`, or `stable` ref and open Director.
-The first server RPC uses Paseo's handler-scoped public API and creates or
-adopts one Director supervisor. No daemon URL, connector password, Go toolchain,
-system Dolt, service unit, raw SQL, or manual bootstrap command is required.
+Install the default unpublished main for source testing, or an exact published
+`alpha`, `beta`, or `stable` ref, and open Director.
+The first server RPC uses Paseo's handler-scoped public API and launches only
+the manifest-pinned Go bootstrap control command. No daemon URL, connector password, system Dolt,
+service unit, raw SQL, or manual bootstrap command is required. Go 1.26.5 is
+required only while preparing an unpublished main add/update; published
+releases and reload never invoke it.
 
-The release manifest pins a precompiled Director Engine and the canonical Dolt
-archive for `linux-amd64`. Director downloads both, verifies their archive,
-executable, notices, source, target, and contract identities, and atomically
-publishes them below the private XDG cache. An unpublished or invalid release
-keeps the UI available with a bounded diagnostic and never compiles a fallback.
+An unpublished descriptor builds the small Go bootstrap once during declared
+add/update preparation; that bootstrap builds the exact clean Engine Candidate
+once and publishes its self-identifying closure below the private XDG cache. A
+published package ships a manifest-pinned precompiled bootstrap which downloads
+the precompiled Engine/notices. Both channels let Go download and verify
+canonical Dolt 2.3.2; JavaScript does neither.
+An invalid channel fails closed and never falls back.
 
-The supervisor starts its exact Dolt executable on `127.0.0.1:3307`, creates a
+The long-lived Go bootstrap starts its exact Dolt executable on `127.0.0.1:3307`, creates a
 fresh private database only when no managed store exists, generates separated
-runtime credentials, invokes the precompiled Engine's idempotent
+runtime credentials, invokes the prepared Engine's idempotent
 `bootstrap-taskstore`, removes transient bootstrap authority, and starts Engine
 on `127.0.0.1:7041` only after schema/grant/backup/cursor readback succeeds.
 Dolt remains separate from Beads on `127.0.0.1:3308`.
 
-Reload and update adopt the same supervisor through an owner-only control
-channel and 30-second lease. Removing the plugin stops lease renewal and its
+Go also creates one owner-only opaque host identity and uses it for the
+controller binding, TaskStore store ID, Engine service, and connector queries.
+The client receives it only from authenticated Director RPC and cannot replace
+it. Update/reload/removal/reinstall preserve the identity and TaskStore.
+
+Reload adopts the same Go controller through an owner-only authenticated Unix
+control channel and 30-second lease; update performs a controlled binding
+handoff. Removing the plugin stops lease renewal and its
 owned processes while retaining the database and verified cache. Unknown
 listeners or process identities are never killed and produce
 `DIRECTOR_RUNTIME_EXTERNAL_OWNER`.

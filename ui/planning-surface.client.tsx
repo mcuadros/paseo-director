@@ -2,8 +2,8 @@
 // Client-only React Native presentation of engine-owned planning projections.
 
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin";
-import { useRpc } from "@getpaseo/plugin";
-import { Icon, Modal } from "@getpaseo/plugin/react-native";
+import { Icon, useRpc } from "@getpaseo/plugin";
+import { Modal } from "./paseo-ui.client.tsx";
 import {
   useMutation,
   useQuery,
@@ -50,6 +50,7 @@ import {
   useAccessibilityPreferences,
   useResponsiveCompactLayout,
 } from "./accessibility.client.tsx";
+import { useDirectorHostIdentity } from "./director-host.client.ts";
 
 const pageSize = 100;
 const initialRequest: Omit<PlanningQueryInput, "cursor"> = {
@@ -189,9 +190,10 @@ export function planningGroupRows(
 
 type PlanningSurfaceProps = Pick<
   PluginWorkspacePanelProps,
-  "theme" | "layout" | "host"
+  "theme" | "layout"
 > & {
   client: PlanningClient;
+  directorHostId: string;
   navigation?: PluginWorkspacePanelProps["navigation"];
 };
 
@@ -207,10 +209,11 @@ export function ProjectBoard(props: PluginWorkspacePanelProps) {
     }),
     [mutatePlanning, queryPlanning, queryTaskDetail],
   );
+  const directorIdentity = useDirectorHostIdentity();
   return (
     <PlanningSurface
       client={client}
-      host={props.host}
+      directorHostId={directorIdentity.identity?.id ?? ""}
       layout={props.layout}
       navigation={props.navigation}
       theme={props.theme}
@@ -222,7 +225,7 @@ export function PlanningSurface({
   theme,
   layout,
   client,
-  host,
+  directorHostId,
   navigation,
 }: PlanningSurfaceProps) {
   const accessibilityPreferences = useAccessibilityPreferences();
@@ -310,17 +313,17 @@ export function PlanningSurface({
   useAccessibilityAnnouncement(planningAnnouncement);
 
   const detail = useQuery({
-    queryKey: ["director", "planning-task", host.id, selectedTaskId],
+    queryKey: ["director", "planning-task", directorHostId, selectedTaskId],
     queryFn: () =>
       client.taskDetail({
-        hostId: host.id,
+        hostId: directorHostId,
         context: "board",
         taskId: selectedTaskId,
         paseoWorkspaceId: null,
         paseoAgentId: null,
         afterCursor: null,
       }),
-    enabled: selectedTaskId !== null,
+    enabled: directorHostId !== "" && selectedTaskId !== null,
     retry: false,
   });
   const detailOffline = planningOffline || detail.fetchStatus === "paused";
@@ -1304,6 +1307,7 @@ export function PlanningSurface({
 
         {snapshot ? (
           <Modal
+            theme={theme}
             icon={<Icon color={theme.colors.foreground} name="ListFilter" size={18} />}
             onOpenChange={setFiltersExpanded}
             open={filtersExpanded}
@@ -1695,6 +1699,7 @@ export function PlanningSurface({
       </ScrollView>
 
       <Modal
+        theme={theme}
         icon={<Icon color={theme.colors.foreground} name={createKind === "epic" ? "Layers3" : "ListPlus"} size={18} />}
         open={createKind !== null}
         onOpenChange={(open) => { if (!open) setCreateKind(null); }}
@@ -1775,6 +1780,7 @@ export function PlanningSurface({
       </Modal>
 
       <Modal
+        theme={theme}
         open={selectedTaskId !== null}
         onOpenChange={(open) => {
           if (!open) setSelectedTaskId(null);
@@ -1861,7 +1867,7 @@ export function PlanningSurface({
           ) : null}
         </Modal.Content>
       </Modal>
-      <Modal open={dependencyDraft !== null} onOpenChange={(open) => { if (!open) setDependencyDraft(null); }} title="Add dependency">
+      <Modal theme={theme} open={dependencyDraft !== null} onOpenChange={(open) => { if (!open) setDependencyDraft(null); }} title="Add dependency">
         <Modal.Content>
           <ScrollView contentContainerStyle={styles.filterContent}>
             <Text style={styles.liveBody}>Select one exact current Task or Epic. Director Engine rejects self-links, missing endpoints, duplicate edges, and cycles transactionally.</Text>

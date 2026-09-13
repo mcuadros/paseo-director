@@ -3,7 +3,7 @@
 
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin";
 import { usePaseo, useRpc } from "@getpaseo/plugin";
-import { Icon } from "@getpaseo/plugin/react-native";
+import { Icon } from "@getpaseo/plugin";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useEffect, useMemo } from "react";
 import {

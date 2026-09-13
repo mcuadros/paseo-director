@@ -35,7 +35,7 @@ export const connectorStartupStatus = defineRpc({
   input: z.strictObject({}),
   output: z.strictObject({
     state: z.literal("board-ready"),
-    engineMode: z.literal("release"),
+    engineMode: z.enum(["main", "release"]),
     productBehavior: z.literal(true),
     activation: z.strictObject({
       lifecycle: z.literal("plugin-reload"),
@@ -60,8 +60,13 @@ export const connectorStartupStatus = defineRpc({
       architecture: z.literal("x64"),
       target: z.literal("linux-amd64"),
     }),
+    host: z.strictObject({
+      schemaVersion: z.literal(1),
+      id: z.string().regex(/^director-[0-9a-f]{32}$/u),
+      label: z.literal("Director"),
+    }),
     engine: z.strictObject({
-      mode: z.literal("release"),
+      mode: z.enum(["main", "release"]),
       version: z.string().min(1).max(128),
       sourceCandidate: z.string().regex(/^[0-9a-f]{40}$/u),
       target: z.literal("linux-amd64"),

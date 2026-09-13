@@ -22,7 +22,6 @@ import {
   type HostCommand,
   type HostCommandArguments,
 } from "../generated/host-contract.shared.ts";
-import type { EngineSelection } from "../connector/engine-selection.server.ts";
 import {
   PROJECT_ADMIN_MCP_CONTRACT_SHA256,
   PROJECT_ADMIN_MCP_CONTRACT_VERSION,
@@ -217,7 +216,7 @@ test("native onboarding derives one stable selector from authoritative public Pa
     gitRuntime: { currentBranch: "main", remoteUrl: "https://github.com/example/source.git", isPaseoOwnedWorktree: false }, githubRuntime: null } as unknown as PaseoWorkspace);
   const host = connector(world.client);
   const snapshot = await host.queryNativePaseoProjects({ hostId: "host-a" });
-  assert.equal(snapshot.hostId, "host-a");
+  assert.equal(snapshot.hostId, `director-${"c".repeat(32)}`);
   assert.equal(snapshot.projects.length, 1);
   assert.equal(snapshot.projects[0]!.projectId, "project-native");
   assert.equal(snapshot.projects[0]!.name, "Project");
@@ -230,23 +229,23 @@ test("native onboarding derives one stable selector from authoritative public Pa
   assert.match(snapshot.projects[0]!.factsRevision, /^[0-9a-f]{64}$/);
 });
 
-function connector(client: ConnectorClient): PaseoHostConnector {
+function connector(client: ConnectorClient, planningTransport: ConstructorParameters<typeof PaseoHostConnector>[3] = {
+  async query() { throw new Error("unused"); },
+  async taskDetail() { throw new Error("unused"); },
+  async mutate() { throw new Error("unused"); },
+}): PaseoHostConnector {
   return new PaseoHostConnector(
     client,
-    {
-      mode: "release",
-      cacheRoot: "/not-exposed/cache",
-      checkoutRoot: "",
-      metadataPath: "",
-      connectorCommit: "4".repeat(40),
-      releaseMetadata: Buffer.from("{}"),
-    } as EngineSelection,
+    { mode: "release" },
     { async load() { throw new Error("unused"); } },
-    {
-      async query() { throw new Error("unused"); },
-      async taskDetail() { throw new Error("unused"); },
-      async mutate() { throw new Error("unused"); },
-    },
+    planningTransport,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    false,
+    undefined,
+    { schemaVersion: 1, id: `director-${"c".repeat(32)}`, label: "Director" },
   );
 }
 
@@ -264,12 +263,19 @@ test("an ordinary authenticated agent is recreated with exact Project administra
     attentionReason: null, timelineEntries: [],
   } as unknown as FakeAgent);
   const host = connector(world.client);
-  host.attachRuntimeSupervisor(Promise.resolve({
-    supervisor: {
+  host.attachBootstrapRuntime(Promise.resolve({
+    bootstrap: {
       binding: "e".repeat(64),
+      host: { schemaVersion: 1 as const, id: `director-${"c".repeat(32)}`, label: "Director" as const },
+      engine: {
+        mode: "release" as const, version: "1.0.0", sourceCandidate: "0".repeat(40), target: "linux-amd64" as const,
+        binaryPath: "/not-exposed/director-engine", noticesPath: "/not-exposed/notices", binarySha256: "3".repeat(64),
+        noticesSha256: "4".repeat(64), connectorCommit: "0".repeat(40), contractVersion: "test", contractSha256: "5".repeat(64),
+      },
+      dolt: { version: "2.3.2" as const, target: "linux-amd64" as const, binaryPath: "/opt/dolt", binarySha256: "1".repeat(64), archiveSha256: "2".repeat(64) },
       projectAdminAuthorization: () => "f".repeat(64),
       async status() { return { state: "current" as const, binding: "e".repeat(64), enginePid: 11, doltPid: 12, restartCount: 0 }; },
-      async close() {}, async release() {},
+      async close() {},
     },
     dolt: { version: "2.3.2", target: "linux-amd64" as const, binaryPath: "/opt/dolt", binarySha256: "1".repeat(64), archiveSha256: "2".repeat(64) },
   }));
@@ -328,6 +334,30 @@ test("an ordinary authenticated agent is recreated with exact Project administra
     globalThis.fetch = originalFetch;
     await host.close();
   }
+});
+
+test("server-authenticated Director identity overrides the literal Paseo host authority for Home", async () => {
+  const world = fakePaseo();
+  const directorId = `director-${"c".repeat(32)}`;
+  const uncorrected = async (input: { hostId: string }) => {
+    if (input.hostId !== directorId) throw new Error("ENGINE_HOME_HOST_MISMATCH");
+    return { accepted: true };
+  };
+  await assert.rejects(() => uncorrected({ hostId: "local-paseo" }), /ENGINE_HOME_HOST_MISMATCH/u);
+  let observed = "";
+  const host = connector(world.client, {
+    async query() { throw new Error("unused"); },
+    async taskDetail() { throw new Error("unused"); },
+    async mutate() { throw new Error("unused"); },
+    async home(input) {
+      observed = input.hostId;
+      await uncorrected(input);
+      return { accepted: true } as never;
+    },
+  });
+  await host.queryHome({ hostId: "local-paseo", cursor: null, pageSize: 25 });
+  assert.equal(observed, directorId);
+  assert.equal((await host.status()).host.id, directorId);
 });
 
 function primaryArguments(): HostCommandArguments {

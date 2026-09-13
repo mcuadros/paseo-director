@@ -5,11 +5,14 @@
 > Director uses only that handler-scoped object. It never copies the daemon
 > password into a runtime file, process argument, or secondary WebSocket.
 
-The plugin owns a release-only runtime supervisor. It downloads exact
-precompiled Director Engine and Dolt artifacts, verifies their closed release
-identity, and starts only those private cached executables. It never invokes Go,
-compiles a runtime fallback, discovers Engine or Dolt through `PATH`, installs a
-system service, or restarts Paseo.
+The plugin ships a portable Go runtime controller. An unpublished default-main
+checkout builds that bootstrap once during add/update; the bootstrap builds its
+exact Engine once. A published alpha/beta/stable package ships a manifest-pinned
+precompiled bootstrap that downloads only pinned precompiled Engine/notices and
+canonical Dolt. Go starts and supervises only private cached executables; Node
+does not download or supervise them. Neither channel uses `PATH`, a system
+service, or a Paseo restart. Reload never builds, and a release never compiles
+or falls back to source.
 
 Director Engine is standalone Go software for planning, executing, reviewing,
 and delivering medium-to-large software products. It is usable and publishable
@@ -96,7 +99,18 @@ registry artifacts and executes no package lifecycle scripts. A registry,
 lock, dependency, compatibility, or compile failure leaves the prior installed
 commit active.
 
-Once a channel is published, install and update explicitly:
+To test the exact current default main before a release exists:
+
+```text
+paseo plugin add mcuadros/paseo-director
+paseo plugin status director
+paseo plugin update director
+paseo plugin reload director
+```
+
+Main add/update requires trusted system Go 1.26.5 and an existing
+Go-sum-verified module cache. Once a channel is published, install and update
+without Go:
 
 ```text
 paseo plugin add mcuadros/paseo-director --ref stable
@@ -106,7 +120,7 @@ paseo plugin reload director
 ```
 
 `update` activates a changed Git candidate and `reload` creates or adopts the
-same plugin-owned supervisor without restarting Paseo or interrupting other
+same plugin-owned Go controller without restarting Paseo or interrupting other
 agents or workspaces. Tags and exact commits are immutable pins and do not advance through update.
 See [installation, update, rollback, and compatibility](docs/installation-update.md)
 before installing; it includes release artifacts, diagnostics, failure
@@ -145,10 +159,14 @@ configured and a Tailscale-only listener works unchanged. Legacy runtime files,
 `DIRECTOR_PASEO_*`, `sourceRoot`, module-cache, and development-mode values have
 no runtime authority.
 
-The first RPC downloads or adopts the release artifacts and one detached
-supervisor. That supervisor owns Dolt on `127.0.0.1:3307`, Engine on
-`127.0.0.1:7041`, private runtime credentials, bootstrap, health, backoff, and
-lease expiry. No Paseo daemon or machine restart is supported or required.
+Add/update preparation resolves the descriptor-selected channel and writes a
+static verified Go-bootstrap pin. The first RPC launches only that bootstrap's
+control command. The long-lived Go controller owns canonical Dolt and the
+prepared-main or published-release Engine, private XDG paths, identity,
+credentials, TaskStore bootstrap, locks, health, backoff, controlled handoff,
+and lease expiry. JavaScript does not download runtime assets, build the Engine,
+or supervise children. No Paseo daemon or machine restart is supported or
+required.
 
 ```text
 paseo plugin reload director
@@ -157,28 +175,34 @@ paseo plugin logs director --json
 ```
 
 The bounded `DIRECTOR_ACTIVATION_READY` record reports the exact connector,
-Engine, Dolt, and supervisor identities with a `running-current` result. It
+Engine, Dolt, and controller identities with a `running-current` result. It
 contains no URL, private path, credential, raw environment, or secret. The native selection resolver accepts
 one current public Paseo Project/workspace pair and derives its Project ID/name,
 repository root, Workspace identity/name, and working directory for the M6.11
 selector; none of those facts belongs in this runtime JSON.
 
 The schema-2 committed release descriptor explicitly marks `0.0.0-scaffold` as
-unpublished and declares no assets or digests. Release resolution rejects that
-state before any fetch. A later coordinator-owned release commit must pin the
-semantic engine version, `linux-amd64` target, exact reviewed source Candidate,
-canonical asset names, non-empty Engine/notices SHA-256 values, and the exact
+unpublished and declares no Engine assets or digests. This is the explicit
+default-main source-testing channel: declared add/update preparation builds the
+small Go bootstrap once from the exact checkout; that bootstrap builds the
+exact Engine once into its private content-addressed cache. Runtime and reload
+use only the static installed bootstrap pin and never compile.
+A later coordinator-owned release commit must ship and pin the precompiled Go
+bootstrap and pin the semantic engine version, `linux-amd64` target, exact
+reviewed source Candidate, canonical asset names, non-empty
+bootstrap/Engine/notices SHA-256 values, and the exact
 Dolt version/archive/executable SHA-256 under the exact Director and DoltHub
 GitHub Release origin/path prefixes. The executable-reported version, mode, source, target, notices digest,
 and engine contract must match before the cache is published or product work runs.
 Dot-segment traversal that normalizes outside that prefix, another origin/path,
 URL credentials, query, or fragment is invalid. Empty-input digests are invalid.
-The installed plugin never compiles as a fallback. Content-addressed release
-caches remain outside the checkout and expose only bounded identity diagnostics.
+Published descriptors never compile or fall back. The shipped Go bootstrap,
+not Node, performs verified downloads and runtime supervision. All content-addressed caches
+remain outside the checkout and expose only bounded identity diagnostics.
 
 ## Director Home and Board/List runtime
 
-The plugin-owned supervisor starts the exact precompiled Engine only after its
+The plugin-owned Go bootstrap starts the exact prepared Engine only after its
 managed direct-Dolt store passes bootstrap and maintenance readback. It serves
 the host-bound Home plus Board/List contracts on loopback. Users do not invoke
 `serve-board`, select an executable, or maintain a service unit.
@@ -192,6 +216,13 @@ compatibility checks, not credentials. Run it only on the accepted single-user
 Linux host and keep its port confined to loopback; never proxy or expose it to
 another host or user. Any local process able to reach the port can read Project
 names, Task titles, Run numbers, and Candidate SHAs.
+
+The Go bootstrap generates one opaque persistent public host identity and
+stores it owner-only outside the checkout. Authenticated Director RPC
+supplies it to the UI; client `hostId` values have no authority. The same
+identity binds TaskStore bootstrap, controller adoption, Engine launch, and
+every query. Reload/update/remove/reinstall preserve it; a verified identity
+change forces one controlled handoff without deleting TaskStore data.
 
 The configuration file and any referenced password files must be absolute,
 regular, owner-only files outside repositories. Unknown, duplicate, missing,
@@ -333,7 +364,7 @@ The engine-owned [`TaskStore` port](engine/ports/taskstore/taskstore.go) exposes
 only typed Project, Task, Run, Candidate, Command, and Event records. It has no
 SQL, connection, credential, database-selection, or Beads surface. The one
 runtime implementation is [`DoltTaskStore`](engine/adapters/dolt/taskstore.go),
-which talks to the supervisor-owned Dolt 2.3.2 SQL server through distinct
+which talks to the Go-controller-owned Dolt 2.3.2 SQL server through distinct
 private control, writer, and exact-routine maintenance identities.
 
 `Bootstrap` installs schema version 2 only into an empty, explicitly selected

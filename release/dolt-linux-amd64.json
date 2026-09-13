@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "version": "2.3.2",
+  "target": "linux-amd64",
+  "archive": {
+    "name": "dolt-linux-amd64.tar.gz",
+    "url": "https://github.com/dolthub/dolt/releases/download/v2.3.2/dolt-linux-amd64.tar.gz",
+    "sha256": "7a2949fa2b2b3799ee1e57e6d64519a8d65d675fd832f6469d4e07e5a1c72b14",
+    "size": 43842207
+  },
+  "executableSha256": "eb50b0e7c4ce2303486deaf850f9dc5630ffcfd8d9aa4a40a2b3e0b23e2ac2f0",
+  "executableSize": 126224392
+}

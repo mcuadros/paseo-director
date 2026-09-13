@@ -422,7 +422,7 @@ test("the stable v0.7 plugin registers strict planning RPCs without runtime fixt
   assert.match(serverContributions, /return \{ status: "rejected", code, diagnosis \}/u);
   const connector = readFileSync("connector/paseo.server.ts", "utf8");
   assert.match(connector, /return this\.#planningTransport\.query\(input\)/);
-  assert.match(connector, /return this\.#planningTransport\.taskDetail\(input\)/);
+  assert.match(connector, /return this\.#planningTransport\.taskDetail\(\{ \.\.\.input, hostId: \(await this\.#hostIdentity\)\.id \}\)/);
   assert.doesNotMatch(connector, /tests\/fixtures|DeterministicPlanningFixture/);
   assert.match(entry, /locations:\s*\["workspace", "explorer"\]/);
   assert.match(entry, /title: "Return to Director Board"/);
@@ -434,12 +434,12 @@ test("the stable v0.7 plugin registers strict planning RPCs without runtime fixt
   const client = readFileSync("ui/planning-surface.client.tsx", "utf8");
   for (const moduleName of [
     "@getpaseo/plugin",
-    "@getpaseo/plugin/react-native",
     "@tanstack/react-query",
     "react",
     "react-native",
   ]) {
     assert.ok(client.includes(`from \"${moduleName}\"`), moduleName);
   }
+  assert.doesNotMatch(client, /@getpaseo\/plugin\/react-native/u);
   assert.doesNotMatch(client, /@getpaseo\/client|node:|window\.|document\./);
 });

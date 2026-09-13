@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { PluginSurfaceProps } from "@getpaseo/plugin";
-import { useRpc } from "@getpaseo/plugin";
-import { Icon, Modal, useToast } from "@getpaseo/plugin/react-native";
+import { Icon, useRpc } from "@getpaseo/plugin";
+import { Modal, useToast } from "./paseo-ui.client.tsx";
 import {
   useInfiniteQuery,
   useMutation,
@@ -55,6 +55,7 @@ import {
   homeActionEnabled,
   homeProjectKey,
 } from "./director-home-model.client.ts";
+import { useDirectorHostIdentity } from "./director-host.client.ts";
 import { shellMetrics } from "./shell-layout.client.ts";
 import { ProjectOperations } from "./project-operations.client.tsx";
 
@@ -121,7 +122,7 @@ function mutationIntent(action: HomeAction): PlanningMutationIntent | null {
   }
 }
 
-export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceProps) {
+export function DirectorHome({ theme, layout, navigation }: PluginSurfaceProps) {
   const accessibilityPreferences = useAccessibilityPreferences();
   const loadHome = useRpc(homeQueryRpc);
   const mutatePlanning = useRpc(planningMutationRpc);
@@ -130,6 +131,8 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
   const queryDoctor = useRpc(doctorQueryRpc);
   const repairProject = useRpc(repairProjectRpc);
   const toast = useToast();
+  const directorIdentity = useDirectorHostIdentity();
+  const hostId = directorIdentity.identity?.id ?? "";
   const queryClient = useQueryClient();
   const [entry, setEntry] = useState<OrganizerEntry | null>(null);
   const [inspectedProject, setInspectedProject] = useState<string | null>(null);
@@ -141,14 +144,15 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
   const [operationsProject, setOperationsProject] = useState<string | null>(null);
   const [operationsInitialTab, setOperationsInitialTab] = useState<"health" | "audit" | "logs" | "support">("health");
   const home = useInfiniteQuery({
-    queryKey: ["director", "home", host.id],
+    queryKey: ["director", "home", hostId],
     initialPageParam: null as string | null,
     queryFn: async ({ pageParam }) => {
-      const result = await loadHome({ hostId: host.id, cursor: pageParam, pageSize: HOME_PAGE_SIZE });
+      const result = await loadHome({ hostId, cursor: pageParam, pageSize: HOME_PAGE_SIZE });
       if (!("page" in result)) throw result;
       return result;
     },
     getNextPageParam: (lastPage: HomeSnapshot) => lastPage.page.nextCursor,
+    enabled: hostId !== "",
     retry: false,
     staleTime: 0,
     refetchOnMount: "always",
@@ -157,15 +161,15 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
   });
   const scene = directorHomeScene({
     pages: home.data?.pages,
-    expectedHostId: host.id,
-    isPending: home.isPending,
-    isError: home.isError || home.isRefetchError || home.isFetchNextPageError,
-    error: home.error,
+    expectedHostId: hostId,
+    isPending: directorIdentity.isPending || home.isPending,
+    isError: directorIdentity.isError || home.isError || home.isRefetchError || home.isFetchNextPageError,
+    error: directorIdentity.error ?? home.error,
   });
   const nativeProjects = useQuery({
-    queryKey: ["director", "native-paseo-projects", host.id],
-    queryFn: () => loadNativePaseoProjects({ hostId: host.id }),
-    enabled: entry?.flow === "native",
+    queryKey: ["director", "native-paseo-projects", hostId],
+    queryFn: () => loadNativePaseoProjects({ hostId }),
+    enabled: hostId !== "" && entry?.flow === "native",
     retry: false,
     staleTime: 0,
     refetchOnMount: "always",
@@ -174,7 +178,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     mutationFn: (input: PlanningMutationInput) => mutatePlanning(input),
     onSuccess: async (result) => {
       toast.show(result.message, { variant: result.status === "accepted" ? "success" : "warning" });
-      await queryClient.invalidateQueries({ queryKey: ["director", "home", host.id], exact: true });
+      await queryClient.invalidateQueries({ queryKey: ["director", "home", hostId], exact: true });
     },
     onError: () => toast.error("The operational action was rejected by current engine facts."),
   });
@@ -184,7 +188,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       if (result.status === "applied") {
         toast.show(result.message, { variant: "success" });
         setEntry(null);
-        await queryClient.resetQueries({ queryKey: ["director", "home", host.id], exact: true });
+        await queryClient.resetQueries({ queryKey: ["director", "home", hostId], exact: true });
       } else if (result.status === "rejected") {
         toast.show(result.message, { variant: "warning" });
       }
@@ -199,7 +203,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     onSuccess: async (result) => {
       if (result.status === "applied") {
         toast.show(result.message, { variant: "success" });
-        await queryClient.resetQueries({ queryKey: ["director", "home", host.id], exact: true });
+        await queryClient.resetQueries({ queryKey: ["director", "home", hostId], exact: true });
       } else if (result.status === "refused") {
         toast.show(result.message, { variant: "warning" });
       }
@@ -214,7 +218,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     control.reset();
     doctor.reset();
     repair.reset();
-  }, [host.id]);
+  }, [hostId]);
   const snapshot = "snapshot" in scene ? scene.snapshot : null;
   const stale = scene.kind === "stale";
   const compact = useResponsiveCompactLayout(layout.compact);
@@ -395,7 +399,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     organizer.reset();
     setEntry({
       flow,
-      hostId: host.id,
+      hostId,
       requestId: organizerRequestId(),
       nativeProject: null,
       projectId: "",
@@ -410,14 +414,14 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
   }
 
   function submitOrganizerEntry(apply: boolean): void {
-    if (!entry?.requestId || entry.hostId !== host.id || stale) return;
+    if (!entry?.requestId || entry.hostId !== hostId || stale) return;
     const preview = organizer.data?.status === "preview" ? organizer.data.preview : null;
     if (apply && (!preview || !preview.valid)) return;
     organizer.mutate({
       schemaVersion: PLANNING_SCHEMA_VERSION,
       contractVersion: PLANNING_CONTRACT_VERSION,
       contractHash: PLANNING_CONTRACT_SHA256,
-      hostId: host.id,
+      hostId,
       requestId: entry.requestId,
       kind: entry.flow === "native"
         ? `native.create.${apply ? "apply" : "preview"}`
@@ -432,7 +436,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
   }
 
   function runAction(action: HomeAction): void {
-    const enabled = homeActionEnabled({ action, expectedHostId: host.id, stale, navigationAvailable: navigation !== undefined });
+    const enabled = homeActionEnabled({ action, expectedHostId: hostId, stale, navigationAvailable: navigation !== undefined });
     if (!enabled) return;
     if (action.kind === "create_project") {
       openOrganizerEntry("native");
@@ -470,7 +474,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     if (!target || stale) return;
     setInspectedProject(projectId);
     doctor.reset();
-    doctor.mutate({ hostId: host.id, projectId, expectedProjectVersion: target.version });
+    doctor.mutate({ hostId, projectId, expectedProjectVersion: target.version });
   }
 
   function openRepairForProject(projectId: string): void {
@@ -483,7 +487,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       schemaVersion: PLANNING_SCHEMA_VERSION,
       contractVersion: PLANNING_CONTRACT_VERSION,
       contractHash: PLANNING_CONTRACT_SHA256,
-      hostId: host.id,
+      hostId,
       requestId,
       kind: "repair.preview",
       projectId,
@@ -500,7 +504,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       schemaVersion: PLANNING_SCHEMA_VERSION,
       contractVersion: PLANNING_CONTRACT_VERSION,
       contractHash: PLANNING_CONTRACT_SHA256,
-      hostId: host.id,
+      hostId,
       requestId: repairRequest.requestId,
       kind: "repair.apply",
       projectId: repairRequest.projectId,
@@ -514,7 +518,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     const busy = control.isPending ||
       ((action.kind === "doctor" || action.kind === "open_needs_you") && doctor.isPending) ||
       (action.kind === "repair" && repair.isPending);
-    const enabled = homeActionEnabled({ action, expectedHostId: host.id, stale, navigationAvailable: navigation !== undefined }) && !busy;
+    const enabled = homeActionEnabled({ action, expectedHostId: hostId, stale, navigationAvailable: navigation !== undefined }) && !busy;
     const hint = action.unavailableReason?.message ?? (navigation === undefined && (action.kind === "open_board" || action.kind === "open_organizer")
       ? "This Paseo host does not expose native navigation"
       : action.kind === "create_project"
@@ -568,7 +572,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
 
   function projectCard(project: HomeProject) {
     return (
-      <View key={homeProjectKey(host.id, project.id)} style={styles.card}>
+      <View key={homeProjectKey(hostId, project.id)} style={styles.card}>
         <View style={styles.cardHeader}>
           <Text accessibilityRole="header" style={styles.cardTitle}>{project.name}</Text>
           <View
@@ -607,7 +611,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
         {project.healthReasons[0] ? <Text style={healthTextStyle(project)}>{project.healthReasons[0].message}</Text> : null}
         <View style={styles.chips}>
           {project.workspaces.map((workspace) => (
-            <View key={`${host.id}:${project.id}:${workspace.id}`} style={styles.chip}>
+            <View key={`${hostId}:${project.id}:${workspace.id}`} style={styles.chip}>
               <Text style={styles.chipText}>{workspace.name} · {healthLabels[workspace.health]}</Text>
             </View>
           ))}
@@ -617,7 +621,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
     );
   }
 
-  const entryPreviewDisabled = entry === null || entry.hostId !== host.id || stale || entry.requestId === null ||
+  const entryPreviewDisabled = entry === null || entry.hostId !== hostId || stale || entry.requestId === null ||
     (entry.flow === "native" ? entry.nativeProject === null :
       entry.projectId === "" || entry.projectName === "" || entry.repositoryPath === "") || organizer.isPending;
   const entryApplyDisabled = entryPreviewDisabled || organizer.data?.status !== "preview" || organizer.data.preview?.valid !== true;
@@ -667,7 +671,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
           )}
         </View>
         {snapshot ? (
-          <Text selectable style={styles.operationalLine}>Engine {snapshot.page.host.instanceId} · host ID {snapshot.page.host.id}</Text>
+          <Text selectable style={styles.operationalLine}>Engine {snapshot.page.host.instanceId} · Director identity verified</Text>
         ) : null}
 
       {scene.kind === "loading" ? (
@@ -700,12 +704,12 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       {scene.kind === "stale" ? (
         <View accessibilityLiveRegion="polite" style={[styles.banner, styles.bannerDanger]}>
           <Text style={styles.bannerTitle}>Host offline or snapshot stale</Text>
-          <Text style={styles.body}>Showing last known facts for {scene.snapshot.page.host.id}. Every action is disabled until this exact host returns current data.</Text>
+          <Text style={styles.body}>Showing last known facts for this exact Director host. Every action is disabled until its current identity returns.</Text>
           <AccessiblePressable
             accessibilityHint="Clears only this host’s cached Home snapshot and loads it again"
             accessibilityLabel="Refresh Director Home for this exact host"
             accessibilityRole="button"
-            onPress={() => void queryClient.resetQueries({ queryKey: ["director", "home", host.id], exact: true })}
+            onPress={() => void queryClient.resetQueries({ queryKey: ["director", "home", hostId], exact: true })}
             style={[styles.action, styles.more]}
           >
             <Text style={styles.actionText}>Refresh exact host</Text>
@@ -772,6 +776,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       ) : null}
       </ScrollView>
       <Modal
+        theme={theme}
         icon={<Icon color={theme.colors.foreground} name={entry?.flow === "advanced" ? "FolderSearch" : "FolderPlus"} size={18} />}
         onOpenChange={(open) => {
           if (!open) {
@@ -894,6 +899,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
         </Modal.Content>
       </Modal>
       <Modal
+        theme={theme}
         icon={<Icon color={inspected?.health === "needs_you" ? theme.colors.statusDanger : theme.colors.foreground} name={inspected?.health === "needs_you" ? "CircleAlert" : "Stethoscope"} size={18} />}
         onOpenChange={(open) => {
           if (!open) {
@@ -993,6 +999,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       </Modal>
 
       <Modal
+        theme={theme}
         icon={<Icon color={theme.colors.statusWarning} name="Wrench" size={18} />}
         onOpenChange={(open) => {
           if (!open) {
@@ -1107,7 +1114,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
         </Modal.Content>
       </Modal>
       <ProjectOperations
-        hostId={host.id}
+        hostId={hostId}
         initialTab={operationsInitialTab}
         layout={layout}
         onOpenChange={(value) => {

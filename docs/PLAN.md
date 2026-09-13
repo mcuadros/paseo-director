@@ -4,7 +4,7 @@
 - **Plan version:** 0.6
 - **Last updated:** 2026-09-12
 - **Approved:** 2026-09-06
-- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope; [ADR-0014](adr/0014-practical-linux-agent-boundary.md) for the human-approved practical trusted-provider Linux boundary; [ADR-0016](adr/0016-defer-taskstore-scale-proof-to-m5.md) for deferring TaskStore agreed-scale proof to `dir-m5.10`; [ADR-0017](adr/0017-standalone-engine-connector-authority-boundary.md) for the standalone Go engine and accepted exact-0.7.2 connector authority; [ADR-0018](adr/0018-deterministic-coordination-boundary.md) for deterministic coordination decisions and structured agent outcome claims; [ADR-0019](adr/0019-event-driven-delivery-fast-path.md) for the event-driven single-CI delivery fast path, launch visibility, and adaptive delivery capacity; [ADR-0020](adr/0020-zero-work-bootstrap-and-terminal-event-dispatch.md) for zero-work top-level bootstrap, separately notified real work, and synchronous terminal-event reconciliation; [ADR-0021](adr/0021-recover-exact-leased-ref-cleanup.md) for exact-guarded recovery of nonterminal local and remote Task-ref deletion; [ADR-0022](adr/0022-least-privilege-taskstore-maintenance.md) for exact-routine backup authority, privilege-file attestation, and fresh-empty first-backup recovery; [ADR-0023](adr/0023-plugin-owned-release-runtime.md) for handler-scoped Paseo authority and a release-only plugin-owned portable Engine/Dolt supervisor; [ADR-0024](adr/0024-project-agent-administration-mcp.md) for the own-Project administration MCP available to every authenticated Project agent
+- **Amended by:** [ADR-0010](adr/0010-top-level-task-agent-parentage.md) for top-level Task Agent and Reviewer Agent parentage; [ADR-0011](adr/0011-linux-only-platform-scope.md) for the Linux-only `1.0` platform scope; [ADR-0014](adr/0014-practical-linux-agent-boundary.md) for the human-approved practical trusted-provider Linux boundary; [ADR-0016](adr/0016-defer-taskstore-scale-proof-to-m5.md) for deferring TaskStore agreed-scale proof to `dir-m5.10`; [ADR-0017](adr/0017-standalone-engine-connector-authority-boundary.md) for the standalone Go engine and accepted exact-0.7.2 connector authority; [ADR-0018](adr/0018-deterministic-coordination-boundary.md) for deterministic coordination decisions and structured agent outcome claims; [ADR-0019](adr/0019-event-driven-delivery-fast-path.md) for the event-driven single-CI delivery fast path, launch visibility, and adaptive delivery capacity; [ADR-0020](adr/0020-zero-work-bootstrap-and-terminal-event-dispatch.md) for zero-work top-level bootstrap, separately notified real work, and synchronous terminal-event reconciliation; [ADR-0021](adr/0021-recover-exact-leased-ref-cleanup.md) for exact-guarded recovery of nonterminal local and remote Task-ref deletion; [ADR-0022](adr/0022-least-privilege-taskstore-maintenance.md) for exact-routine backup authority, privilege-file attestation, and fresh-empty first-backup recovery; [ADR-0023](adr/0023-plugin-owned-release-runtime.md) for handler-scoped Paseo authority and a plugin-owned portable Engine/Dolt runtime; [ADR-0024](adr/0024-project-agent-administration-mcp.md) for the own-Project administration MCP available to every authenticated Project agent; [ADR-0025](adr/0025-main-source-testing-and-director-host-identity.md) for the Go-owned two-channel runtime, explicit unpublished-main source-testing channel, and Director-owned persistent host identity
 - **Human consolidation record:** Beads Task `dir-m1.14`, comment `01a07a8a-65f2-7755-a7af-bf5239fffffc`, for current worktree ownership, host-view, Organizer, UI, and repository-process rules
 - **Plugin repository:** <https://github.com/mcuadros/paseo-director>
 - **Public name:** Director for Paseo
@@ -450,7 +450,7 @@ Bootstrap does not add, edit, or commit files in product repositories. Director 
 
 The domain depends on a `TaskStore` port, never on Beads commands or internal storage layout.
 
-Director `1.0` uses one Director-owned direct Dolt `2.3.2` schema behind the Director Engine's trusted typed `TaskStore` adapter (ADR-0004, ADR-0012, ADR-0022, and ADR-0023). Dolt remains a separately supervised process, but its exact precompiled release artifact and lifecycle are owned by the plugin's detached portable supervisor rather than a machine service. The engine is the sole holder and user of the distinct scoped control, writer, and exact-routine maintenance SQL identities. The transient bootstrap owner is not retained at runtime. Agents, host connectors, UI, repositories, prompts, and configuration receive only scoped typed contracts, never raw SQL or TaskStore credentials. Beads `1.2.2` is rejected as the product runtime store; this repository's Beads workflow is independent.
+Director `1.0` uses one Director-owned direct Dolt `2.3.2` schema behind the Director Engine's trusted typed `TaskStore` adapter (ADR-0004, ADR-0012, ADR-0022, ADR-0023, and ADR-0025). Dolt remains a separately supervised process, but its exact precompiled release artifact and lifecycle are owned by the plugin's long-lived Go bootstrap rather than Node or a machine service. The engine is the sole holder and user of the distinct scoped control, writer, and exact-routine maintenance SQL identities. The bootstrap retains only runtime-controller authority and never exposes SQL credentials to Node. Agents, host connectors, UI, repositories, prompts, events, and configuration receive only scoped typed contracts, never raw SQL or TaskStore credentials. Beads `1.2.2` is rejected as the product runtime store; this repository's Beads workflow is independent.
 
 The selected mapping supports:
 
@@ -1079,9 +1079,11 @@ Linux platform rules:
 
 - Public repository: `mcuadros/paseo-director`.
 - Director for Paseo installs/updates through Paseo's Git-clone plugin lifecycle. The declared direct-argv preparation runs `npm ci --omit=dev --ignore-scripts --no-audit --no-fund` from the committed lockfile and then the committed compatibility/dependency verifier before Paseo compiles or loads the candidate. CI audits the complete locked registry/integrity graph and the disabled lifecycle-script set; drift, registry failure, lock/package mismatch, or verification failure rejects the candidate without replacing the prior installation (ADR-0009 and ADR-0017, as amended by owner decision `dir-m6.9` comment `01a09682-1168-70ca-841a-4ef6a4aabedb`).
-- In explicit `release` mode, the installed connector commit pins the Director Engine version, target, exact reviewed source Candidate, and SHA-256 of both the binary and exact-source third-party notices. It downloads those Director-owned GitHub Release assets, verifies them before execution, and atomically caches them outside the plugin checkout at the platform XDG cache location. Missing/mismatched identity, asset, notice, target, source, or digest fails closed and never compiles (ADR-0017).
-- In explicit `development` mode, the connector builds the Go engine from the selected local source with the declared local Go toolchain and never downloads or falls back to release mode. A missing explicit mode fails closed; ambient Git state, cache, toolchain, or network never selects or changes it (ADR-0017).
-- Every engine start reports mode, version, exact source Candidate, target, executable/notices SHA-256, connector commit, and contract version/hash in structured diagnostics. Go is a development/release-builder prerequisite, not a release-user prerequisite. Statically linked releases ship verified notices generated from the exact source Candidate (ADR-0009 and ADR-0017).
+- An unpublished `release/engine.json` is the explicit default-main source-testing channel. Declared add/update preparation uses a narrow fixed-system Go 1.26.5 adapter to build exactly the Go bootstrap from Paseo's clean checkout once. That bootstrap then builds exactly the Engine package with fixed direct argv, readonly modules, bounded output/time, and an existing Go-sum-verified offline cache, and atomically publishes its self-identifying Candidate/target/contract/digest closure. Node never builds the Engine; runtime and reload never compile or depend on the checkout (ADR-0025).
+- A published `release/engine.json` is the alpha/beta/stable binary-distribution channel, paired with a manifest-pinned precompiled `director-bootstrap`. Without Go, Git, or a compiler, that bootstrap downloads, verifies, and atomically caches the pinned Engine, exact-source notices, and canonical Dolt 2.3.2. Missing/mismatched/unpublished bootstrap or runtime artifacts fail closed and never compile or fall back to source (ADR-0017 and ADR-0025).
+- The long-lived Go bootstrap owns runtime XDG state, locks, leases, credentials, TaskStore bootstrap, Engine/Dolt children, health/backoff/recovery, and controlled handoff. TypeScript is only Paseo UI/RPC integration plus the policy-free pinned-bootstrap launcher. It generates no runtime identity, downloads no runtime asset, supervises no child, and implements no release fallback (ADR-0025).
+- Go generates one random opaque public host identity and preserves it owner-only outside the checkout. The same authenticated identity binds TaskStore bootstrap, Engine service, controller adoption/handoff, Project-admin authority, and all connector queries. Client host input has no authority, foreign or poisoned identity fails closed, the exact legacy TaskStore binding migrates without data deletion, and public logs do not disclose the raw value (ADR-0025).
+- Every engine start reports mode, version, exact source Candidate, target, executable/notices SHA-256, connector commit, and contract version/hash in structured diagnostics. Go is a default-main preparation/release-builder prerequisite, not a release-user or reload prerequisite. Statically linked releases ship verified notices generated from the exact source Candidate (ADR-0009, ADR-0017, and ADR-0025).
 - Director never automatically downloads undeclared external third-party binaries. Its own declared, pinned, verified release artifact follows the preceding accepted distribution chain.
 - Doctor explains missing prerequisites and how to install them.
 - No telemetry.
@@ -1187,16 +1189,32 @@ Tests use real disposable Git repositories/worktrees and the selected TaskStore.
 
 ### 21.3 Release candidate
 
-- Clean installation on exact supported Paseo `0.7.2`, including the disclosed full-daemon-operator connector authority and fail-closed missing-credential behavior (ADR-0017).
+- Deterministic connector and client compatibility on the exact supported Paseo
+  `0.7.2` public contract, including the disclosed full-daemon-operator
+  connector authority and fail-closed missing-credential behavior (ADR-0017).
 - Upgrade from the previous Director version.
 - Locked npm candidate preparation, concurrent/replayed update reconciliation, failed-update preservation, and recovery from registry, lockfile, dependency, and lifecycle verification failures.
-- Release-mode version/source/digest/notices download and external-cache verification, development-mode Go compilation, attributable engine identity, and no cross-mode fallback.
+- Published bootstrap/Engine/notices/Dolt download and private-cache verification with zero compiler access; unpublished exact-checkout bootstrap-plus-Engine compilation only during add/update; attributable identities and no cross-channel fallback.
 - Real PR and CI in a GitHub sandbox repository.
 - Manual smoke with compatible Codex, Claude Code, and OpenCode installations.
 - Desktop, browser, and mobile UI.
 - Pause, emergency stop, recovery, cleanup, backup, and restore.
 
 Real models and external GitHub Actions run manually or for release candidates, not on every PR.
+The former `test:activation:real` disposable Paseo add/update/reload lifecycle
+is intentionally not an M6.20, CI, or release-candidate gate. It is not skipped
+or conditionally selected: the script and its exclusive fixture code are
+absent. Deterministic Go and Node tests cover channel selection, exact build
+counts, trust, namespace-independent cleanup behavior, coordinator
+authentication, and Project administration. The separately scoped
+`test:runtime:real` published-runtime gate remains required.
+That retained gate capability-probes the fixed `pasta` transport and uses its
+isolated network only when the host admits rootless user namespaces. When the
+probe reports the exact user-mapping permission refusal or `pasta` is absent,
+the same complete fixture runs as an owned child in the original user network
+namespace after proving its fixed runtime ports absent; private XDG state,
+lease-expiry cleanup, process ownership, and post-run port/process absence
+remain mandatory. Unknown transport failures never select the fallback.
 
 ### 21.4 Validation scale
 
@@ -1342,7 +1360,7 @@ agreed acceptance scenario.
 ### M6 — Public release
 
 - Git installation/update lifecycle.
-- Pinned release-download/development-compile Director Engine distribution, notices, identity, and exact-0.7.2 connector authority disclosure.
+- Go-bootstrap-owned unpublished-main compilation and published-release download distribution, notices, persistent identity, process ownership, and exact-0.7.2 connector authority disclosure.
 - Stable Paseo compatibility declaration.
 - Public user, operator, and developer documentation.
 - Example Organizer.
@@ -1491,7 +1509,7 @@ These facts were true when the plan was written and are not permanent assumption
 - Paseo `0.7` documentation is marked current/stable.
 - `0.8` documentation is marked preview and introduces incompatible client/server entrypoints.
 - The public plugin API remains experimental.
-- The plugin server runs trusted, unsandboxed Node code on the daemon.
+- The plugin server runs trusted, unsandboxed Node UI/RPC integration on the daemon; the manifest-pinned Go bootstrap exclusively owns runtime distribution and process control.
 - Plugin UI uses React Native surfaces on desktop/web/mobile.
 - Plugin storage and general native navigation, hierarchy, and notification contributions are limited or absent.
 - The current SDK exposes Project/Workspace/Agent/provider operations and per-session MCP.

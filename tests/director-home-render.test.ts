@@ -85,13 +85,13 @@ function loadHomeComponent(
   const require = (specifier: string): unknown => {
     switch (specifier) {
       case "@getpaseo/plugin":
-        return { useRpc: (contract: unknown) => contract === PlanningRpc.homeQueryRpc ? homeRpc
+        return { Icon: "Icon", useRpc: (contract: unknown) => contract === PlanningRpc.homeQueryRpc ? homeRpc
           : contract === PlanningRpc.organizerBootstrapRpc ? organizerRpc
             : contract === PlanningRpc.nativePaseoProjectsRpc ? nativeProjectsRpc
             : contract === PlanningRpc.doctorQueryRpc ? doctorRpc
               : contract === PlanningRpc.repairProjectRpc ? repairRpc
                 : mutationRpc };
-      case "@getpaseo/plugin/react-native":
+      case "./paseo-ui.client.tsx":
         return { Icon: "Icon", Modal, useToast: () => ({ show() {}, error() {} }) };
       case "@tanstack/react-query": return ReactQuery;
       case "react": return reactModule;
@@ -101,6 +101,7 @@ function loadHomeComponent(
       case "../generated/planning-contract.shared.ts": return PlanningContract;
       case "../rpc/planning.shared.ts": return PlanningRpc;
       case "./director-home-model.client.ts": return HomeModel;
+      case "./director-host.client.ts": return { useDirectorHostIdentity: () => ({ identity: { schemaVersion: 1, id: "host-a", label: "Director" }, isPending: false, isError: false, error: null }) };
       case "./shell-layout.client.ts": return ShellLayout;
       case "./accessibility.client.tsx":
         return loadClientModule("ui/accessibility.client.tsx", require);

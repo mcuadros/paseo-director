@@ -44,13 +44,13 @@ const REQUIRED_SCRIPTS = [
   "smoke",
   "test",
   "test:baseline",
-  "test:activation:real",
   "test:engine",
   "test:host",
   "test:packaging",
   "test:packaging:real",
   "typecheck",
 ];
+const RETIRED_SCRIPTS = ["test:activation:real"];
 const REQUIRED_UI_REGISTRATIONS = [
   'addSurface("home", DirectorHome)',
   'id: "project-board"',
@@ -64,6 +64,7 @@ const ENGINE_ALLOWED_PREFIXES = [
   "engine/agent-runtime/",
   "engine/application/",
   "engine/cmd/director-engine/",
+  "engine/cmd/director-bootstrap/",
   "engine/cmd/generate-host-client/",
   "engine/cmd/generate-planning-client/",
   "engine/cmd/generate-agent-mcp-client/",
@@ -594,9 +595,7 @@ export function hostSourceErrors(path, source) {
   ) {
     errors.push(`${path}: Paseo SDK imports belong only in the host connector`);
   }
-  const policySource = path === "connector/runtime-supervisor-process.linux.server.mjs"
-    ? source.replaceAll(/taskstore/giu, "")
-    : source;
+  const policySource = source;
   if (
     isHostRuntime &&
     /\b(?:eligibility|scheduler|retryPolicy|escalation|reconciliation|TaskStore|stateTransition|closurePolicy)\b/i.test(
@@ -625,6 +624,32 @@ export function enginePackageInventoryErrors(paths) {
 
 function architectureErrors(repositoryRoot, paths) {
   const errors = [];
+  const forbiddenNodeRuntimeOwners = [
+    "connector/dolt-distribution.server.ts",
+    "connector/engine-distribution.server.ts",
+    "connector/host-identity.server.ts",
+    "connector/runtime-supervisor.server.ts",
+    "connector/runtime-supervisor-process.linux.server.mjs",
+    "tools/packaging/main-engine-build.mjs",
+  ];
+  for (const path of forbiddenNodeRuntimeOwners) {
+    if (paths.includes(path)) errors.push(`${path}: runtime ownership belongs to the Go bootstrap`);
+  }
+  if (!paths.includes("engine/cmd/director-bootstrap/main.go")) {
+    errors.push("engine/cmd/director-bootstrap: exact Go runtime controller is missing");
+  }
+  const launcher = readFileSync(resolve(repositoryRoot, "connector/bootstrap-launcher.server.ts"), "utf8");
+  const installer = readFileSync(resolve(repositoryRoot, "tools/packaging/verify-install.mjs"), "utf8");
+  const bootstrapBuild = ["bootstrap-build.mjs", "bootstrap-build-core.mjs"]
+    .map((file) => readFileSync(resolve(repositoryRoot, "tools/packaging", file), "utf8"))
+    .join("\n");
+  if (/\b(?:fetch|createServer|createConnection|fork|spawn)\b|sql-server|serve-board|bootstrap-taskstore|SIGKILL|SIGTERM/u.test(launcher)) {
+    errors.push("connector/bootstrap-launcher.server.ts: JavaScript launcher contains runtime distribution or supervision effects");
+  }
+  if (/director-engine|dolt-linux|sql-server|serve-board|bootstrap-taskstore/u.test(installer) ||
+    /\.\/cmd\/director-engine|sql-server|serve-board|bootstrap-taskstore/u.test(bootstrapBuild)) {
+    errors.push("tools/packaging: JavaScript preparation crossed the bootstrap-only build boundary");
+  }
   const futureProduct = paths.filter((path) =>
     FUTURE_PRODUCT_PATHS.some((pattern) => pattern.test(path)),
   );
@@ -660,6 +685,7 @@ function scaffoldErrors(repositoryRoot, paths) {
   const manifest = readJson(repositoryRoot, "paseo-plugin.json", errors);
   const lockfile = readJson(repositoryRoot, "package-lock.json", errors);
   const release = readJson(repositoryRoot, "release/engine.json", errors);
+  const bootstrapRelease = readJson(repositoryRoot, "release/bootstrap-linux-amd64.json", errors);
   const readme = readFileSync(resolve(repositoryRoot, "README.md"), "utf8");
   const licenseHash = createHash("sha256")
     .update(readFileSync(resolve(repositoryRoot, "LICENSE")))
@@ -681,6 +707,16 @@ function scaffoldErrors(repositoryRoot, paths) {
     for (const script of REQUIRED_SCRIPTS) {
       if (typeof packageJson.scripts?.[script] !== "string") {
         errors.push(`package.json: required deterministic script ${script} is missing`);
+      }
+    }
+    for (const script of RETIRED_SCRIPTS) {
+      if (Object.hasOwn(packageJson.scripts ?? {}, script)) {
+        errors.push(`package.json: retired script ${script} must remain absent`);
+      }
+      for (const [owner, command] of Object.entries(packageJson.scripts ?? {})) {
+        if (typeof command === "string" && command.includes(`npm run ${script}`)) {
+          errors.push(`package.json: script ${owner} invokes retired script ${script}`);
+        }
       }
     }
   }
@@ -716,6 +752,14 @@ function scaffoldErrors(repositoryRoot, paths) {
         "release/engine.json: scaffold release must fail closed as unpublished",
       );
     }
+  }
+  if (bootstrapRelease && !isDeepStrictEqual(bootstrapRelease, {
+    schemaVersion: 1,
+    state: "unpublished",
+    version: "0.0.0-scaffold",
+    target: "linux-amd64",
+  })) {
+    errors.push("release/bootstrap-linux-amd64.json: scaffold bootstrap must fail closed as unpublished without an asset");
   }
   if (
     !readme.includes("independent community plugin") ||

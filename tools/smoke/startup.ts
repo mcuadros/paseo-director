@@ -5,18 +5,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  EngineSelectionError,
-  selectEngine,
-} from "../../connector/engine-selection.server.ts";
-
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-assert.throws(
-  () => selectEngine({ DIRECTOR_ENGINE_MODE: "development" }, repositoryRoot),
-  (error: unknown) =>
-    error instanceof EngineSelectionError &&
-    error.code === "ENGINE_DEVELOPMENT_DISABLED",
-);
 
 for (const command of ["version", "smoke"] as const) {
   const result = spawnSync("go", [
@@ -44,6 +33,13 @@ for (const command of ["version", "smoke"] as const) {
     assert.equal(output.productBehavior, true);
   }
 }
+const bootstrap = spawnSync("go", ["-C", resolve(repositoryRoot, "engine"), "run", "./cmd/director-bootstrap", "version"], {
+  encoding: "utf8",
+  env: { ...(process.env.PATH ? { PATH: process.env.PATH } : {}), ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
+    ...(process.env.GOCACHE ? { GOCACHE: process.env.GOCACHE } : {}), GOTOOLCHAIN: "local", GOWORK: "off" },
+});
+assert.equal(bootstrap.status, 0, bootstrap.stderr);
+assert.equal(JSON.parse(bootstrap.stdout).name, "director-bootstrap");
 process.stdout.write(
-  "Standalone Engine CI smoke passed; installed runtime remains release-only.\n",
+  "Standalone Engine and Go bootstrap CI smoke passed.\n",
 );

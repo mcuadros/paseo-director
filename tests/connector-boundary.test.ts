@@ -18,21 +18,14 @@ import test from "node:test";
 
 import type { PaseoClientConfig } from "@getpaseo/client";
 
-import { startConnectorShell } from "../connector/paseo.server.ts";
+import { startConnectorShell, type ConnectorEngineSelection } from "../connector/paseo.server.ts";
 import {
   ConnectorCredentialError,
   loadConnectorCredential,
 } from "../connector/credential.server.ts";
-import {
-  EngineDistributionError,
-  engineBoundaryPaths,
-  type ResolvedEngine,
-} from "../connector/engine-distribution.server.ts";
+import { BootstrapLauncherError, type ResolvedEngine } from "../connector/bootstrap-launcher.server.ts";
 import { HostCompatibilityError } from "../connector/compatibility.server.ts";
 import { BoardTransportError } from "../connector/engine-board.server.ts";
-import {
-  selectEngine,
-} from "../connector/engine-selection.server.ts";
 
 function secureDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -77,7 +70,7 @@ function hostCompatibility() {
   };
 }
 
-function resolvedEngine(_selection: { mode: "release" }): Promise<ResolvedEngine> {
+function resolvedEngine(_selection: ConnectorEngineSelection): Promise<ResolvedEngine> {
   return Promise.resolve({
     mode: "release",
     version: "1.0.0",
@@ -425,29 +418,6 @@ test("connector startup requires the explicit engine Board endpoint before const
   }
 });
 
-test("release boundary enumerates only checkout, metadata, and cache paths", () => {
-  const boundary = temporaryBoundary();
-  try {
-    const selection = selectEngine(
-      {
-        DIRECTOR_ENGINE_MODE: "release",
-        XDG_CACHE_HOME: boundary.cacheBase,
-      },
-      boundary.checkoutRoot,
-    );
-    const boundaryPaths = engineBoundaryPaths(selection);
-    for (const path of [
-      selection.checkoutRoot,
-      selection.cacheRoot,
-      selection.metadataPath,
-    ]) {
-      assert.ok(boundaryPaths.includes(path), `missing engine boundary path ${path}`);
-    }
-  } finally {
-    rmSync(boundary.root, { recursive: true, force: true });
-  }
-});
-
 test("the legacy external connector descriptor never propagates its credential", async () => {
   const boundary = temporaryBoundary();
   let configuration: PaseoClientConfig | undefined;
@@ -538,9 +508,9 @@ test("engine verification failure closes connector authority before startup beco
       },
     });
     const status = connector.status();
-    rejectEngine(new EngineDistributionError("ENGINE_IDENTITY_MISMATCH", "engine identity does not match the installed pin"));
+    rejectEngine(new BootstrapLauncherError("ENGINE_IDENTITY_MISMATCH", "engine identity does not match the installed pin"));
     await assert.rejects(status, (error: unknown) =>
-      error instanceof EngineDistributionError && error.code === "ENGINE_IDENTITY_MISMATCH");
+      error instanceof BootstrapLauncherError && error.code === "ENGINE_IDENTITY_MISMATCH");
     assert.equal(closed, true);
   } finally {
     rmSync(boundary.root, { recursive: true, force: true });

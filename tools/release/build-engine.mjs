@@ -12,6 +12,7 @@ import {
   fsyncSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   renameSync,
@@ -19,6 +20,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
@@ -133,10 +135,13 @@ function verifyExistingOutput(options) {
     const metadataPath = join(options.output, "engine.json");
     const binaryPath = join(options.output, "director-engine-linux-amd64");
     const noticesPath = join(options.output, "THIRD_PARTY_NOTICES.txt");
-    for (const path of [metadataPath, binaryPath, noticesPath]) assertPrivateRegular(path, "RELEASE_OUTPUT_POISONED");
+    const bootstrapPath = join(options.output, "director-bootstrap-linux-amd64");
+    const bootstrapMetadataPath = join(options.output, "bootstrap-linux-amd64.json");
+    for (const path of [metadataPath, binaryPath, noticesPath, bootstrapPath, bootstrapMetadataPath]) assertPrivateRegular(path, "RELEASE_OUTPUT_POISONED");
     const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
     const expectedBinaryURL = `https://github.com/mcuadros/paseo-director/releases/download/v${options.version}/director-engine-linux-amd64`;
     const expectedNoticesURL = `https://github.com/mcuadros/paseo-director/releases/download/v${options.version}/THIRD_PARTY_NOTICES.txt`;
+    const bootstrapMetadata = JSON.parse(readFileSync(bootstrapMetadataPath, "utf8"));
     if (
       JSON.stringify(Object.keys(metadata).sort()) !== JSON.stringify(["binary", "dolt", "notices", "schemaVersion", "sourceCandidate", "state", "target", "version"]) ||
       JSON.stringify(Object.keys(metadata.binary ?? {}).sort()) !== JSON.stringify(["name", "sha256", "size", "url"]) ||
@@ -159,7 +164,13 @@ function verifyExistingOutput(options) {
       metadata.dolt?.executableSize !== lstatSync(options.doltExecutable).size ||
       metadata.binary?.sha256 !== sha256(binaryPath) ||
       metadata.notices?.sha256 !== sha256(noticesPath) ||
-      metadata.notices.sha256 !== sha256(options.notices)
+      metadata.notices.sha256 !== sha256(options.notices) ||
+      JSON.stringify(Object.keys(bootstrapMetadata).sort()) !== JSON.stringify(["binary", "schemaVersion", "sourceCandidate", "state", "target", "version"]) ||
+      bootstrapMetadata.schemaVersion !== 1 || bootstrapMetadata.state !== "published" || bootstrapMetadata.version !== options.version ||
+      bootstrapMetadata.target !== "linux-amd64" || bootstrapMetadata.sourceCandidate !== options.candidate ||
+      bootstrapMetadata.binary?.name !== "director-bootstrap-linux-amd64" ||
+      bootstrapMetadata.binary?.url !== `https://github.com/mcuadros/paseo-director/releases/download/v${options.version}/director-bootstrap-linux-amd64` ||
+      bootstrapMetadata.binary?.sha256 !== sha256(bootstrapPath) || bootstrapMetadata.binary?.size !== lstatSync(bootstrapPath).size
     ) {
       fail("RELEASE_OUTPUT_POISONED", "existing release output does not match the requested closure");
     }
@@ -173,7 +184,10 @@ function verifyExistingOutput(options) {
     ) {
       fail("RELEASE_OUTPUT_POISONED", "existing release identity does not match");
     }
-    return { metadata, identity, output: options.output };
+    const bootstrapIdentity = JSON.parse(command(bootstrapPath, ["version"], { env: {}, code: "RELEASE_OUTPUT_POISONED", timeout: 10_000 }));
+    if (bootstrapIdentity.name !== "director-bootstrap" || bootstrapIdentity.version !== options.version || bootstrapIdentity.buildMode !== "release" ||
+      bootstrapIdentity.sourceCandidate !== options.candidate || bootstrapIdentity.target !== "linux-amd64") fail("RELEASE_OUTPUT_POISONED", "existing bootstrap identity does not match");
+    return { metadata, identity, bootstrapMetadata, bootstrapIdentity, output: options.output };
   } catch (error) {
     if (error?.code === "RELEASE_OUTPUT_POISONED") throw error;
     fail("RELEASE_OUTPUT_POISONED", "existing release output cannot be verified");
@@ -215,9 +229,15 @@ export function buildRelease(argumentsValue) {
   assertRegular(options.notices, "RELEASE_NOTICES_IDENTITY");
   assertRegular(options.doltArchive, "RELEASE_DOLT_IDENTITY");
   assertRegular(options.doltExecutable, "RELEASE_DOLT_IDENTITY");
-  if (command(options.doltExecutable, ["version"], { env: { DOLT_DISABLE_VERSION_CHECK: "1" }, code: "RELEASE_DOLT_IDENTITY", timeout: 10_000 })
-    .split("\n")[0] !== `dolt version ${options.doltVersion}`) {
-    fail("RELEASE_DOLT_IDENTITY", "Dolt executable does not match the exact release input");
+  const doltIdentityHome = mkdtempSync(join(tmpdir(), "director-release-dolt-identity-"));
+  chmodSync(doltIdentityHome, 0o700);
+  try {
+    if (command(options.doltExecutable, ["version"], { env: { HOME: doltIdentityHome, DOLT_DISABLE_VERSION_CHECK: "1" }, code: "RELEASE_DOLT_IDENTITY", timeout: 10_000 })
+      .split("\n")[0] !== `dolt version ${options.doltVersion}`) {
+      fail("RELEASE_DOLT_IDENTITY", "Dolt executable does not match the exact release input");
+    }
+  } finally {
+    rmSync(doltIdentityHome, { recursive: true, force: true });
   }
   if (!readFileSync(options.notices, "utf8").split("\n").includes(`source-candidate: ${options.candidate}`)) {
     fail("RELEASE_NOTICES_IDENTITY", "notices do not identify the exact source Candidate");
@@ -229,16 +249,18 @@ export function buildRelease(argumentsValue) {
   const temporary = join(parent, `.partial-${options.candidate}-${randomUUID()}`);
   mkdirSync(temporary, { mode: 0o700 });
   const binaryName = "director-engine-linux-amd64";
-  const noticesName = "THIRD_PARTY_NOTICES.txt";
-  const binary = join(temporary, binaryName);
-  const notices = join(temporary, noticesName);
+    const noticesName = "THIRD_PARTY_NOTICES.txt";
+    const bootstrapName = "director-bootstrap-linux-amd64";
+    const binary = join(temporary, binaryName);
+    const notices = join(temporary, noticesName);
+    const bootstrap = join(temporary, bootstrapName);
   try {
     copyFileSync(options.notices, notices);
     chmodSync(notices, 0o400);
     fsyncPath(notices);
     const noticesSha256 = sha256(notices);
     command("go", [
-      "build", "-trimpath", "-buildvcs=false", "-ldflags",
+      "build", "-trimpath", "-buildvcs=false", "-mod=readonly", "-ldflags",
       `-s -w -X main.buildMode=release -X main.version=${options.version} -X main.sourceCandidate=${options.candidate} -X main.noticesSha=${noticesSha256}`,
       "-o", binary, "./cmd/director-engine",
     ], { cwd: options.source, env: buildEnvironment(), code: "RELEASE_BUILD_FAILED" });
@@ -254,6 +276,16 @@ export function buildRelease(argumentsValue) {
     ) {
       fail("RELEASE_IDENTITY_MISMATCH", "built engine identity does not match release inputs");
     }
+    command("go", [
+      "build", "-trimpath", "-buildvcs=false", "-mod=readonly", "-ldflags",
+      `-s -w -X main.bootstrapMode=release -X main.bootstrapVersion=${options.version} -X main.bootstrapCandidate=${options.candidate}`,
+      "-o", bootstrap, "./cmd/director-bootstrap",
+    ], { cwd: options.source, env: buildEnvironment(), code: "RELEASE_BOOTSTRAP_BUILD_FAILED" });
+    chmodSync(bootstrap, 0o500);
+    fsyncPath(bootstrap);
+    const bootstrapIdentity = JSON.parse(command(bootstrap, ["version"], { env: {}, code: "RELEASE_BOOTSTRAP_IDENTITY", timeout: 10_000 }));
+    if (bootstrapIdentity.name !== "director-bootstrap" || bootstrapIdentity.version !== options.version || bootstrapIdentity.buildMode !== "release" ||
+      bootstrapIdentity.sourceCandidate !== options.candidate || bootstrapIdentity.target !== "linux-amd64") fail("RELEASE_BOOTSTRAP_IDENTITY", "built bootstrap identity does not match release inputs");
     const metadata = {
       schemaVersion: 2,
       state: "published",
@@ -285,11 +317,17 @@ export function buildRelease(argumentsValue) {
       },
     };
     writeFileSync(join(temporary, "engine.json"), `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o400 });
+    const bootstrapMetadata = {
+      schemaVersion: 1, state: "published", version: options.version, target: "linux-amd64", sourceCandidate: options.candidate,
+      binary: { name: bootstrapName, url: `https://github.com/mcuadros/paseo-director/releases/download/v${options.version}/${bootstrapName}`, sha256: sha256(bootstrap), size: lstatSync(bootstrap).size },
+    };
+    writeFileSync(join(temporary, "bootstrap-linux-amd64.json"), `${JSON.stringify(bootstrapMetadata, null, 2)}\n`, { mode: 0o400 });
     fsyncPath(join(temporary, "engine.json"));
+    fsyncPath(join(temporary, "bootstrap-linux-amd64.json"));
     fsyncPath(temporary, true);
     renameSync(temporary, options.output);
     fsyncPath(parent, true);
-    return { metadata, identity, output: options.output };
+    return { metadata, identity, bootstrapMetadata, bootstrapIdentity, output: options.output };
   } finally {
     if (existsSync(temporary)) rmSync(temporary, { recursive: true, force: true });
   }
@@ -299,7 +337,7 @@ const modulePath = fileURLToPath(import.meta.url);
 if (process.argv[1] && resolve(process.argv[1]) === resolve(modulePath)) {
   try {
     const result = buildRelease(process.argv.slice(2));
-    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, version: result.metadata.version, sourceCandidate: result.metadata.sourceCandidate, binarySha256: result.metadata.binary.sha256, noticesSha256: result.metadata.notices.sha256, doltVersion: result.metadata.dolt.version, doltArchiveSha256: result.metadata.dolt.archive.sha256, doltExecutableSha256: result.metadata.dolt.executableSha256 })}\n`);
+    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, version: result.metadata.version, sourceCandidate: result.metadata.sourceCandidate, binarySha256: result.metadata.binary.sha256, bootstrapSha256: result.bootstrapMetadata.binary.sha256, noticesSha256: result.metadata.notices.sha256, doltVersion: result.metadata.dolt.version, doltArchiveSha256: result.metadata.dolt.archive.sha256, doltExecutableSha256: result.metadata.dolt.executableSha256 })}\n`);
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? error.code : "RELEASE_BUILD_FAILED";
     process.stderr.write(`${code}: ${error instanceof Error ? error.message : "release build failed"}\n`);
