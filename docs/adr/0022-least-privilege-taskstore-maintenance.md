@@ -1,6 +1,9 @@
 # ADR-0022: Use an exact routine grant for TaskStore maintenance
 
 - **Status:** Accepted
+- **Amended by:** [ADR-0023](0023-plugin-owned-release-runtime.md) for
+  release-only plugin-owned portable supervision while preserving the exact
+  scoped runtime identities
 - **Date:** 2026-09-12
 - **Beads Task:** `dir-m6.12`
 - **Decision owner:** Human project owner

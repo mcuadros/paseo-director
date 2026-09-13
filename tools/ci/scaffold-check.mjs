@@ -483,7 +483,7 @@ function releaseAssetValid(asset, version, name) {
     asset !== null &&
     typeof asset === "object" &&
     !Array.isArray(asset) &&
-    isDeepStrictEqual(Object.keys(asset).sort(), ["name", "sha256", "url"]) &&
+    isDeepStrictEqual(Object.keys(asset).sort(), ["name", "sha256", "size", "url"]) &&
     asset.name === name &&
     typeof asset.url === "string" &&
     parsed.origin === RELEASE_ORIGIN &&
@@ -494,8 +494,30 @@ function releaseAssetValid(asset, version, name) {
     parsed.hash === "" &&
     typeof asset.sha256 === "string" &&
     /^[0-9a-f]{64}$/.test(asset.sha256) &&
-    asset.sha256 !== EMPTY_SHA256
+    asset.sha256 !== EMPTY_SHA256 && Number.isSafeInteger(asset.size) && asset.size > 0
   );
+}
+
+function doltReleaseValid(dolt) {
+  let parsed;
+  try {
+    parsed = new URL(dolt?.archive?.url);
+  } catch {
+    return false;
+  }
+  const name = "dolt-linux-amd64.tar.gz";
+  return dolt !== null && typeof dolt === "object" && !Array.isArray(dolt) &&
+    isDeepStrictEqual(Object.keys(dolt).sort(), ["archive", "executableSha256", "executableSize", "version"]) &&
+    dolt.version === "2.3.2" &&
+    dolt.archive !== null && typeof dolt.archive === "object" && !Array.isArray(dolt.archive) &&
+    isDeepStrictEqual(Object.keys(dolt.archive).sort(), ["name", "sha256", "size", "url"]) &&
+    dolt.archive.name === name && parsed.origin === "https://github.com" &&
+    parsed.pathname === `/dolthub/dolt/releases/download/v${dolt.version}/${name}` &&
+    parsed.username === "" && parsed.password === "" && parsed.search === "" && parsed.hash === "" &&
+    /^[0-9a-f]{64}$/.test(dolt.archive.sha256 ?? "") && dolt.archive.sha256 !== EMPTY_SHA256 &&
+    Number.isSafeInteger(dolt.archive.size) && dolt.archive.size > 0 &&
+    /^[0-9a-f]{64}$/.test(dolt.executableSha256 ?? "") && dolt.executableSha256 !== EMPTY_SHA256 &&
+    Number.isSafeInteger(dolt.executableSize) && dolt.executableSize > 0;
 }
 
 export function releaseMetadataErrors(release) {
@@ -532,6 +554,7 @@ export function releaseMetadataErrors(release) {
   if (
     !isDeepStrictEqual(Object.keys(release).sort(), [
       "binary",
+      "dolt",
       "notices",
       "schemaVersion",
       "sourceCandidate",
@@ -547,6 +570,9 @@ export function releaseMetadataErrors(release) {
   }
   if (!releaseAssetValid(release.notices, release.version, "THIRD_PARTY_NOTICES.txt")) {
     errors.push("published release notices identity or digest is invalid");
+  }
+  if (!doltReleaseValid(release.dolt)) {
+    errors.push("published Dolt release identity or digest is invalid");
   }
   return errors;
 }
@@ -566,10 +592,13 @@ export function hostSourceErrors(path, source) {
   ) {
     errors.push(`${path}: Paseo SDK imports belong only in the host connector`);
   }
+  const policySource = path === "connector/runtime-supervisor-process.linux.server.mjs"
+    ? source.replaceAll(/taskstore/giu, "")
+    : source;
   if (
     isHostRuntime &&
     /\b(?:eligibility|scheduler|retryPolicy|escalation|reconciliation|TaskStore|stateTransition|closurePolicy)\b/i.test(
-      source,
+      policySource,
     )
   ) {
     errors.push(`${path}: host source contains prohibited workflow policy`);

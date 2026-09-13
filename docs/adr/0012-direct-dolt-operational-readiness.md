@@ -6,7 +6,9 @@
 - **Plan gate:** M0 TaskStore synchronization, backup, restore, and migration
 - **Decision owners:** Human project owner and Director maintainers
 - **Amended by:** [ADR-0022](0022-least-privilege-taskstore-maintenance.md)
-  for runtime global-safe-mode correction and least-privilege backup authority
+  for runtime global-safe-mode correction and least-privilege backup authority;
+  [ADR-0023](0023-plugin-owned-release-runtime.md) for release-only plugin-owned
+  portable supervision
 
 ## Context
 

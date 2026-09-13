@@ -22,12 +22,13 @@ function fixture() {
 test("the committed registry closure and disabled lifecycle set are fully audited", () => {
   const result = auditDependencyClosure(repositoryRoot, { installed: true });
   assert.deepEqual(result.errors, []);
-  assert.equal(result.packageCount, 346);
+  assert.equal(result.packageCount, 580);
   assert.equal(result.productionPackageCount, 7);
   assert.equal(result.lifecycleScriptsExecuted, 0);
   assert.deepEqual(result.auditedInstallScriptPackages, [
     "node_modules/esbuild",
     "node_modules/fsevents",
+    "node_modules/node-pty",
   ]);
   assert.match(result.sha256, /^[0-9a-f]{64}$/u);
 });

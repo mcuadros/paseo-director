@@ -227,7 +227,14 @@ test("native onboarding derives one stable selector from authoritative public Pa
 function connector(client: ConnectorClient): PaseoHostConnector {
   return new PaseoHostConnector(
     client,
-    { mode: "development" } as EngineSelection,
+    {
+      mode: "release",
+      cacheRoot: "/not-exposed/cache",
+      checkoutRoot: "",
+      metadataPath: "",
+      connectorCommit: "4".repeat(40),
+      releaseMetadata: Buffer.from("{}"),
+    } as EngineSelection,
     { async load() { throw new Error("unused"); } },
     {
       async query() { throw new Error("unused"); },

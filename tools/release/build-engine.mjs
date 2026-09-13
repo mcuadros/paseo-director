@@ -67,12 +67,19 @@ function parseArguments(argumentsValue) {
     }
     values.set(name, value);
   }
-  if ([...values.keys()].some((name) => !["--source", "--candidate", "--version", "--notices", "--output"].includes(name))) {
+  if ([...values.keys()].some((name) => ![
+    "--source", "--candidate", "--version", "--notices", "--output",
+    "--dolt-version", "--dolt-archive", "--dolt-executable",
+  ].includes(name))) {
     fail("RELEASE_ARGUMENT", "release builder argument is unsupported");
   }
   const candidate = values.get("--candidate");
   const version = values.get("--version");
-  if (!SHA_PATTERN.test(candidate ?? "") || !VERSION_PATTERN.test(version ?? "")) {
+  const doltVersion = values.get("--dolt-version");
+  if (
+    !SHA_PATTERN.test(candidate ?? "") || !VERSION_PATTERN.test(version ?? "") ||
+    doltVersion !== "2.3.2"
+  ) {
     fail("RELEASE_ARGUMENT", "release version or Candidate is invalid");
   }
   return {
@@ -80,6 +87,9 @@ function parseArguments(argumentsValue) {
     candidate,
     version,
     notices: exactPath(values.get("--notices"), "notices"),
+    doltVersion,
+    doltArchive: exactPath(values.get("--dolt-archive"), "Dolt archive"),
+    doltExecutable: exactPath(values.get("--dolt-executable"), "Dolt executable"),
     output: exactPath(values.get("--output"), "output"),
   };
 }
@@ -128,15 +138,25 @@ function verifyExistingOutput(options) {
     const expectedBinaryURL = `https://github.com/mcuadros/paseo-director/releases/download/v${options.version}/director-engine-linux-amd64`;
     const expectedNoticesURL = `https://github.com/mcuadros/paseo-director/releases/download/v${options.version}/THIRD_PARTY_NOTICES.txt`;
     if (
-      JSON.stringify(Object.keys(metadata).sort()) !== JSON.stringify(["binary", "notices", "schemaVersion", "sourceCandidate", "state", "target", "version"]) ||
-      JSON.stringify(Object.keys(metadata.binary ?? {}).sort()) !== JSON.stringify(["name", "sha256", "url"]) ||
-      JSON.stringify(Object.keys(metadata.notices ?? {}).sort()) !== JSON.stringify(["name", "sha256", "url"]) ||
+      JSON.stringify(Object.keys(metadata).sort()) !== JSON.stringify(["binary", "dolt", "notices", "schemaVersion", "sourceCandidate", "state", "target", "version"]) ||
+      JSON.stringify(Object.keys(metadata.binary ?? {}).sort()) !== JSON.stringify(["name", "sha256", "size", "url"]) ||
+      JSON.stringify(Object.keys(metadata.notices ?? {}).sort()) !== JSON.stringify(["name", "sha256", "size", "url"]) ||
       metadata.schemaVersion !== 2 || metadata.state !== "published" ||
       metadata.version !== options.version || metadata.target !== "linux-amd64" ||
       metadata.sourceCandidate !== options.candidate ||
       metadata.binary?.name !== "director-engine-linux-amd64" ||
       metadata.notices?.name !== "THIRD_PARTY_NOTICES.txt" ||
       metadata.binary?.url !== expectedBinaryURL || metadata.notices?.url !== expectedNoticesURL ||
+      metadata.binary?.size !== lstatSync(binaryPath).size || metadata.notices?.size !== lstatSync(noticesPath).size ||
+      metadata.dolt?.version !== options.doltVersion ||
+      JSON.stringify(Object.keys(metadata.dolt ?? {}).sort()) !== JSON.stringify(["archive", "executableSha256", "executableSize", "version"]) ||
+      JSON.stringify(Object.keys(metadata.dolt?.archive ?? {}).sort()) !== JSON.stringify(["name", "sha256", "size", "url"]) ||
+      metadata.dolt?.archive?.name !== "dolt-linux-amd64.tar.gz" ||
+      metadata.dolt?.archive?.url !== `https://github.com/dolthub/dolt/releases/download/v${options.doltVersion}/dolt-linux-amd64.tar.gz` ||
+      metadata.dolt?.archive?.sha256 !== sha256(options.doltArchive) ||
+      metadata.dolt?.archive?.size !== lstatSync(options.doltArchive).size ||
+      metadata.dolt?.executableSha256 !== sha256(options.doltExecutable) ||
+      metadata.dolt?.executableSize !== lstatSync(options.doltExecutable).size ||
       metadata.binary?.sha256 !== sha256(binaryPath) ||
       metadata.notices?.sha256 !== sha256(noticesPath) ||
       metadata.notices.sha256 !== sha256(options.notices)
@@ -193,6 +213,12 @@ export function buildRelease(argumentsValue) {
   const options = parseArguments(argumentsValue);
   assertSource(options.source, options.candidate);
   assertRegular(options.notices, "RELEASE_NOTICES_IDENTITY");
+  assertRegular(options.doltArchive, "RELEASE_DOLT_IDENTITY");
+  assertRegular(options.doltExecutable, "RELEASE_DOLT_IDENTITY");
+  if (command(options.doltExecutable, ["version"], { env: { DOLT_DISABLE_VERSION_CHECK: "1" }, code: "RELEASE_DOLT_IDENTITY", timeout: 10_000 })
+    .split("\n")[0] !== `dolt version ${options.doltVersion}`) {
+    fail("RELEASE_DOLT_IDENTITY", "Dolt executable does not match the exact release input");
+  }
   if (!readFileSync(options.notices, "utf8").split("\n").includes(`source-candidate: ${options.candidate}`)) {
     fail("RELEASE_NOTICES_IDENTITY", "notices do not identify the exact source Candidate");
   }
@@ -238,11 +264,24 @@ export function buildRelease(argumentsValue) {
         name: binaryName,
         url: `https://github.com/mcuadros/paseo-director/releases/download/v${options.version}/${binaryName}`,
         sha256: sha256(binary),
+        size: lstatSync(binary).size,
       },
       notices: {
         name: noticesName,
         url: `https://github.com/mcuadros/paseo-director/releases/download/v${options.version}/${noticesName}`,
         sha256: noticesSha256,
+        size: lstatSync(notices).size,
+      },
+      dolt: {
+        version: options.doltVersion,
+        archive: {
+          name: "dolt-linux-amd64.tar.gz",
+          url: `https://github.com/dolthub/dolt/releases/download/v${options.doltVersion}/dolt-linux-amd64.tar.gz`,
+          sha256: sha256(options.doltArchive),
+          size: lstatSync(options.doltArchive).size,
+        },
+        executableSha256: sha256(options.doltExecutable),
+        executableSize: lstatSync(options.doltExecutable).size,
       },
     };
     writeFileSync(join(temporary, "engine.json"), `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o400 });
@@ -260,7 +299,7 @@ const modulePath = fileURLToPath(import.meta.url);
 if (process.argv[1] && resolve(process.argv[1]) === resolve(modulePath)) {
   try {
     const result = buildRelease(process.argv.slice(2));
-    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, version: result.metadata.version, sourceCandidate: result.metadata.sourceCandidate, binarySha256: result.metadata.binary.sha256, noticesSha256: result.metadata.notices.sha256 })}\n`);
+    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, version: result.metadata.version, sourceCandidate: result.metadata.sourceCandidate, binarySha256: result.metadata.binary.sha256, noticesSha256: result.metadata.notices.sha256, doltVersion: result.metadata.dolt.version, doltArchiveSha256: result.metadata.dolt.archive.sha256, doltExecutableSha256: result.metadata.dolt.executableSha256 })}\n`);
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? error.code : "RELEASE_BUILD_FAILED";
     process.stderr.write(`${code}: ${error instanceof Error ? error.message : "release build failed"}\n`);

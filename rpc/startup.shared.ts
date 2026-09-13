@@ -35,25 +35,23 @@ export const connectorStartupStatus = defineRpc({
   input: z.strictObject({}),
   output: z.strictObject({
     state: z.literal("board-ready"),
-    engineMode: z.enum(["release", "development"]),
+    engineMode: z.literal("release"),
     productBehavior: z.literal(true),
     activation: z.strictObject({
       lifecycle: z.literal("plugin-reload"),
       result: z.literal("running-current"),
-      configurationSchemaVersion: z.literal(1),
+      configurationSchemaVersion: z.literal(2),
       configurationSha256: z.string().regex(/^[0-9a-f]{64}$/u),
       legacyEnvironment: z.enum(["absent", "ignored"]),
       settings: z.array(z.strictObject({
         name: z.enum([
-          "paseo.url",
           "engine.mode",
           "engine.url",
           "engine.cache-base",
           "engine.runtime-base",
-          "engine.module-cache",
         ]),
         source: z.enum(["defaulted", "overridden"]),
-      })).max(5),
+      })).max(4),
     }),
     compatibility: z.strictObject({
       paseoVersion: z.literal("0.7.2"),
@@ -63,7 +61,7 @@ export const connectorStartupStatus = defineRpc({
       target: z.literal("linux-amd64"),
     }),
     engine: z.strictObject({
-      mode: z.enum(["release", "development"]),
+      mode: z.literal("release"),
       version: z.string().min(1).max(128),
       sourceCandidate: z.string().regex(/^[0-9a-f]{40}$/u),
       target: z.literal("linux-amd64"),
@@ -72,6 +70,14 @@ export const connectorStartupStatus = defineRpc({
       connectorCommit: z.string().regex(/^[0-9a-f]{40}$/u),
       contractVersion: z.string().min(1).max(64),
       contractSha256: z.string().regex(/^[0-9a-f]{64}$/u),
+    }),
+    runtime: z.strictObject({
+      supervisorBinding: z.string().regex(/^[0-9a-f]{64}$/u),
+      supervisorState: z.literal("current"),
+      doltVersion: z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+$/u),
+      doltTarget: z.literal("linux-amd64"),
+      doltBinarySha256: z.string().regex(/^[0-9a-f]{64}$/u),
+      doltArchiveSha256: z.string().regex(/^[0-9a-f]{64}$/u),
     }),
     descriptor: descriptorSchema,
   }),
