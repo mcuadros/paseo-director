@@ -94,6 +94,75 @@ test("the maintained scaffold and workflow satisfy their contracts", () => {
   assert.deepEqual(lintRepository(repositoryRoot).errors, []);
 });
 
+test("ADR lifecycle rejects compound status and missing reciprocal amendment links", () => {
+  const temporaryRoot = trackedRepositoryCopy("director-adr-lifecycle-");
+  const paths = {
+    adr0004: "docs/adr/0004-select-direct-dolt-taskstore.md",
+    adr0012: "docs/adr/0012-direct-dolt-operational-readiness.md",
+    adr0022: "docs/adr/0022-least-privilege-taskstore-maintenance.md",
+  };
+  const originals = new Map(
+    Object.values(paths).map((path) => [
+      path,
+      readFileSync(resolve(temporaryRoot, path), "utf8"),
+    ]),
+  );
+  const restore = () => {
+    for (const [path, contents] of originals) {
+      writeFileSync(resolve(temporaryRoot, path), contents);
+    }
+  };
+  const replace = (path, before, after) => {
+    const original = originals.get(path);
+    const changed = original.replace(before, after);
+    assert.notEqual(changed, original, `${path} mutation must apply`);
+    writeFileSync(resolve(temporaryRoot, path), changed);
+  };
+  const governanceErrors = () =>
+    lintRepository(temporaryRoot).governance.errors;
+
+  try {
+    assert.deepEqual(
+      governanceErrors(),
+      [],
+      "the corrected ADR-0022 topology must pass",
+    );
+
+    replace(
+      paths.adr0022,
+      "- **Status:** Accepted\n",
+      "- **Status:** Accepted; effective only after exact-Candidate review and integration\n",
+    );
+    assert.deepEqual(governanceErrors(), [
+      `${paths.adr0022}: invalid or missing ADR lifecycle status`,
+    ]);
+
+    restore();
+    replace(
+      paths.adr0022,
+      "- **Amends:** PLAN header and §8.1;\n  [ADR-0004]",
+      "- **Amends:** [ADR-0004]",
+    );
+    assert.deepEqual(governanceErrors(), [
+      "PLAN: amended_by ADR-0022 lacks reciprocal amends",
+    ]);
+
+    restore();
+    const adr0022AmendedBy =
+      "- **Amended by:** [ADR-0022](0022-least-privilege-taskstore-maintenance.md)\n" +
+      "  for runtime global-safe-mode correction and least-privilege backup authority;\n" +
+      "  ";
+    replace(paths.adr0004, adr0022AmendedBy, "- **Amended by:** ");
+    replace(paths.adr0012, adr0022AmendedBy, "- **Amended by:** ");
+    assert.deepEqual(governanceErrors(), [
+      "ADR-0022: amends ADR-0004 lacks reciprocal amended_by",
+      "ADR-0022: amends ADR-0012 lacks reciprocal amended_by",
+    ]);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test("scaffold inventory admits only the exact credential fixture package", () => {
   const exact = "engine/internal/testkit/secretfixture/canary.go";
   assert.deepEqual(enginePackageInventoryErrors([exact]), []);
