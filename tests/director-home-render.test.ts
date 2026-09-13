@@ -237,6 +237,7 @@ test("DirectorHome native Paseo Project onboarding submits generated Preview bef
   const create = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Create Project")[0]!;
   await act(async () => create.parent!.props.onPress());
   await act(async () => waitForText(renderer, /Native Project/));
+  assert.match(renderedText(renderer), /proposed Organizer path/);
   await act(async () => renderer.root.findByProps({ accessibilityLabel: "Paseo Project Native Project" }).props.onPress());
   assert.match(renderedText(renderer), /Paseo Project ID ·\s+native-project/);
   assert.match(renderedText(renderer), /Workspace ·\s+Native Workspace\s+·\s+native-workspace\s+·\s+\/srv\/native/);
