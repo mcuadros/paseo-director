@@ -1,43 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import type { PluginContext, PluginHandlerContext } from "@getpaseo/plugin";
+import type { PluginContext } from "@getpaseo/plugin";
 
 import { TaskInspector } from "./ui/task-inspector.client";
 import { DirectorHome } from "./ui/director-home.client";
 import { ProjectBoard } from "./ui/planning-surface.client";
 import { DirectorWorkers } from "./ui/director-workers-panel.client";
 import { contributeTaskNavigation } from "./ui/task-navigation.client";
-import { startInstalledConnectorShell } from "./connector/paseo.server";
+import { registerInstalledConnectorHandlers } from "./connector/contributions.server";
 import { connectorStartupStatus } from "./rpc/startup.shared";
-import { boardSnapshotRpc } from "./rpc/board.shared";
-import { directorWorkersRpc } from "./rpc/workers.shared";
-import { loadDirectorWorkers } from "./connector/engine-workers.server";
-import {
-  planningMutationRpc,
-  doctorQueryRpc,
-  homeQueryRpc,
-  organizerBootstrapRpc,
-  operationsMutationRpc,
-  operationsQueryRpc,
-  planningQueryRpc,
-  planningTaskDetailRpc,
-  repairProjectRpc,
-  nativePaseoProjectsRpc,
-} from "./rpc/planning.shared";
 
 export default function contribute(plugin: PluginContext) {
-  type PaseoApi = PluginHandlerContext["paseo"];
-  type InstalledConnector = ReturnType<typeof startInstalledConnectorShell>;
-  let connector: InstalledConnector | null = null;
-  let paseoAuthority: PaseoApi | null = null;
-  const startConnector = (paseo: PaseoApi): InstalledConnector => {
-    if (paseoAuthority !== null && paseoAuthority !== paseo) {
-      throw new Error("HOST_PUBLIC_PLUGIN_AUTHORITY_CHANGED");
-    }
-    paseoAuthority = paseo;
-    connector ??= startInstalledConnectorShell({ paseo });
-    return connector;
-  };
+  let serverCleanup: () => void | Promise<void> = () => {};
 
   plugin.addSurface("home", DirectorHome);
   plugin.addSidebarItem({
@@ -106,27 +80,11 @@ export default function contribute(plugin: PluginContext) {
       openPanel("task-inspector");
     },
   });
-  plugin.handle(connectorStartupStatus, (_input, { paseo }) => startConnector(paseo).status());
-  plugin.handle(boardSnapshotRpc, (_input, { paseo }) => startConnector(paseo).loadBoard());
-  plugin.handle(directorWorkersRpc, ({ rootWorkspaceId }, { paseo }) =>
-    loadDirectorWorkers(
-      (query) => paseo.agents.list(query),
-      rootWorkspaceId,
-    ),
+  plugin.handle(
+    connectorStartupStatus,
+    registerInstalledConnectorHandlers(plugin, (cleanup) => { serverCleanup = cleanup; }),
   );
-  plugin.handle(planningQueryRpc, (input, { paseo }) => startConnector(paseo).queryPlanning(input));
-  plugin.handle(homeQueryRpc, (input, { paseo }) => startConnector(paseo).queryHome(input));
-  plugin.handle(doctorQueryRpc, (input, { paseo }) => startConnector(paseo).queryDoctor(input));
-  plugin.handle(operationsQueryRpc, (input, { paseo }) => startConnector(paseo).queryOperations(input));
-  plugin.handle(operationsMutationRpc, (input, { paseo }) => startConnector(paseo).mutateOperations(input));
-  plugin.handle(repairProjectRpc, (input, { paseo }) => startConnector(paseo).repairProject(input));
-  plugin.handle(organizerBootstrapRpc, (input, { paseo }) => startConnector(paseo).bootstrapOrganizer(input));
-  plugin.handle(nativePaseoProjectsRpc, (input, { paseo }) => startConnector(paseo).queryNativePaseoProjects(input));
-  plugin.handle(planningTaskDetailRpc, (input, { paseo }) =>
-    startConnector(paseo).queryPlanningTask(input),
-  );
-  plugin.handle(planningMutationRpc, (input, { paseo }) => startConnector(paseo).mutatePlanning(input));
   plugin.addClientSide(contributeTaskNavigation);
 
-  return () => connector?.close();
+  return () => serverCleanup();
 }

@@ -55,6 +55,10 @@ import {
   type RepairInput,
   type RepairResult,
 } from "../generated/planning-contract.shared.ts";
+import {
+  hostFactRejectionSchema,
+  type HostFactDiagnosis,
+} from "../rpc/home-diagnostics.shared.ts";
 
 const requestTimeoutMilliseconds = 10_000;
 
@@ -83,12 +87,24 @@ export type PlanningMutationActor = {
 
 export class PlanningTransportError extends Error {
   readonly code: string;
+  readonly diagnosis: HostFactDiagnosis | null;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, diagnosis: HostFactDiagnosis | null = null) {
     super(message);
     this.name = "PlanningTransportError";
     this.code = code;
+    this.diagnosis = diagnosis;
   }
+}
+
+function hostFactTransportError(value: unknown, engineCode: string): PlanningTransportError | null {
+  const parsed = hostFactRejectionSchema.safeParse(value);
+  if (!parsed.success) return null;
+  return new PlanningTransportError(
+    engineCode,
+    "Director Engine rejected one bounded host observation field",
+    { field: parsed.data.field, expected: parsed.data.expected, observed: parsed.data.observed },
+  );
 }
 
 function loopbackBaseUrl(value: string | undefined): URL {
@@ -212,14 +228,17 @@ export function createPlanningTransport(options: {
       }
       if (!response.ok) {
         let responseCode: string | undefined;
+        let rejection: PlanningTransportError | null = null;
         try {
           const value = await boundedResponseValue(response);
-          if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && typeof (value as { code?: unknown }).code === "string") {
+          rejection = hostFactTransportError(value, "ENGINE_OPERATIONS_HOST_FACT_REJECTED");
+          if (value && typeof value === "object" && !Array.isArray(value) && typeof (value as { code?: unknown }).code === "string") {
             responseCode = (value as { code: string }).code;
           }
         } catch {
           responseCode = undefined;
         }
+        if (rejection?.diagnosis && responseCode === "OPERATIONS_HOST_FACT_REJECTED") throw rejection;
         const code = responseCode === "OPERATIONS_HOST_MISMATCH" ? "ENGINE_OPERATIONS_HOST_MISMATCH"
           : responseCode === "OPERATIONS_FACTS_STALE" ? "ENGINE_OPERATIONS_FACTS_STALE"
             : "ENGINE_OPERATIONS_RESPONSE";
@@ -317,14 +336,17 @@ export function createPlanningTransport(options: {
       }
       if (!response.ok) {
         let responseCode: string | undefined;
+        let rejection: PlanningTransportError | null = null;
         try {
           const value = await boundedResponseValue(response);
-          if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && typeof (value as { code?: unknown }).code === "string") {
+          rejection = hostFactTransportError(value, "ENGINE_DOCTOR_HOST_FACT_REJECTED");
+          if (value && typeof value === "object" && !Array.isArray(value) && typeof (value as { code?: unknown }).code === "string") {
             responseCode = (value as { code: string }).code;
           }
         } catch {
           responseCode = undefined;
         }
+        if (rejection?.diagnosis && responseCode === "DOCTOR_HOST_FACT_REJECTED") throw rejection;
         const code = responseCode === "DOCTOR_HOST_MISMATCH" ? "ENGINE_DOCTOR_HOST_MISMATCH"
           : responseCode === "DOCTOR_FACTS_STALE" ? "ENGINE_DOCTOR_FACTS_STALE"
             : "ENGINE_DOCTOR_RESPONSE";
@@ -491,14 +513,17 @@ export function createPlanningTransport(options: {
       }
       if (!response.ok) {
         let responseCode: string | undefined;
+        let rejection: PlanningTransportError | null = null;
         try {
           const value = await boundedResponseValue(response);
-          if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && typeof (value as { code?: unknown }).code === "string") {
+          rejection = hostFactTransportError(value, "ENGINE_HOME_HOST_FACT_REJECTED");
+          if (value && typeof value === "object" && !Array.isArray(value) && typeof (value as { code?: unknown }).code === "string") {
             responseCode = (value as { code: string }).code;
           }
         } catch {
           responseCode = undefined;
         }
+        if (rejection?.diagnosis && responseCode === "HOME_HOST_FACT_REJECTED") throw rejection;
         const code = responseCode === "HOME_HOST_MISMATCH"
           ? "ENGINE_HOME_HOST_MISMATCH"
           : responseCode === "HOME_CURSOR_INVALIDATED"

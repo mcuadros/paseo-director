@@ -389,6 +389,24 @@ func TestStaticSourceNeverInventsOperationalHealthOrNavigation(t *testing.T) {
 	}
 }
 
+func TestProductionStaticSourceReturnsHomeAfterProjectCreation(t *testing.T) {
+	now := int64(10_000)
+	store, _ := homeFixture(now, 1)
+	source := NewStaticSource("host-a", "Primary host", "engine-production", func() int64 { return now }).
+		WithProductionOperations().
+		WithWorkspaceStore(store)
+	reader := NewReader(store, &homeProjectionSource{store}, source, func() int64 { return now })
+
+	result, err := reader.Query(context.Background(), planningport.HomeQueryInput{HostID: "host-a", PageSize: 1})
+	if err != nil {
+		t.Fatalf("production Home after Project creation: %v", err)
+	}
+	if len(result.Page.Projects) != 1 || result.Page.Projects[0].ID != "project-00" ||
+		result.Page.Projects[0].Sync.DynamicState != "not_configured" {
+		t.Fatalf("production Home Project = %#v", result.Page.Projects)
+	}
+}
+
 func TestHomeReaderBoundsProjectPagesAndUsesBulkRunCandidateFactsAtScale(t *testing.T) {
 	now := int64(10_000)
 	store, observation := homeFixture(now, planningport.MaximumProjects)

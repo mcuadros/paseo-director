@@ -99,6 +99,39 @@ test("a reload adopts one exact live supervisor and renews its lease", async () 
   }
 });
 
+test("compatible connector update adopts one release binding while artifact drift changes it", () => {
+  const first = artifacts();
+  const compatibleConnector = artifacts();
+  compatibleConnector.engine.connectorCommit = "9".repeat(40);
+  assert.equal(
+    runtimeSupervisorBinding(first.engine, first.dolt),
+    runtimeSupervisorBinding(compatibleConnector.engine, compatibleConnector.dolt),
+    "a connector-only update must adopt the verified release supervisor",
+  );
+
+  for (const mutate of [
+    (value: ReturnType<typeof artifacts>) => { value.engine.binarySha256 = "8".repeat(64); },
+    (value: ReturnType<typeof artifacts>) => { value.engine.contractSha256 = "8".repeat(64); },
+    (value: ReturnType<typeof artifacts>) => { value.engine.sourceCandidate = "8".repeat(40); },
+    (value: ReturnType<typeof artifacts>) => { value.engine.version = "1.0.0-alpha.2"; },
+    (value: ReturnType<typeof artifacts>) => { value.dolt.binarySha256 = "8".repeat(64); },
+    (value: ReturnType<typeof artifacts>) => { value.dolt.version = "2.3.3"; },
+  ]) {
+    const changed = artifacts();
+    mutate(changed);
+    assert.notEqual(runtimeSupervisorBinding(first.engine, first.dolt), runtimeSupervisorBinding(changed.engine, changed.dolt));
+  }
+  assert.notEqual(
+    runtimeSupervisorBinding(first.engine, first.dolt),
+    runtimeSupervisorBinding(first.engine, first.dolt, { dolt: 3308, engine: 7041 }),
+  );
+  const source = readFileSync(join(repositoryRoot, "connector", "runtime-supervisor.server.ts"), "utf8");
+  assert.match(source, /existing\.binding !== binding[\s\S]*request\(paths\.socket, token, "release"\)[\s\S]*waitForProcessExit/u);
+  const processSource = readFileSync(join(repositoryRoot, "connector", "runtime-supervisor-process.linux.server.mjs"), "utf8");
+  assert.match(processSource, /DIRECTOR_TASKSTORE_CONFIG_OUTPUT_MISMATCH:[\s\S]*fail\("DIRECTOR_TASKSTORE_CONFIG_OUTPUT_MISMATCH"\)/u);
+  assert.doesNotMatch(processSource, /fail\([^)]*stderr/u);
+});
+
 async function listenerPresent(port: number): Promise<boolean> {
   return new Promise((accept) => {
     const socket = createConnection({ host: "127.0.0.1", port });
@@ -145,12 +178,15 @@ test("installed runtime has no compiler, source, PATH-binary, or system-service 
   const selection = readFileSync(join(repositoryRoot, "connector", "engine-selection.server.ts"), "utf8");
   const supervisor = readFileSync(join(repositoryRoot, "connector", "runtime-supervisor-process.linux.server.mjs"), "utf8");
   const entry = readFileSync(join(repositoryRoot, "index.ts"), "utf8");
+  const contributions = readFileSync(join(repositoryRoot, "connector", "contributions.server.ts"), "utf8");
   assert.doesNotMatch(distribution, /defaultCompile|spawnSync\(["']go["']|ENGINE_DEVELOPMENT_BUILD|developmentEnginePaths/u);
   assert.doesNotMatch(selection, /sourceRoot|GOMODCACHE|go-build-cache/u);
   assert.doesNotMatch(supervisor, /systemctl|systemd|spawnOwned\(["'](?:dolt|director-engine)["']/u);
   assert.match(supervisor, /spawnOwned\(configuration\.dolt\.binaryPath/u);
   assert.match(supervisor, /spawnOwned\(configuration\.engine\.binaryPath/u);
-  assert.doesNotMatch(entry, /createPaseoClient|DIRECTOR_PASEO_URL|credentialFile/u);
+  assert.doesNotMatch(`${entry}\n${contributions}`, /createPaseoClient|DIRECTOR_PASEO_URL|credentialFile|loopback|bridge/u);
+  assert.match(contributions, /type PaseoApi = PluginHandlerContext\["paseo"\]/u);
+  assert.match(contributions, /startInstalledConnectorShell\(\{ paseo \}\)/u);
   assert.equal(runtimePlatform("linux", "x64").target, "linux-amd64");
   assert.throws(
     () => runtimePlatform("win32", "x64"),

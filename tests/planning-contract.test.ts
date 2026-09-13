@@ -173,6 +173,20 @@ test("generated Home and Organizer contracts reject cross-host and Preview/Apply
   assert.equal(homeQueryInputSchema.safeParse({ hostId: "host-a", cursor: null, pageSize: 50 }).success, true);
   assert.equal(homeQueryInputSchema.safeParse({ hostId: "host-a", cursor: null, pageSize: 51 }).success, false);
   assert.equal(homeQueryRpc.input.safeParse({ hostId: "host-a", cursor: null, pageSize: 25 }).success, true);
+  assert.equal(homeQueryRpc.output.safeParse({
+    status: "rejected",
+    code: "ENGINE_HOME_HOST_FACT_REJECTED",
+    diagnosis: {
+      field: "project.taskstore_sync_detail.local_revision_fingerprint",
+      expected: "nonempty_sha256",
+      observed: "empty",
+    },
+  }).success, true);
+  assert.equal(homeQueryRpc.output.safeParse({
+    status: "rejected",
+    code: "ENGINE_HOME_HOST_FACT_REJECTED",
+    diagnosis: { field: "unknown_field", expected: "raw", observed: "raw_value" },
+  }).success, false);
   assert.equal(homeSnapshotSchema.safeParse({}).success, false);
 
   const base = {
@@ -390,6 +404,7 @@ test("the engine schema closes every object and is the generated source", () => 
 
 test("the stable v0.7 plugin registers strict planning RPCs without runtime fixtures", () => {
   const entry = readFileSync("index.ts", "utf8");
+  const serverContributions = readFileSync("connector/contributions.server.ts", "utf8");
   for (const registration of [
     "plugin.handle(planningQueryRpc",
     "plugin.handle(planningTaskDetailRpc",
@@ -399,8 +414,12 @@ test("the stable v0.7 plugin registers strict planning RPCs without runtime fixt
     "plugin.handle(repairProjectRpc",
     "plugin.handle(organizerBootstrapRpc",
   ]) {
-    assert.ok(entry.includes(registration), registration);
+    assert.ok(serverContributions.includes(registration), registration);
   }
+  assert.match(entry, /plugin\.handle\([\s\S]*connectorStartupStatus[\s\S]*registerInstalledConnectorHandlers/u);
+  assert.doesNotMatch(entry, /startInstalledConnectorShell|RuntimeConfigurationError/u);
+  assert.match(serverContributions, /console\.error\(JSON\.stringify\(\{ code, lifecycle: "home-query", result: "failed"/u);
+  assert.match(serverContributions, /return \{ status: "rejected", code, diagnosis \}/u);
   const connector = readFileSync("connector/paseo.server.ts", "utf8");
   assert.match(connector, /return this\.#planningTransport\.query\(input\)/);
   assert.match(connector, /return this\.#planningTransport\.taskDetail\(input\)/);

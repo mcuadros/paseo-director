@@ -646,7 +646,7 @@ function architectureErrors(repositoryRoot, paths) {
       errors.push(`index.ts: missing planned UI shell registration ${registration}`);
     }
   }
-  if (!entry.includes("plugin.handle(connectorStartupStatus")) {
+  if (!/plugin\.handle\(\s*connectorStartupStatus,\s*registerInstalledConnectorHandlers\(/u.test(entry)) {
     errors.push("index.ts: missing the Zod-validated startup RPC");
   }
   return errors;

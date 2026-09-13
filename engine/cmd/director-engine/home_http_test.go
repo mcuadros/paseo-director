@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	homeapp "github.com/mcuadros/director-engine/application/home"
@@ -16,6 +17,13 @@ import (
 )
 
 type homeReaderFunc func(context.Context, planningport.HomeQueryInput) (planningport.HomeSnapshot, error)
+
+func boundedHostFactFailure() error {
+	return &homeapp.HostFactRejectionError{Rejection: homeapp.HostFactRejection{
+		Field:    "project.taskstore_sync_detail.local_revision_fingerprint",
+		Expected: "nonempty_sha256", Observed: "empty",
+	}}
+}
 
 func (function homeReaderFunc) Query(ctx context.Context, input planningport.HomeQueryInput) (planningport.HomeSnapshot, error) {
 	return function(ctx, input)
@@ -88,5 +96,16 @@ func TestHomeHTTPRejectsMalformedHostCursorAndContractWithoutFallback(t *testing
 		if response := homeHTTPRequest(t, handler, body); response.Code != http.StatusBadRequest {
 			t.Fatalf("malformed Home status = %d %s", response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestHomeHTTPPreservesBoundedRejectedFieldDiagnosis(t *testing.T) {
+	handler := newHomeHandler(homeReaderFunc(func(context.Context, planningport.HomeQueryInput) (planningport.HomeSnapshot, error) {
+		return planningport.HomeSnapshot{}, boundedHostFactFailure()
+	}))
+	response := homeHTTPRequest(t, handler, []byte(`{"hostId":"host-a","cursor":null,"pageSize":25}`))
+	want := `{"code":"HOME_HOST_FACT_REJECTED","field":"project.taskstore_sync_detail.local_revision_fingerprint","expected":"nonempty_sha256","observed":"empty"}`
+	if response.Code != http.StatusServiceUnavailable || strings.TrimSpace(response.Body.String()) != want {
+		t.Fatalf("typed Home failure = %d %s", response.Code, response.Body.String())
 	}
 }

@@ -4,10 +4,11 @@ import type {
   HomeAction,
   HomeSnapshot,
 } from "../generated/planning-contract.shared.ts";
+import type { HostFactDiagnosis } from "../rpc/home-diagnostics.shared.ts";
 
 export type DirectorHomeScene =
   | { kind: "loading" }
-  | { kind: "error"; code: "offline" | "contract" | "host" | "invalid" }
+  | { kind: "error"; code: "offline" | "contract" | "host" | "facts" | "invalid"; diagnosticCode: string; diagnosis: HostFactDiagnosis | null }
   | { kind: "empty"; snapshot: HomeSnapshot; stale: boolean }
   | { kind: "stale"; snapshot: HomeSnapshot }
   | { kind: "needs_you"; snapshot: HomeSnapshot; stale: false }
@@ -15,7 +16,7 @@ export type DirectorHomeScene =
   | { kind: "degraded"; snapshot: HomeSnapshot; stale: false }
   | { kind: "data"; snapshot: HomeSnapshot; stale: false };
 
-type DirectorHomeErrorCode = "offline" | "contract" | "host" | "invalid";
+type DirectorHomeErrorCode = "offline" | "contract" | "host" | "facts" | "invalid";
 
 function sameTotals(left: HomeSnapshot, right: HomeSnapshot): boolean {
   return JSON.stringify(left.page.totals) === JSON.stringify(right.page.totals) &&
@@ -59,14 +60,19 @@ export function combineHomePages(
   };
 }
 
-function transportCode(error: unknown): DirectorHomeErrorCode {
+function transportFailure(error: unknown): { code: DirectorHomeErrorCode; diagnosticCode: string; diagnosis: HostFactDiagnosis | null } {
   const code = typeof error === "object" && error !== null && "code" in error
     ? String((error as { code: unknown }).code)
     : "";
-  if (code.includes("CONTRACT")) return "contract";
-  if (code.includes("HOST_MISMATCH") || code.includes("ORIGIN")) return "host";
-  if (code.includes("UNAVAILABLE")) return "offline";
-  return "invalid";
+  const diagnosis = typeof error === "object" && error !== null && "diagnosis" in error
+    ? (error as { diagnosis: HostFactDiagnosis | null }).diagnosis
+    : null;
+  const diagnosticCode = /^[A-Z][A-Z0-9_]{2,95}$/u.test(code) ? code : "DIRECTOR_HOME_QUERY_FAILED";
+  if (code === "ENGINE_HOME_HOST_FACT_REJECTED" && diagnosis) return { code: "facts", diagnosticCode, diagnosis };
+  if (code.includes("CONTRACT")) return { code: "contract", diagnosticCode, diagnosis: null };
+  if (code.includes("HOST_MISMATCH") || code.includes("ORIGIN")) return { code: "host", diagnosticCode, diagnosis: null };
+  if (code.includes("UNAVAILABLE")) return { code: "offline", diagnosticCode, diagnosis: null };
+  return { code: "invalid", diagnosticCode, diagnosis: null };
 }
 
 export function directorHomeScene(input: {
@@ -77,12 +83,12 @@ export function directorHomeScene(input: {
   error: unknown;
 }): DirectorHomeScene {
   if (!input.pages && input.isPending) return { kind: "loading" };
-  if (!input.pages) return { kind: "error", code: transportCode(input.error) };
+  if (!input.pages) return { kind: "error", ...transportFailure(input.error) };
   let snapshot: HomeSnapshot;
   try {
     snapshot = combineHomePages(input.pages, input.expectedHostId);
   } catch {
-    return { kind: "error", code: "host" };
+    return { kind: "error", code: "host", diagnosticCode: "HOME_PAGE_BINDING_MISMATCH", diagnosis: null };
   }
   if (input.isError || snapshot.page.host.state === "disconnected" || snapshot.page.host.state === "stale") {
     return { kind: "stale", snapshot };

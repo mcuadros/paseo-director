@@ -23,6 +23,10 @@ import (
 
 type bootstrapLogCompactor struct{}
 
+var errTaskStoreConfigOutputMismatch = errors.New("TaskStore config output differs")
+
+const taskStoreConfigOutputMismatchMessage = "director-engine: DIRECTOR_TASKSTORE_CONFIG_OUTPUT_MISMATCH: the existing --config-output file differs; the TaskStore/database is not the cause and must not be deleted. Safe remediation: move the existing config file to an owner-only backup, rerun the identical bootstrap command to create a replacement, compare both files without exposing credentials, then deliberately restore the backup or adopt the replacement."
+
 func (bootstrapLogCompactor) CompactExpired(context.Context, int64) error { return nil }
 
 type taskStoreBootstrapResult struct {
@@ -141,7 +145,11 @@ func runTaskStoreBootstrap(arguments []string, stdout, stderr io.Writer) int {
 			MaintenanceRoot: *maintenanceRoot, NowMillis: time.Now().UnixMilli(),
 		})
 		if err != nil {
-			fmt.Fprintln(stderr, "director-engine: TaskStore configuration seed refused incompatible or ambiguous state")
+			if errors.Is(err, errTaskStoreConfigOutputMismatch) {
+				fmt.Fprintln(stderr, taskStoreConfigOutputMismatchMessage)
+			} else {
+				fmt.Fprintln(stderr, "director-engine: TaskStore configuration seed refused incompatible or ambiguous state")
+			}
 			return 1
 		}
 		if err := writeJSON(stdout, result); err != nil {
@@ -348,7 +356,7 @@ func installTaskStoreConfig(path string, config dolt.Config, controlPassword, wr
 			return nil
 		}
 		if !sameTaskStoreConfigBinding(existing, desired) {
-			return errors.New("TaskStore configuration already differs")
+			return errTaskStoreConfigOutputMismatch
 		}
 	} else if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
 		return errors.New("TaskStore configuration target is unsafe")

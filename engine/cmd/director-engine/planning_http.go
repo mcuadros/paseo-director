@@ -11,6 +11,7 @@ import (
 	"net/http"
 
 	"github.com/mcuadros/director-engine/application/board"
+	homeapp "github.com/mcuadros/director-engine/application/home"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
 	"github.com/mcuadros/director-engine/domain/safedata"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
@@ -150,4 +151,27 @@ func writePlanningError(response http.ResponseWriter, status int, code string) {
 	_ = json.NewEncoder(response).Encode(struct {
 		Code string `json:"code"`
 	}{Code: code})
+}
+
+func writeHostFactRejection(response http.ResponseWriter, status int, code string, err error) bool {
+	rejection, ok := homeapp.HostFactRejectionFrom(err)
+	if !ok {
+		return false
+	}
+	value := struct {
+		Code     string                      `json:"code"`
+		Field    homeapp.HostFactField       `json:"field"`
+		Expected homeapp.HostFactExpectation `json:"expected"`
+		Observed homeapp.HostFactObserved    `json:"observed"`
+	}{Code: code, Field: rejection.Field, Expected: rejection.Expected, Observed: rejection.Observed}
+	encoded, safe := encodeSafeBoundaryJSON(value, planningport.MaximumResponseBytes, true)
+	if !safe {
+		writePlanningError(response, http.StatusServiceUnavailable, "PLANNING_OUTPUT_UNSAFE")
+		return true
+	}
+	response.Header().Set("Cache-Control", "no-store")
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(status)
+	_, _ = response.Write(encoded)
+	return true
 }

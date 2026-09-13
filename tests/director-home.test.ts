@@ -115,7 +115,14 @@ test("Home pages stay bound to one exact host, engine instance, cursor, and Proj
 
 test("Home scene keeps loading, offline, empty, stale, partial-sync, degraded, and current states distinct", () => {
   assert.deepEqual(directorHomeScene({ pages: undefined, expectedHostId: "host-a", isPending: true, isError: false, error: null }), { kind: "loading" });
-  assert.deepEqual(directorHomeScene({ pages: undefined, expectedHostId: "host-a", isPending: false, isError: true, error: { code: "ENGINE_HOME_UNAVAILABLE" } }), { kind: "error", code: "offline" });
+  assert.deepEqual(directorHomeScene({ pages: undefined, expectedHostId: "host-a", isPending: false, isError: true, error: { code: "ENGINE_HOME_UNAVAILABLE" } }), { kind: "error", code: "offline", diagnosticCode: "ENGINE_HOME_UNAVAILABLE", diagnosis: null });
+  assert.deepEqual(directorHomeScene({ pages: undefined, expectedHostId: "host-a", isPending: false, isError: true, error: {
+    code: "ENGINE_HOME_HOST_FACT_REJECTED",
+    diagnosis: { field: "project.taskstore_sync_detail.local_revision_fingerprint", expected: "nonempty_sha256", observed: "empty" },
+  } }), {
+    kind: "error", code: "facts", diagnosticCode: "ENGINE_HOME_HOST_FACT_REJECTED",
+    diagnosis: { field: "project.taskstore_sync_detail.local_revision_fingerprint", expected: "nonempty_sha256", observed: "empty" },
+  });
   assert.equal(directorHomeScene({ pages: [snapshot({ projects: [], totalProjects: "0" })], expectedHostId: "host-a", isPending: false, isError: false, error: null }).kind, "empty");
   assert.equal(directorHomeScene({ pages: [snapshot()], expectedHostId: "host-a", isPending: false, isError: true, error: new Error("offline") }).kind, "stale");
   assert.equal(directorHomeScene({ pages: [snapshot({ hostState: "stale" })], expectedHostId: "host-a", isPending: false, isError: false, error: null }).kind, "stale");

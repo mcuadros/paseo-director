@@ -102,7 +102,13 @@ function boundedSpawn(executable, args, options = {}) {
     timeout: options.timeout ?? 120_000,
     maxBuffer: 128 * 1024,
   });
-  if (result.status !== 0 || result.error) fail(options.code ?? "DIRECTOR_RUNTIME_COMMAND_FAILED");
+  if (result.status !== 0 || result.error) {
+    const stderr = typeof result.stderr === "string" ? result.stderr : "";
+    if (/(?:^|\s)DIRECTOR_TASKSTORE_CONFIG_OUTPUT_MISMATCH:/u.test(stderr)) {
+      fail("DIRECTOR_TASKSTORE_CONFIG_OUTPUT_MISMATCH");
+    }
+    fail(options.code ?? "DIRECTOR_RUNTIME_COMMAND_FAILED");
+  }
 }
 
 function childEnvironment() {

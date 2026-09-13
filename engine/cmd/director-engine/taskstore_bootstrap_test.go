@@ -129,4 +129,31 @@ func TestTaskStoreConfigSeedRecoversExactDurableStagingAndRefusesChangedState(t 
 	if err := installTaskStoreConfig(changed, config, passwords[0], passwords[1], passwords[2]); err == nil {
 		t.Fatal("changed staging state was adopted")
 	}
+	different := config
+	different.StoreID = "another-store"
+	if err := installTaskStoreConfig(reference, different, passwords[0], passwords[1], passwords[2]); !errors.Is(err, errTaskStoreConfigOutputMismatch) {
+		t.Fatalf("different existing config error = %v", err)
+	}
+	if contentAfter, readErr := os.ReadFile(reference); readErr != nil || !bytes.Equal(contentAfter, content) {
+		t.Fatalf("different existing config was overwritten: %v", readErr)
+	}
+}
+
+func TestTaskStoreConfigOutputMismatchMessageIsBoundedAndNonDestructive(t *testing.T) {
+	message := taskStoreConfigOutputMismatchMessage
+	for _, required := range []string{
+		"DIRECTOR_TASKSTORE_CONFIG_OUTPUT_MISMATCH",
+		"TaskStore/database is not the cause and must not be deleted",
+		"move the existing config file to an owner-only backup",
+		"rerun the identical bootstrap command",
+		"compare both files without exposing credentials",
+		"restore the backup or adopt the replacement",
+	} {
+		if !strings.Contains(message, required) {
+			t.Fatalf("config mismatch diagnostic missing %q: %s", required, message)
+		}
+	}
+	if strings.Contains(message, "/home/") || strings.Contains(message, "/tmp/") || len(message) > 1_024 {
+		t.Fatalf("config mismatch diagnostic is unsafe: %s", message)
+	}
 }

@@ -59,6 +59,7 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
     };
     let supervisorClosed = false;
     let configReads = 0;
+    let supervisorStatus = { state: "current" as const, binding: "8".repeat(64), enginePid: null as number | null, doltPid: null as number | null, restartCount: 0 };
     const paseo = {
       config: {
         async get() {
@@ -166,7 +167,7 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
           return {
             binding: "8".repeat(64),
             async status() {
-              return { state: "current", binding: "8".repeat(64), enginePid: 1, doltPid: 2, restartCount: 0 };
+              return supervisorStatus;
             },
             async close() { supervisorClosed = true; },
             async release() { supervisorClosed = true; },
@@ -174,6 +175,9 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
         },
       },
     });
+    await assert.rejects(connector.status(), (error: unknown) =>
+      error !== null && typeof error === "object" && Reflect.get(error, "code") === "DIRECTOR_RUNTIME_CHILDREN_NOT_READY");
+    supervisorStatus = { ...supervisorStatus, enginePid: 1, doltPid: 2 };
     const status = await connector.status();
     assert.equal(configReads, 1);
     assert.equal(status.state, "board-ready");

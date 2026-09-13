@@ -2,6 +2,7 @@
 // Paseo RPC is a strict transport for the engine-owned planning contract.
 
 import { defineRpc } from "@getpaseo/plugin/server";
+import { z } from "zod";
 
 import {
   planningMutationInputSchema,
@@ -25,6 +26,7 @@ import {
   nativePaseoProjectsInputSchema,
   nativePaseoProjectsSnapshotSchema,
 } from "../generated/planning-contract.shared.ts";
+import { homeQueryFailureSchema } from "./home-diagnostics.shared.ts";
 
 export const nativePaseoProjectsRpc = defineRpc({
   name: "director.native-paseo-projects",
@@ -41,7 +43,7 @@ export const planningQueryRpc = defineRpc({
 export const homeQueryRpc = defineRpc({
   name: "director.home-query",
   input: homeQueryInputSchema,
-  output: homeSnapshotSchema,
+  output: z.union([homeSnapshotSchema, homeQueryFailureSchema]),
 });
 
 export const doctorQueryRpc = defineRpc({

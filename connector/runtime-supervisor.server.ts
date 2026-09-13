@@ -191,8 +191,9 @@ async function controlRequest(
           value.schemaVersion !== 1 || !SHA256_PATTERN.test(value.binding) ||
           (value.state !== "current" && value.state !== "degraded") ||
           !Number.isSafeInteger(value.restartCount) ||
-          (value.enginePid !== null && !Number.isSafeInteger(value.enginePid)) ||
-          (value.doltPid !== null && !Number.isSafeInteger(value.doltPid))
+          (value.enginePid !== null && (!Number.isSafeInteger(value.enginePid) || value.enginePid <= 0)) ||
+          (value.doltPid !== null && (!Number.isSafeInteger(value.doltPid) || value.doltPid <= 0)) ||
+          (value.state === "current" && (value.enginePid === null || value.doltPid === null || value.enginePid === value.doltPid))
         ) {
           throw new Error("invalid response");
         }

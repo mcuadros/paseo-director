@@ -84,8 +84,8 @@ func (service *DoctorRepairService) observe(ctx context.Context, input planningp
 			return doctorFacts{}, err
 		}
 		now := service.now()
-		if !validObservation(host, input.HostID, []string{project.ID}, now) {
-			return doctorFacts{}, ErrHostFacts
+		if err := validateObservation(host, input.HostID, []string{project.ID}, now); err != nil {
+			return doctorFacts{}, err
 		}
 		after, err := service.store.LatestEventSequence(ctx)
 		if err != nil {

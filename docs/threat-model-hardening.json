@@ -64,14 +64,20 @@
       "severity": "P0",
       "categories": ["secrets", "private_paths"],
       "threats": ["SUP-1"],
-      "mitigation": "Board, planning, technical-log, and support-bundle sinks post-scan bounded structured data and return only fixed content-free refusal codes.",
+      "mitigation": "Board, planning, technical-log, and support-bundle sinks post-scan bounded structured data; host-fact rejection carries only closed field/expectation/category values, while runtime bootstrap promotes only allowlisted child codes and never raw stderr.",
       "implementation": [
         "engine/cmd/director-engine/planning_http.go#encodeSafeBoundaryJSON",
+        "engine/application/home/host_fact_diagnostics.go#HostFactRejection",
+        "connector/engine-planning.server.ts#hostFactTransportError",
+        "connector/runtime-supervisor-process.linux.server.mjs#DIRECTOR_TASKSTORE_CONFIG_OUTPUT_MISMATCH",
         "engine/application/home/operations.go#diagnosticBytesSafe",
         "engine/adapters/diagnostics/bundle.go#safeEntry"
       ],
       "tests": [
         "engine/cmd/director-engine/planning_http_test.go#TestPlanningHandlerSuppressesCredentialAndPrivatePathOutput",
+        "engine/application/home/host_fact_diagnostics_test.go#TestHostFactRejectionsIdentifyEveryBoundedPredicateWithoutRawValues",
+        "engine/cmd/director-engine/home_http_test.go#TestHomeHTTPPreservesBoundedRejectedFieldDiagnosis",
+        "tests/home-connector.test.ts#the Home transport preserves only the bounded rejected-field diagnosis",
         "engine/cmd/director-engine/board_http_test.go#TestBoardHandlerSuppressesUnsafeProjectionText",
         "engine/adapters/diagnostics/bundle_test.go#TestBundleWriterRefusesSecretsPathsUnknownEntriesAndRootReplacement"
       ],

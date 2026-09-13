@@ -143,7 +143,11 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
   const home = useInfiniteQuery({
     queryKey: ["director", "home", host.id],
     initialPageParam: null as string | null,
-    queryFn: ({ pageParam }) => loadHome({ hostId: host.id, cursor: pageParam, pageSize: HOME_PAGE_SIZE }),
+    queryFn: async ({ pageParam }) => {
+      const result = await loadHome({ hostId: host.id, cursor: pageParam, pageSize: HOME_PAGE_SIZE });
+      if (!("page" in result)) throw result;
+      return result;
+    },
     getNextPageParam: (lastPage: HomeSnapshot) => lastPage.page.nextCursor,
     retry: false,
     staleTime: 0,
@@ -625,7 +629,11 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
       ? ["Director contract changed", "The response was rejected before any Project or action could be displayed."]
       : scene.code === "host"
         ? ["Director host identity changed", "The response did not match this exact Paseo host. No other host was selected."]
-        : ["Director host is offline", "No current Home snapshot is available for this exact host."]
+        : scene.code === "facts" && scene.diagnosis
+          ? ["Director host observation was rejected", `Field ${scene.diagnosis.field} expected ${scene.diagnosis.expected}; observed ${scene.diagnosis.observed}. No raw value, path, or credential was exposed.`]
+        : scene.code === "offline"
+          ? ["Director host is offline", "No current Home snapshot is available for this exact host."]
+          : ["Director Home request failed", "Use the diagnostic code below to correct the exact runtime condition, then retry this host."]
     : null;
 
   return (
@@ -677,6 +685,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
         <View accessibilityLiveRegion="polite" style={[styles.liveState, styles.bannerDanger]}>
           <Text style={styles.cardTitle}>{errorCopy[0]}</Text>
           <Text style={[styles.body, styles.centered]}>{errorCopy[1]}</Text>
+          <Text selectable style={styles.operationalLine}>Diagnostic code {scene.diagnosticCode}</Text>
           <AccessiblePressable
             accessibilityHint="Retries Director Home on this exact host"
             accessibilityLabel="Try loading Director Home again"

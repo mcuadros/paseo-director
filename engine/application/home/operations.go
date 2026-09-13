@@ -113,34 +113,6 @@ func validFingerprint(value string) bool {
 	return validSHA(value, 64)
 }
 
-func validSyncDetail(value homeport.SyncStreamObservation, now int64) bool {
-	if !validDetailedSyncState(value.State) || !validSyncReason(value.Reason) ||
-		!validFingerprint(value.LocalRevisionFingerprint) || !validFingerprint(value.RemoteRevisionFingerprint) ||
-		value.ObservedAtMillis < 0 || value.ObservedAtMillis > now || value.LastSuccessAtMillis < 0 || value.LastSuccessAtMillis > now {
-		return false
-	}
-	if value.State == homeport.SyncCurrent {
-		return value.Reason == homeport.SyncReasonAligned && value.LocalRevisionFingerprint != "" &&
-			value.LocalRevisionFingerprint == value.RemoteRevisionFingerprint
-	}
-	exactReasons := map[homeport.SyncStreamState]homeport.SyncReason{
-		homeport.SyncLocalAhead:       homeport.SyncReasonLocalAhead,
-		homeport.SyncRemoteAhead:      homeport.SyncReasonRemoteAhead,
-		homeport.SyncDiverged:         homeport.SyncReasonDiverged,
-		homeport.SyncIdentityMismatch: homeport.SyncReasonIdentityMismatch,
-		homeport.SyncNotConfigured:    homeport.SyncReasonNotConfigured,
-		homeport.SyncStale:            homeport.SyncReasonObservationStale,
-	}
-	if reason, exact := exactReasons[value.State]; exact && value.Reason != reason {
-		return false
-	}
-	if value.State == homeport.SyncLocalAhead || value.State == homeport.SyncRemoteAhead || value.State == homeport.SyncDiverged {
-		return value.LocalRevisionFingerprint != "" && value.RemoteRevisionFingerprint != "" &&
-			value.LocalRevisionFingerprint != value.RemoteRevisionFingerprint
-	}
-	return true
-}
-
 func legacySyncDetail(state homeport.SyncStreamState, observedAt int64) homeport.SyncStreamObservation {
 	reason := homeport.SyncReasonOperationFailed
 	switch state {
@@ -160,8 +132,14 @@ func streamDetail(kind string, detailed homeport.SyncStreamObservation, legacy h
 	legacyOnly := detailed.State == ""
 	if legacyOnly {
 		detailed = legacySyncDetail(legacy, observedAt)
-	} else if !validSyncDetail(detailed, now) {
-		return planningport.SyncStreamDetail{}, ErrOperationsFacts
+	} else {
+		prefix := "project.git_sync_detail"
+		if kind == "taskstore_dolt" {
+			prefix = "project.taskstore_sync_detail"
+		}
+		if err := validateSyncDetail(prefix, detailed, now); err != nil {
+			return planningport.SyncStreamDetail{}, err
+		}
 	}
 	if observedAt > 0 && maximumAge > 0 && now-observedAt > maximumAge {
 		detailed.State = homeport.SyncStale
@@ -211,29 +189,12 @@ func combinedSyncState(streams []planningport.SyncStreamDetail) string {
 	}
 }
 
-func validReconciliation(value homeport.ReconciliationObservation, now int64) bool {
-	switch value.State {
-	case homeport.ReconciliationCurrent, homeport.ReconciliationRunning, homeport.ReconciliationWaiting,
-		homeport.ReconciliationDegraded, homeport.ReconciliationUnavailable, homeport.ReconciliationStale:
-	default:
-		return false
-	}
-	switch value.Reason {
-	case homeport.ReconciliationReasonObserved, homeport.ReconciliationReasonEventWake,
-		homeport.ReconciliationReasonExternalWait, homeport.ReconciliationReasonFactMismatch,
-		homeport.ReconciliationReasonSourceOffline, homeport.ReconciliationReasonObservationOld:
-	default:
-		return false
-	}
-	return value.ObservedAtMillis >= 0 && value.ObservedAtMillis <= now && value.LastCompletedAtMillis >= 0 && value.LastCompletedAtMillis <= now
-}
-
 func reconciliationDetail(value homeport.ReconciliationObservation, host homeport.HostObservation, now int64) (planningport.OperationsReconciliation, error) {
 	if value.State == "" {
 		value = homeport.ReconciliationObservation{State: homeport.ReconciliationUnavailable, Reason: homeport.ReconciliationReasonSourceOffline, ObservedAtMillis: host.ObservedAtMillis}
 	}
-	if !validReconciliation(value, now) {
-		return planningport.OperationsReconciliation{}, ErrOperationsFacts
+	if err := validateReconciliation(value, now); err != nil {
+		return planningport.OperationsReconciliation{}, err
 	}
 	if now-host.ObservedAtMillis > host.MaximumAgeMillis {
 		value.State, value.Reason = homeport.ReconciliationStale, homeport.ReconciliationReasonObservationOld
@@ -365,32 +326,6 @@ func auditEntries(events []domain.Event, scope map[string]struct{}) ([]planningp
 	return result, matched > len(result)
 }
 
-func validLog(value homeport.TechnicalLogObservation, now int64) bool {
-	if value.Sequence == 0 || value.OccurredAtMillis <= 0 || value.OccurredAtMillis > now || value.Occurrences == 0 {
-		return false
-	}
-	switch value.Level {
-	case homeport.TechnicalLogInfo, homeport.TechnicalLogWarning, homeport.TechnicalLogError:
-	default:
-		return false
-	}
-	switch value.Component {
-	case homeport.TechnicalLogEngine, homeport.TechnicalLogTaskStore, homeport.TechnicalLogGit, homeport.TechnicalLogDolt,
-		homeport.TechnicalLogReconciliation, homeport.TechnicalLogSecurity, homeport.TechnicalLogSupport:
-	default:
-		return false
-	}
-	switch value.Code {
-	case homeport.TechnicalLogEngineStarted, homeport.TechnicalLogReconciliationCompleted, homeport.TechnicalLogReconciliationWaiting,
-		homeport.TechnicalLogGitSyncCurrent, homeport.TechnicalLogGitSyncFailed, homeport.TechnicalLogDoltSyncCurrent,
-		homeport.TechnicalLogDoltSyncFailed, homeport.TechnicalLogTaskStoreUnhealthy, homeport.TechnicalLogSupportBundleGenerated,
-		homeport.TechnicalLogUnsafeOutputSuppressed:
-		return true
-	default:
-		return false
-	}
-}
-
 func technicalLogs(values []homeport.TechnicalLogObservation, available bool, now int64) (planningport.OperationsLogs, error) {
 	messages := map[homeport.TechnicalLogCode]string{
 		homeport.TechnicalLogEngineStarted:           "Director Engine started with its exact configured identity.",
@@ -423,11 +358,11 @@ func technicalLogs(values []homeport.TechnicalLogObservation, available bool, no
 	}
 	var bytes uint64
 	for _, value := range rows {
-		if !validLog(value, now) {
-			return planningport.OperationsLogs{}, ErrOperationsFacts
+		if err := validateLog(value, now); err != nil {
+			return planningport.OperationsLogs{}, err
 		}
 		if _, duplicate := seen[value.Sequence]; duplicate {
-			return planningport.OperationsLogs{}, ErrOperationsFacts
+			return planningport.OperationsLogs{}, rejectFact("project.technical_log.sequence", expectUnique, observedDuplicate)
 		}
 		seen[value.Sequence] = struct{}{}
 		if now-value.OccurredAtMillis > operationsLogRetentionMillis || len(result.Entries) == planningport.MaximumTechnicalLogs {
@@ -518,8 +453,8 @@ func (service *OperationsService) report(ctx context.Context, input planningport
 			return planningport.OperationsReport{}, err
 		}
 		now := service.now()
-		if !validObservation(host, input.HostID, []string{project.ID}, now) {
-			return planningport.OperationsReport{}, ErrOperationsFacts
+		if err := validateObservation(host, input.HostID, []string{project.ID}, now); err != nil {
+			return planningport.OperationsReport{}, err
 		}
 		observation := host.Projects[project.ID]
 		gitStream, err := streamDetail("organizer_git", observation.GitSyncDetail, observation.GitSync, observation.SyncObservedAtMillis, observation.SyncMaximumAgeMillis, now)
