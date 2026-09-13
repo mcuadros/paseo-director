@@ -87,10 +87,21 @@ test("the Paseo 0.7.2 client bundle contains no Director server runtime symbol",
     surfaces: ["home"],
     sidebar: ["home"],
     panels: ["director-workers", "project-board", "task-inspector"],
-    commands: ["open-director-workers", "return-to-director-board", "open-project-board", "open-task-inspector"],
+    commands: [
+      "open-director-workers",
+      "create-director-administration-session",
+      "return-to-director-board",
+      "open-project-board",
+      "open-task-inspector",
+    ],
     clientSides: 1,
     handles: 0,
   });
+  assert.equal(
+    contributions.commands.filter((id) => id === "create-director-administration-session").length,
+    1,
+    "Project administration session command must be registered exactly once",
+  );
   await cleanup();
 });
 

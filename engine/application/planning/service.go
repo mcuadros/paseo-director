@@ -72,18 +72,8 @@ type ConfigurationService interface {
 	MutateConfiguration(context.Context, planningport.MutationInput, Actor) Result
 }
 
-type Actor struct {
-	ID        string
-	SessionID string
-}
-
-type Result struct {
-	Status          string
-	Message         string
-	UpdatedVersion  *uint64
-	Preview         any
-	ConfirmationRef string
-}
+type Actor = planningport.Actor
+type Result = planningport.Result
 
 type Service struct {
 	store         Store
@@ -154,7 +144,10 @@ func expectedVersion(input planningport.MutationInput) uint64 {
 // caller retains control intents in the execution controller because those
 // reducers own Pause/Resume/Cancel/Emergency-stop semantics.
 func (service *Service) Mutate(ctx context.Context, input planningport.MutationInput, actor Actor) (Result, error) {
-	if service == nil || service.store == nil || actor.ID == "" || actor.SessionID == "" || planningport.ValidateMutation(input) != nil {
+	if actor.Kind == "" {
+		actor.Kind = "human"
+	}
+	if service == nil || service.store == nil || (actor.Kind != "human" && actor.Kind != "agent") || actor.ID == "" || actor.SessionID == "" || planningport.ValidateMutation(input) != nil {
 		return Result{}, ErrInvalidMutation
 	}
 	intent, expected := input.Intent, expectedVersion(input)
@@ -340,6 +333,9 @@ func (service *Service) Mutate(ctx context.Context, input planningport.MutationI
 		}
 		return applied(task.Version, "Task dependency change was durably recorded"), nil
 	case "dependency.override":
+		if actor.Kind != "human" {
+			return refused("Dependency override requires an authenticated human decision"), nil
+		}
 		task, err := service.store.Task(ctx, intent.TaskID)
 		if err != nil {
 			return Result{}, err

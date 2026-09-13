@@ -950,6 +950,13 @@ test("standalone checks diagnose a content-shaped host contract outside engine",
       resolve(repositoryRoot, "tools/ci/architecture-check.mjs"),
       resolve(checkout, "tools/ci/architecture-check.mjs"),
     );
+    for (const path of [
+      "generated/project-admin-mcp-contract.shared.ts",
+      "engine/domain/projectadmin/schemas/director-project-admin-mcp.v1.json",
+    ]) {
+      mkdirSync(dirname(resolve(checkout, path)), { recursive: true });
+      copyFileSync(resolve(repositoryRoot, path), resolve(checkout, path));
+    }
     writeFileSync(
       resolve(checkout, duplicatePath),
       readFileSync(

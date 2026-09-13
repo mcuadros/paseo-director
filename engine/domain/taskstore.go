@@ -7,6 +7,7 @@ import (
 
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	"github.com/mcuadros/director-engine/domain/execution"
+	"github.com/mcuadros/director-engine/domain/projectadmin"
 )
 
 // OrganizerMode records how a Project's Organizer repository entered Director.
@@ -63,6 +64,7 @@ type Project struct {
 	LeaseObservation *ProjectLeaseObservation
 	Control          execution.ProjectControl
 	Scheduling       SchedulingLedger
+	ProjectAdmin     projectadmin.State
 }
 
 // Task is one mutable planning unit. It belongs to exactly one Project,

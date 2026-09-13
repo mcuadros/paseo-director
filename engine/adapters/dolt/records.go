@@ -25,6 +25,7 @@ import (
 	"github.com/mcuadros/director-engine/domain/execution"
 	feedbackdomain "github.com/mcuadros/director-engine/domain/feedback"
 	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
+	projectadmindomain "github.com/mcuadros/director-engine/domain/projectadmin"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
 	reviewdomain "github.com/mcuadros/director-engine/domain/review"
 	"github.com/mcuadros/director-engine/domain/safedata"
@@ -41,6 +42,7 @@ type projectData struct {
 	LeaseObservation *domain.ProjectLeaseObservation `json:"leaseObservation,omitempty"`
 	Control          execution.ProjectControl        `json:"control,omitempty"`
 	Scheduling       domain.SchedulingLedger         `json:"scheduling,omitempty"`
+	ProjectAdmin     projectadmindomain.State        `json:"projectAdmin,omitempty"`
 }
 
 type organizerData struct {
@@ -896,8 +898,9 @@ func (store *DoltTaskStore) CreateProject(
 		return domain.CommandResult{}, err
 	}
 	if project.LastLeaseEpoch != 0 || project.Lease != nil || project.LeaseObservation != nil ||
-		len(project.Scheduling.Batches) != 0 || len(project.Scheduling.Reservations) != 0 || len(project.Scheduling.Permits) != 0 {
-		return domain.CommandResult{}, fmt.Errorf("%w: a new Project cannot preallocate lease state", storeport.ErrInvalidRecord)
+		len(project.Scheduling.Batches) != 0 || len(project.Scheduling.Reservations) != 0 || len(project.Scheduling.Permits) != 0 ||
+		len(project.ProjectAdmin.Sessions) != 0 || len(project.ProjectAdmin.Receipts) != 0 {
+		return domain.CommandResult{}, fmt.Errorf("%w: a new Project cannot preallocate runtime authority state", storeport.ErrInvalidRecord)
 	}
 	if err := domain.ValidateWorkspaceSet(project.ID, workspaces); err != nil {
 		return domain.CommandResult{}, fmt.Errorf("%w: invalid initial Workspace set", storeport.ErrInvalidRecord)
@@ -914,8 +917,9 @@ func (store *DoltTaskStore) CreateProject(
 		Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer),
 		LastLeaseEpoch: project.LastLeaseEpoch,
 		Lease:          storedLease(project.Lease), LeaseObservation: storedLeaseObservation(project.LeaseObservation),
-		Control:    project.Control,
-		Scheduling: project.Scheduling,
+		Control:      project.Control,
+		Scheduling:   project.Scheduling,
+		ProjectAdmin: projectadmindomain.Clone(project.ProjectAdmin),
 	})
 	if err != nil {
 		return domain.CommandResult{}, err
@@ -950,8 +954,9 @@ func (store *DoltTaskStore) UpdateProject(
 		Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer),
 		LastLeaseEpoch: project.LastLeaseEpoch,
 		Lease:          storedLease(project.Lease), LeaseObservation: storedLeaseObservation(project.LeaseObservation),
-		Control:    project.Control,
-		Scheduling: project.Scheduling,
+		Control:      project.Control,
+		Scheduling:   project.Scheduling,
+		ProjectAdmin: projectadmindomain.Clone(project.ProjectAdmin),
 	})
 	if err != nil {
 		return domain.CommandResult{}, err
@@ -979,6 +984,9 @@ func (store *DoltTaskStore) UpdateProject(
 		}
 		if !reflect.DeepEqual(current.Scheduling, project.Scheduling) && !strings.HasPrefix(command.Type, "scheduler.") {
 			return mutationResult{}, fmt.Errorf("%w: only a scheduler command may change Project scheduling state", storeport.ErrInvalidRecord)
+		}
+		if !reflect.DeepEqual(current.ProjectAdmin, project.ProjectAdmin) && !strings.HasPrefix(command.Type, "project.admin_mcp.") {
+			return mutationResult{}, fmt.Errorf("%w: only a Project administration MCP command may change its state", storeport.ErrInvalidRecord)
 		}
 		if current.State != project.State && current.Organizer.Phase == domain.OrganizerPhaseActive &&
 			!strings.HasPrefix(command.Type, "project.control.") && !strings.HasPrefix(command.Type, "organizer.") {
@@ -1033,7 +1041,7 @@ func encodeProject(project domain.Project) ([]byte, error) {
 		Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer),
 		LastLeaseEpoch: project.LastLeaseEpoch,
 		Lease:          storedLease(project.Lease), LeaseObservation: storedLeaseObservation(project.LeaseObservation),
-		Control: project.Control, Scheduling: project.Scheduling,
+		Control: project.Control, Scheduling: project.Scheduling, ProjectAdmin: projectadmindomain.Clone(project.ProjectAdmin),
 	})
 }
 
@@ -1226,6 +1234,7 @@ func projectByIDForUpdate(ctx context.Context, tx *sql.Tx, id string) (domain.Pr
 	project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
 	project.Control = data.Control
 	project.Scheduling = data.Scheduling
+	project.ProjectAdmin = projectadmindomain.Clone(data.ProjectAdmin)
 	if err := validateReloaded(validateProject(project)); err != nil {
 		return domain.Project{}, err
 	}
@@ -2007,6 +2016,7 @@ func projectByID(ctx context.Context, query rowQuerier, id string) (domain.Proje
 	project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
 	project.Control = data.Control
 	project.Scheduling = data.Scheduling
+	project.ProjectAdmin = projectadmindomain.Clone(data.ProjectAdmin)
 	if err := validateReloaded(validateProject(project)); err != nil {
 		return domain.Project{}, err
 	}
@@ -2043,6 +2053,7 @@ func (store *DoltTaskStore) Projects(ctx context.Context) ([]domain.Project, err
 		project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
 		project.Control = data.Control
 		project.Scheduling = data.Scheduling
+		project.ProjectAdmin = projectadmindomain.Clone(data.ProjectAdmin)
 		if err := validateReloaded(validateProject(project)); err != nil {
 			return nil, err
 		}
@@ -2096,6 +2107,7 @@ func (store *DoltTaskStore) PlanningProjects(ctx context.Context) ([]domain.Proj
 		project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
 		project.Control = data.Control
 		project.Scheduling = data.Scheduling
+		project.ProjectAdmin = projectadmindomain.Clone(data.ProjectAdmin)
 		if err := validateReloaded(validateProject(project)); err != nil {
 			return nil, err
 		}

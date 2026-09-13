@@ -480,6 +480,12 @@ export function structureErrors(paths, packagePaths, fileSources = new Map()) {
   if (!pathSet.has("generated/planning-contract.shared.ts")) {
     errors.push("generated: the generated planning client is missing");
   }
+  if (!pathSet.has("generated/project-admin-mcp-contract.shared.ts")) {
+    errors.push("generated: the generated Project administration MCP client is missing");
+  }
+  if (!pathSet.has("engine/domain/projectadmin/schemas/director-project-admin-mcp.v1.json")) {
+    errors.push("engine/domain/projectadmin: the engine-owned Project administration MCP schema is missing");
+  }
   if (!pathSet.has("engine/ports/planning/planning-surface.v1.json")) {
     errors.push("engine/ports/planning: the engine-owned planning schema is missing");
   }

@@ -90,3 +90,34 @@ TaskStore access, or lifecycle implementation. Primary agent/worktree lifecycle
 and injection dispatch remain with M3.4. Controlled helper admission, fixed
 helper scope, and contribution handoff are defined in
 [Controlled helper lifecycle](controlled-helpers.md).
+
+## Project administration sessions
+
+[ADR-0024](adr/0024-project-agent-administration-mcp.md) adds the distinct
+`director.project-admin-mcp/v1` contract for every authenticated agent working
+in a Director-managed Project. Its canonical schema is
+`engine/domain/projectadmin/schemas/director-project-admin-mcp.v1.json`; the
+generated connector constants carry the canonical SHA-256. This is not an
+additional role in the Run-scoped table above.
+
+The six exact tools read the Project/Organizer/configuration projection, read
+planning and execution projections, submit real planning commands, submit the
+agent-permitted control/recovery commands, and read redacted diagnostics. The
+model cannot select Project, host, native Agent, or native Workspace. Target
+Task/Epic/Workspace/Run IDs are accepted only after authoritative membership
+readback. Human-confirmed dependency override, configuration apply/policy
+expansion, emergency confirmation, integration, purge, P2 residual-risk
+acceptance, review verdict, and public-history rewrite are absent.
+
+Paseo `0.7.2` has no public operation for changing `mcpServers` on a live
+agent. From an existing agent use **Create Director administration session** in
+the command center. Director creates a new top-level agent in the same native
+Workspace with exact per-create MCP injection, registers its actual identity,
+and then sends its first turn. The exact reconnect message is:
+
+> Open ‘Create Director administration session’ from this agent. Paseo 0.7.2
+> cannot add MCP servers to the current live session, so Director creates a new
+> session in the same Project; re-send your request there. Do not restart Paseo.
+
+Runtime recovery remains owned by the plugin supervisor; no Paseo or machine
+restart is part of this lifecycle.

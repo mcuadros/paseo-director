@@ -35,6 +35,8 @@ import (
 	executionapp "github.com/mcuadros/director-engine/application/execution"
 	homeapp "github.com/mcuadros/director-engine/application/home"
 	organizerapp "github.com/mcuadros/director-engine/application/organizer"
+	planningapp "github.com/mcuadros/director-engine/application/planning"
+	adminapp "github.com/mcuadros/director-engine/application/projectadmin"
 	maintenanceapp "github.com/mcuadros/director-engine/application/taskstoremaintenance"
 	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
@@ -44,6 +46,12 @@ import (
 )
 
 const maximumBoardServerConfigBytes = 64 * 1024
+
+func validProjectAdminAuthorization(value string) bool {
+	return len(value) == 64 && strings.IndexFunc(value, func(character rune) bool {
+		return !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f'))
+	}) < 0
+}
 
 type boardServerEndpoint struct {
 	Address      string          `json:"address"`
@@ -359,12 +367,19 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 	hostLabel := flags.String("host-label", "", "public Paseo host label")
 	hostSocket := flags.String("host-socket", defaultHostSocket, "absolute owner-only Director for Paseo host socket")
 	runtimeRoot := flags.String("runtime-root", defaultRuntimeRoot, "absolute owner-only production runtime root")
+	adminTokenPath := flags.String("project-admin-token-file", "", "absolute owner-only Project administration transport token")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 || !loopbackListenAddress(*listenAddress) || *configPath == "" ||
 		!validServerHostIdentity(*hostID, *hostLabel) || !filepath.IsAbs(*hostSocket) || filepath.Clean(*hostSocket) != *hostSocket ||
-		!filepath.IsAbs(*runtimeRoot) || filepath.Clean(*runtimeRoot) != *runtimeRoot {
-		fmt.Fprintln(stderr, "usage: director-engine serve-board --listen <loopback:port> --taskstore-config <absolute-path> --host-id <id> --host-label <label> --host-socket <absolute-path> --runtime-root <absolute-path>")
+		!filepath.IsAbs(*runtimeRoot) || filepath.Clean(*runtimeRoot) != *runtimeRoot || !filepath.IsAbs(*adminTokenPath) {
+		fmt.Fprintln(stderr, "usage: director-engine serve-board --listen <loopback:port> --taskstore-config <absolute-path> --host-id <id> --host-label <label> --host-socket <absolute-path> --runtime-root <absolute-path> --project-admin-token-file <absolute-path>")
 		return 2
 	}
+	adminTokenBytes, err := privateFile(*adminTokenPath, 4096)
+	if err != nil || !validProjectAdminAuthorization(strings.TrimSpace(string(adminTokenBytes))) {
+		fmt.Fprintln(stderr, "director-engine: Project administration transport authorization is invalid")
+		return 1
+	}
+	adminAuthorization := strings.TrimSpace(string(adminTokenBytes))
 	config, err := readBoardServerConfig(*configPath)
 	if err != nil {
 		fmt.Fprintln(stderr, "director-engine: Board server configuration is invalid")
@@ -530,6 +545,19 @@ func runBoardServer(arguments []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "director-engine: production workflow composition is unavailable")
 		return 1
 	}
+	planningService, err := planningapp.NewService(store, launcher, nil)
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: Project administration planning composition is unavailable")
+		return 1
+	}
+	adminService, err := adminapp.NewService(store, planningReader, planningService, controller, production)
+	if err != nil {
+		fmt.Fprintln(stderr, "director-engine: Project administration composition is unavailable")
+		return 1
+	}
+	adminHandler := &projectAdminMCPHandler{service: adminService, authorization: adminAuthorization}
+	handler.Handle(projectAdminLifecyclePath, adminHandler)
+	handler.Handle(projectAdminMCPPath, adminHandler)
 	operationsExecutor := NewOperationsExecutor(store, production)
 	homeSource.WithProductionOperations().WithWorkspaceStore(store)
 	handler.Handle(planningport.HomeQueryPath, newHomeHandler(homeapp.NewReader(store, board.NewTaskStoreFactSource(store), homeSource, now)))

@@ -129,6 +129,24 @@ type MutationResult struct {
 	ConfirmationRef *string `json:"confirmationRef"`
 }
 
+// Actor is the server-authenticated caller of one planning command. Kind is
+// either human or agent; it never comes from the mutation payload.
+type Actor struct {
+	Kind      string
+	ID        string
+	SessionID string
+}
+
+// Result is the internal typed command result returned after authoritative
+// planning application dispatch.
+type Result struct {
+	Status          string
+	Message         string
+	UpdatedVersion  *uint64
+	Preview         any
+	ConfirmationRef string
+}
+
 func ParseExpectedVersion(value string) (uint64, error) {
 	result, err := strconv.ParseUint(value, 10, 64)
 	if err != nil || strconv.FormatUint(result, 10) != value {

@@ -23,6 +23,12 @@ import {
   type HostCommandArguments,
 } from "../generated/host-contract.shared.ts";
 import type { EngineSelection } from "../connector/engine-selection.server.ts";
+import {
+  PROJECT_ADMIN_MCP_CONTRACT_SHA256,
+  PROJECT_ADMIN_MCP_CONTRACT_VERSION,
+  PROJECT_ADMIN_MCP_TOOLS,
+} from "../generated/project-admin-mcp-contract.shared.ts";
+import { PROJECT_ADMIN_RECONNECT_INSTRUCTION } from "../rpc/project-admin.shared.ts";
 
 type FakeAgent = PaseoAgent & {
   timelineEntries: {
@@ -172,7 +178,7 @@ function fakePaseo(options: { stripGitRuntimeFromList?: boolean; executionWorksp
           : [...workspaces];
         return { requestId: "workspaces", entries, pageInfo };
       },
-      ref(value: string) { return workspaceHandle(value); },
+      ref(value: string | PaseoWorkspace) { return workspaceHandle(typeof value === "string" ? value : value.id); },
       async create(options: { title?: string; source: { kind: string; path: string } }) {
         calls.workspaceCreates++;
         const workspace = {
@@ -243,6 +249,86 @@ function connector(client: ConnectorClient): PaseoHostConnector {
     },
   );
 }
+
+test("an ordinary authenticated agent is recreated with exact Project administration MCP before its first turn", async () => {
+  const world = fakePaseo();
+  world.workspaces.push({ id: "workspace-source", projectId: "project-native", projectDisplayName: "Project",
+    projectRootPath: "/srv/source", workspaceDirectory: "/srv/source", projectKind: "git", workspaceKind: "directory",
+    name: "Source", title: null, archivingAt: null, status: "done", statusEnteredAt: null, activityAt: null, scripts: [],
+    gitRuntime: { currentBranch: "main", remoteUrl: "https://github.com/example/source.git", isPaseoOwnedWorktree: false }, githubRuntime: null } as unknown as PaseoWorkspace);
+  world.agents.push({
+    id: "ordinary-agent", provider: "codex", model: "gpt-5.4-mini", cwd: "/srv/source", workspaceId: "workspace-source",
+    createdAt: "2026-09-10T08:00:00Z", updatedAt: "2026-09-10T08:00:00Z", lastUserMessageAt: "2026-09-10T08:00:00Z",
+    status: "idle", activeTurn: null, capabilities: { supportsMcpServers: true }, currentModeId: "default", thinkingOptionId: "high",
+    availableModes: [], pendingPermissions: [], persistence: null, title: "Ordinary agent", labels: {}, archivedAt: null,
+    attentionReason: null, timelineEntries: [],
+  } as unknown as FakeAgent);
+  const host = connector(world.client);
+  host.attachRuntimeSupervisor(Promise.resolve({
+    supervisor: {
+      binding: "e".repeat(64),
+      projectAdminAuthorization: () => "f".repeat(64),
+      async status() { return { state: "current" as const, binding: "e".repeat(64), enginePid: 11, doltPid: 12, restartCount: 0 }; },
+      async close() {}, async release() {},
+    },
+    dolt: { version: "2.3.2", target: "linux-amd64" as const, binaryPath: "/opt/dolt", binarySha256: "1".repeat(64), archiveSha256: "2".repeat(64) },
+  }));
+  const originalFetch = globalThis.fetch;
+  const lifecycle: Array<{ body: Record<string, unknown>; headers: Headers }> = [];
+  globalThis.fetch = (async (_input: URL | RequestInfo, init?: RequestInit) => {
+    lifecycle.push({ body: JSON.parse(String(init?.body)), headers: new Headers(init?.headers) });
+    const result = new Response(JSON.stringify({ status: "active", sessionId: lifecycle[0]!.body.registration &&
+      (lifecycle[0]!.body.registration as Record<string, unknown>).sessionId, projectVersion: "2",
+      contractVersion: PROJECT_ADMIN_MCP_CONTRACT_VERSION }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-director-contract-version": PROJECT_ADMIN_MCP_CONTRACT_VERSION,
+        "x-director-contract-sha256": PROJECT_ADMIN_MCP_CONTRACT_SHA256,
+      },
+    });
+    Object.defineProperty(result, "url", { value: "http://127.0.0.1:7041/v1/project-admin-mcp/session" });
+    return result;
+  }) as typeof globalThis.fetch;
+  try {
+    const result = await host.recreateProjectAdminSession({ requestId: "admin-recreate-1", sourceWorkspaceId: "workspace-source", sourceAgentId: "ordinary-agent" });
+    assert.equal(result.status, "created");
+    assert.equal(result.agentId, "agent-1");
+    assert.equal(result.instruction, PROJECT_ADMIN_RECONNECT_INSTRUCTION);
+    assert.equal(world.calls.agentCreates, 1);
+    assert.equal(world.calls.sends, 1, "registration must complete before the first provider turn is sent");
+    const created = world.createdInputs[0] as any;
+    assert.equal(created.prompt, undefined);
+    assert.equal(created.config.featureValues.permissionMode, "read-only");
+    assert.deepEqual(created.config.toolPolicy.preapproved.map((entry: any) => entry.tool), PROJECT_ADMIN_MCP_TOOLS.map((tool) => tool.name));
+    assert.deepEqual(Object.keys(created.config.mcpServers), ["director-project-admin"]);
+    assert.equal(lifecycle.length, 1);
+    const registration = lifecycle[0]!.body.registration as Record<string, unknown>;
+    assert.equal(registration.nativeWorkspaceId, "workspace-source");
+    assert.equal(registration.nativeAgentId, "agent-1");
+    assert.equal("projectId" in registration, false);
+    assert.equal(lifecycle[0]!.headers.get("x-director-contract-version"), PROJECT_ADMIN_MCP_CONTRACT_VERSION);
+    assert.equal(lifecycle[0]!.headers.get("x-director-contract-sha256"), PROJECT_ADMIN_MCP_CONTRACT_SHA256);
+    assert.equal(JSON.stringify(created).includes("project-native"), false);
+    world.workspaces.push({ ...world.workspaces[0]!, id: "workspace-confused" });
+    await assert.rejects(
+      host.recreateProjectAdminSession({ requestId: "admin-recreate-confused", sourceWorkspaceId: "workspace-confused", sourceAgentId: "ordinary-agent" }),
+      (error: unknown) => error instanceof PaseoHostEffectError && error.code === "PROJECT_ADMIN_NATIVE_IDENTITY_REFUSED",
+    );
+    assert.equal(world.calls.agentCreates, 1, "a mismatched native Agent/Workspace pair must fail before creation");
+    assert.equal(lifecycle.length, 1);
+    world.agents[0]!.capabilities = { ...world.agents[0]!.capabilities, supportsMcpServers: false };
+    await assert.rejects(
+      host.recreateProjectAdminSession({ requestId: "admin-recreate-unsupported", sourceWorkspaceId: "workspace-source", sourceAgentId: "ordinary-agent" }),
+      (error: unknown) => error instanceof PaseoHostEffectError && error.code === "PROJECT_ADMIN_NATIVE_IDENTITY_REFUSED",
+    );
+    assert.equal(world.calls.agentCreates, 1, "an MCP-incapable provider session must fail before creation");
+    assert.equal(lifecycle.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await host.close();
+  }
+});
 
 function primaryArguments(): HostCommandArguments {
   const effectId = "effect-primary-create";

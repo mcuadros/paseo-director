@@ -22,6 +22,7 @@ import {
 } from "../rpc/planning.shared.ts";
 import { directorWorkersRpc } from "../rpc/workers.shared.ts";
 import type { HomeQueryFailure } from "../rpc/home-diagnostics.shared.ts";
+import { recreateProjectAdminSessionRpc } from "../rpc/project-admin.shared.ts";
 
 type PaseoApi = PluginHandlerContext["paseo"];
 type InstalledConnector = ReturnType<typeof startInstalledConnectorShell>;
@@ -87,6 +88,8 @@ export function registerInstalledConnectorHandlers(
   plugin.handle(nativePaseoProjectsRpc, (input, { paseo }) => startConnector(paseo).queryNativePaseoProjects(input));
   plugin.handle(planningTaskDetailRpc, (input, { paseo }) => startConnector(paseo).queryPlanningTask(input));
   plugin.handle(planningMutationRpc, (input, { paseo }) => startConnector(paseo).mutatePlanning(input));
+  plugin.handle(recreateProjectAdminSessionRpc, (input, { paseo }) =>
+    startConnector(paseo).recreateProjectAdminSession(input));
 
   return (_input: unknown, { paseo }: PluginHandlerContext) => startConnector(paseo).status();
 }

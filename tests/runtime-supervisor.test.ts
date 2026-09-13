@@ -77,6 +77,7 @@ test("a reload adopts one exact live supervisor and renews its lease", async () 
     doltProcessStart: null,
   })}\n`, { mode: 0o600 });
   writeFileSync(paths.token, "a".repeat(64), { mode: 0o600 });
+  writeFileSync(paths.projectAdminToken, "b".repeat(64), { mode: 0o600 });
   const commands: string[] = [];
   try {
     const request = async (_socket: string, _token: string, command: "ensure" | "status" | "release") => {
@@ -91,6 +92,8 @@ test("a reload adopts one exact live supervisor and renews its lease", async () 
       dependencies: { request },
     });
     assert.equal(handle.binding, binding);
+    assert.equal(handle.projectAdminAuthorization(), "b".repeat(64));
+    assert.notEqual(handle.projectAdminAuthorization(), "a".repeat(64));
     assert.equal((await handle.status()).state, "current");
     await handle.close();
     assert.deepEqual(commands, ["ensure", "status"]);

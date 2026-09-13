@@ -31,7 +31,8 @@
     "docs/adr/0018-deterministic-coordination-boundary.md",
     "docs/adr/0019-event-driven-delivery-fast-path.md",
     "docs/adr/0020-zero-work-bootstrap-and-terminal-event-dispatch.md",
-    "docs/adr/0021-recover-exact-leased-ref-cleanup.md"
+    "docs/adr/0021-recover-exact-leased-ref-cleanup.md",
+    "docs/adr/0024-project-agent-administration-mcp.md"
   ],
   "controls": [
     {
@@ -39,12 +40,13 @@
       "severity": "P0",
       "categories": ["credentials", "secrets"],
       "threats": ["SEC-1", "SEC-2"],
-      "mitigation": "Credential bytes and credential-shaped values are rejected or redacted by one bounded classifier; plugin handlers borrow Paseo authority without copying a daemon credential, and generated runtime credentials remain in the detached supervisor and Engine boundary.",
+      "mitigation": "Credential bytes and credential-shaped values are rejected or redacted by one bounded classifier; plugin handlers borrow Paseo authority without copying a daemon credential, generated runtime credentials remain in the detached supervisor and Engine boundary, and the Project-admin session persists only a token digest.",
       "implementation": [
         "engine/domain/safedata/safedata.go#ClassifyJSON",
         "engine/domain/planning.go#boundedPlanningText",
         "engine/domain/project.go#ValidateProject",
         "connector/runtime-supervisor-process.linux.server.mjs#privateSecret",
+        "engine/domain/projectadmin/state.go#TokenMatches",
         "index.ts#contribute",
         "tools/coordinator/coordinator.mjs#selectedEnvironment"
       ],
@@ -55,7 +57,8 @@
         "engine/adapters/dolt/store_adversarial_test.go#credential-bearing Project name",
         "tests/paseo-commonjs-load.test.ts#the real connector loads from Paseo 0.7.2's CommonJS backend shape",
         "tests/runtime-supervisor.test.ts#installed runtime has no compiler, source, PATH-binary, or system-service fallback",
-        "tools/coordinator/paseo-auth.test.mjs#public local Paseo MCP lifecycle reads isolate credentials and fail closed"
+        "tools/coordinator/paseo-auth.test.mjs#public local Paseo MCP lifecycle reads isolate credentials and fail closed",
+        "engine/domain/projectadmin/contract_test.go#TestSessionStateIsProjectBoundAndStoresOnlyTokenDigest"
       ],
       "status": "closed"
     },
@@ -106,17 +109,19 @@
       "severity": "P0",
       "categories": ["process_arguments_environment", "credentials"],
       "threats": ["CMD-1", "CMD-2"],
-      "mitigation": "Processes use direct argument vectors, fixed commands, exact working directories, empty MCP environments, credential-free arguments, bounded output, and no shell expansion.",
+      "mitigation": "Processes use direct argument vectors, fixed commands, exact working directories, credential-free arguments, bounded output, and no shell expansion. Run MCP environments remain empty; the Project-admin stdio child receives only its scoped session token.",
       "implementation": [
         "engine/domain/execution/primary.go#validMCPServer",
         "engine/ports/host/host-interface.v1.json#arguments",
         "connector/paseo.server.ts#assertCreate",
+        "connector/project-admin-mcp.server.ts#createProjectAdminMCPInjection",
         "tools/coordinator/coordinator.mjs#defaultCommandRunner"
       ],
       "tests": [
         "engine/domain/execution/primary_test.go#TestPrimarySessionRejectsCredentialAndControlEnvironment",
         "tests/primary-host-connector.test.ts#primary creation fails before Paseo when frozen profile or session correlation drifts",
-        "tools/coordinator/coordinator.test.mjs#argument arrays preserve hostile PR title text without shell execution"
+        "tools/coordinator/coordinator.test.mjs#argument arrays preserve hostile PR title text without shell execution",
+        "tests/project-admin-mcp-connector.test.ts#project administration injection rejects drift, selectors, non-loopback transport, and environment expansion"
       ],
       "status": "closed"
     },
@@ -125,17 +130,23 @@
       "severity": "P0",
       "categories": ["mcp_capability_scope", "actor_authority_separation"],
       "threats": ["MCP-1", "MCP-2", "MCP-3"],
-      "mitigation": "The Engine derives a fixed role catalog, reauthorizes immutable Task/Run/Candidate scope on every call, rejects caller scope selectors, and never exposes lifecycle effects.",
+      "mitigation": "The Engine derives fixed Run-role and Project-admin catalogs, reauthorizes immutable scope on every call, checks every administrative target against the bound Project, rejects caller Project selectors, and never exposes lifecycle effects or human-only decisions.",
       "implementation": [
         "engine/domain/agentbridge/contract.go#Catalog",
         "engine/domain/agentbridge/schemas/director-agent-mcp.v1.json#reviewer",
         "engine/application/agentbridge/service.go#OpenSession",
-        "engine/application/agentbridge/service.go#Call"
+        "engine/application/agentbridge/service.go#Call",
+        "engine/domain/projectadmin/contract.go#forbiddenAuthorityField",
+        "engine/application/projectadmin/service.go#OpenSession",
+        "engine/application/projectadmin/service.go#scopeIntent"
       ],
       "tests": [
         "engine/domain/agentbridge/contract_test.go#TestContractMutationsFailClosed",
         "engine/domain/agentbridge/contract_test.go#TestToolInputRejectsForgedScopeUnknownFieldsOversizeAndSecrets",
-        "engine/domain/agentbridge/executionoracle_conformance_test.go#TestExecutionOracleConformsToIntegratedSessionMCPContract"
+        "engine/domain/agentbridge/executionoracle_conformance_test.go#TestExecutionOracleConformsToIntegratedSessionMCPContract",
+        "engine/domain/projectadmin/contract_test.go#TestEmbeddedDefinitionIsExactClosedAndProjectSelectorFree",
+        "engine/application/projectadmin/service_test.go#TestProjectAdminSessionCreatesRealTaskAndReplaysDurably",
+        "engine/application/projectadmin/service_test.go#TestRegistrationFailsClosedForAmbiguousOrUnknownWorkspace"
       ],
       "status": "closed"
     },
@@ -162,17 +173,19 @@
       "severity": "P0",
       "categories": ["actor_authority_separation", "policy_envelope"],
       "threats": ["AGT-1", "AGT-2", "AGT-4"],
-      "mitigation": "Mutation payloads cannot carry authorship; connector-only headers must contain one exact bounded human identity, and Task/Reviewer claims cannot close, publish, review themselves, or integrate.",
+      "mitigation": "Mutation payloads cannot carry authorship; human planning ingress accepts only exact bounded human identity, while Project-admin ingress injects its immutable native Agent/session actor. Task/Reviewer claims still cannot close, publish, review themselves, or integrate.",
       "implementation": [
         "engine/ports/planning/model.go#ValidMutationActor",
         "engine/ports/planning/planning-surface.v1.json#mutationActorHeaders",
         "engine/cmd/director-engine/planning_mutation_http.go#planningMutationActor",
-        "engine/domain/review/review.go#ValidateClaim"
+        "engine/domain/review/review.go#ValidateClaim",
+        "engine/application/projectadmin/service.go#planningCommand"
       ],
       "tests": [
         "engine/cmd/director-engine/planning_mutation_http_test.go#TestPlanningControlHTTPRejectsCallerAuthorshipFields",
         "engine/ports/planning/contract_test.go#TestPlanningIngressRejectsCredentialPathsAndForgedActorShapes",
-        "tools/coordinator/coordinator.test.mjs#review evidence rejects Task-Agent, coordinator, and harness identity aliasing"
+        "tools/coordinator/coordinator.test.mjs#review evidence rejects Task-Agent, coordinator, and harness identity aliasing",
+        "engine/application/projectadmin/service_test.go#TestEveryExposedAdministrativeCommandUsesAgentActorAndCurrentGates"
       ],
       "status": "closed"
     },
@@ -235,16 +248,18 @@
       "severity": "P1",
       "categories": ["response_loss_restart", "secrets"],
       "threats": ["DAT-1", "DOS-1"],
-      "mitigation": "Typed durable state, canonical JSON, strict versions, monotonic event cursors, resource limits, finite retries, disk-pressure gates, backups, and verified restore/migration preserve recoverability without unbounded work.",
+      "mitigation": "Typed durable state, canonical JSON, strict versions, monotonic event cursors, resource limits, finite retries, disk-pressure gates, backups, and verified restore/migration preserve recoverability without unbounded work. Project-admin replay state is bounded and durable outside Run receipts.",
       "implementation": [
         "engine/adapters/dolt/taskstore.go#prepareCommand",
         "engine/adapters/dolt/maintenance.go#ObserveDisk",
-        "engine/domain/execution/admission.go#EvaluateOperationalLimits"
+        "engine/domain/execution/admission.go#EvaluateOperationalLimits",
+        "engine/domain/projectadmin/state.go#State"
       ],
       "tests": [
         "engine/adapters/dolt/store_adversarial_test.go#TestConcurrentStrictEventResumeObservesEveryCommit",
         "engine/adapters/dolt/maintenance_contract_test.go#TestDoltInterruptedSchemaEffectProducesExactRecovery",
-        "engine/domain/execution/admission_test.go#TestOperationalLimitsAcceptExactBoundaryAndParkEveryMissingOrExceededFact"
+        "engine/domain/execution/admission_test.go#TestOperationalLimitsAcceptExactBoundaryAndParkEveryMissingOrExceededFact",
+        "engine/application/projectadmin/service_test.go#TestProjectAdminInputAndOutputAreBounded"
       ],
       "status": "closed"
     }

@@ -16,6 +16,7 @@ import (
 	"github.com/mcuadros/director-engine/domain"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
+	executionport "github.com/mcuadros/director-engine/ports/execution"
 	"github.com/mcuadros/director-engine/ports/host"
 	storeport "github.com/mcuadros/director-engine/ports/taskstore"
 	controlreducer "github.com/mcuadros/director-engine/reducer/control"
@@ -26,39 +27,9 @@ var (
 	ErrEmergencyConfirmationStale = errors.New("emergency stop confirmation is absent, stale, or belongs to another authenticated session")
 )
 
-// AuthenticatedControlActor is supplied by the trusted server ingress rather
-// than decoded from the planning mutation. Emergency stop accepts only a
-// server-authenticated human actor.
-type AuthenticatedControlActor struct {
-	Kind          domainexecution.ControlActorKind
-	ID            string
-	SessionID     string
-	Source        string
-	Authenticated bool
-}
-
-type ControlCommand struct {
-	Kind                   domainexecution.ControlKind
-	RequestID              string
-	ProjectID              string
-	TaskID                 string
-	RunID                  string
-	ExpectedProjectVersion uint64
-	ExpectedTaskVersion    uint64
-	ExpectedRunVersion     uint64
-	Lease                  domainexecution.LeaseBinding
-	Actor                  AuthenticatedControlActor
-	NowMillis              int64
-	ConfirmationID         string
-}
-
-type ControlResult struct {
-	Project        domain.Project
-	Run            *domain.Run
-	Command        domain.CommandResult
-	ConfirmationID string
-	Replay         bool
-}
+type AuthenticatedControlActor = executionport.AuthenticatedControlActor
+type ControlCommand = executionport.ControlCommand
+type ControlResult = executionport.ControlResult
 
 type ReconcileControlCommand struct {
 	RequestID string
@@ -77,7 +48,7 @@ type AgentRegistrationCommand struct {
 
 func validControlActor(actor AuthenticatedControlActor) bool {
 	return actor.Authenticated && actor.Source == "server" && actor.ID != "" && actor.SessionID != "" &&
-		(actor.Kind == domainexecution.ControlActorHuman || actor.Kind == domainexecution.ControlActorBudget ||
+		(actor.Kind == domainexecution.ControlActorHuman || actor.Kind == domainexecution.ControlActorAgent || actor.Kind == domainexecution.ControlActorBudget ||
 			actor.Kind == domainexecution.ControlActorCoordinator)
 }
 
@@ -244,7 +215,7 @@ func (controller *Controller) RequestProjectControl(ctx context.Context, command
 	if command.TaskID != "" || command.RunID != "" || command.ConfirmationID != "" {
 		return ControlResult{}, ErrControlInvalid
 	}
-	if command.Kind == domainexecution.ControlResumeProject && command.Actor.Kind != domainexecution.ControlActorHuman {
+	if command.Kind == domainexecution.ControlResumeProject && command.Actor.Kind != domainexecution.ControlActorHuman && command.Actor.Kind != domainexecution.ControlActorAgent {
 		return ControlResult{}, ErrControlInvalid
 	}
 	project, err := controller.validateProjectControlCommand(ctx, command)
@@ -512,7 +483,7 @@ func (controller *Controller) refreshControlledHelpers(ctx context.Context, run 
 func (controller *Controller) CancelTask(ctx context.Context, command ControlCommand) (ControlResult, error) {
 	command.Kind = domainexecution.ControlCancelTask
 	if !identifierPattern.MatchString(command.TaskID) || !identifierPattern.MatchString(command.RunID) ||
-		command.ConfirmationID != "" || command.Actor.Kind != domainexecution.ControlActorHuman {
+		command.ConfirmationID != "" || (command.Actor.Kind != domainexecution.ControlActorHuman && command.Actor.Kind != domainexecution.ControlActorAgent) {
 		return ControlResult{}, ErrControlInvalid
 	}
 	transition := "run.control.cancel_task"

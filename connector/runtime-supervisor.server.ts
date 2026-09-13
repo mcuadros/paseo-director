@@ -50,6 +50,7 @@ export type RuntimeSupervisorStatus = {
 
 export type RuntimeSupervisorHandle = {
   binding: string;
+  projectAdminAuthorization(): string;
   status(): Promise<RuntimeSupervisorStatus>;
   close(): Promise<void>;
   release(): Promise<void>;
@@ -104,6 +105,7 @@ export function runtimeSupervisorPaths(environment: NodeJS.ProcessEnv): {
   socket: string;
   state: string;
   token: string;
+  projectAdminToken: string;
   lock: string;
   data: string;
   config: string;
@@ -124,6 +126,7 @@ export function runtimeSupervisorPaths(environment: NodeJS.ProcessEnv): {
     socket: join(root, platform.controlEndpointName),
     state: join(root, "state.json"),
     token: join(root, "control.token"),
+    projectAdminToken: join(root, "project-admin.token"),
     lock: join(root, "launch.lock"),
     data: resolve(dataBase, "director"),
     config: resolve(configBase, "director", "managed-runtime"),
@@ -252,7 +255,7 @@ async function waitForProcessExit(pid: number, processStart: string): Promise<vo
 }
 
 function removeStaleControl(paths: ReturnType<typeof runtimeSupervisorPaths>): void {
-  for (const path of [paths.socket, paths.state, paths.token]) {
+  for (const path of [paths.socket, paths.state, paths.token, paths.projectAdminToken]) {
     if (!existsSync(path)) continue;
     const status = lstatSync(path);
     const uid = process.geteuid?.();
@@ -339,26 +342,39 @@ export async function ensureRuntimeSupervisor(options: {
   let existing = readState(paths.state);
   if (existing !== null) {
     const token = readPrivateFile(paths.token, "DIRECTOR_RUNTIME_CONTROL_TOKEN");
-    if (existing.binding !== binding) {
-      if (platform.processIdentity(existing.pid) !== existing.processStart) {
-        await reclaimOwnedChildren(existing, options.engine.binaryPath, options.dolt.binaryPath);
-        removeStaleControl(paths);
-        existing = null;
-      } else {
+    if (!existsSync(paths.projectAdminToken)) {
+      if (platform.processIdentity(existing.pid) === existing.processStart) {
         await request(paths.socket, token, "release");
         await waitForProcessExit(existing.pid, existing.processStart);
-        removeStaleControl(paths);
-        existing = null;
+      } else {
+        await reclaimOwnedChildren(existing, options.engine.binaryPath, options.dolt.binaryPath);
       }
+      removeStaleControl(paths);
+      existing = null;
     }
     if (existing !== null) {
-      if (platform.processIdentity(existing.pid) !== existing.processStart) {
-        await reclaimOwnedChildren(existing, options.engine.binaryPath, options.dolt.binaryPath);
-        removeStaleControl(paths);
-        existing = null;
-      } else {
-        await request(paths.socket, token, "ensure");
-        return leasedHandle(paths.socket, token, binding, request);
+      const projectAdminToken = readPrivateFile(paths.projectAdminToken, "DIRECTOR_PROJECT_ADMIN_TOKEN");
+      if (existing.binding !== binding) {
+        if (platform.processIdentity(existing.pid) !== existing.processStart) {
+          await reclaimOwnedChildren(existing, options.engine.binaryPath, options.dolt.binaryPath);
+          removeStaleControl(paths);
+          existing = null;
+        } else {
+          await request(paths.socket, token, "release");
+          await waitForProcessExit(existing.pid, existing.processStart);
+          removeStaleControl(paths);
+          existing = null;
+        }
+      }
+      if (existing !== null) {
+        if (platform.processIdentity(existing.pid) !== existing.processStart) {
+          await reclaimOwnedChildren(existing, options.engine.binaryPath, options.dolt.binaryPath);
+          removeStaleControl(paths);
+          existing = null;
+        } else {
+          await request(paths.socket, token, "ensure");
+          return leasedHandle(paths.socket, token, projectAdminToken, binding, request);
+        }
       }
     }
   }
@@ -423,11 +439,12 @@ export async function ensureRuntimeSupervisor(options: {
     child.disconnect();
     child.unref();
     const token = readPrivateFile(paths.token, "DIRECTOR_RUNTIME_CONTROL_TOKEN");
+    const projectAdminToken = readPrivateFile(paths.projectAdminToken, "DIRECTOR_PROJECT_ADMIN_TOKEN");
     const status = await request(paths.socket, token, "ensure");
     if (status.binding !== binding) {
       throw new RuntimeSupervisorError("DIRECTOR_RUNTIME_BINDING_MISMATCH", "runtime supervisor started with another binding");
     }
-    return leasedHandle(paths.socket, token, binding, request);
+    return leasedHandle(paths.socket, token, projectAdminToken, binding, request);
   } finally {
     releaseLock();
   }
@@ -436,6 +453,7 @@ export async function ensureRuntimeSupervisor(options: {
 function leasedHandle(
   socketPath: string,
   token: string,
+  projectAdminToken: string,
   binding: string,
   request: typeof controlRequest,
 ): RuntimeSupervisorHandle {
@@ -446,6 +464,7 @@ function leasedHandle(
   timer.unref();
   return {
     binding,
+    projectAdminAuthorization: () => projectAdminToken,
     status: () => request(socketPath, token, "status"),
     async close() {
       if (closed) return;
