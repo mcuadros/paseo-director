@@ -30,6 +30,7 @@ export type RuntimeConfiguration = {
 
 export class RuntimeConfigurationError extends Error {
   readonly code: string;
+  readonly state: "absent" | "invalid";
 }
 
 export const DEFAULT_ENGINE_MODE: "release";

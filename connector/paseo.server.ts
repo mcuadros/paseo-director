@@ -86,6 +86,7 @@ import {
 } from "./compatibility.server.ts";
 import { INSTALLED_CONNECTOR_METADATA } from "./install-metadata.server.ts";
 import {
+  assertRuntimeDeployment,
   loadRuntimeConfiguration,
   type RuntimeConfiguration,
 } from "./runtime-configuration.server.mjs";
@@ -1346,6 +1347,7 @@ export function startInstalledConnectorShell(options: {
     if (!source || source.source !== "directory" || !isAbsolute(source.path)) {
       throw new PaseoHostEffectError("HOST_PLUGIN_SOURCE_UNAVAILABLE");
     }
+    assertRuntimeDeployment(source.path, loaded, environment);
     assertConnectorCredentialOutsideCheckout(
       configuration.paseo.credentialFile,
       source.path,

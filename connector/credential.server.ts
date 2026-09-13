@@ -21,11 +21,17 @@ import {
 
 export class ConnectorCredentialError extends Error {
   readonly code: string;
+  readonly state: "absent" | "invalid";
 
-  constructor(code: string, message: string) {
+  constructor(
+    code: string,
+    message: string,
+    state: "absent" | "invalid" = "invalid",
+  ) {
     super(message);
     this.name = "ConnectorCredentialError";
     this.code = code;
+    this.state = state;
   }
 }
 
@@ -137,6 +143,7 @@ export function loadConnectorCredential(options: {
     throw new ConnectorCredentialError(
       "CONNECTOR_CREDENTIAL_REQUIRED",
       "Director for Paseo requires its connector credential file",
+      "absent",
     );
   }
   const credentialPath = realpathSync(options.credentialPath);
