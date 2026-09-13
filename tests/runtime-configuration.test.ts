@@ -51,11 +51,14 @@ test("runtime configuration supplies only deterministic safe defaults", () => {
     }, current.root);
     assert.equal(loaded.configuration.engine.mode, "release");
     assert.equal(loaded.configuration.engine.url, "http://127.0.0.1:7041");
+    assert.equal(loaded.configuration.engine.hostSocket, join(current.cacheBase, "director", "runtime", "host.sock"));
+    assert.equal(loaded.configuration.engine.runtimeRoot, join(current.cacheBase, "director", "runtime", "work"));
     assert.deepEqual(loaded.configuration.diagnostics.settings, [
       { name: "paseo.url", source: "defaulted" },
       { name: "engine.mode", source: "defaulted" },
       { name: "engine.url", source: "defaulted" },
       { name: "engine.cache-base", source: "overridden" },
+      { name: "engine.runtime-base", source: "overridden" },
     ]);
     const diagnostic = JSON.stringify(loaded.configuration.diagnostics);
     assert.doesNotMatch(diagnostic, /test-only-secret|connector\.password|127\.0\.0\.1/u);
@@ -86,6 +89,7 @@ test("explicit development overrides remain strict and path-safe", () => {
       { name: "engine.mode", source: "overridden" },
       { name: "engine.url", source: "overridden" },
       { name: "engine.cache-base", source: "overridden" },
+      { name: "engine.runtime-base", source: "overridden" },
       { name: "engine.module-cache", source: "overridden" },
     ]);
     assert.equal(
@@ -96,6 +100,21 @@ test("explicit development overrides remain strict and path-safe", () => {
     rmSync(current.root, { recursive: true, force: true });
     rmSync(source, { recursive: true, force: true });
     rmSync(moduleCache, { recursive: true, force: true });
+  }
+});
+
+test("XDG runtime paths are derived consistently without entering runtime JSON", () => {
+  const current = fixture();
+  const runtimeBase = join(current.root, "run");
+  mkdirSync(runtimeBase, { mode: 0o700 });
+  try {
+    const loaded = loadRuntimeConfiguration({ XDG_CONFIG_HOME: current.configBase,
+      XDG_CACHE_HOME: current.cacheBase, XDG_RUNTIME_DIR: runtimeBase }, current.root);
+    assert.equal(loaded.configuration.engine.hostSocket, join(runtimeBase, "director", "runtime", "host.sock"));
+    assert.equal(loaded.configuration.engine.runtimeRoot, join(runtimeBase, "director", "runtime", "work"));
+    assert.doesNotMatch(JSON.stringify(loaded.configuration.diagnostics), new RegExp(runtimeBase));
+  } finally {
+    rmSync(current.root, { recursive: true, force: true });
   }
 });
 
@@ -122,6 +141,15 @@ test("legacy daemon environment is ignored without restart and unsafe runtime fi
 });
 
 test("configuration rejects unknown fields, non-loopback authority, and checkout overlap", () => {
+  const isolated = parseRuntimeConfiguration(Buffer.from(JSON.stringify({ schemaVersion: 1,
+    paseo: { credentialFile: "/private/credential", url: "ws://127.0.0.2:6767/ws" }, engine: {} })));
+  assert.equal(isolated.paseo.url, "ws://127.0.0.2:6767/ws");
+  assert.equal(isolated.diagnostics.settings[0]?.source, "overridden");
+  assert.throws(
+    () => parseRuntimeConfiguration(Buffer.from(JSON.stringify({ schemaVersion: 1,
+      paseo: { credentialFile: "/private/credential", url: "ws://100.125.223.8:6767/ws" }, engine: {} }))),
+    (error: unknown) => error instanceof RuntimeConfigurationError && error.code === "DIRECTOR_RUNTIME_PASEO_URL",
+  );
   assert.throws(
     () => parseRuntimeConfiguration(Buffer.from('{"schemaVersion":1,"schemaVersion":1,"paseo":{"credentialFile":"/private/credential"},"engine":{}}')),
     (error: unknown) => error instanceof RuntimeConfigurationError && error.code === "DIRECTOR_RUNTIME_CONFIG_JSON",

@@ -44,12 +44,16 @@ raw adapter errors.
 
 ## Create and Adopt
 
-`Create Project` and `Adopt Organizer` open a host-bound form. The client must
-mint a secure request ID; absence disables both Preview and Apply. Preview is a
-read-only call to the existing Director Engine Organizer service. It returns
-the exact selected Organizer path, file digests, operations, revision/config
-digests, and bounded validation issues directly to that authenticated human
-surface.
+`Create from Paseo Project` opens with the authoritative native Paseo Project
+selector. Project ID/name, repository root, derived sibling Organizer
+candidate, and exact visible Workspaces come from public Paseo facts. Director
+Engine generates `paseo-director.json`; the standard path asks for no duplicate
+fields or raw JSON. `Advanced existing-setup import` remains separately named
+for an already prepared Organizer. The client must mint a secure request ID;
+absence disables Preview and Apply. Preview is a read-only call to Director
+Engine and returns the generated configuration, exact Organizer path, file
+digests, ordered operations, revision/config digests, and bounded issues to the
+authenticated human surface.
 
 Apply is a separate press which resubmits the unchanged request ID, inputs, and
 exact Preview SHA-256 with explicit confirmation. The connector supplies the

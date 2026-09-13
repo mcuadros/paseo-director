@@ -56,6 +56,12 @@ consumes at most one lease-fenced replacement authority, preserves unrelated
 Reviewer/helper/orphan resources, and routes every ambiguity or second failure
 to Needs you. See [Primary replacement and orphan recovery](docs/primary-recovery.md).
 
+The maintained production entry path includes engine-owned direct-Dolt
+bootstrap, native Paseo Project selection and generated Organizer Preview,
+closed planning mutations, atomic scheduling, real host/recovery callbacks,
+Candidate/CI/independent-Review delivery, feedback correction, maintenance,
+and guarded cleanup. See [Production onboarding and workflow](docs/production-onboarding.md).
+
 The walking skeleton also retains one explicitly fake execution path. It moves one
 queued Task through engine-owned Eligibility, Launch, Retry, Escalation,
 Routing, and fake-terminal Closure reductions; a Director-owned disposable Git
@@ -66,8 +72,7 @@ every persisted walking-skeleton Run, validates its immutable Command/Event and
 Candidate graph, recovers exact execution IDs and cleanup intents, refreshes
 the external frontier through a replaceable policy-free connector, and resumes
 one reducer-authorized transition without duplicating an unknown effect.
-The fake adapter remains test-only; validation/review/delivery remain later
-milestone work. See
+The fake adapter remains test-only and is not a production fallback. See
 [Fake execution vertical path](docs/fake-execution.md).
 
 Alongside that fake path, the walking skeleton establishes the process,
@@ -232,7 +237,9 @@ director-engine serve-board \
   --listen 127.0.0.1:7041 \
   --taskstore-config /absolute/private/director-engine.json \
   --host-id paseo-host-id \
-  --host-label "Paseo host label"
+  --host-label "Paseo host label" \
+  --host-socket /absolute/private/director-runtime/host.sock \
+  --runtime-root /absolute/private/director-runtime/work
 ```
 
 The Home, Board, and Doctor query endpoints are unauthenticated. Organizer
@@ -270,8 +277,10 @@ shape is:
 ```
 
 `passwordFile` may be `null` only for an explicitly configured passwordless
-local test store. The server never bootstraps or repairs the selected database;
-missing identity, schema, or connection facts fail startup or the
+owner-local store. Use the supported `bootstrap-taskstore` command in the
+production runbook to initialize and read back the selected database without
+raw SQL. The serving process never guesses or replaces a store; missing
+identity, schema, or connection facts fail startup or the
 query closed with a bounded error. An unavailable Repair executor disables
 Repair and fails closed; it never turns a client Preview into an effect. The
 endpoint accepts only the generated

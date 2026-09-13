@@ -56,10 +56,10 @@ function realIncidentFixtures(): RealIncidentFixture[] {
   return corpus.fixtures;
 }
 
-function fakePaseo() {
+function fakePaseo(options: { stripGitRuntimeFromList?: boolean; executionWorkspaceRefreshLag?: number } = {}) {
   const workspaces: PaseoWorkspace[] = [];
   const agents: FakeAgent[] = [];
-  const calls = { connect: 0, workspaceCreates: 0, agentCreates: 0, sends: 0, agentArchives: 0 };
+  const calls = { connect: 0, workspaceCreates: 0, workspaceRefreshes: 0, agentCreates: 0, sends: 0, detaches: 0, agentArchives: 0 };
   const createdInputs: unknown[] = [];
   const pageInfo = { hasMore: false, nextCursor: null, previousCursor: null };
 
@@ -93,6 +93,7 @@ function fakePaseo() {
       agent.status = "running";
       agent.activeTurn = { turnId: `turn-${calls.sends}`, startedAt: "2026-09-10T08:00:00Z" };
     },
+    async detach() { calls.detaches++; },
     async archive() {
       calls.agentArchives++;
       const agent = agents.find((entry) => entry.id === id)!;
@@ -105,7 +106,13 @@ function fakePaseo() {
   const workspaceHandle = (id: string) => ({
     id,
     async refresh() {
-      return workspaces.find((entry) => entry.id === id) ?? null;
+      calls.workspaceRefreshes++;
+      const workspace = workspaces.find((entry) => entry.id === id) ?? null;
+      if (workspace && workspace.title?.endsWith(" execution workspace") &&
+        calls.workspaceRefreshes <= (options.executionWorkspaceRefreshLag ?? 0)) {
+        return { ...workspace, workspaceKind: "local_checkout", gitRuntime: undefined } as PaseoWorkspace;
+      }
+      return workspace;
     },
     agents: {
       async create(options: {
@@ -151,8 +158,20 @@ function fakePaseo() {
   const client = {
     async connect() { calls.connect++; },
     async close() {},
+    projects: {
+      async list() {
+        return { requestId: "projects", projects: [{ projectId: "project-native", projectKey: "native",
+          projectDisplayName: "Project", projectCustomName: null, projectRootPath: "/srv/source",
+          projectKind: "git", syncSeq: 1 }] };
+      },
+    },
     workspaces: {
-      async list() { return { requestId: "workspaces", entries: [...workspaces], pageInfo }; },
+      async list() {
+        const entries = options.stripGitRuntimeFromList
+          ? workspaces.map((workspace) => ({ ...workspace, gitRuntime: undefined }))
+          : [...workspaces];
+        return { requestId: "workspaces", entries, pageInfo };
+      },
       ref(value: string) { return workspaceHandle(value); },
       async create(options: { title?: string; source: { kind: string; path: string } }) {
         calls.workspaceCreates++;
@@ -183,6 +202,27 @@ function fakePaseo() {
   } as unknown as ConnectorClient;
   return { client, workspaces, agents, calls, createdInputs };
 }
+
+test("native onboarding derives one stable selector from authoritative public Paseo facts", async () => {
+  const world = fakePaseo({ stripGitRuntimeFromList: true });
+  world.workspaces.push({ id: "workspace-source", projectId: "project-native", projectDisplayName: "Project",
+    projectRootPath: "/srv/source", workspaceDirectory: "/srv/source", projectKind: "git", workspaceKind: "directory",
+    name: "Source", title: null, archivingAt: null, status: "done", statusEnteredAt: null, activityAt: null, scripts: [],
+    gitRuntime: { currentBranch: "main", remoteUrl: "https://github.com/example/source.git", isPaseoOwnedWorktree: false }, githubRuntime: null } as unknown as PaseoWorkspace);
+  const host = connector(world.client);
+  const snapshot = await host.queryNativePaseoProjects({ hostId: "host-a" });
+  assert.equal(snapshot.hostId, "host-a");
+  assert.equal(snapshot.projects.length, 1);
+  assert.equal(snapshot.projects[0]!.projectId, "project-native");
+  assert.equal(snapshot.projects[0]!.name, "Project");
+  assert.equal(snapshot.projects[0]!.organizerCandidate, "/srv/.source-director-organizer");
+  assert.equal(snapshot.projects[0]!.workspaces.length, 1);
+  assert.equal(snapshot.projects[0]!.workspaces[0]!.id, "workspace-source");
+  assert.equal(snapshot.projects[0]!.workspaces[0]!.remoteUrl, "https://github.com/example/source.git");
+  assert.equal(snapshot.projects[0]!.workspaces[0]!.baseBranch, "main");
+  assert.equal(world.calls.workspaceRefreshes, 1, "native selector must refresh Paseo 0.7.2's list-only row");
+  assert.match(snapshot.projects[0]!.factsRevision, /^[0-9a-f]{64}$/);
+});
 
 function connector(client: ConnectorClient): PaseoHostConnector {
   return new PaseoHostConnector(
@@ -269,7 +309,7 @@ function directorMessageId(effectId: string): string {
 }
 
 test("public connector creates one host view and one parentless primary then sends one notified prompt", async () => {
-  const world = fakePaseo();
+  const world = fakePaseo({ executionWorkspaceRefreshLag: 2 });
   const host = connector(world.client);
   const base = primaryArguments();
   const workspaceCreate = command("executionWorkspace.createManaged", {
@@ -278,6 +318,7 @@ test("public connector creates one host view and one parentless primary then sen
   const createdWorkspace = await host.invoke(workspaceCreate);
   assert.equal(createdWorkspace.result.status, "desired");
   assert.equal(world.calls.workspaceCreates, 1);
+  assert.equal(world.calls.workspaceRefreshes, 3, "eventual Paseo Git facts must settle before desired evidence");
   const replayedWorkspace = await host.invoke(workspaceCreate);
   assert.equal(replayedWorkspace.result.status, "desired");
   assert.equal(world.calls.workspaceCreates, 1);
@@ -307,7 +348,7 @@ test("public connector creates one host view and one parentless primary then sen
       options: {},
       mcpServers: {
         "director-session-mcp": {
-          type: "stdio", command: "/usr/bin/director-agent-runtime", args: ["serve"], env: {},
+          type: "stdio", command: "/usr/bin/director-agent-runtime", args: ["serve", "--role", "worker", "--session-sha", "b".repeat(64)], env: {},
         },
       },
       toolPolicy: {
@@ -320,7 +361,8 @@ test("public connector creates one host view and one parentless primary then sen
   );
 
   agent.status = "idle";
-  agent.activeTurn = null;
+  // Paseo 0.7.2 may retain a stale activeTurn object in one snapshot after
+  // publishing the explicit idle/finished terminal pair.
   agent.attentionReason = "finished";
   const observedAgent = await host.invoke(command("agent.observe", createArguments, createdAgent.cursor));
   assert.equal(observedAgent.result.status, "desired");
@@ -342,9 +384,11 @@ test("public connector creates one host view and one parentless primary then sen
   const firstPrompt = await host.invoke(prompt);
   assert.equal(firstPrompt.result.status, "owned_present");
   assert.equal(world.calls.sends, 1);
+  assert.equal(world.calls.detaches, 1, "idle provider session must detach before a new governed turn");
   const replayedPrompt = await host.invoke(prompt);
   assert.equal(replayedPrompt.result.status, "owned_present");
   assert.equal(world.calls.sends, 1, "nonrepeatable real prompt must not be sent twice");
+  assert.equal(world.calls.detaches, 1, "prompt replay must not detach or send twice");
 
   agent.status = "idle";
   agent.activeTurn = null;

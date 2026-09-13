@@ -62,6 +62,7 @@ type Project struct {
 	Lease            *ProjectLease
 	LeaseObservation *ProjectLeaseObservation
 	Control          execution.ProjectControl
+	Scheduling       SchedulingLedger
 }
 
 // Task is one mutable planning unit. It belongs to exactly one Project,

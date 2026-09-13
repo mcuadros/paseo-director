@@ -22,7 +22,15 @@ import {
   organizerBootstrapResultSchema,
   repairInputSchema,
   repairResultSchema,
+  nativePaseoProjectsInputSchema,
+  nativePaseoProjectsSnapshotSchema,
 } from "../generated/planning-contract.shared.ts";
+
+export const nativePaseoProjectsRpc = defineRpc({
+  name: "director.native-paseo-projects",
+  input: nativePaseoProjectsInputSchema,
+  output: nativePaseoProjectsSnapshotSchema,
+});
 
 export const planningQueryRpc = defineRpc({
   name: "director.planning-query",

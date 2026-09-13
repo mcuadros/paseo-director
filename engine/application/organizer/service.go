@@ -107,6 +107,7 @@ type Preview struct {
 	RepositoryPath      string   `json:"repositoryPath"`
 	OrganizerRevision   string   `json:"organizerRevision,omitempty"`
 	ConfigurationSHA256 string   `json:"configurationSha256,omitempty"`
+	ConfigurationJSON   string   `json:"configurationJson,omitempty"`
 	Files               []File   `json:"files"`
 	Operations          []string `json:"operations"`
 	Valid               bool     `json:"valid"`
@@ -319,7 +320,7 @@ func (service *Service) validateDocument(
 			}
 			preview.workspaces = append(preview.workspaces, domain.Workspace{
 				ID: domain.WorkspaceID(preview.ProjectID, workspace.ID), ProjectID: preview.ProjectID,
-				Key: workspace.ID, Name: name,
+				Key: workspace.ID, Name: name, NativePaseoWorkspaceID: workspace.NativePaseoWorkspaceID,
 				Repository: domain.RepositoryIdentity{
 					ID: resolved.RepositoryID, Key: resolved.RepositoryKey,
 					CanonicalRemote: resolved.CanonicalRemote, SourcePath: resolved.SourcePath,
@@ -397,6 +398,7 @@ func (service *Service) buildCreatePreview(ctx context.Context, request CreateRe
 	document, documentValid := service.validateDocument(ctx, &preview, request.ConfigurationJSON, observeTarget)
 	if documentValid {
 		preview.configurationJSON = document.CanonicalJSON()
+		preview.ConfigurationJSON = string(preview.configurationJSON)
 		preview.ConfigurationSHA256 = document.SHA256()
 		preview.readme = generatedReadme(request.ProjectName)
 		preview.ownership = ownershipMarker(request.ProjectID, request.RequestID, preview.ConfigurationSHA256)
@@ -467,6 +469,7 @@ func (service *Service) PreviewAdopt(ctx context.Context, request AdoptRequest) 
 			if valid {
 				preview.ConfigurationSHA256 = document.SHA256()
 				preview.configurationJSON = document.CanonicalJSON()
+				preview.ConfigurationJSON = string(preview.configurationJSON)
 				preview.Operations = []string{
 					"adopt existing clean Organizer repository", "activate exact revision in TaskStore",
 				}

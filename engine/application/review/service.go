@@ -315,8 +315,8 @@ func (service *Service) invoke(ctx context.Context, command host.Command, nowMil
 	}
 	observedAt, parseErr := time.Parse(time.RFC3339Nano, validated.ObservedAt)
 	observedAtMillis := observedAt.UnixMilli()
-	if parseErr != nil || observedAtMillis > nowMillis ||
-		nowMillis-observedAtMillis > validated.Result.MaximumAgeMillis {
+	if parseErr != nil || observedAtMillis > nowMillis+1_000 ||
+		observedAtMillis <= nowMillis && nowMillis-observedAtMillis > validated.Result.MaximumAgeMillis {
 		return host.Observation{}, ErrReviewAmbiguous
 	}
 	return validated, nil

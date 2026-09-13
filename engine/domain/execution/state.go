@@ -148,6 +148,7 @@ type CandidateObservation = candidatedomain.Observation
 // remains in the immutable Command row and is addressed by CommandKey.
 type MCPCommandReceipt struct {
 	CommandKey              string `json:"commandKey"`
+	RequestID               string `json:"requestId,omitempty"`
 	ToolName                string `json:"toolName"`
 	Capability              string `json:"capability"`
 	Role                    string `json:"role"`
@@ -173,6 +174,10 @@ func ValidMCPCommandReceipt(receipt MCPCommandReceipt) bool {
 		!validSHA256(strings.TrimPrefix(receipt.CommandKey, "mcp-command-")) || !validSHA256(receipt.SessionSHA256) ||
 		!validSHA256(receipt.PayloadSHA256) || !validSHA256(receipt.EffectiveProfilesSHA256) ||
 		!validSHA256(receipt.ConfigurationSHA256) {
+		return false
+	}
+	if receipt.RequestID != "" && (!strings.HasPrefix(receipt.RequestID, "mcp-call-") ||
+		len(receipt.RequestID) != len("mcp-call-")+64 || !validSHA256(strings.TrimPrefix(receipt.RequestID, "mcp-call-"))) {
 		return false
 	}
 	switch receipt.Role {
@@ -304,11 +309,13 @@ type State struct {
 	Validation                       *validationdomain.State               `json:"validation,omitempty"`
 	ValidationHistory                []validationdomain.State              `json:"validationHistory,omitempty"`
 	Correction                       *correctiondomain.State               `json:"correction,omitempty"`
+	CorrectionPolicy                 *correctiondomain.Policy              `json:"correctionPolicy,omitempty"`
 	Feedback                         *feedbackdomain.State                 `json:"feedback,omitempty"`
 	FeedbackHistory                  []feedbackdomain.State                `json:"feedbackHistory,omitempty"`
 	Publication                      *publicationdomain.State              `json:"publication,omitempty"`
 	PublicationHistory               []publicationdomain.State             `json:"publicationHistory,omitempty"`
 	DirectDelivery                   *directdomain.State                   `json:"directDelivery,omitempty"`
+	DirectDeliveryPolicy             *directdomain.Policy                  `json:"directDeliveryPolicy,omitempty"`
 	DirectDeliveryHistory            []directdomain.State                  `json:"directDeliveryHistory,omitempty"`
 	Integration                      *integrationdomain.State              `json:"integration,omitempty"`
 	IntegrationHistory               []integrationdomain.State             `json:"integrationHistory,omitempty"`

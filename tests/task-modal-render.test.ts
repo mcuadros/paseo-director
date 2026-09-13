@@ -303,11 +303,25 @@ test("TaskDetailView renders tabs, exact agent navigation, execution binding, bu
   const actionsSubmitted: unknown[] = [];
   const navigationCalls: unknown[] = [];
 
+  const feedbackAction: AllowedAction = {
+    kind: "task.feedback",
+    label: "Send feedback",
+    targetId: detail.binding.runId,
+    requestId: "action-task-feedback-0001",
+    idempotencyKey: "action-task-feedback-0001",
+    expectedVersion: detail.binding.runVersion!,
+    humanApprovalRef: null,
+    acknowledgementRevision: null,
+    emphasis: "secondary",
+  };
+
   function makeElement(tab: string, agentAvailable = true) {
-    const task = agentAvailable ? detail : {
-      ...detail,
+    const actionable = { ...detail, summary: { ...detail.summary,
+      allowedActions: [...detail.summary.allowedActions, feedbackAction] } };
+    const task = agentAvailable ? actionable : {
+      ...actionable,
       binding: {
-        ...detail.binding,
+        ...actionable.binding,
         paseoWorkspaceId: null,
         paseoAgentId: null,
         agentNavigation: "unavailable" as const,
@@ -394,6 +408,18 @@ test("TaskDetailView renders tabs, exact agent navigation, execution binding, bu
   assert.match(text, /run-task-0/);
   assert.match(text, /candidate-task-0/);
   assert.match(text, /host-a/);
+  assert.match(text, /Send feedback/);
+  const feedbackInput = renderer.root.findByProps({
+    accessibilityLabel: "Feedback for the exact current Candidate",
+  });
+  await act(async () => feedbackInput.props.onChangeText("Please tighten the exact restart assertion."));
+  const feedbackButton = renderer.root.findByProps({ accessibilityLabel: "Send feedback" });
+  await act(async () => feedbackButton.props.onPress());
+  assert.deepEqual(actionsSubmitted.at(-1), {
+    action: feedbackAction,
+    intent: { type: "task.feedback", projectId: detail.summary.projectId, taskId: detail.summary.id,
+      runId: detail.binding.runId, body: "Please tighten the exact restart assertion.", severity: "P1" },
+  });
 
   // Test Open agent Unavailable Degradation
   await act(async () => {

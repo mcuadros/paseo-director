@@ -22,6 +22,7 @@ import {
   planningQueryRpc,
   planningTaskDetailRpc,
   repairProjectRpc,
+  nativePaseoProjectsRpc,
 } from "./rpc/planning.shared";
 
 export default function contribute(plugin: PluginContext) {
@@ -109,6 +110,7 @@ export default function contribute(plugin: PluginContext) {
   plugin.handle(operationsMutationRpc, (input) => connector.mutateOperations(input));
   plugin.handle(repairProjectRpc, (input) => connector.repairProject(input));
   plugin.handle(organizerBootstrapRpc, (input) => connector.bootstrapOrganizer(input));
+  plugin.handle(nativePaseoProjectsRpc, (input) => connector.queryNativePaseoProjects(input));
   plugin.handle(planningTaskDetailRpc, (input) =>
     connector.queryPlanningTask(input),
   );

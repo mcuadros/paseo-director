@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	executionapp "github.com/mcuadros/director-engine/application/execution"
+	"github.com/mcuadros/director-engine/domain"
 	"github.com/mcuadros/director-engine/internal/testkit/secretfixture"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
 )
@@ -154,5 +155,74 @@ func TestPlanningControlHTTPRejectsCallerAuthorshipFields(t *testing.T) {
 		if response.Code != http.StatusUnauthorized || strings.Contains(response.Body.String(), actor[1]) {
 			t.Fatalf("forged actor response = %d %s", response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestPlanningHTTPRoutesAdvertisedPlanningVocabularyThroughApplicationService(t *testing.T) {
+	fixture := startVerticalDolt(t)
+	store := openVerticalStore(t, fixture)
+	source, _ := initializeRepository(t, "planning-vocabulary")
+	project, existing := createVerticalRecords(t, store, "planning-vocabulary", source)
+	handler := newPlanningMutationHandler(store, executionapp.NewController(store, nil, nil, nil))
+	definition, _ := planningport.EmbeddedDefinition()
+	hash, _ := planningport.SchemaSHA256()
+	request := func(id, expected string, intent planningport.MutationIntent) planningport.MutationResult {
+		result, status := planningControlRequest(t, handler, planningport.MutationInput{SchemaVersion: definition.SchemaVersion,
+			ContractVersion: definition.ContractVersion, ContractHash: hash, RequestID: id, IdempotencyKey: id,
+			ExpectedVersion: expected, Intent: intent})
+		if status != http.StatusOK || strings.Contains(strings.ToLower(result.Message), "unwired") || strings.Contains(result.Message, "execution control") {
+			t.Fatalf("%s response = %d %#v", intent.Type, status, result)
+		}
+		return result
+	}
+	if result := request("planning-project-create-refusal", "0", planningport.MutationIntent{Type: "project.create", Name: "New Project"}); result.Status != "rejected" {
+		t.Fatalf("Project Create must route to native onboarding refusal: %#v", result)
+	}
+	updated := request("planning-project-update", strconv.FormatUint(project.Version, 10), planningport.MutationIntent{Type: "project.update", ProjectID: project.ID, Name: "Updated Project"})
+	if updated.Status != "accepted" || updated.UpdatedVersion == nil {
+		t.Fatalf("Project update = %#v", updated)
+	}
+	priority := "normal"
+	epic := request("planning-epic-create", *updated.UpdatedVersion, planningport.MutationIntent{Type: "epic.create", ProjectID: project.ID,
+		Key: "M6", Title: "Production Epic", Description: "Complete the production workflow", Priority: nil, Labels: []string{"production"}})
+	if epic.Status != "accepted" {
+		t.Fatalf("Epic create = %#v", epic)
+	}
+	workspaces, err := store.Workspaces(context.Background(), project.ID)
+	if err != nil || len(workspaces) != 1 {
+		t.Fatalf("Workspaces = %#v, %v", workspaces, err)
+	}
+	taskResult := request("planning-task-create", *updated.UpdatedVersion, planningport.MutationIntent{Type: "task.create", ProjectID: project.ID,
+		WorkspaceID: workspaces[0].ID, Key: "DIR-NEW", Title: "New Task", Objective: "Exercise production planning",
+		AcceptanceCriteria: []string{"Planning is durable"}, Priority: &priority, Labels: []string{"production"}})
+	if taskResult.Status != "accepted" {
+		t.Fatalf("Task create = %#v", taskResult)
+	}
+	tasks, err := store.Tasks(context.Background(), project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created domain.Task
+	for _, task := range tasks {
+		if task.Key == "DIR-NEW" {
+			created = task
+		}
+	}
+	if created.ID == "" {
+		t.Fatal("created Task was not read back")
+	}
+	dependency := request("planning-dependency-add", strconv.FormatUint(created.Version, 10), planningport.MutationIntent{Type: "dependency.add",
+		TaskID: created.ID, DependencyKind: "task", DependencyID: existing.ID})
+	if dependency.Status != "accepted" {
+		t.Fatalf("dependency add = %#v", dependency)
+	}
+	configuration := request("planning-configuration-preview", *dependency.UpdatedVersion, planningport.MutationIntent{Type: "configuration.preview",
+		Target: &planningport.ConfigurationTarget{Scope: "task", ID: created.ID}, Overrides: []planningport.ConfigurationOverride{}})
+	if configuration.Status != "rejected" || !strings.Contains(configuration.Message, "Organizer revision") {
+		t.Fatalf("configuration policy refusal = %#v", configuration)
+	}
+	launch := request("planning-launch-policy-refusal", *dependency.UpdatedVersion, planningport.MutationIntent{Type: "task.launch-now", TaskID: created.ID})
+	if launch.Status != "rejected" || !strings.Contains(launch.Message, "facts") {
+		t.Fatalf("launch policy refusal = %#v", launch)
 	}
 }

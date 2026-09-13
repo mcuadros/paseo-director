@@ -294,7 +294,14 @@ func (service *Service) OpenSession(ctx context.Context, binding domainbridge.Se
 	if err != nil {
 		return nil, &Failure{Code: CodeProviderPreflight, PreflightCode: domainbridge.PreflightDiscoveryInvalid}
 	}
-	if err := domainbridge.VerifyProviderPreflight(facts.role, snapshot, binding.ProviderDiscoveryRevision, nowMillis); err != nil {
+	preflightNow := nowMillis
+	if snapshot.ObservedAtMillis > preflightNow {
+		if snapshot.ObservedAtMillis-preflightNow > 1_000 {
+			return nil, &Failure{Code: CodeProviderPreflight, PreflightCode: domainbridge.PreflightDiscoveryStale}
+		}
+		preflightNow = snapshot.ObservedAtMillis
+	}
+	if err := domainbridge.VerifyProviderPreflight(facts.role, snapshot, binding.ProviderDiscoveryRevision, preflightNow); err != nil {
 		var preflight *domainbridge.PreflightError
 		if errors.As(err, &preflight) {
 			return nil, &Failure{Code: CodeProviderPreflight, PreflightCode: preflight.Code}
@@ -698,7 +705,7 @@ func (session *Session) mutate(ctx context.Context, requestID string, tool domai
 	next := facts.run
 	next.Version = session.binding.ExpectedRunVersion + 1
 	next.Execution.MCPCommandReceipts = append(slices.Clone(facts.run.Execution.MCPCommandReceipts), domainexecution.MCPCommandReceipt{
-		CommandKey: key, ToolName: tool.Name, Capability: string(tool.Capability), Role: string(session.binding.Role),
+		CommandKey: key, RequestID: requestID, ToolName: tool.Name, Capability: string(tool.Capability), Role: string(session.binding.Role),
 		SessionSHA256: session.descriptor.SessionSHA256, PayloadSHA256: payloadHash,
 		EffectiveProfilesSHA256: session.binding.EffectiveProfilesSHA256,
 		ConfigurationSHA256:     session.binding.ConfigurationSHA256,

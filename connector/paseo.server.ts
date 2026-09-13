@@ -6,11 +6,13 @@ import {
   type PaseoClient,
   type PaseoAgent,
   type PaseoAgentConfig,
+  type PaseoAgentUpdate,
+  type PaseoProject,
   type PaseoWorkspace,
   type PaseoClientConfig,
 } from "@getpaseo/client";
 import { createHash } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import {
   assertHostDescriptor,
@@ -28,25 +30,31 @@ import {
   type HostProviderUsage,
 } from "../generated/host-contract.shared.ts";
 import type { AgentMCPSessionLaunch } from "../generated/agent-mcp-contract.shared.ts";
-import type {
-  PlanningMutationInput,
-  PlanningMutationResult,
-  PlanningQueryInput,
-  PlanningSnapshot,
-  TaskDetailQueryInput,
-  TaskDetailSnapshot,
-  HomeQueryInput,
-  HomeSnapshot,
-  DoctorQueryInput,
-  DoctorReport,
-  OperationsQueryInput,
-  OperationsReport,
-  OperationsMutationInput,
-  OperationsMutationResult,
-  OrganizerBootstrapInput,
-  OrganizerBootstrapResult,
-  RepairInput,
-  RepairResult,
+import {
+  PLANNING_CONTRACT_SHA256,
+  PLANNING_CONTRACT_VERSION,
+  nativePaseoProjectsSnapshotSchema,
+  type NativePaseoProject,
+  type NativePaseoProjectsInput,
+  type NativePaseoProjectsSnapshot,
+  type PlanningMutationInput,
+  type PlanningMutationResult,
+  type PlanningQueryInput,
+  type PlanningSnapshot,
+  type TaskDetailQueryInput,
+  type TaskDetailSnapshot,
+  type HomeQueryInput,
+  type HomeSnapshot,
+  type DoctorQueryInput,
+  type DoctorReport,
+  type OperationsQueryInput,
+  type OperationsReport,
+  type OperationsMutationInput,
+  type OperationsMutationResult,
+  type OrganizerBootstrapInput,
+  type OrganizerBootstrapResult,
+  type RepairInput,
+  type RepairResult,
 } from "../generated/planning-contract.shared.ts";
 import type { ConnectorStartupStatus } from "../rpc/startup.shared.ts";
 import {
@@ -81,9 +89,10 @@ import {
   loadRuntimeConfiguration,
   type RuntimeConfiguration,
 } from "./runtime-configuration.server.mjs";
+import { startHostContractServer } from "./host-ipc.server.ts";
 
 export type ConnectorClient = Pick<PaseoClient, "close"> &
-  Partial<Pick<PaseoClient, "connect" | "workspaces" | "agents" | "config">>;
+  Partial<Pick<PaseoClient, "connect" | "projects" | "workspaces" | "agents" | "config">>;
 
 export class PaseoHostEffectError extends Error {
   readonly code: string;
@@ -256,6 +265,9 @@ export class PaseoHostConnector implements DirectorHost {
   readonly #planningTransport: PlanningTransport;
   readonly #ready: Promise<void>;
   readonly #activation: ConnectorStartupStatus["activation"];
+  #hostServer: Promise<() => Promise<void>> | null = null;
+  #terminalUnsubscribe: (() => void) | null = null;
+  #terminalCursor = 0;
   readonly #inflight = new Map<string, { digest: string; promise: Promise<HostObservation> }>();
   #cursor = 0;
 
@@ -319,6 +331,54 @@ export class PaseoHostConnector implements DirectorHost {
     return EXPECTED_HOST_DESCRIPTOR;
   }
 
+  attachHostServer(server: Promise<() => Promise<void>>): void {
+    if (this.#hostServer !== null) {
+      throw new Error("HOST_CONTRACT_SERVER_ALREADY_ATTACHED");
+    }
+    this.#hostServer = server;
+  }
+
+  attachTerminalEvents(baseUrl: string): void {
+    const endpoint = new URL("/v1/host/terminal-event", baseUrl);
+    const hostname = endpoint.hostname.startsWith("[") ? endpoint.hostname.slice(1, -1) : endpoint.hostname;
+    if (endpoint.protocol !== "http:" || endpoint.port === "" ||
+      !(hostname === "::1" || hostname.startsWith("127."))) {
+      throw new Error("DIRECTOR_ENGINE_URL must be an exact loopback origin for terminal callbacks");
+    }
+    void this.#ready.then(async () => {
+      if (!this.#client.agents || this.#terminalUnsubscribe) return;
+      this.#terminalUnsubscribe = this.#client.agents.subscribe((update: PaseoAgentUpdate) => {
+        if (update.kind !== "upsert") return;
+        const agent = update.agent;
+        const runId = agent.labels?.[WORKER_LABEL.run];
+        if (!runId || !agent.labels?.[WORKER_LABEL.role]) return;
+        let kind: "agent.finished" | "agent.error" | "agent.permission" | null = null;
+        if (agent.pendingPermissions.length > 0 || agent.attentionReason === "permission") kind = "agent.permission";
+        else if (agent.status === "error" || agent.attentionReason === "error") kind = "agent.error";
+        else if (agent.status === "idle" && !agent.activeTurn && agent.lastUserMessageAt) kind = "agent.finished";
+        if (!kind) return;
+        const cursor = Number.isSafeInteger(update.seq) && (update.seq ?? 0) > 0
+          ? update.seq!
+          : ++this.#terminalCursor;
+        this.#terminalCursor = Math.max(this.#terminalCursor, cursor);
+        const observedAtMillis = Date.now();
+        const eventId = `terminal-${sha256(JSON.stringify({ agentId: agent.id, runId, kind, generation: update.generation ?? "", cursor })).slice(0, 32)}`;
+        void globalThis.fetch(endpoint, {
+          method: "POST",
+          redirect: "error",
+          headers: {
+            "content-type": "application/json",
+            "x-director-contract-version": EXPECTED_HOST_DESCRIPTOR.contractVersion,
+            "x-director-contract-hash": EXPECTED_HOST_DESCRIPTOR.contractHash,
+          },
+          body: JSON.stringify({ schemaVersion: 1, eventId, kind, runId, agentId: agent.id, cursor, observedAtMillis }),
+          signal: AbortSignal.timeout(900),
+        }).catch(() => undefined);
+      });
+      await this.#client.agents.list({ page: { limit: 100 }, subscribe: {} });
+    });
+  }
+
   #observation(
     command: HostCommand,
     status: HostObservationStatus,
@@ -375,6 +435,88 @@ export class PaseoHostConnector implements DirectorHost {
     return result;
   }
 
+  async #projects(): Promise<PaseoProject[]> {
+    if (!this.#client.projects) {
+      throw new PaseoHostEffectError("HOST_PUBLIC_PROJECTS_UNAVAILABLE");
+    }
+    const result = await this.#client.projects.list({
+      requestId: `director-native-projects-${process.pid}`,
+    });
+    if (result.projects.length > 100) {
+      throw new PaseoHostEffectError("HOST_PROJECT_DIRECTORY_LIMIT_EXCEEDED");
+    }
+    return [...result.projects];
+  }
+
+  async queryNativePaseoProjects(
+    input: NativePaseoProjectsInput,
+  ): Promise<NativePaseoProjectsSnapshot> {
+    await this.#ready;
+    if (!IDENTITY_PATTERN.test(input.hostId) || input.hostId.length > 128) {
+      throw new PaseoHostEffectError("HOST_NATIVE_PROJECT_QUERY_INVALID");
+    }
+    const [projects, listedWorkspaces] = await Promise.all([
+      this.#projects(),
+      this.#workspaces(),
+    ]);
+    // Paseo 0.7.2's directory page intentionally omits current gitRuntime
+    // details. Re-observe each bounded active Workspace through the public
+    // handle before generating a selector/Preview; a stale list row which has
+    // disappeared is excluded rather than treated as a current Git fact.
+    const allWorkspaces: PaseoWorkspace[] = [];
+    for (const workspace of listedWorkspaces) {
+      if (workspace.archivingAt) continue;
+      const current = await this.#roots().workspaces.ref(workspace.id).refresh({
+        requestId: `director-native-refresh-${sha256(`${input.hostId}\u0000${workspace.id}`).slice(0, 32)}`,
+      });
+      if (current && !current.archivingAt) allWorkspaces.push(current);
+    }
+    const values: NativePaseoProject[] = projects.map((project) => {
+      const root = project.projectRootPath;
+      if (!isAbsolute(root) || resolve(root) !== root) {
+        throw new PaseoHostEffectError("HOST_NATIVE_PROJECT_PATH_INVALID");
+      }
+      const workspaces = allWorkspaces
+        .filter(
+          (workspace) =>
+            workspace.projectId === project.projectId && !workspace.archivingAt,
+        )
+        .map((workspace) => ({
+          id: workspace.id,
+          name: workspace.title || workspace.name,
+          projectRootPath: workspace.projectRootPath,
+          workspaceDirectory:
+            workspace.workspaceDirectory || workspace.projectRootPath,
+          workspaceKind: workspace.workspaceKind,
+          remoteUrl: workspace.gitRuntime?.remoteUrl || null,
+          baseBranch: workspace.gitRuntime?.currentBranch || null,
+        }))
+        .sort((left, right) => left.id.localeCompare(right.id));
+      const value = {
+        projectId: project.projectId,
+        name: project.projectCustomName || project.projectDisplayName,
+        projectRootPath: root,
+        projectKind: project.projectKind,
+        organizerCandidate: join(
+          dirname(root),
+          `.${basename(root)}-director-organizer`,
+        ),
+        workspaces,
+        factsRevision: "",
+      } satisfies NativePaseoProject;
+      return { ...value, factsRevision: sha256(JSON.stringify(value)) };
+    });
+    values.sort((left, right) => left.projectId.localeCompare(right.projectId));
+    return nativePaseoProjectsSnapshotSchema.parse({
+      schemaVersion: 1,
+      contractVersion: PLANNING_CONTRACT_VERSION,
+      contractHash: PLANNING_CONTRACT_SHA256,
+      hostId: input.hostId,
+      observedAt: new Date().toISOString(),
+      projects: values,
+    });
+  }
+
   async #workspace(command: HostCommand): Promise<HostObservation> {
     const argumentsValue = command.arguments;
     const expectedTitle = `${argumentsValue.title ?? argumentsValue.scope.taskId} execution workspace`;
@@ -402,7 +544,26 @@ export class PaseoHostConnector implements DirectorHost {
       );
     }
     if (matches.length !== 1) return this.#observation(command, "ambiguous");
-    const workspace = matches[0]!;
+    let workspace = await this.#roots().workspaces.ref(matches[0]!.id).refresh({
+      requestId: `${command.requestId}-workspace-fact-0`,
+    });
+    for (let attempt = 1; workspace && attempt <= 20; attempt++) {
+      const coreExact = workspace.id === (argumentsValue.workspaceId || workspace.id) &&
+        workspace.title === expectedTitle && workspace.workspaceDirectory === argumentsValue.worktreePath &&
+        !workspace.archivingAt;
+      if (!coreExact || (workspace.workspaceKind === "worktree" && workspace.gitRuntime?.isPaseoOwnedWorktree === false)) break;
+      await new Promise((accept) => setTimeout(accept, 100));
+      workspace = await this.#roots().workspaces.ref(matches[0]!.id).refresh({
+        requestId: `${command.requestId}-workspace-fact-${attempt}`,
+      });
+    }
+    if (!workspace) {
+      return this.#observation(
+        command,
+        command.arguments.effectKind === "host_view.archive" ? "desired" : "absent",
+        command.arguments.effectKind === "host_view.archive" ? (argumentsValue.workspaceId ?? "") : "",
+      );
+    }
     if (
       workspace.id !== (argumentsValue.workspaceId || workspace.id) ||
       workspace.title !== expectedTitle ||
@@ -615,6 +776,9 @@ export class PaseoHostConnector implements DirectorHost {
       if (agent.status === "error" || agent.attentionReason === "error") {
         return this.#observation(command, "errored", agent.id, correlation, true, providerUsage(agent));
       }
+      if (agent.status === "idle" && agent.attentionReason === "finished") {
+        return this.#observation(command, "desired", agent.id, correlation, true, providerUsage(agent));
+      }
       if (agent.status === "running" || agent.status === "initializing" || agent.activeTurn) {
         return this.#observation(command, "owned_present", agent.id, correlation, false, providerUsage(agent));
       }
@@ -637,6 +801,9 @@ export class PaseoHostConnector implements DirectorHost {
     }
     if (agent.status === "error" || agent.attentionReason === "error") {
       return this.#observation(command, "errored", agent.id, correlation, true, providerUsage(agent));
+    }
+    if (agent.status === "idle" && agent.attentionReason === "finished") {
+      return this.#observation(command, "desired", agent.id, correlation, true, providerUsage(agent));
     }
     if (agent.status === "running" || agent.status === "initializing" || agent.activeTurn) {
       return this.#observation(command, "owned_present", agent.id, correlation, false, providerUsage(agent));
@@ -731,7 +898,7 @@ export class PaseoHostConnector implements DirectorHost {
           {
             type: server.type,
             command: server.command,
-            args: [...server.args],
+            args: [...server.args, "--role", session.role, "--session-sha", session.sessionSha256],
             env: { ...server.env },
           },
         ]),
@@ -824,12 +991,12 @@ export class PaseoHostConnector implements DirectorHost {
         if (!value.worktreePath || !value.worktreeId || !value.title || !value.lifecycleDigest) {
           throw new PaseoHostEffectError("HOST_WORKSPACE_CREATE_INVALID");
         }
-        const workspace = await this.#roots().workspaces.create({
+        await this.#roots().workspaces.create({
           requestId: command.idempotencyKey,
           title: `${value.title} execution workspace`,
           source: { kind: "directory", path: value.worktreePath },
         });
-        return this.#observation(command, "desired", workspace.id);
+        return this.#workspace(command);
       }
       case "taskAgent.createWithBootstrap":
       case "reviewerAgent.createWithBootstrap": {
@@ -880,7 +1047,18 @@ export class PaseoHostConnector implements DirectorHost {
         }
         const observed = await this.#agent(command);
         if (observed.result.status !== "absent") return observed;
-        await this.#roots().agents.ref(value.agentId).send(value.initialPrompt, {
+        const agent = this.#roots().agents.ref(value.agentId);
+        const refreshed = await agent.refresh(`${command.requestId}-prompt-boundary`);
+        if (!refreshed?.agent || refreshed.agent.status !== "idle" ||
+          (refreshed.agent.activeTurn && refreshed.agent.attentionReason !== "finished")) {
+          throw new PaseoHostEffectError("HOST_PRIMARY_PROMPT_BOUNDARY_INVALID");
+        }
+        // Paseo/Codex sessions close their stdio MCP child when one turn ends.
+        // Detaching the idle provider session before the next engine-owned
+        // prompt preserves the native agent identity while reapplying its
+        // frozen MCP configuration to the new turn.
+        await agent.detach();
+        await agent.send(value.initialPrompt, {
           messageId: value.clientMessageId,
         });
         return this.#observation(command, "owned_present", value.agentId, "", false);
@@ -1012,6 +1190,22 @@ export class PaseoHostConnector implements DirectorHost {
     if (!this.#planningTransport.bootstrapOrganizer) {
       throw new Error("ORGANIZER_BOOTSTRAP_NOT_WIRED");
     }
+    if (input.kind === "native.create.preview" || input.kind === "native.create.apply") {
+      if (!input.nativeProject) {
+        throw new Error("NATIVE_PROJECT_FACTS_REQUIRED");
+      }
+      const current = await this.queryNativePaseoProjects({ hostId: input.hostId });
+      const project = current.projects.find(
+        (value) => value.projectId === input.nativeProject?.projectId,
+      );
+      if (!project || project.factsRevision !== input.nativeProject.factsRevision) {
+        throw new Error("NATIVE_PROJECT_FACTS_CHANGED");
+      }
+      return this.#planningTransport.bootstrapOrganizer({
+        ...input,
+        nativeProject: project,
+      });
+    }
     return this.#planningTransport.bootstrapOrganizer(input);
   }
 
@@ -1030,6 +1224,12 @@ export class PaseoHostConnector implements DirectorHost {
   }
 
   async close(): Promise<void> {
+	this.#terminalUnsubscribe?.();
+	this.#terminalUnsubscribe = null;
+	if (this.#hostServer) {
+		const closeHostServer = await this.#hostServer;
+		await closeHostServer();
+	}
     await this.#client.close();
   }
 }
@@ -1073,7 +1273,7 @@ export function startConnectorShell(options: {
     reconnect: { enabled: false },
   });
   const engine = (options.dependencies?.resolveEngine ?? resolveEngine)(selection);
-  return new PaseoHostConnector(
+  const connector = new PaseoHostConnector(
     client,
     selection,
     boardTransport,
@@ -1081,6 +1281,13 @@ export function startConnectorShell(options: {
     engine,
     compatibility,
   );
+  if (options.environment.DIRECTOR_HOST_SOCKET) {
+    connector.attachHostServer(startHostContractServer(connector, options.environment.DIRECTOR_HOST_SOCKET));
+  }
+  if (options.environment.DIRECTOR_ENGINE_URL) {
+    connector.attachTerminalEvents(options.environment.DIRECTOR_ENGINE_URL);
+  }
+  return connector;
 }
 
 export function startInstalledConnectorShell(options: {
@@ -1161,6 +1368,8 @@ export function startInstalledConnectorShell(options: {
     deploymentReady,
     activation,
   );
+  connector.attachHostServer(startHostContractServer(connector, configuration.engine.hostSocket));
+  connector.attachTerminalEvents(configuration.engine.url);
   if (options.reportActivation !== false) void connector.status().then(
     (status) => {
       console.log(JSON.stringify({

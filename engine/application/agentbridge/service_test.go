@@ -323,6 +323,21 @@ func TestSessionsExposeOnlyRoleProfileCapabilities(t *testing.T) {
 	}
 }
 
+func TestSessionPreflightAllowsOnlyBoundedClockSamplingOrder(t *testing.T) {
+	fixture := newServiceFixture(t)
+	fixture.discovery.snapshot.ObservedAtMillis = 1_001
+	if _, err := fixture.service.OpenSession(context.Background(), fixture.binding(t, agentprofile.RoleWorker), 1_000); err != nil {
+		t.Fatalf("one-millisecond observation ordering = %v", err)
+	}
+	fixture.discovery.snapshot.ObservedAtMillis = 2_001
+	_, err := fixture.service.OpenSession(context.Background(), fixture.binding(t, agentprofile.RoleWorker), 1_000)
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.Code != CodeProviderPreflight ||
+		failure.PreflightCode != domainbridge.PreflightDiscoveryStale {
+		t.Fatalf("future observation failure = %#v, %v", failure, err)
+	}
+}
+
 func TestWorkerRequestsHelperAndOnlyBoundHelperSubmitsContribution(t *testing.T) {
 	fixture := newServiceFixture(t)
 	fixture.store.run.CurrentCandidateID = ""

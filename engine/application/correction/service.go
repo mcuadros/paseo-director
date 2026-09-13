@@ -530,7 +530,8 @@ func (service *Service) invoke(ctx context.Context, command host.Command, nowMil
 		return host.Observation{}, ErrCorrectionAmbiguous
 	}
 	observedAt, err := time.Parse(time.RFC3339Nano, observation.ObservedAt)
-	if err != nil || observedAt.UnixMilli() > nowMillis || nowMillis-observedAt.UnixMilli() > observation.Result.MaximumAgeMillis {
+	if err != nil || observedAt.UnixMilli() > nowMillis+1_000 ||
+		observedAt.UnixMilli() <= nowMillis && nowMillis-observedAt.UnixMilli() > observation.Result.MaximumAgeMillis {
 		return host.Observation{}, ErrCorrectionAmbiguous
 	}
 	return observation, nil

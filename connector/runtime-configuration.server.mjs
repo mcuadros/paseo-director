@@ -37,6 +37,20 @@ export const DEFAULT_ENGINE_MODE = "release";
 export const DEFAULT_ENGINE_URL = "http://127.0.0.1:7041";
 export const DEFAULT_PASEO_URL = "ws://127.0.0.1:6767/ws";
 
+export function directorRuntimePaths(environment = process.env, home = homedir()) {
+  const runtimeBase = environment.XDG_RUNTIME_DIR;
+  const cacheBase = environment.XDG_CACHE_HOME;
+  if (runtimeBase !== undefined && !isAbsolute(runtimeBase)) {
+    fail("DIRECTOR_RUNTIME_PATH_BASE", "XDG_RUNTIME_DIR must be absolute when set");
+  }
+  if (cacheBase !== undefined && !isAbsolute(cacheBase)) {
+    fail("DIRECTOR_RUNTIME_PATH_BASE", "XDG_CACHE_HOME must be absolute when set");
+  }
+  const base = runtimeBase ?? cacheBase ?? join(home, ".cache");
+  const root = resolve(base, "director", "runtime");
+  return { root, hostSocket: join(root, "host.sock"), workRoot: join(root, "work") };
+}
+
 export class RuntimeConfigurationError extends Error {
   constructor(code, message) {
     super(message);
@@ -317,7 +331,7 @@ export function legacyDirectorEnvironmentState(environment = process.env) {
   ) ? "ignored" : "absent";
 }
 
-export function parseRuntimeConfiguration(bytes, environment = process.env) {
+export function parseRuntimeConfiguration(bytes, environment = process.env, home = homedir()) {
   let value;
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -329,7 +343,7 @@ export function parseRuntimeConfiguration(bytes, environment = process.env) {
   if (!strictKeys(value, ["engine", "paseo", "schemaVersion"]) || value.schemaVersion !== 1) {
     fail("DIRECTOR_RUNTIME_CONFIG_SCHEMA", "Director runtime configuration fields do not match schema 1");
   }
-  if (!strictKeys(value.paseo, ["credentialFile"])) {
+  if (!optionalStrictKeys(value.paseo, ["credentialFile"], ["url"])) {
     fail("DIRECTOR_RUNTIME_CONFIG_SCHEMA", "Director Paseo runtime fields do not match schema 1");
   }
   if (
@@ -345,10 +359,12 @@ export function parseRuntimeConfiguration(bytes, environment = process.env) {
   }
   const mode = value.engine.mode ?? DEFAULT_ENGINE_MODE;
   const engineURL = value.engine.url ?? DEFAULT_ENGINE_URL;
+  const paseoURL = value.paseo.url ?? DEFAULT_PASEO_URL;
   if (mode !== "release" && mode !== "development") {
     fail("DIRECTOR_RUNTIME_ENGINE_MODE", "Director Engine mode must be release or development");
   }
   assertLoopbackURL(engineURL, "http:", "/", "DIRECTOR_RUNTIME_ENGINE_URL");
+  assertLoopbackURL(paseoURL, "ws:", "/ws", "DIRECTOR_RUNTIME_PASEO_URL");
   for (const field of ["sourceRoot", "moduleCache"]) {
     const fieldValue = value.engine[field];
     if (fieldValue !== undefined && (!boundedString(fieldValue) || !isAbsolute(fieldValue))) {
@@ -367,27 +383,34 @@ export function parseRuntimeConfiguration(bytes, environment = process.env) {
     sha256: createHash("sha256").update(bytes).digest("hex"),
     legacyEnvironment: legacyDirectorEnvironmentState(environment),
     settings: [
-      { name: "paseo.url", source: "defaulted" },
+      { name: "paseo.url", source: value.paseo.url === undefined ? "defaulted" : "overridden" },
       { name: "engine.mode", source: value.engine.mode === undefined ? "defaulted" : "overridden" },
       { name: "engine.url", source: value.engine.url === undefined ? "defaulted" : "overridden" },
       {
         name: "engine.cache-base",
         source: environment.XDG_CACHE_HOME === undefined ? "defaulted" : "overridden",
       },
+      {
+        name: "engine.runtime-base",
+        source: environment.XDG_RUNTIME_DIR === undefined && environment.XDG_CACHE_HOME === undefined ? "defaulted" : "overridden",
+      },
       ...(mode === "development"
         ? [{ name: "engine.module-cache", source: value.engine.moduleCache === undefined ? "defaulted" : "overridden" }]
         : []),
     ],
   };
+  const runtime = directorRuntimePaths(environment, home);
   return {
     schemaVersion: 1,
     paseo: {
-      url: DEFAULT_PASEO_URL,
+      url: paseoURL,
       credentialFile: canonicalProspectivePath(value.paseo.credentialFile),
     },
     engine: {
       mode,
       url: engineURL,
+      hostSocket: runtime.hostSocket,
+      runtimeRoot: runtime.workRoot,
       ...(value.engine.sourceRoot
         ? { sourceRoot: canonicalProspectivePath(value.engine.sourceRoot) }
         : {}),
@@ -406,7 +429,7 @@ export function loadRuntimeConfiguration(environment = process.env, home = homed
     MAXIMUM_CONFIGURATION_BYTES,
     "DIRECTOR_RUNTIME_CONFIG_REQUIRED",
   );
-  return { path, configuration: parseRuntimeConfiguration(bytes, environment) };
+  return { path, configuration: parseRuntimeConfiguration(bytes, environment, home) };
 }
 
 export function assertCredentialFileDeployment(credentialFile) {

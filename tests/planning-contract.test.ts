@@ -90,7 +90,7 @@ test("planning identity and vocabularies are closed and versioned", () => {
     "priority_fifo",
     "key_asc",
   ]);
-  assert.equal(PLANNING_ALLOWED_ACTIONS.length, 17);
+  assert.equal(PLANNING_ALLOWED_ACTIONS.length, 19);
   assert.equal(PLANNING_ATTENTION_CODES.length, 12);
   assert.equal(PLANNING_CONFIGURATION_KEYS.length, 8);
   assert.ok(PLANNING_CONFIGURATION_KEYS.includes("requireDifferentReviewerModel"));
@@ -181,17 +181,25 @@ test("generated Home and Organizer contracts reject cross-host and Preview/Apply
     contractHash: PLANNING_CONTRACT_SHA256,
     hostId: "host-a",
     requestId: "request-organizer-0001",
-    projectId: "project-a",
-    projectName: "Project A",
-    repositoryPath: "/srv/director/project-a",
+    projectId: null,
+    projectName: null,
+    repositoryPath: null,
+    configurationJson: null,
   } as const;
-  const preview = { ...base, kind: "create.preview", configurationJson: "{}", previewId: null };
+  const nativeProject = {
+    projectId: "native-project-a", name: "Project A", projectRootPath: "/srv/project-a", projectKind: "git",
+    organizerCandidate: "/srv/.project-a-director-organizer", factsRevision: "f".repeat(64),
+    workspaces: [{ id: "native-workspace-a", name: "Project A", projectRootPath: "/srv/project-a",
+      workspaceDirectory: "/srv/project-a", workspaceKind: "directory", remoteUrl: "https://github.com/example/project-a.git", baseBranch: "main" }],
+  } as const;
+  const preview = { ...base, kind: "native.create.preview", nativeProject, previewId: null };
   assert.equal(organizerBootstrapInputSchema.safeParse(preview).success, true);
   assert.equal(organizerBootstrapRpc.input.safeParse(preview).success, true);
   assert.equal(organizerBootstrapInputSchema.safeParse({ ...preview, confirmed: true }).success, false);
-  assert.equal(organizerBootstrapInputSchema.safeParse({ ...preview, configurationJson: null }).success, false);
-  assert.equal(organizerBootstrapInputSchema.safeParse({ ...preview, kind: "create.apply", previewId: "a".repeat(64) }).success, true);
-  assert.equal(organizerBootstrapInputSchema.safeParse({ ...preview, kind: "adopt.preview", configurationJson: null }).success, true);
+  assert.equal(organizerBootstrapInputSchema.safeParse({ ...preview, nativeProject: null }).success, false);
+  assert.equal(organizerBootstrapInputSchema.safeParse({ ...preview, kind: "native.create.apply", previewId: "a".repeat(64) }).success, true);
+  assert.equal(organizerBootstrapInputSchema.safeParse({ ...base, kind: "advanced.adopt.preview", nativeProject: null,
+    projectId: "project-a", projectName: "Project A", repositoryPath: "/srv/director/project-a", previewId: null }).success, true);
   assert.equal(organizerBootstrapResultSchema.safeParse({}).success, false);
   assert.equal(organizerBootstrapRpc.output, organizerBootstrapResultSchema);
 });

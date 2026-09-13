@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/mcuadros/director-engine/domain"
+	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	"github.com/mcuadros/director-engine/domain/execution"
 	domainfeedback "github.com/mcuadros/director-engine/domain/feedback"
+	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
 	"github.com/mcuadros/director-engine/domain/runtimebudget"
 	"github.com/mcuadros/director-engine/domain/scheduling"
 	planningport "github.com/mcuadros/director-engine/ports/planning"
@@ -605,6 +607,21 @@ func action(kind, label, target string, version uint64, approval *string, emphas
 	}
 }
 
+func actionAtCursor(kind, label, target string, version uint64, cursor, emphasis string) planningport.AllowedAction {
+	result := action(kind, label, target, version, nil, emphasis)
+	digest := sha256.Sum256([]byte(result.RequestID + "\x1f" + cursor))
+	request := "action-" + strings.ReplaceAll(kind, ".", "-") + "-" + hex.EncodeToString(digest[:16])
+	result.RequestID, result.IdempotencyKey = request, request
+	return result
+}
+
+func actionWithAcknowledgement(kind, label, target string, version uint64, approval string, emphasis string) planningport.AllowedAction {
+	result := action(kind, label, target, version, &approval, emphasis)
+	revision := strconv.FormatUint(version, 10)
+	result.AcknowledgementRevision = &revision
+	return result
+}
+
 func runControlExplanation(run *domain.Run) *planningport.Explanation {
 	if run == nil || run.Execution.Control.SchemaVersion == "" || run.Execution.Control.ExplanationCode == "" {
 		return nil
@@ -649,9 +666,26 @@ func taskSummary(row projection.TaskProjectionRow, input projection.TaskProjecti
 		}
 	}
 	actions := []planningport.AllowedAction{}
+	if run == nil && state == "queued" {
+		actions = append(actions,
+			action("task.update", "Edit Task", row.TaskID, input.Facts.TaskVersion, nil, "secondary"),
+			action("dependency.add", "Add dependency", row.TaskID, input.Facts.TaskVersion, nil, "secondary"),
+		)
+		if disposition == "eligible" {
+			actions = append(actions, action("task.launch-now", "Launch now", row.TaskID, input.Facts.TaskVersion, nil, "primary"))
+		}
+	}
 	if run != nil && !run.Execution.Terminal && run.Execution.Control.Phase != execution.ControlContaining &&
 		project.Control.Intent.Kind != execution.ControlEmergencyStop {
+		if (run.Execution.Integration != nil && run.Execution.Integration.Phase == integrationdomain.PhaseReady && run.Execution.Integration.HumanAuthorization == nil) ||
+			(run.Execution.DirectDelivery != nil && run.Execution.DirectDelivery.Phase == directdomain.PhaseWaitingHuman && run.Execution.DirectDelivery.HumanAuthorization == nil) {
+			actions = append(actions, action("task.integrate", "Integrate exact Candidate", run.ID, run.Version, nil, "primary"))
+		}
 		actions = append(actions, action("task.cancel", "Cancel Task", run.ID, run.Version, nil, "danger"))
+	}
+	if run != nil && run.CurrentCandidateID != "" && run.Execution.CandidateAuthority != nil &&
+		!run.Execution.CandidateAuthority.Invalidated {
+		actions = append(actions, action("task.feedback", "Send feedback", run.ID, run.Version, nil, "secondary"))
 	}
 	return planningport.TaskSummary{
 		ID: row.TaskID, ProjectID: row.ProjectID, WorkspaceID: row.WorkspaceID, EpicID: epicID,
@@ -668,7 +702,7 @@ func taskSummary(row projection.TaskProjectionRow, input projection.TaskProjecti
 	}
 }
 
-func projectSummaries(facts planningFacts) []planningport.ProjectSummary {
+func projectSummaries(facts planningFacts, cursor string) []planningport.ProjectSummary {
 	result := make([]planningport.ProjectSummary, 0, len(facts.projects))
 	for _, current := range facts.projects {
 		project := current.project
@@ -693,6 +727,9 @@ func projectSummaries(facts planningFacts) []planningport.ProjectSummary {
 			actions = append(actions, action("project.emergency-stop.confirm", "Confirm emergency stop", project.ID, project.Version, &approval, "danger"))
 		} else if project.State == "active" {
 			actions = append(actions,
+				action("project.update", "Edit Project", project.ID, project.Version, nil, "secondary"),
+				actionAtCursor("epic.create", "Create Epic", project.ID, project.Version, cursor, "secondary"),
+				actionAtCursor("task.create", "Create Task", project.ID, project.Version, cursor, "primary"),
 				action("project.pause", "Pause Project", project.ID, project.Version, nil, "secondary"),
 				action("project.emergency-stop.prepare", "Emergency stop…", project.ID, project.Version, nil, "danger"),
 			)
@@ -778,7 +815,9 @@ func epicSummaries(project *planningProjectFacts) []planningport.EpicSummary {
 			Progress: planningport.EpicProgress{
 				Completed: strconv.FormatUint(progress.completed, 10), Total: strconv.FormatUint(progress.total, 10),
 			},
-			Blockers: []planningport.Explanation{}, AllowedActions: []planningport.AllowedAction{},
+			Blockers: []planningport.Explanation{}, AllowedActions: []planningport.AllowedAction{
+				action("epic.update", "Edit Epic", epic.ID, epic.Version, nil, "secondary"),
+			},
 		})
 	}
 	return result
@@ -896,7 +935,7 @@ func (reader *PlanningReader) project(input planningport.QueryInput, cursor uint
 			SelectedProjectID: selected, SelectedWorkspaceIDs: cloneText(input.WorkspaceIDs),
 			SelectedEpicIDs: cloneText(input.EpicIDs), AppliedQuery: cloneQuery(input),
 			AvailableSorts: slices.Clone(definition.StableSorts), AvailableLabels: availableLabels(project),
-			Projects: projectSummaries(facts), Workspaces: workspaceSummaries(project), Epics: epicSummaries(project),
+			Projects: projectSummaries(facts, page.SnapshotCursor), Workspaces: workspaceSummaries(project), Epics: epicSummaries(project),
 			Tasks: tasks, Capacity: capacityFacts(project, input.WorkspaceIDs),
 			SurfaceActions: []planningport.AllowedAction{}, TotalTasks: strconv.FormatUint(page.TotalTasks, 10),
 			NextCursor: next,
@@ -1258,6 +1297,13 @@ func (reader *PlanningReader) TaskDetail(ctx context.Context, input planningport
 			}
 			cursor := strconv.FormatUint(before, 10)
 			summary := taskSummary(projectedTaskRow(match.input), match.input, match.project.project, match.run, workspaces, cursor)
+			for _, dependency := range match.task.Dependencies {
+				summary.AllowedActions = append(summary.AllowedActions,
+					action("dependency.remove", "Remove dependency", dependency.On.ID, match.task.Version, nil, "secondary"),
+					actionWithAcknowledgement("dependency.override", "Override dependency", dependency.On.ID, match.task.Version,
+						"dependency-override-"+match.task.ID+"-"+dependency.On.ID, "danger"),
+				)
+			}
 			detail = &planningport.TaskDetail{
 				Binding: detailBinding(input.HostID, match), Summary: summary, Objective: match.task.Objective,
 				AcceptanceCriteria: detailAcceptance(match.task), Dependencies: detailDependencies(match),

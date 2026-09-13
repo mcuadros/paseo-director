@@ -49,6 +49,7 @@ type mcpTool struct {
 type callParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+	Meta      json.RawMessage `json:"_meta,omitempty"`
 }
 
 type content struct {
@@ -97,10 +98,33 @@ func validRequestID(id json.RawMessage) bool {
 	}
 }
 
-func stableRequestID(id json.RawMessage) string {
-	canonical, _ := jsondocument.CanonicalWithNormalizedNumbers(id)
-	digest := sha256.Sum256(canonical)
+func stableRequestID(id json.RawMessage, toolName string, arguments json.RawMessage) string {
+	canonicalID, _ := jsondocument.CanonicalWithNormalizedNumbers(id)
+	canonicalArguments, _ := jsondocument.CanonicalWithNormalizedNumbers(arguments)
+	identity, _ := json.Marshal(struct {
+		ID        json.RawMessage `json:"id"`
+		Tool      string          `json:"tool"`
+		Arguments json.RawMessage `json:"arguments"`
+	}{canonicalID, toolName, canonicalArguments})
+	digest := sha256.Sum256(identity)
 	return "mcp-call-" + hex.EncodeToString(digest[:])
+}
+
+// RequestIdentity returns the same content-bound identity used for a mutable
+// tools/call. Exact response-loss replay remains stable, while a later MCP
+// process may safely restart its JSON-RPC counter without colliding with a
+// different tool call from an earlier turn.
+func RequestIdentity(raw []byte) string {
+	var request rpcRequest
+	if strictRequest(raw, &request) != nil || request.Method != "tools/call" || !validRequestID(request.ID) {
+		return ""
+	}
+	var parameters callParams
+	if len(request.Params) == 0 || strictRequest(request.Params, &parameters) != nil ||
+		parameters.Name == "" || len(parameters.Arguments) == 0 {
+		return ""
+	}
+	return stableRequestID(request.ID, parameters.Name, parameters.Arguments)
 }
 
 func boundedCode(err error) string {
@@ -219,7 +243,7 @@ func handleRequest(ctx context.Context, session *applicationbridge.Session, requ
 			returnValue := responseError(request.ID, -32602, "Invalid params")
 			return &returnValue
 		}
-		result, err := session.Call(ctx, stableRequestID(request.ID), parameters.Name, parameters.Arguments)
+		result, err := session.Call(ctx, stableRequestID(request.ID, parameters.Name, parameters.Arguments), parameters.Name, parameters.Arguments)
 		if err != nil {
 			response.Result = callResult{Content: []content{{Type: "text", Text: boundedCode(err)}}, IsError: true}
 		} else {

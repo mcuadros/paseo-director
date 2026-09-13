@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -24,6 +25,8 @@ import (
 	candidatedomain "github.com/mcuadros/director-engine/domain/candidate"
 	cleanupdomain "github.com/mcuadros/director-engine/domain/cleanup"
 	domainconfig "github.com/mcuadros/director-engine/domain/configuration"
+	domaincorrection "github.com/mcuadros/director-engine/domain/correction"
+	directdomain "github.com/mcuadros/director-engine/domain/directdelivery"
 	domainexecution "github.com/mcuadros/director-engine/domain/execution"
 	integrationdomain "github.com/mcuadros/director-engine/domain/integration"
 	publicationdomain "github.com/mcuadros/director-engine/domain/publication"
@@ -80,31 +83,36 @@ func NewControllerWithGit(store storeport.TaskStore, runtime runtimeport.Port, g
 
 // StartCommand freezes every identity and fact needed by one primary Run.
 type StartCommand struct {
-	RequestID         string
-	Scope             domainexecution.Scope
-	RunNumber         uint64
-	SourcePath        string
-	WorktreePath      string
-	Branch            string
-	BaseSHA           string
-	TaskTitle         string
-	CriterionIDs      []string
-	InitialPrompt     string
-	RootWorkspaceID   string
-	MCPServer         domainexecution.MCPServerLaunch
-	EffectiveProfiles agentprofile.FrozenSet
-	ReviewPolicy      reviewdomain.ProfilePolicy
-	PublicationPolicy publicationdomain.Policy
-	DeliveryMode      domainconfig.DeliveryMode
-	ValidationPolicy  validationdomain.Policy
-	IntegrationPolicy integrationdomain.Policy
-	CleanupPolicy     cleanupdomain.Policy
-	BudgetPolicy      runtimebudget.Policy
-	TurnBudgetDemand  runtimebudget.Demand
-	HelperPolicy      domainexecution.HelperPolicy
-	ControlPolicy     domainexecution.ControlPolicy
-	RecoveryPolicy    domainexecution.PrimaryRecoveryPolicy
-	EligibilityFacts  eligibility.Facts
+	RequestID            string
+	Scope                domainexecution.Scope
+	RunNumber            uint64
+	SourcePath           string
+	WorktreePath         string
+	Branch               string
+	BaseSHA              string
+	TaskTitle            string
+	CriterionIDs         []string
+	InitialPrompt        string
+	RootWorkspaceID      string
+	MCPServer            domainexecution.MCPServerLaunch
+	EffectiveProfiles    agentprofile.FrozenSet
+	ReviewPolicy         reviewdomain.ProfilePolicy
+	PublicationPolicy    publicationdomain.Policy
+	DeliveryMode         domainconfig.DeliveryMode
+	DirectDeliveryPolicy directdomain.Policy
+	CorrectionPolicy     domaincorrection.Policy
+	ValidationPolicy     validationdomain.Policy
+	IntegrationPolicy    integrationdomain.Policy
+	CleanupPolicy        cleanupdomain.Policy
+	BudgetPolicy         runtimebudget.Policy
+	TurnBudgetDemand     runtimebudget.Demand
+	HelperPolicy         domainexecution.HelperPolicy
+	ControlPolicy        domainexecution.ControlPolicy
+	RecoveryPolicy       domainexecution.PrimaryRecoveryPolicy
+	EligibilityFacts     eligibility.Facts
+	// Production selects the delivery terminal rung. Tests which omit it retain
+	// the bounded M1 fake lifecycle and cannot be mistaken for product wiring.
+	Production bool
 }
 
 func effectiveRecoveryPolicy(policy domainexecution.PrimaryRecoveryPolicy) domainexecution.PrimaryRecoveryPolicy {
@@ -148,6 +156,24 @@ func validationPoliciesEqual(left, right *validationdomain.Policy) bool {
 
 func effectiveIntegrationPolicy(policy integrationdomain.Policy) *integrationdomain.Policy {
 	if policy.SchemaVersion == "" {
+		return nil
+	}
+	copy := policy
+	return &copy
+}
+
+func effectiveDirectPolicy(policy directdomain.Policy) *directdomain.Policy {
+	if policy.SchemaVersion == "" {
+		return nil
+	}
+	copy := policy
+	copy.AuthorizedTargetRefs = slices.Clone(policy.AuthorizedTargetRefs)
+	copy.AutomaticTargetRefs = slices.Clone(policy.AutomaticTargetRefs)
+	return &copy
+}
+
+func effectiveCorrectionPolicy(policy domaincorrection.Policy) *domaincorrection.Policy {
+	if policy.AttemptLimit == 0 {
 		return nil
 	}
 	copy := policy
@@ -385,6 +411,9 @@ func validStart(command StartCommand, project domain.Project, workspace domain.W
 		domainexecution.ValidHelperPolicy(command.HelperPolicy) && domainexecution.ValidControlPolicy(controlPolicy) &&
 		domainexecution.ValidPrimaryRecoveryPolicy(recoveryPolicy) && cleanupPolicy != nil && cleanupdomain.ValidPolicy(*cleanupPolicy) &&
 		(command.DeliveryMode == domainconfig.DeliveryPullRequest || command.DeliveryMode == domainconfig.DeliveryDirect) &&
+		(command.DeliveryMode != domainconfig.DeliveryDirect || directdomain.ValidPolicy(command.DirectDeliveryPolicy)) &&
+		(command.DeliveryMode != domainconfig.DeliveryPullRequest || command.DirectDeliveryPolicy.SchemaVersion == "") &&
+		(!command.Production || command.CorrectionPolicy.AttemptLimit == domaincorrection.AttemptLimit) &&
 		(command.PublicationPolicy.SchemaVersion == "" || publicationdomain.ValidPolicy(command.PublicationPolicy)) &&
 		(command.DeliveryMode != domainconfig.DeliveryDirect || command.PublicationPolicy.SchemaVersion == "") &&
 		(command.DeliveryMode != domainconfig.DeliveryDirect || command.ValidationPolicy.SchemaVersion == "") &&
@@ -490,6 +519,8 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			existing.Execution.DeliveryMode != command.DeliveryMode ||
 			!validationPoliciesEqual(existing.Execution.ValidationPolicy, effectiveValidationPolicy(command.ValidationPolicy)) ||
 			!integrationPoliciesEqual(existing.Execution.IntegrationPolicy, effectiveIntegrationPolicy(command.IntegrationPolicy)) ||
+			!reflect.DeepEqual(existing.Execution.DirectDeliveryPolicy, effectiveDirectPolicy(command.DirectDeliveryPolicy)) ||
+			!reflect.DeepEqual(existing.Execution.CorrectionPolicy, effectiveCorrectionPolicy(command.CorrectionPolicy)) ||
 			!cleanupPoliciesEqual(existing.Execution.CleanupPolicy, cleanupPolicy) ||
 			existing.Execution.RepositoryBinding != repositoryBinding(workspace, command.WorktreePath, command.Branch, command.BaseSHA) ||
 			existing.Execution.BaseRef != "refs/heads/"+workspace.DefaultBaseBranch ||
@@ -501,7 +532,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 			existing.Execution.Budget.Policy != command.BudgetPolicy ||
 			existing.Execution.TurnBudgetDemand != command.TurnBudgetDemand ||
 			existing.Execution.HelperPolicy != command.HelperPolicy || existing.Execution.ControlPolicy != controlPolicy ||
-			existing.Execution.RecoveryPolicy != recoveryPolicy {
+			existing.Execution.RecoveryPolicy != recoveryPolicy || existing.Execution.FakeTerminalRung != !command.Production {
 			return StartResult{}, errors.New("existing Run conflicts with start command")
 		}
 		result.Decision.Kind = eligibility.DecisionEligible
@@ -544,6 +575,8 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 	publicationPolicy := effectivePublicationPolicy(command.PublicationPolicy)
 	validationPolicy := effectiveValidationPolicy(command.ValidationPolicy)
 	integrationPolicy := effectiveIntegrationPolicy(command.IntegrationPolicy)
+	directPolicy := effectiveDirectPolicy(command.DirectDeliveryPolicy)
+	correctionPolicy := effectiveCorrectionPolicy(command.CorrectionPolicy)
 	cleanupPolicy := effectiveCleanupPolicy(command.CleanupPolicy, command.EffectiveProfiles.ConfigurationSHA256())
 	publicationPolicySHA256 := ""
 	if publicationPolicy != nil {
@@ -570,6 +603,8 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		DeliveryMode:            command.DeliveryMode,
 		ValidationPolicy:        validationPolicy,
 		IntegrationPolicy:       integrationPolicy,
+		DirectDeliveryPolicy:    directPolicy,
+		CorrectionPolicy:        correctionPolicy,
 		CleanupPolicy:           cleanupPolicy,
 		LifecycleApproval:       command.EligibilityFacts.LifecycleApproval,
 		Isolation:               command.EligibilityFacts.Isolation,
@@ -601,7 +636,7 @@ func (controller *Controller) Start(ctx context.Context, command StartCommand) (
 		Boundary:                         newEffect(command.Scope.RunID, domainexecution.EffectBoundaryMaterialize, 2),
 		OperationalObservation:           &command.EligibilityFacts.OperationalObservation,
 		OperationalObservationRunVersion: 0,
-		FakeTerminalRung:                 true,
+		FakeTerminalRung:                 !command.Production,
 	}
 	if setupRequired(state.LifecycleSurfaces) {
 		state.Setup = newEffect(command.Scope.RunID, domainexecution.EffectSetupRun, 2)
@@ -778,6 +813,37 @@ func (controller *Controller) RecordCompletedClaim(ctx context.Context, runID st
 	next.Execution.CandidateObservationRunVersion = 0
 	next.Execution.OperationalObservationConsumed = true
 	return controller.persistRun(ctx, run, next, "agent.claim.recorded")
+}
+
+// RecordOutcomeAttention reduces one already-durable closed Worker outcome to
+// a typed Needs-you state. The receipt identity proves this is not free-form
+// connector policy, and the escalation reducer remains the sole constructor
+// of the human-attention record.
+func (controller *Controller) RecordOutcomeAttention(ctx context.Context, runID, receiptKey string,
+	code domainexecution.NeedCode, wakeCondition string,
+) error {
+	run, err := controller.store.Run(ctx, runID)
+	if err != nil {
+		return err
+	}
+	receiptCurrent := slices.ContainsFunc(run.Execution.MCPCommandReceipts, func(receipt domainexecution.MCPCommandReceipt) bool {
+		return receipt.CommandKey == receiptKey && receipt.ToolName == "director_task_outcome_submit" &&
+			receipt.Role == "worker" && receipt.SessionSHA256 == run.Execution.PrimarySession.ReservationSHA256
+	})
+	if !receiptCurrent || run.Execution.AgentPrompt.Phase != domainexecution.EffectComplete || code == "" {
+		return errors.New("Worker outcome attention is not bound to the ended turn")
+	}
+	escalated := escalation.Reduce(escalation.Facts{SchemaVersion: escalation.SchemaVersion,
+		Scope: run.Execution.Scope, CauseCode: code, Reconciled: true, WakeCondition: wakeCondition})
+	if escalated.Kind != escalation.DecisionNeedsYou {
+		return errors.New("Worker outcome attention was refused by escalation policy")
+	}
+	if run.Execution.NeedsYou != nil && *run.Execution.NeedsYou == escalated.NeedsYou {
+		return nil
+	}
+	next := run
+	next.Execution.NeedsYou = &escalated.NeedsYou
+	return controller.persistRun(ctx, run, next, "agent.outcome.needs_you")
 }
 
 // RecordCompletionEvent durably deduplicates one daemon terminal callback and
@@ -1376,9 +1442,26 @@ func operationalResult(run domain.Run, nowMillis int64) domainexecution.Admissio
 	return domainexecution.EvaluateOperationalLimits(state.OperationalPolicy, *state.OperationalObservation, nowMillis)
 }
 
+func operationalObservationID(run domain.Run, admission domainexecution.Admission, nowMillis int64) string {
+	if run.Execution.OperationalObservation == nil || run.Execution.OperationalObservationConsumed ||
+		run.Execution.OperationalObservationRunVersion != run.Version {
+		return ""
+	}
+	observation := run.Execution.OperationalObservation
+	if admission.Code == domainexecution.NeedOperationalFactMissing && observation.ObservedAtMillis >= 0 &&
+		observation.ObservedAtMillis <= nowMillis && run.Execution.OperationalPolicy.MaximumObservationAgeMillis > 0 &&
+		nowMillis-observation.ObservedAtMillis > run.Execution.OperationalPolicy.MaximumObservationAgeMillis {
+		return ""
+	}
+	return observation.ID
+}
+
 func (controller *Controller) observeOperational(ctx context.Context, run domain.Run) error {
 	observation, err := controller.runtime.ObserveOperational(ctx, run.Execution.Scope, run.Execution.OperationalPolicy)
 	if err != nil {
+		return controller.parkRun(ctx, run, domainexecution.NeedOperationalFactMissing)
+	}
+	if observation.ID == "" {
 		return controller.parkRun(ctx, run, domainexecution.NeedOperationalFactMissing)
 	}
 	next := run
@@ -1892,10 +1975,7 @@ func (controller *Controller) stepLaunch(ctx context.Context, run domain.Run, no
 		Boundary: run.Execution.Boundary, Setup: run.Execution.Setup, Agent: run.Execution.Agent,
 		AgentPrompt: run.Execution.AgentPrompt,
 	}
-	if run.Execution.OperationalObservation != nil && !run.Execution.OperationalObservationConsumed &&
-		run.Execution.OperationalObservationRunVersion == run.Version {
-		facts.OperationalObservationID = run.Execution.OperationalObservation.ID
-	}
+	facts.OperationalObservationID = operationalObservationID(run, operational, nowMillis)
 	decision := launch.Reduce(facts)
 	if decision.Kind == launch.DecisionEscalate {
 		code := domainexecution.NeedCode(decision.Code)
@@ -1956,10 +2036,7 @@ func (controller *Controller) stepRouting(ctx context.Context, run domain.Run, n
 		CandidateObservation: run.Execution.CandidateObservation,
 		TaskStoreNowMillis:   nowMillis,
 	}
-	if run.Execution.OperationalObservation != nil && !run.Execution.OperationalObservationConsumed &&
-		run.Execution.OperationalObservationRunVersion == run.Version {
-		facts.OperationalObservationID = run.Execution.OperationalObservation.ID
-	}
+	facts.OperationalObservationID = operationalObservationID(run, operational, nowMillis)
 	decision := routing.Reduce(facts)
 	switch decision.Kind {
 	case routing.DecisionObserveOperationalLimits:
@@ -2082,6 +2159,9 @@ func (controller *Controller) stepClosure(ctx context.Context, run domain.Run, n
 	}
 	facts := closure.Facts{
 		SchemaVersion: closure.SchemaVersion, FakeTerminalRung: run.Execution.FakeTerminalRung,
+		DeliveryTerminalRung:    !run.Execution.FakeTerminalRung,
+		CleanupBindingCurrent:   run.Execution.Cleanup != nil && run.Execution.Cleanup.Binding.CandidateID == run.CurrentCandidateID,
+		Cleanup:                 run.Execution.Cleanup,
 		CandidateCurrent:        run.CurrentCandidateID != "" && run.CurrentCandidateID == expectedCandidate,
 		CriteriaClaimsSatisfied: allCriteriaClaimedSatisfied(run.Execution.Claim),
 		ExactOwnership: run.Execution.Agent.ExternalID != "" && run.Execution.HostView.ExternalID != "" &&
@@ -2097,10 +2177,11 @@ func (controller *Controller) stepClosure(ctx context.Context, run domain.Run, n
 		AgentArchive:              run.Execution.AgentArchive, HostViewArchive: run.Execution.HostViewArchive,
 		WorktreeRemove: run.Execution.WorktreeRemove,
 	}
-	if run.Execution.OperationalObservation != nil && !run.Execution.OperationalObservationConsumed &&
-		run.Execution.OperationalObservationRunVersion == run.Version {
-		facts.OperationalObservationID = run.Execution.OperationalObservation.ID
+	if !run.Execution.FakeTerminalRung {
+		facts.CandidateCurrent = run.CurrentCandidateID != "" && run.Execution.CandidateAuthority != nil &&
+			!run.Execution.CandidateAuthority.Invalidated && run.Execution.CandidateAuthority.CandidateID == run.CurrentCandidateID
 	}
+	facts.OperationalObservationID = operationalObservationID(run, operational, nowMillis)
 	decision := closure.Reduce(facts)
 	switch decision.Kind {
 	case closure.DecisionObserveOperationalLimits:

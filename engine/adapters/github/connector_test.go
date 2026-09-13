@@ -204,6 +204,19 @@ func includedJSON(body string, remaining int) []byte {
 	return []byte(fmt.Sprintf("HTTP/2.0 200 OK\r\nx-ratelimit-remaining: %d\r\nx-ratelimit-reset: 2000000000\r\n\r\n%s", remaining, body))
 }
 
+func TestRepositoryDiscoveryAcceptsCanonicalGitHubSSHRemoteIdentity(t *testing.T) {
+	runner := &queuedRunner{results: []Result{
+		{Started: true, Stdout: includedJSON(`{"id":123,"node_id":"R_node","name":"product","owner":{"login":"example"}}`, 5_000)},
+		{Started: true, Stdout: includedJSON(`{"login":"example"}`, 4_999)},
+	}}
+	fact, err := NewWithRunner(runner).DiscoverRepository(context.Background(), githubport.RepositoryDiscoveryRequest{
+		CanonicalRemote: "ssh://git@github.com/example/product", RepositoryID: "repository-unused",
+		RepositoryKey: "github.com/example/product", NowMillis: 1_000})
+	if err != nil || fact.DatabaseID != 123 || fact.Owner != "example" || fact.Name != "product" || fact.ViewerLogin != "example" {
+		t.Fatalf("SSH GitHub discovery = %#v, %v", fact, err)
+	}
+}
+
 func TestConnectorPreflightBindsViewerCapabilitiesIdentityAndRate(t *testing.T) {
 	runner := &queuedRunner{results: []Result{
 		{Started: true, Stdout: includedJSON(`{"login":"example"}`, 5_000)},

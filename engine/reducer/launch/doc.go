@@ -87,8 +87,11 @@ func reduceEffect(effect execution.Effect, nowMillis int64) Decision {
 		return Decision{SchemaVersion: SchemaVersion, Kind: DecisionObserve, EffectKind: effect.Kind}
 	}
 	if effect.Observation.EffectID != effect.ID || effect.Observation.ID == "" ||
-		!execution.CurrentEffectObservation(*effect.Observation, nowMillis) {
+		!execution.ValidEffectObservation(*effect.Observation) {
 		return needs("launch_observation_binding_invalid")
+	}
+	if !execution.CurrentEffectObservation(*effect.Observation, nowMillis) {
+		return Decision{SchemaVersion: SchemaVersion, Kind: DecisionObserve, EffectKind: effect.Kind}
 	}
 	switch effect.Observation.Status {
 	case execution.ObservationDesired:

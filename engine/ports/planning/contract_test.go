@@ -29,7 +29,7 @@ func TestEmbeddedPlanningContract(t *testing.T) {
 		t.Fatalf("planning transport bounds = %#v", definition)
 	}
 	if len(definition.DerivedStates) != 7 || len(definition.AttentionCodes) != 12 ||
-		len(definition.AllowedActions) != 17 || len(definition.ConfigurationKeys) != 8 ||
+		len(definition.AllowedActions) != 19 || len(definition.ConfigurationKeys) != 8 ||
 		len(definition.HomeHealthStates) != 7 || len(definition.HomeActionKinds) != 13 {
 		t.Fatalf("planning closed vocabularies = %#v", definition)
 	}
@@ -101,22 +101,27 @@ func TestHomeAndOrganizerBootstrapValidationStayHostBoundAndClosed(t *testing.T)
 		}
 	}
 	hash, _ := SchemaSHA256()
-	configuration, preview := `{}`, strings.Repeat("a", 64)
+	preview := strings.Repeat("a", 64)
+	remote, branch := "https://github.com/example/project-a.git", "main"
+	native := NativePaseoProject{ProjectID: "native-project-a", Name: "Project A", ProjectRootPath: "/srv/project-a",
+		OrganizerCandidate: "/srv/.project-a-director-organizer", ProjectKind: "git",
+		Workspaces: []NativePaseoWorkspace{{ID: "native-workspace-a", Name: "Project A", ProjectRootPath: "/srv/project-a",
+			WorkspaceDirectory: "/srv/project-a", WorkspaceKind: "directory", RemoteURL: &remote, BaseBranch: &branch}}}
+	native.FactsRevision = NativePaseoProjectFactsSHA256(native)
 	valid := OrganizerBootstrapInput{SchemaVersion: 1, ContractVersion: "director-planning/v1", ContractHash: hash,
-		HostID: "host-a", RequestID: "request-organizer-0001", Kind: "create.preview", ProjectID: "project-a",
-		ProjectName: "Project A", RepositoryPath: "/srv/director/project-a", ConfigurationJSON: &configuration}
+		HostID: "host-a", RequestID: "request-organizer-0001", Kind: "native.create.preview", NativeProject: &native}
 	if err := ValidateOrganizerBootstrap(valid); err != nil {
 		t.Fatal(err)
 	}
-	valid.Kind, valid.PreviewID = "create.apply", &preview
+	valid.Kind, valid.PreviewID = "native.create.apply", &preview
 	if err := ValidateOrganizerBootstrap(valid); err != nil {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*OrganizerBootstrapInput){
-		"host absent":          func(input *OrganizerBootstrapInput) { input.HostID = "" },
-		"short request":        func(input *OrganizerBootstrapInput) { input.RequestID = "short" },
-		"Preview absent":       func(input *OrganizerBootstrapInput) { input.PreviewID = nil },
-		"Create config absent": func(input *OrganizerBootstrapInput) { input.ConfigurationJSON = nil },
+		"host absent":         func(input *OrganizerBootstrapInput) { input.HostID = "" },
+		"short request":       func(input *OrganizerBootstrapInput) { input.RequestID = "short" },
+		"Preview absent":      func(input *OrganizerBootstrapInput) { input.PreviewID = nil },
+		"native facts absent": func(input *OrganizerBootstrapInput) { input.NativeProject = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			input := valid
@@ -127,7 +132,8 @@ func TestHomeAndOrganizerBootstrapValidationStayHostBoundAndClosed(t *testing.T)
 		})
 	}
 	adopt := valid
-	adopt.Kind, adopt.ConfigurationJSON = "adopt.apply", nil
+	adopt.Kind, adopt.NativeProject = "advanced.adopt.apply", nil
+	adopt.ProjectID, adopt.ProjectName, adopt.RepositoryPath = "project-a", "Project A", "/srv/director/project-a"
 	if err := ValidateOrganizerBootstrap(adopt); err != nil {
 		t.Fatalf("valid Adopt Apply: %v", err)
 	}

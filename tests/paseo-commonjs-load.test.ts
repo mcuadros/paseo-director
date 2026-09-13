@@ -155,6 +155,7 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
         { name: "engine.mode", source: "overridden" },
         { name: "engine.url", source: "defaulted" },
         { name: "engine.cache-base", source: "overridden" },
+        { name: "engine.runtime-base", source: "overridden" },
         { name: "engine.module-cache", source: "defaulted" },
       ],
     });

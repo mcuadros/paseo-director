@@ -40,6 +40,7 @@ type projectData struct {
 	Lease            *domain.ProjectLease            `json:"lease,omitempty"`
 	LeaseObservation *domain.ProjectLeaseObservation `json:"leaseObservation,omitempty"`
 	Control          execution.ProjectControl        `json:"control,omitempty"`
+	Scheduling       domain.SchedulingLedger         `json:"scheduling,omitempty"`
 }
 
 type organizerData struct {
@@ -56,11 +57,12 @@ type organizerData struct {
 }
 
 type workspaceData struct {
-	Key               string                    `json:"key"`
-	Name              string                    `json:"name"`
-	Repository        domain.RepositoryIdentity `json:"repository"`
-	DefaultBaseBranch string                    `json:"defaultBaseBranch"`
-	Policy            domain.WorkspacePolicy    `json:"policy"`
+	Key                    string                    `json:"key"`
+	Name                   string                    `json:"name"`
+	NativePaseoWorkspaceID string                    `json:"nativePaseoWorkspaceId,omitempty"`
+	Repository             domain.RepositoryIdentity `json:"repository"`
+	DefaultBaseBranch      string                    `json:"defaultBaseBranch"`
+	Policy                 domain.WorkspacePolicy    `json:"policy"`
 }
 
 type epicData struct {
@@ -253,7 +255,7 @@ func storedLeaseObservation(observation *domain.ProjectLeaseObservation) *domain
 
 func workspaceRecord(workspace domain.Workspace) workspaceData {
 	return workspaceData{
-		Key: workspace.Key, Name: workspace.Name, Repository: workspace.Repository,
+		Key: workspace.Key, Name: workspace.Name, NativePaseoWorkspaceID: workspace.NativePaseoWorkspaceID, Repository: workspace.Repository,
 		DefaultBaseBranch: workspace.DefaultBaseBranch, Policy: workspace.Policy,
 	}
 }
@@ -893,7 +895,8 @@ func (store *DoltTaskStore) CreateProject(
 	if err := validateProject(project); err != nil {
 		return domain.CommandResult{}, err
 	}
-	if project.LastLeaseEpoch != 0 || project.Lease != nil || project.LeaseObservation != nil {
+	if project.LastLeaseEpoch != 0 || project.Lease != nil || project.LeaseObservation != nil ||
+		len(project.Scheduling.Batches) != 0 || len(project.Scheduling.Reservations) != 0 || len(project.Scheduling.Permits) != 0 {
 		return domain.CommandResult{}, fmt.Errorf("%w: a new Project cannot preallocate lease state", storeport.ErrInvalidRecord)
 	}
 	if err := domain.ValidateWorkspaceSet(project.ID, workspaces); err != nil {
@@ -911,7 +914,8 @@ func (store *DoltTaskStore) CreateProject(
 		Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer),
 		LastLeaseEpoch: project.LastLeaseEpoch,
 		Lease:          storedLease(project.Lease), LeaseObservation: storedLeaseObservation(project.LeaseObservation),
-		Control: project.Control,
+		Control:    project.Control,
+		Scheduling: project.Scheduling,
 	})
 	if err != nil {
 		return domain.CommandResult{}, err
@@ -946,7 +950,8 @@ func (store *DoltTaskStore) UpdateProject(
 		Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer),
 		LastLeaseEpoch: project.LastLeaseEpoch,
 		Lease:          storedLease(project.Lease), LeaseObservation: storedLeaseObservation(project.LeaseObservation),
-		Control: project.Control,
+		Control:    project.Control,
+		Scheduling: project.Scheduling,
 	})
 	if err != nil {
 		return domain.CommandResult{}, err
@@ -971,6 +976,9 @@ func (store *DoltTaskStore) UpdateProject(
 		}
 		if !reflect.DeepEqual(current.Control, project.Control) && !strings.HasPrefix(command.Type, "project.control.") {
 			return mutationResult{}, fmt.Errorf("%w: only a control command may change Project control state", storeport.ErrInvalidRecord)
+		}
+		if !reflect.DeepEqual(current.Scheduling, project.Scheduling) && !strings.HasPrefix(command.Type, "scheduler.") {
+			return mutationResult{}, fmt.Errorf("%w: only a scheduler command may change Project scheduling state", storeport.ErrInvalidRecord)
 		}
 		if current.State != project.State && current.Organizer.Phase == domain.OrganizerPhaseActive &&
 			!strings.HasPrefix(command.Type, "project.control.") && !strings.HasPrefix(command.Type, "organizer.") {
@@ -1025,7 +1033,7 @@ func encodeProject(project domain.Project) ([]byte, error) {
 		Name: project.Name, State: project.State, Organizer: storedOrganizer(project.Organizer),
 		LastLeaseEpoch: project.LastLeaseEpoch,
 		Lease:          storedLease(project.Lease), LeaseObservation: storedLeaseObservation(project.LeaseObservation),
-		Control: project.Control,
+		Control: project.Control, Scheduling: project.Scheduling,
 	})
 }
 
@@ -1217,6 +1225,7 @@ func projectByIDForUpdate(ctx context.Context, tx *sql.Tx, id string) (domain.Pr
 	project.LastLeaseEpoch, project.Lease = data.LastLeaseEpoch, storedLease(data.Lease)
 	project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
 	project.Control = data.Control
+	project.Scheduling = data.Scheduling
 	if err := validateReloaded(validateProject(project)); err != nil {
 		return domain.Project{}, err
 	}
@@ -1249,7 +1258,7 @@ func workspaceByID(ctx context.Context, query rowQuerier, id string) (domain.Wor
 	if err := decodeRecord(rawData, &data); err != nil {
 		return domain.Workspace{}, err
 	}
-	workspace.Key, workspace.Name, workspace.Repository = data.Key, data.Name, data.Repository
+	workspace.Key, workspace.Name, workspace.NativePaseoWorkspaceID, workspace.Repository = data.Key, data.Name, data.NativePaseoWorkspaceID, data.Repository
 	workspace.DefaultBaseBranch, workspace.Policy = data.DefaultBaseBranch, data.Policy
 	if err := validateReloaded(validateWorkspace(workspace)); err != nil {
 		return domain.Workspace{}, err
@@ -1277,7 +1286,7 @@ func workspacesByProject(ctx context.Context, query rowsQuerier, projectID strin
 		if err := decodeRecord(rawData, &data); err != nil {
 			return nil, err
 		}
-		workspace.Key, workspace.Name, workspace.Repository = data.Key, data.Name, data.Repository
+		workspace.Key, workspace.Name, workspace.NativePaseoWorkspaceID, workspace.Repository = data.Key, data.Name, data.NativePaseoWorkspaceID, data.Repository
 		workspace.DefaultBaseBranch, workspace.Policy = data.DefaultBaseBranch, data.Policy
 		if err := validateReloaded(validateWorkspace(workspace)); err != nil {
 			return nil, err
@@ -1997,6 +2006,7 @@ func projectByID(ctx context.Context, query rowQuerier, id string) (domain.Proje
 	project.LastLeaseEpoch, project.Lease = data.LastLeaseEpoch, storedLease(data.Lease)
 	project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
 	project.Control = data.Control
+	project.Scheduling = data.Scheduling
 	if err := validateReloaded(validateProject(project)); err != nil {
 		return domain.Project{}, err
 	}
@@ -2032,6 +2042,7 @@ func (store *DoltTaskStore) Projects(ctx context.Context) ([]domain.Project, err
 		project.LastLeaseEpoch, project.Lease = data.LastLeaseEpoch, storedLease(data.Lease)
 		project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
 		project.Control = data.Control
+		project.Scheduling = data.Scheduling
 		if err := validateReloaded(validateProject(project)); err != nil {
 			return nil, err
 		}
@@ -2084,6 +2095,7 @@ func (store *DoltTaskStore) PlanningProjects(ctx context.Context) ([]domain.Proj
 		project.LastLeaseEpoch, project.Lease = data.LastLeaseEpoch, storedLease(data.Lease)
 		project.LeaseObservation = storedLeaseObservation(data.LeaseObservation)
 		project.Control = data.Control
+		project.Scheduling = data.Scheduling
 		if err := validateReloaded(validateProject(project)); err != nil {
 			return nil, err
 		}
@@ -2944,8 +2956,10 @@ func (store *DoltTaskStore) LatestEventSequence(ctx context.Context) (uint64, er
 	defer connection.Close()
 	var sequence uint64
 	if err := connection.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(global_sequence), 0) FROM events`,
-	).Scan(&sequence); err != nil {
+		`SELECT global_sequence FROM events ORDER BY global_sequence DESC LIMIT 1`,
+	).Scan(&sequence); errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	} else if err != nil {
 		return 0, queryFailure()
 	}
 	return sequence, nil

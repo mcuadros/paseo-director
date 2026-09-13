@@ -8,7 +8,7 @@ import { z } from "zod";
 
 export const PLANNING_SCHEMA_VERSION = 1 as const;
 export const PLANNING_CONTRACT_VERSION = "director-planning/v1" as const;
-export const PLANNING_CONTRACT_SHA256 = "e0099da4d6ab89b6d7830418d5b0788e10ac6bb8c36303c3b812e167ff6f7bd9" as const;
+export const PLANNING_CONTRACT_SHA256 = "def3f85a9b78b7ba41396011e4c43340b9493d3cfa9e304a9f73658fe8e08abe" as const;
 export const PLANNING_QUERY_NAMES = [
   "planning.query",
   "planning.task-detail",
@@ -115,6 +115,8 @@ export const PLANNING_ALLOWED_ACTIONS = [
   "project.emergency-stop.prepare",
   "project.emergency-stop.confirm",
   "task.cancel",
+  "task.integrate",
+  "task.feedback",
 ] as const;
 export const PLANNING_CONFIGURATION_KEYS = [
   "launchPolicy",
@@ -830,7 +832,38 @@ export const repairResultSchema = z.strictObject({
   }
 });
 
-export const organizerBootstrapKindSchema = z.enum(["create.preview", "create.apply", "adopt.preview", "adopt.apply"]);
+export const nativePaseoWorkspaceSchema = z.strictObject({
+  id: opaquePlanningIdSchema,
+  name: boundedPlanningTextSchema,
+  projectRootPath: z.string().min(1).max(4096),
+  workspaceDirectory: z.string().min(1).max(4096),
+  workspaceKind: z.enum(["worktree", "directory", "checkout", "local_checkout"]),
+  remoteUrl: z.string().min(1).max(4096).nullable(),
+  baseBranch: z.string().min(1).max(512).nullable(),
+});
+
+export const nativePaseoProjectSchema = z.strictObject({
+  projectId: opaquePlanningIdSchema,
+  name: boundedPlanningTextSchema,
+  projectRootPath: z.string().min(1).max(4096),
+  projectKind: z.enum(["git", "directory", "non_git"]),
+  organizerCandidate: z.string().min(2).max(4096),
+  workspaces: z.array(nativePaseoWorkspaceSchema).max(PLANNING_MAXIMUM_WORKSPACES).readonly(),
+  factsRevision: sha256Schema,
+});
+
+export const nativePaseoProjectsInputSchema = z.strictObject({ hostId: opaquePlanningIdSchema });
+
+export const nativePaseoProjectsSnapshotSchema = z.strictObject({
+  schemaVersion: z.literal(PLANNING_SCHEMA_VERSION),
+  contractVersion: z.literal(PLANNING_CONTRACT_VERSION),
+  contractHash: z.literal(PLANNING_CONTRACT_SHA256),
+  hostId: opaquePlanningIdSchema,
+  observedAt: z.iso.datetime(),
+  projects: z.array(nativePaseoProjectSchema).max(PLANNING_MAXIMUM_PROJECTS).readonly(),
+});
+
+export const organizerBootstrapKindSchema = z.enum(["native.create.preview", "native.create.apply", "advanced.adopt.preview", "advanced.adopt.apply"]);
 
 export const organizerBootstrapInputSchema = z.strictObject({
   schemaVersion: z.literal(PLANNING_SCHEMA_VERSION),
@@ -839,16 +872,20 @@ export const organizerBootstrapInputSchema = z.strictObject({
   hostId: opaquePlanningIdSchema,
   requestId: opaquePlanningIdSchema.refine((value) => value.length >= 16),
   kind: organizerBootstrapKindSchema,
-  projectId: opaquePlanningIdSchema,
-  projectName: z.string().min(1).max(512),
-  repositoryPath: z.string().min(2).max(4096),
+  nativeProject: nativePaseoProjectSchema.nullable(),
+  projectId: opaquePlanningIdSchema.nullable(),
+  projectName: z.string().min(1).max(512).nullable(),
+  repositoryPath: z.string().min(2).max(4096).nullable(),
   configurationJson: z.string().min(2).max(60000).nullable(),
   previewId: sha256Schema.nullable(),
 }).superRefine((value, context) => {
-  const create = value.kind === "create.preview" || value.kind === "create.apply";
-  const apply = value.kind === "create.apply" || value.kind === "adopt.apply";
-  if (create !== (value.configurationJson !== null)) {
-    context.addIssue({ code: "custom", message: "Create requires exact configuration JSON; Adopt forbids it", path: ["configurationJson"] });
+  const native = value.kind === "native.create.preview" || value.kind === "native.create.apply";
+  const apply = value.kind === "native.create.apply" || value.kind === "advanced.adopt.apply";
+  if (native !== (value.nativeProject !== null) || native === (value.projectId !== null || value.projectName !== null || value.repositoryPath !== null || value.configurationJson !== null)) {
+    context.addIssue({ code: "custom", message: "Native onboarding accepts only authoritative Paseo facts; advanced import requires explicit existing-setup fields", path: ["nativeProject"] });
+  }
+  if (!native && (value.projectId === null || value.projectName === null || value.repositoryPath === null || value.configurationJson !== null)) {
+    context.addIssue({ code: "custom", message: "Advanced existing-setup import requires its exact identity and forbids raw configuration JSON", path: ["projectId"] });
   }
   if (apply !== (value.previewId !== null)) {
     context.addIssue({ code: "custom", message: "Apply requires the exact Preview and explicit confirmation", path: ["previewId"] });
@@ -864,6 +901,7 @@ export const organizerBootstrapPreviewSchema = z.strictObject({
   repositoryPath: z.string().min(2).max(4096),
   organizerRevision: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
   configurationSha256: sha256Schema.nullable(),
+  configurationJson: z.string().min(2).max(60000).nullable(),
   files: z.array(z.strictObject({ path: z.string().min(1).max(1024), sha256: sha256Schema })).max(256).readonly(),
   operations: z.array(boundedPlanningTextSchema).max(32).readonly(),
   valid: z.boolean(),
@@ -1137,6 +1175,20 @@ export const planningMutationIntentSchema = z.discriminatedUnion("type", [
     taskId: opaquePlanningIdSchema,
     runId: opaquePlanningIdSchema,
   }),
+  z.strictObject({
+    type: z.literal("task.integrate"),
+    projectId: opaquePlanningIdSchema,
+    taskId: opaquePlanningIdSchema,
+    runId: opaquePlanningIdSchema,
+  }),
+  z.strictObject({
+    type: z.literal("task.feedback"),
+    projectId: opaquePlanningIdSchema,
+    taskId: opaquePlanningIdSchema,
+    runId: opaquePlanningIdSchema,
+    body: boundedPlanningTextSchema,
+    severity: z.enum(["P0", "P1", "P2", "P3"]),
+  }),
 ]);
 
 export const planningMutationInputSchema = z.strictObject({
@@ -1218,6 +1270,10 @@ export type RepairResult = z.output<typeof repairResultSchema>;
 export type OrganizerBootstrapInput = z.output<typeof organizerBootstrapInputSchema>;
 export type OrganizerBootstrapPreview = z.output<typeof organizerBootstrapPreviewSchema>;
 export type OrganizerBootstrapResult = z.output<typeof organizerBootstrapResultSchema>;
+export type NativePaseoWorkspace = z.output<typeof nativePaseoWorkspaceSchema>;
+export type NativePaseoProject = z.output<typeof nativePaseoProjectSchema>;
+export type NativePaseoProjectsInput = z.output<typeof nativePaseoProjectsInputSchema>;
+export type NativePaseoProjectsSnapshot = z.output<typeof nativePaseoProjectsSnapshotSchema>;
 export type ConfigurationValue = z.output<typeof configurationValueSchema>;
 export type ConfigurationOverride = z.output<typeof configurationOverrideSchema>;
 export type ConfigurationEntry = z.output<typeof configurationEntrySchema>;
@@ -1267,9 +1323,12 @@ function actionTargetsIntent(
     case "task.update":
     case "task.launch-now":
       return action.targetId === intent.taskId;
-    case "task.cancel":
-      return action.targetId === intent.runId;
     case "dependency.add":
+      return action.targetId === intent.taskId;
+    case "task.cancel":
+    case "task.integrate":
+    case "task.feedback":
+      return action.targetId === intent.runId;
     case "dependency.remove":
     case "dependency.override":
       return action.targetId === intent.dependencyId;

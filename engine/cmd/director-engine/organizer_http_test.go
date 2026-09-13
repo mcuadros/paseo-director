@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/mcuadros/director-engine/adapters/organizergit"
@@ -55,16 +54,21 @@ func organizerHTTPInput(t *testing.T, hostID, projectID, projectName, organizerP
 	t.Helper()
 	definition, _ := planningport.EmbeddedDefinition()
 	hash, _ := planningport.SchemaSHA256()
-	configuration := string(configurationJSON(projectID, projectName, productPath, remote))
+	remoteValue, branch := remote, "main"
+	native := planningport.NativePaseoProject{ProjectID: "native-" + projectID, Name: projectName, ProjectRootPath: productPath,
+		ProjectKind: "git", OrganizerCandidate: organizerapp.OrganizerCandidate(productPath),
+		Workspaces: []planningport.NativePaseoWorkspace{{ID: "native-workspace-" + projectID, Name: projectName,
+			ProjectRootPath: productPath, WorkspaceDirectory: productPath, WorkspaceKind: "directory",
+			RemoteURL: &remoteValue, BaseBranch: &branch}}}
+	native.FactsRevision = planningport.NativePaseoProjectFactsSHA256(native)
 	return planningport.OrganizerBootstrapInput{SchemaVersion: definition.SchemaVersion, ContractVersion: definition.ContractVersion,
-		ContractHash: hash, HostID: hostID, RequestID: "request-home-" + projectID, Kind: "create.preview",
-		ProjectID: projectID, ProjectName: projectName, RepositoryPath: organizerPath, ConfigurationJSON: &configuration}
+		ContractHash: hash, HostID: hostID, RequestID: "request-home-" + projectID, Kind: "native.create.preview", NativeProject: &native}
 }
 
 func TestOrganizerBootstrapHTTPPreviewsThenAppliesExactCreate(t *testing.T) {
 	root := privateTempDir(t)
 	productPath, remote, _ := newProductRepository(t, root)
-	organizerPath := filepath.Join(root, "organizer")
+	organizerPath := organizerapp.OrganizerCandidate(productPath)
 	store := &organizerHTTPStore{newMemoryProjectStore()}
 	service := organizerapp.New(store, organizergit.New(), nil)
 	handler := newOrganizerBootstrapHandler(service, store, "host-a")
@@ -72,21 +76,22 @@ func TestOrganizerBootstrapHTTPPreviewsThenAppliesExactCreate(t *testing.T) {
 
 	previewResult, status := organizerHTTPRequest(t, handler, input, true)
 	if status != http.StatusOK || previewResult.Status != "preview" || previewResult.Preview == nil || !previewResult.Preview.Valid || previewResult.Preview.ID == "" || previewResult.HostID != "host-a" {
-		t.Fatalf("Preview response = %d %#v", status, previewResult)
+		t.Fatalf("Preview response = %d %#v preview=%#v", status, previewResult, previewResult.Preview)
 	}
 	if _, err := os.Stat(organizerPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Preview mutated Organizer target: %v", err)
 	}
-	if _, err := store.Project(context.Background(), input.ProjectID); err == nil {
+	directorProjectID := organizerapp.NativeProjectID(input.NativeProject.ProjectID)
+	if _, err := store.Project(context.Background(), directorProjectID); err == nil {
 		t.Fatal("Preview persisted a Project")
 	}
 
-	input.Kind, input.PreviewID = "create.apply", &previewResult.Preview.ID
+	input.Kind, input.PreviewID = "native.create.apply", &previewResult.Preview.ID
 	applied, status := organizerHTTPRequest(t, handler, input, true)
 	if status != http.StatusOK || applied.Status != "applied" || applied.ProjectVersion == nil || applied.Preview != nil {
 		t.Fatalf("Apply response = %d %#v", status, applied)
 	}
-	project, err := store.Project(context.Background(), input.ProjectID)
+	project, err := store.Project(context.Background(), directorProjectID)
 	if err != nil || project.Organizer == nil || project.Organizer.Phase != "active" || project.Organizer.HumanActorID != "server-owner" {
 		t.Fatalf("applied Project = %#v, %v", project, err)
 	}
@@ -99,7 +104,7 @@ func TestOrganizerBootstrapHTTPPreviewsThenAppliesExactCreate(t *testing.T) {
 func TestOrganizerBootstrapHTTPRejectsMissingAuthAndAnotherHostBeforeMutation(t *testing.T) {
 	root := privateTempDir(t)
 	productPath, remote, _ := newProductRepository(t, root)
-	organizerPath := filepath.Join(root, "organizer")
+	organizerPath := organizerapp.OrganizerCandidate(productPath)
 	store := &organizerHTTPStore{newMemoryProjectStore()}
 	handler := newOrganizerBootstrapHandler(organizerapp.New(store, organizergit.New(), nil), store, "host-a")
 	input := organizerHTTPInput(t, "host-a", "project-home-refuse", "Home Refuse", organizerPath, productPath, remote)
