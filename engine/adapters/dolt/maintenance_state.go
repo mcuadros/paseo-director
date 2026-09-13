@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 
 	domainmaintenance "github.com/mcuadros/director-engine/domain/taskstoremaintenance"
@@ -84,6 +85,11 @@ func decodeMaintenanceState(document []byte) (domainmaintenance.State, error) {
 func (maintenance *Maintenance) verifyRoot() error {
 	identity, err := exactOwnedDirectory(maintenance.root)
 	if err != nil || identity != maintenance.identity {
+		return ErrMaintenanceUnsafe
+	}
+	backups, backupsErr := exactOwnedDirectory(filepath.Join(maintenance.root, "backups"))
+	manifests, manifestsErr := exactOwnedDirectory(filepath.Join(maintenance.root, "manifests"))
+	if backupsErr != nil || manifestsErr != nil || backups != maintenance.backupsIdentity || manifests != maintenance.manifestsIdentity {
 		return ErrMaintenanceUnsafe
 	}
 	return nil
@@ -195,6 +201,10 @@ func (maintenance *Maintenance) CompareAndSwap(ctx context.Context, expected uin
 			return err
 		}
 		if current.Revision != expected || next.Revision != expected+1 {
+			return ErrMaintenanceUnsafe
+		}
+		if len(next.RecoveryAudit) < len(current.RecoveryAudit) ||
+			!slices.Equal(current.RecoveryAudit, next.RecoveryAudit[:len(current.RecoveryAudit)]) {
 			return ErrMaintenanceUnsafe
 		}
 		return maintenance.writeStateUnlocked(next)

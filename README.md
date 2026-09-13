@@ -254,33 +254,48 @@ names, Task titles, Run numbers, and Candidate SHAs.
 
 The configuration file and any referenced password files must be absolute,
 regular, owner-only files outside repositories. Unknown, duplicate, missing,
-oversized, trailing, or unsupported fields fail closed. The closed version 1
+oversized, trailing, or unsupported fields fail closed. The closed version 2
 shape is:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "storeId": "director-project-store",
+  "authoritySha256": "<bootstrap grant-contract SHA-256>",
+  "privilegeFile": "/absolute/private/director-dolt/privileges.db",
+  "privilegeFileSha256": "<bootstrap privilege-file SHA-256>",
   "control": {
     "address": "127.0.0.1:3307",
     "database": "director",
     "user": "director_control",
+    "principal": "director_control@%",
     "passwordFile": "/absolute/private/dolt-control.password"
   },
   "writer": {
     "address": "127.0.0.1:3307",
     "database": "director",
     "user": "director_writer",
+    "principal": "director_writer@%",
     "passwordFile": "/absolute/private/dolt-writer.password"
+  },
+  "maintenance": {
+    "address": "127.0.0.1:3307",
+    "database": "director",
+    "user": "director_maintenance",
+    "principal": "director_maintenance@%",
+    "passwordFile": "/absolute/private/dolt-maintenance.password"
   }
 }
 ```
 
-`passwordFile` may be `null` only for an explicitly configured passwordless
-owner-local store. Use the supported `bootstrap-taskstore` command in the
-production runbook to initialize and read back the selected database without
-raw SQL. The serving process never guesses or replaces a store; missing
-identity, schema, or connection facts fail startup or the
+Use the supported `bootstrap-taskstore` command in the production runbook to
+initialize the schema, provision and verify three distinct runtime principals,
+and atomically install this private configuration without user-run raw SQL.
+Runtime password files must be non-empty owner-only inputs. A passwordless
+identity is accepted only for the transient owner-local bootstrap connection,
+never by `serve-board`. The serving process never guesses, bootstraps, repairs,
+or replaces a store; missing identity, authority, schema, or connection facts
+fail startup or the
 query closed with a bounded error. An unavailable Repair executor disables
 Repair and fails closed; it never turns a client Preview into an effect. The
 endpoint accepts only the generated
@@ -377,15 +392,18 @@ The engine-owned [`TaskStore` port](engine/ports/taskstore/taskstore.go) exposes
 only typed Project, Task, Run, Candidate, Command, and Event records. It has no
 SQL, connection, credential, database-selection, or Beads surface. The one
 runtime implementation is [`DoltTaskStore`](engine/adapters/dolt/taskstore.go),
-which talks to a separately supervised Dolt 2.3.2 SQL server through private
-control and writer identities.
+which talks to a separately supervised Dolt 2.3.2 SQL server through distinct
+private control, writer, and exact-routine maintenance identities.
 
-`Bootstrap` installs schema version 1 only into an empty, explicitly selected
+`Bootstrap` installs schema version 2 only into an empty, explicitly selected
 database and verifies the complete expected table and guard-trigger sets plus
 the three exact guard seed rows on every later start; a missing or extra
 table/trigger, changed guard row, incomplete or foreign schema, wrong version,
-wrong database, or wrong store fails closed. Before each write the adapter sets
-and reads back the safe global and exact-connection session commit values,
+wrong database, or wrong store fails closed. Supported bootstrap also
+provisions and attests the exact runtime identities and owner-only Dolt
+privilege file without exposing raw SQL. Before each write the adapter sets the
+exact-connection session commit value and reads back both the supervised global
+and session values,
 verifies the database and store identity, then commits the aggregate, immutable
 Command outcome, and Event in one transaction. Mutable aggregates use exact
 expected-version updates. Candidate, Command, and Event identities use
@@ -408,8 +426,17 @@ exclude `DROP` privilege, which also makes `TRUNCATE` unavailable. Its DML
 grants must be table-scoped so `guard_constants`, `parent_guard`, and
 `immutable_write_guard` are read-only: the writer receives `SELECT` but no
 direct `INSERT`, `UPDATE`, or `DELETE` on those three tables. Schema bootstrap
-and migration authority remains a separate engine-only control path and must
+and migration authority remains a separate scoped engine-only control path and must
 never be exposed to agents, connectors, UI, repositories, or prompts.
+
+The maintenance identity has only exact `dolt_backup` routine execution. It has
+no TaskStore read/DDL/grant authority and cannot call another admin-only Dolt
+routine; control and writer cannot invoke backup. No runtime principal receives
+global privilege, `ALL`, `SUPER`, user/role administration, or grant option.
+The transient bootstrap owner is not retained by production. See
+[ADR-0022](docs/adr/0022-least-privilege-taskstore-maintenance.md) and the
+[maintenance runbook](docs/taskstore-maintenance.md) for the privilege-file
+attestation, fixed restore-database scopes, and fresh-empty recovery rule.
 
 All port-facing connection, query, scan, cursor, replay-entry, and schema
 failures are typed as `HealthError` or `SchemaError`. Their bounded codes unwrap

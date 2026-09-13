@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -38,13 +39,15 @@ type LogCompactor interface {
 // exact effects authorized by the application service. Paths, credentials,
 // SQL diagnostics, and filesystem identities never cross this adapter.
 type Maintenance struct {
-	store    *DoltTaskStore
-	root     string
-	identity maintenanceRootIdentity
-	binding  string
-	logs     LogCompactor
-	now      func() time.Time
-	statfs   func(string, *syscall.Statfs_t) error
+	store             *DoltTaskStore
+	root              string
+	identity          maintenanceRootIdentity
+	backupsIdentity   maintenanceRootIdentity
+	manifestsIdentity maintenanceRootIdentity
+	binding           string
+	logs              LogCompactor
+	now               func() time.Time
+	statfs            func(string, *syscall.Statfs_t) error
 }
 
 func maintenanceStoreBinding(store *DoltTaskStore) string {
@@ -88,12 +91,16 @@ func NewMaintenance(store *DoltTaskStore, root string, logs LogCompactor) (*Main
 	if err != nil {
 		return nil, err
 	}
-	for _, child := range []string{"backups", "manifests"} {
-		if _, err := ensurePrivateDirectory(filepath.Join(root, child)); err != nil {
-			return nil, err
-		}
+	backupsIdentity, err := ensurePrivateDirectory(filepath.Join(root, "backups"))
+	if err != nil {
+		return nil, err
 	}
-	maintenance := &Maintenance{store: store, root: root, identity: identity, binding: maintenanceStoreBinding(store), logs: logs, now: time.Now, statfs: syscall.Statfs}
+	manifestsIdentity, err := ensurePrivateDirectory(filepath.Join(root, "manifests"))
+	if err != nil {
+		return nil, err
+	}
+	maintenance := &Maintenance{store: store, root: root, identity: identity, backupsIdentity: backupsIdentity,
+		manifestsIdentity: manifestsIdentity, binding: maintenanceStoreBinding(store), logs: logs, now: time.Now, statfs: syscall.Statfs}
 	if err := maintenance.initializeState(context.Background()); err != nil {
 		return nil, err
 	}
@@ -110,6 +117,15 @@ type backupManifest struct {
 	SHA256            string `json:"sha256"`
 }
 
+type validationReceipt struct {
+	SchemaVersion       string `json:"schemaVersion"`
+	ID                  string `json:"id"`
+	SourceVersion       int    `json:"sourceSchemaVersion"`
+	SourceFingerprint   string `json:"sourceFingerprint"`
+	RestoredFingerprint string `json:"restoredFingerprint"`
+	SHA256              string `json:"sha256"`
+}
+
 func manifestValue(value backupManifest) backupManifest { value.SHA256 = ""; return value }
 
 func manifestSHA(value backupManifest) string {
@@ -122,6 +138,23 @@ func validManifest(value backupManifest) bool {
 	return value.SchemaVersion == "director.taskstore-backup-manifest/v1" && safeIdentifier(value.ID, 128) &&
 		value.SourceVersion > 0 && len(value.SourceFingerprint) == 64 && value.Device != 0 && value.Inode != 0 &&
 		value.SHA256 == manifestSHA(value)
+}
+
+func validationReceiptValue(value validationReceipt) validationReceipt {
+	value.SHA256 = ""
+	return value
+}
+
+func validationReceiptSHA(value validationReceipt) string {
+	document, _ := json.Marshal(validationReceiptValue(value))
+	digest := sha256.Sum256(document)
+	return hex.EncodeToString(digest[:])
+}
+
+func validValidationReceipt(value validationReceipt) bool {
+	return value.SchemaVersion == "director.taskstore-backup-validation/v1" && safeIdentifier(value.ID, 128) &&
+		value.SourceVersion > 0 && len(value.SourceFingerprint) == 64 && value.RestoredFingerprint == value.SourceFingerprint &&
+		value.SHA256 == validationReceiptSHA(value)
 }
 
 func backupPaths(maintenance *Maintenance, id string) (string, string, bool) {
@@ -152,6 +185,31 @@ func readManifest(path string) (backupManifest, error) {
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) || !validManifest(value) {
 		return backupManifest{}, ErrMaintenanceUnsafe
+	}
+	return value, nil
+}
+
+func readValidationReceipt(path string) (validationReceipt, error) {
+	before, err := exactOwnedFile(path, maximumBackupManifestBytes)
+	if err != nil {
+		return validationReceipt{}, err
+	}
+	document, err := os.ReadFile(path)
+	if err != nil {
+		return validationReceipt{}, ErrMaintenanceUnsafe
+	}
+	after, err := exactOwnedFile(path, maximumBackupManifestBytes)
+	if err != nil || !os.SameFile(before, after) || before.Size() != after.Size() || before.ModTime() != after.ModTime() || !json.Valid(document) {
+		return validationReceipt{}, ErrMaintenanceUnsafe
+	}
+	decoder := json.NewDecoder(bytes.NewReader(document))
+	decoder.DisallowUnknownFields()
+	var value validationReceipt
+	if decoder.Decode(&value) != nil {
+		return validationReceipt{}, ErrMaintenanceUnsafe
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) || !validValidationReceipt(value) {
+		return validationReceipt{}, ErrMaintenanceUnsafe
 	}
 	return value, nil
 }
@@ -218,6 +276,26 @@ func hashQuery(ctx context.Context, digest interface{ Write([]byte) (int, error)
 	}
 	if rows.Err() != nil || rows.Close() != nil {
 		return ErrMaintenanceUnsafe
+	}
+	return nil
+}
+
+func hashTriggerMetadata(ctx context.Context, digest interface{ Write([]byte) (int, error) }, connection *sql.Conn) error {
+	triggers, err := schemaTriggers(ctx, connection)
+	if err != nil {
+		return ErrMaintenanceUnsafe
+	}
+	names := make([]string, 0, len(triggers))
+	for name := range triggers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	_, _ = digest.Write([]byte("trigger-digests\x00"))
+	for _, name := range names {
+		_, _ = digest.Write([]byte(name))
+		_, _ = digest.Write([]byte{0})
+		value := triggers[name]
+		_, _ = digest.Write(value[:])
 	}
 	return nil
 }
@@ -335,7 +413,6 @@ func (maintenance *Maintenance) observeOn(ctx context.Context, connection *sql.C
 	queries := []struct{ label, query string }{
 		{"columns", `SELECT table_name,column_name,ordinal_position,column_type,is_nullable,column_key,COALESCE(character_set_name,''),COALESCE(collation_name,'') FROM information_schema.columns WHERE table_schema=DATABASE() ORDER BY table_name,ordinal_position`},
 		{"statistics", `SELECT table_name,index_name,non_unique,seq_in_index,COALESCE(column_name,''),COALESCE(sub_part,0),nullable,COALESCE(expression,'') FROM information_schema.statistics WHERE table_schema=DATABASE() ORDER BY table_name,index_name,seq_in_index`},
-		{"triggers", `SELECT trigger_name,event_manipulation,event_object_table,action_timing,action_statement FROM information_schema.triggers WHERE trigger_schema=DATABASE() ORDER BY trigger_name`},
 		{"branches", `SELECT name,hash FROM dolt_branches ORDER BY name`},
 		{"status", `SELECT table_name,staged,status FROM dolt_status ORDER BY table_name,staged,status`},
 		{"identity", `SELECT singleton,store_id FROM taskstore_identity ORDER BY singleton`},
@@ -345,6 +422,9 @@ func (maintenance *Maintenance) observeOn(ctx context.Context, connection *sql.C
 		if err := hashQuery(ctx, digest, connection, query.label, query.query); err != nil {
 			return domainmaintenance.StoreObservation{}, err
 		}
+	}
+	if err := hashTriggerMetadata(ctx, digest, connection); err != nil {
+		return domainmaintenance.StoreObservation{}, err
 	}
 	tables, err := schemaTables(ctx, connection)
 	if err != nil {
@@ -362,11 +442,29 @@ func (maintenance *Maintenance) observeOn(ctx context.Context, connection *sql.C
 }
 
 func (maintenance *Maintenance) controlConnection(ctx context.Context) (*sql.Conn, error) {
+	if maintenance.store.requireLeastPrivilege && !maintenance.store.verifyPrivilegeAttestation() {
+		return nil, ErrMaintenanceUnsafe
+	}
 	connection, err := maintenance.store.control.Conn(ctx)
 	if err != nil {
 		return nil, ErrMaintenanceUnsafe
 	}
-	if setAndVerifySafeCommitMode(ctx, connection, true) != nil || maintenance.store.verifyStoreIdentity(ctx, connection) != nil {
+	if setAndVerifySafeCommitMode(ctx, connection, false) != nil || maintenance.store.verifyStoreIdentity(ctx, connection) != nil {
+		connection.Close()
+		return nil, ErrMaintenanceUnsafe
+	}
+	return connection, nil
+}
+
+func (maintenance *Maintenance) maintenanceConnection(ctx context.Context) (*sql.Conn, error) {
+	if status, err := maintenance.store.verifyMaintenanceAuthority(ctx); err != nil || !status.Exact {
+		return nil, ErrMaintenanceUnsafe
+	}
+	connection, err := maintenance.store.maintenanceClient.Conn(ctx)
+	if err != nil {
+		return nil, ErrMaintenanceUnsafe
+	}
+	if setAndVerifySafeCommitMode(ctx, connection, false) != nil || maintenance.store.verifyDatabase(ctx, connection) != nil {
 		connection.Close()
 		return nil, ErrMaintenanceUnsafe
 	}
@@ -405,13 +503,140 @@ func (maintenance *Maintenance) ObserveBackup(ctx context.Context, id string) (m
 	}
 	entries, err := os.ReadDir(directory)
 	if err != nil || len(entries) == 0 {
-		return maintenanceport.BackupObservation{Present: true, Source: domainmaintenance.StoreObservation{
-			SchemaVersion: manifest.SourceVersion, Fingerprint: manifest.SourceFingerprint,
+		return maintenanceport.BackupObservation{Present: true, EmptyOwned: err == nil, Source: domainmaintenance.StoreObservation{
+			SchemaVersion: manifest.SourceVersion, Fingerprint: manifest.SourceFingerprint, Exact: true,
 		}}, nil
 	}
 	return maintenanceport.BackupObservation{Present: true, Exact: true, Source: domainmaintenance.StoreObservation{
 		SchemaVersion: manifest.SourceVersion, Fingerprint: manifest.SourceFingerprint, Exact: true,
 	}}, nil
+}
+
+func (maintenance *Maintenance) observeFreshEmptyStore(ctx context.Context) (domainmaintenance.StoreObservation, bool, error) {
+	maintenance.store.maintenance.RLock()
+	defer maintenance.store.maintenance.RUnlock()
+	connection, err := maintenance.controlConnection(ctx)
+	if err != nil {
+		return domainmaintenance.StoreObservation{}, false, err
+	}
+	defer connection.Close()
+	observation, err := maintenance.observeOn(ctx, connection, true)
+	if err != nil || !observation.Exact {
+		return observation, false, ErrMaintenanceUnsafe
+	}
+	counts := make([]uint64, 13)
+	destinations := make([]any, len(counts))
+	for index := range counts {
+		destinations[index] = &counts[index]
+	}
+	err = connection.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM aggregates),
+		(SELECT COUNT(*) FROM candidates),
+		(SELECT COUNT(*) FROM events),
+		(SELECT COUNT(*) FROM command_requests),
+		(SELECT COUNT(*) FROM command_outcomes),
+		(SELECT COUNT(*) FROM aggregates_identity),
+		(SELECT COUNT(*) FROM candidates_identity),
+		(SELECT COUNT(*) FROM events_identity),
+		(SELECT COUNT(*) FROM command_requests_identity),
+		(SELECT COUNT(*) FROM command_outcomes_identity),
+		(SELECT COUNT(*) FROM dolt_log),
+		(SELECT COUNT(*) FROM dolt_branches),
+		(SELECT COUNT(*) FROM dolt_branches WHERE name='main')`).Scan(destinations...)
+	if err != nil {
+		return observation, false, ErrMaintenanceUnsafe
+	}
+	for _, count := range counts[:10] {
+		if count != 0 {
+			return observation, false, nil
+		}
+	}
+	return observation, counts[10] == 1 && counts[11] == 1 && counts[12] == 1, nil
+}
+
+func emptyDirectory(path string, expected backupManifest) bool {
+	identity, err := exactOwnedDirectory(path)
+	if err != nil || identity.device != expected.Device || identity.inode != expected.Inode {
+		return false
+	}
+	entries, err := os.ReadDir(path)
+	return err == nil && len(entries) == 0
+}
+
+func (maintenance *Maintenance) recoveryArtifactObservation(backup domainmaintenance.Backup) (empty, absent bool, manifestDigest string, err error) {
+	directory, manifestPath, ok := backupPaths(maintenance, backup.ID)
+	if !ok || maintenance.verifyRoot() != nil {
+		return false, false, "", ErrMaintenanceUnsafe
+	}
+	quarantine := directory + ".rearm"
+	manifest, manifestErr := readManifest(manifestPath)
+	_, directoryErr := os.Lstat(directory)
+	_, quarantineErr := os.Lstat(quarantine)
+	if errors.Is(manifestErr, os.ErrNotExist) && errors.Is(directoryErr, os.ErrNotExist) && errors.Is(quarantineErr, os.ErrNotExist) {
+		return false, true, "absent", nil
+	}
+	if manifestErr != nil || manifest.ID != backup.ID || manifest.SourceVersion != backup.SourceSchemaVersion ||
+		manifest.SourceFingerprint != backup.SourceFingerprint || !errors.Is(quarantineErr, os.ErrNotExist) {
+		return false, false, "", nil
+	}
+	return directoryErr == nil && emptyDirectory(directory, manifest), false, manifest.SHA256, nil
+}
+
+func backupRecoveryEvidence(backup domainmaintenance.Backup, store domainmaintenance.StoreObservation, fresh, empty, absent, authority bool, authoritySHA, manifestSHA string) string {
+	return authorityDigest(backup.ID, backup.SourceFingerprint, store.Fingerprint,
+		strconv.FormatBool(fresh), strconv.FormatBool(empty), strconv.FormatBool(absent), strconv.FormatBool(authority), authoritySHA, manifestSHA)
+}
+
+func (maintenance *Maintenance) ObserveBackupRecovery(ctx context.Context, backup domainmaintenance.Backup) (maintenanceport.BackupRecoveryObservation, error) {
+	if err := ctx.Err(); err != nil {
+		return maintenanceport.BackupRecoveryObservation{}, err
+	}
+	store, fresh, err := maintenance.observeFreshEmptyStore(ctx)
+	if err != nil {
+		return maintenanceport.BackupRecoveryObservation{}, err
+	}
+	empty, absent, manifestSHA, err := maintenance.recoveryArtifactObservation(backup)
+	if err != nil {
+		return maintenanceport.BackupRecoveryObservation{}, err
+	}
+	authority, authorityErr := maintenance.store.verifyMaintenanceAuthority(ctx)
+	if authorityErr != nil && authority.Code == AuthorityUnavailable {
+		return maintenanceport.BackupRecoveryObservation{}, ErrMaintenanceUnsafe
+	}
+	authorityExact := maintenance.store.requireLeastPrivilege && authority.Exact && authority.Code == AuthorityCurrent
+	result := maintenanceport.BackupRecoveryObservation{
+		Store: store, FreshEmptyStore: fresh, EmptyOwnedArtifact: empty, ArtifactAbsentExact: absent,
+		MaintenanceAuthority: authorityExact,
+	}
+	result.EvidenceSHA256 = backupRecoveryEvidence(backup, store, fresh, empty, absent, authorityExact, authority.SHA256, manifestSHA)
+	return result, nil
+}
+
+func (maintenance *Maintenance) RearmBackup(ctx context.Context, backup domainmaintenance.Backup, evidenceSHA256 string) error {
+	if backup.Phase != domainmaintenance.BackupRearmDispatching || len(evidenceSHA256) != 64 {
+		return ErrMaintenanceUnsafe
+	}
+	return maintenance.withStateLock(ctx, func() error {
+		observation, err := maintenance.ObserveBackupRecovery(ctx, backup)
+		if err != nil || !observation.FreshEmptyStore || !observation.MaintenanceAuthority ||
+			(!observation.EmptyOwnedArtifact && !observation.ArtifactAbsentExact) || observation.EvidenceSHA256 != evidenceSHA256 {
+			return ErrMaintenanceUnsafe
+		}
+		directory, _, ok := backupPaths(maintenance, backup.ID)
+		if !ok {
+			return ErrMaintenanceUnsafe
+		}
+		remote := (&url.URL{Scheme: "file", Path: directory}).String()
+		connection, err := maintenance.maintenanceConnection(ctx)
+		if err != nil {
+			return err
+		}
+		defer connection.Close()
+		if _, err := connection.ExecContext(ctx, `CALL DOLT_BACKUP('sync-url', ?)`, remote); err != nil {
+			return ErrMaintenanceUnsafe
+		}
+		return nil
+	})
 }
 
 func (maintenance *Maintenance) CreateBackup(ctx context.Context, backup domainmaintenance.Backup) (maintenanceport.BackupResult, error) {
@@ -454,7 +679,12 @@ func (maintenance *Maintenance) CreateBackup(ctx context.Context, backup domainm
 		return maintenanceport.BackupResult{}, err
 	}
 	remote := (&url.URL{Scheme: "file", Path: directory}).String()
-	if _, err := connection.ExecContext(ctx, `CALL DOLT_BACKUP('sync-url', ?)`, remote); err != nil {
+	maintenanceConnection, err := maintenance.maintenanceConnection(ctx)
+	if err != nil {
+		return maintenanceport.BackupResult{}, err
+	}
+	defer maintenanceConnection.Close()
+	if _, err := maintenanceConnection.ExecContext(ctx, `CALL DOLT_BACKUP('sync-url', ?)`, remote); err != nil {
 		return maintenanceport.BackupResult{}, ErrMaintenanceUnsafe
 	}
 	return maintenanceport.BackupResult{Source: source}, nil
@@ -463,11 +693,6 @@ func (maintenance *Maintenance) CreateBackup(ctx context.Context, backup domainm
 func backupMatchesManifest(observation maintenanceport.BackupObservation, backup domainmaintenance.Backup) bool {
 	return observation.Present && observation.Exact && observation.Source.Exact &&
 		observation.Source.SchemaVersion == backup.SourceSchemaVersion && observation.Source.Fingerprint == backup.SourceFingerprint
-}
-
-func generatedDatabase(prefix, id string) string {
-	digest := sha256.Sum256([]byte(prefix + "\x1f" + id))
-	return prefix + "_" + hex.EncodeToString(digest[:16])
 }
 
 func quoteDatabase(value string) string { return "`" + value + "`" }
@@ -489,18 +714,30 @@ func (maintenance *Maintenance) restoreAndObserve(ctx context.Context, backup do
 	if err != nil {
 		return domainmaintenance.StoreObservation{}, err
 	}
-	defer connection.Close()
 	exists, err := databaseExists(ctx, connection, database)
 	if err != nil {
+		connection.Close()
 		return domainmaintenance.StoreObservation{}, err
 	}
+	connection.Close()
 	if !exists {
 		directory, _, _ := backupPaths(maintenance, backup.ID)
 		remote := (&url.URL{Scheme: "file", Path: directory}).String()
-		if _, err := connection.ExecContext(ctx, `CALL DOLT_BACKUP('restore', ?, ?)`, remote, database); err != nil {
+		maintenanceConnection, err := maintenance.maintenanceConnection(ctx)
+		if err != nil {
+			return domainmaintenance.StoreObservation{}, err
+		}
+		_, restoreErr := maintenanceConnection.ExecContext(ctx, `CALL DOLT_BACKUP('restore', ?, ?)`, remote, database)
+		closeErr := maintenanceConnection.Close()
+		if restoreErr != nil || closeErr != nil {
 			return domainmaintenance.StoreObservation{}, ErrMaintenanceUnsafe
 		}
 	}
+	connection, err = maintenance.controlConnection(ctx)
+	if err != nil {
+		return domainmaintenance.StoreObservation{}, err
+	}
+	defer connection.Close()
 	if _, err := connection.ExecContext(ctx, `USE `+quoteDatabase(database)); err != nil {
 		return domainmaintenance.StoreObservation{}, ErrMaintenanceUnsafe
 	}
@@ -510,26 +747,74 @@ func (maintenance *Maintenance) restoreAndObserve(ctx context.Context, backup do
 			observeErr = ErrMaintenanceUnsafe
 		}
 	}
-	if _, err := connection.ExecContext(ctx, `USE `+quoteDatabase(maintenance.store.database)); err != nil {
-		return domainmaintenance.StoreObservation{}, ErrMaintenanceUnsafe
-	}
 	if observeErr != nil || !restored.Exact || restored.SchemaVersion != backup.SourceSchemaVersion || restored.Fingerprint != backup.SourceFingerprint {
 		return restored, ErrMaintenanceUnsafe
 	}
 	if !keep {
+		// Dolt 2.3.2 authorizes DROP DATABASE against the current database
+		// rather than the explicitly named target. Keep the exact validation
+		// database selected until this bounded cleanup completes.
 		if _, err := connection.ExecContext(ctx, `DROP DATABASE `+quoteDatabase(database)); err != nil {
 			return restored, ErrMaintenanceUnsafe
 		}
+	}
+	// A sql.Conn returns to the shared control pool on Close. Restore the exact
+	// source binding after cleanup (or retained recovery inspection) so a later
+	// borrower never inherits a dropped or recovery database.
+	if _, err := connection.ExecContext(ctx, `USE `+quoteDatabase(maintenance.store.database)); err != nil {
+		return restored, ErrMaintenanceUnsafe
 	}
 	return restored, nil
 }
 
 func (maintenance *Maintenance) ValidateBackup(ctx context.Context, backup domainmaintenance.Backup) (maintenanceport.ValidationResult, error) {
-	database := generatedDatabase("director_validate", backup.ID)
-	restored, err := maintenance.restoreAndObserve(ctx, backup, database, false)
-	return maintenanceport.ValidationResult{Source: domainmaintenance.StoreObservation{
-		SchemaVersion: backup.SourceSchemaVersion, Fingerprint: backup.SourceFingerprint, Exact: err == nil,
-	}, RestoredFingerprint: restored.Fingerprint}, err
+	var result maintenanceport.ValidationResult
+	err := maintenance.withStateLock(ctx, func() error {
+		_, manifestPath, ok := backupPaths(maintenance, backup.ID)
+		if !ok {
+			return ErrMaintenanceUnsafe
+		}
+		receiptPath := strings.TrimSuffix(manifestPath, ".json") + ".validated.json"
+		receipt, receiptErr := readValidationReceipt(receiptPath)
+		if receiptErr == nil {
+			if receipt.ID != backup.ID || receipt.SourceVersion != backup.SourceSchemaVersion ||
+				receipt.SourceFingerprint != backup.SourceFingerprint {
+				return ErrMaintenanceUnsafe
+			}
+			result = maintenanceport.ValidationResult{Source: domainmaintenance.StoreObservation{
+				SchemaVersion: receipt.SourceVersion, Fingerprint: receipt.SourceFingerprint, Exact: true,
+			}, RestoredFingerprint: receipt.RestoredFingerprint}
+			return nil
+		}
+		if !errors.Is(receiptErr, os.ErrNotExist) {
+			return ErrMaintenanceUnsafe
+		}
+		database, _, nameErr := MaintenanceDatabaseNames(maintenance.store.storeID)
+		if nameErr != nil {
+			return ErrMaintenanceUnsafe
+		}
+		restored, restoreErr := maintenance.restoreAndObserve(ctx, backup, database, false)
+		if restoreErr != nil {
+			return restoreErr
+		}
+		receipt = validationReceipt{SchemaVersion: "director.taskstore-backup-validation/v1", ID: backup.ID,
+			SourceVersion: backup.SourceSchemaVersion, SourceFingerprint: backup.SourceFingerprint,
+			RestoredFingerprint: restored.Fingerprint}
+		receipt.SHA256 = validationReceiptSHA(receipt)
+		if writeExclusivePrivate(receiptPath, receipt) != nil {
+			return ErrMaintenanceUnsafe
+		}
+		result = maintenanceport.ValidationResult{Source: domainmaintenance.StoreObservation{
+			SchemaVersion: backup.SourceSchemaVersion, Fingerprint: backup.SourceFingerprint, Exact: true,
+		}, RestoredFingerprint: restored.Fingerprint}
+		return nil
+	})
+	if err != nil {
+		return maintenanceport.ValidationResult{Source: domainmaintenance.StoreObservation{
+			SchemaVersion: backup.SourceSchemaVersion, Fingerprint: backup.SourceFingerprint,
+		}}, err
+	}
+	return result, nil
 }
 
 func (maintenance *Maintenance) currentProjects(ctx context.Context, connection *sql.Conn) ([]domain.Project, error) {
@@ -960,7 +1245,10 @@ func (maintenance *Maintenance) ApplyMigration(ctx context.Context, migration do
 }
 
 func (maintenance *Maintenance) RestoreBackup(ctx context.Context, migration domainmaintenance.Migration, backup domainmaintenance.Backup) (maintenanceport.RestoreResult, error) {
-	database := generatedDatabase("director_recovery", migration.ID+"\x1f"+backup.ID)
+	_, database, nameErr := MaintenanceDatabaseNames(maintenance.store.storeID)
+	if nameErr != nil {
+		return maintenanceport.RestoreResult{}, ErrMaintenanceUnsafe
+	}
 	restored, err := maintenance.restoreAndObserve(ctx, backup, database, true)
 	return maintenanceport.RestoreResult{Fingerprint: restored.Fingerprint}, err
 }
@@ -990,6 +1278,16 @@ func (maintenance *Maintenance) ExpireBackup(ctx context.Context, backup domainm
 	if err != nil {
 		return ErrMaintenanceUnsafe
 	}
+	receiptPath := strings.TrimSuffix(manifestPath, ".json") + ".validated.json"
+	receipt, receiptErr := readValidationReceipt(receiptPath)
+	if receiptErr == nil {
+		if receipt.ID != backup.ID || receipt.SourceVersion != backup.SourceSchemaVersion ||
+			receipt.SourceFingerprint != backup.SourceFingerprint || receipt.RestoredFingerprint != backup.SourceFingerprint {
+			return ErrMaintenanceUnsafe
+		}
+	} else if !errors.Is(receiptErr, os.ErrNotExist) {
+		return ErrMaintenanceUnsafe
+	}
 	identity, err := exactOwnedDirectory(directory)
 	if errors.Is(err, os.ErrNotExist) {
 		quarantine := directory + ".expired"
@@ -1003,6 +1301,9 @@ func (maintenance *Maintenance) ExpireBackup(ctx context.Context, backup domainm
 			return ErrMaintenanceUnsafe
 		}
 		if os.Remove(manifestPath) != nil {
+			return ErrMaintenanceUnsafe
+		}
+		if receiptErr == nil && os.Remove(receiptPath) != nil {
 			return ErrMaintenanceUnsafe
 		}
 		return syncDirectory(filepath.Dir(manifestPath))
@@ -1022,7 +1323,13 @@ func (maintenance *Maintenance) ExpireBackup(ctx context.Context, backup domainm
 	if err != nil || quarantined.device != manifest.Device || quarantined.inode != manifest.Inode {
 		return ErrMaintenanceUnsafe
 	}
-	if os.RemoveAll(quarantine) != nil || os.Remove(manifestPath) != nil || syncDirectory(filepath.Dir(manifestPath)) != nil {
+	if os.RemoveAll(quarantine) != nil || os.Remove(manifestPath) != nil {
+		return ErrMaintenanceUnsafe
+	}
+	if receiptErr == nil && os.Remove(receiptPath) != nil {
+		return ErrMaintenanceUnsafe
+	}
+	if syncDirectory(filepath.Dir(manifestPath)) != nil {
 		return ErrMaintenanceUnsafe
 	}
 	return nil

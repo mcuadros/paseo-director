@@ -131,6 +131,75 @@ func backupMatches(observation maintenanceport.BackupObservation, backup domainm
 		observation.Source.SchemaVersion == backup.SourceSchemaVersion && observation.Source.Fingerprint == backup.SourceFingerprint
 }
 
+func validRecoveryEvidence(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func recoveryObservationMatches(observation maintenanceport.BackupRecoveryObservation, backup domainmaintenance.Backup) bool {
+	return observation.FreshEmptyStore && observation.MaintenanceAuthority && validRecoveryEvidence(observation.EvidenceSHA256) &&
+		domainmaintenance.ValidStoreObservation(observation.Store) && observation.Store.SchemaVersion == backup.SourceSchemaVersion &&
+		observation.Store.Fingerprint == backup.SourceFingerprint
+}
+
+func recoverableFirstBackup(state domainmaintenance.State, backup domainmaintenance.Backup) bool {
+	if backup.Purpose != domainmaintenance.BackupDaily || state.Migration != nil || len(state.Backups) != 1 {
+		return false
+	}
+	if backup.Phase == domainmaintenance.BackupNeedsYou {
+		return backup.Attempt == 1 && backup.NeedsYouCode == "backup_handoff_ambiguous" && backup.RecoveryAttempt < 2 &&
+			(backup.RecoveryAttempt == 0 || validRecoveryEvidence(backup.RecoveryEvidenceSHA))
+	}
+	return backup.Phase == domainmaintenance.BackupRearmDispatching && backup.Attempt == 1 && backup.NeedsYouCode == "" &&
+		backup.RecoveryAttempt > 0 && backup.RecoveryAttempt <= 2 && validRecoveryEvidence(backup.RecoveryEvidenceSHA)
+}
+
+func appendRecoveryAudit(state *domainmaintenance.State, backup domainmaintenance.Backup, code domainmaintenance.RecoveryAuditCode, nowMillis int64) bool {
+	return domainmaintenance.AppendRecoveryAudit(state, backup.ID, code, backup.RecoveryAttempt, nowMillis, backup.RecoveryEvidenceSHA)
+}
+
+func (service *Service) completeRearm(ctx context.Context, state domainmaintenance.State, backup domainmaintenance.Backup, nowMillis int64) (domainmaintenance.State, error) {
+	backup.Phase = domainmaintenance.BackupValidationRequired
+	backup.Attempt = 2
+	backup.NeedsYouCode = ""
+	next := state
+	if !replaceBackup(&next, backup) || !appendRecoveryAudit(&next, backup, domainmaintenance.RecoveryRearmCompleted, nowMillis) {
+		return state, ErrInvalidState
+	}
+	return service.save(ctx, state, next)
+}
+
+func (service *Service) refuseRearm(ctx context.Context, state domainmaintenance.State, backup domainmaintenance.Backup, code string, nowMillis int64) (domainmaintenance.State, error) {
+	backup.Phase, backup.NeedsYouCode = domainmaintenance.BackupNeedsYou, code
+	next := state
+	if !replaceBackup(&next, backup) || !appendRecoveryAudit(&next, backup, domainmaintenance.RecoveryRearmRefused, nowMillis) {
+		return state, ErrInvalidState
+	}
+	updated, err := service.save(ctx, state, next)
+	if err != nil {
+		return state, err
+	}
+	return updated, ErrNeedsYou
+}
+
+func (service *Service) dispatchRearm(ctx context.Context, state domainmaintenance.State, backup domainmaintenance.Backup, nowMillis int64) (domainmaintenance.State, error) {
+	handoffErr := service.backend.RearmBackup(ctx, backup, backup.RecoveryEvidenceSHA)
+	artifact, observationErr := service.backend.ObserveBackup(ctx, backup.ID)
+	if observationErr != nil {
+		return state, externalFailure(ctx)
+	}
+	if backupMatches(artifact, backup) {
+		return service.completeRearm(ctx, state, backup, nowMillis)
+	}
+	if handoffErr != nil && artifact.Present && artifact.EmptyOwned && !artifact.Exact {
+		return service.refuseRearm(ctx, state, backup, "backup_handoff_ambiguous", nowMillis)
+	}
+	return service.refuseRearm(ctx, state, backup, "backup_rearm_handoff_ambiguous", nowMillis)
+}
+
 func (service *Service) reconcileBackup(ctx context.Context, state domainmaintenance.State, backupID string, nowMillis int64) (domainmaintenance.State, error) {
 	for steps := 0; steps < 12; steps++ {
 		index := domainmaintenance.BackupIndex(state, backupID)
@@ -138,17 +207,84 @@ func (service *Service) reconcileBackup(ctx context.Context, state domainmainten
 			return state, ErrInvalidState
 		}
 		backup := state.Backups[index]
+		var err error
 		switch backup.Phase {
 		case domainmaintenance.BackupValidated:
 			return state, nil
 		case domainmaintenance.BackupNeedsYou:
-			return state, ErrNeedsYou
+			if !recoverableFirstBackup(state, backup) {
+				return state, ErrNeedsYou
+			}
+			observation, observationErr := service.backend.ObserveBackupRecovery(ctx, backup)
+			if observationErr != nil {
+				return state, externalFailure(ctx)
+			}
+			if !recoveryObservationMatches(observation, backup) || !observation.EmptyOwnedArtifact || observation.ArtifactAbsentExact {
+				return state, ErrNeedsYou
+			}
+			backup.Phase, backup.NeedsYouCode = domainmaintenance.BackupRearmDispatching, ""
+			backup.RecoveryAttempt++
+			backup.RecoveryEvidenceSHA = observation.EvidenceSHA256
+			next := state
+			auditCode := domainmaintenance.RecoveryRearmAuthorized
+			if backup.RecoveryAttempt > 1 {
+				auditCode = domainmaintenance.RecoveryRearmRetryAuthorized
+			}
+			if !replaceBackup(&next, backup) || !appendRecoveryAudit(&next, backup, auditCode, nowMillis) {
+				return state, ErrInvalidState
+			}
+			state, err = service.save(ctx, state, next)
+			if err != nil {
+				return state, err
+			}
+			state, err = service.dispatchRearm(ctx, state, backup, nowMillis)
+			if err != nil {
+				return state, err
+			}
+		case domainmaintenance.BackupRearmDispatching:
+			if !recoverableFirstBackup(state, backup) {
+				return state, ErrNeedsYou
+			}
+			artifact, artifactErr := service.backend.ObserveBackup(ctx, backup.ID)
+			if artifactErr != nil {
+				return state, externalFailure(ctx)
+			}
+			if backupMatches(artifact, backup) {
+				state, err = service.completeRearm(ctx, state, backup, nowMillis)
+				if err != nil {
+					return state, err
+				}
+				continue
+			}
+			observation, observationErr := service.backend.ObserveBackupRecovery(ctx, backup)
+			if observationErr != nil {
+				return state, externalFailure(ctx)
+			}
+			if !recoveryObservationMatches(observation, backup) || !observation.EmptyOwnedArtifact {
+				return service.refuseRearm(ctx, state, backup, "backup_rearm_handoff_ambiguous", nowMillis)
+			}
+			if backup.RecoveryAttempt >= 2 {
+				return service.refuseRearm(ctx, state, backup, "backup_rearm_retry_exhausted", nowMillis)
+			}
+			backup.RecoveryAttempt++
+			backup.RecoveryEvidenceSHA = observation.EvidenceSHA256
+			next := state
+			if !replaceBackup(&next, backup) || !appendRecoveryAudit(&next, backup, domainmaintenance.RecoveryRearmRetryAuthorized, nowMillis) {
+				return state, ErrInvalidState
+			}
+			state, err = service.save(ctx, state, next)
+			if err != nil {
+				return state, err
+			}
+			state, err = service.dispatchRearm(ctx, state, backup, nowMillis)
+			if err != nil {
+				return state, err
+			}
 		case domainmaintenance.BackupIntentRecorded:
 			backup.Phase = domainmaintenance.BackupDispatching
 			backup.Attempt++
 			next := state
 			replaceBackup(&next, backup)
-			var err error
 			state, err = service.save(ctx, state, next)
 			if err != nil {
 				return state, err
@@ -173,6 +309,9 @@ func (service *Service) reconcileBackup(ctx context.Context, state domainmainten
 			if err != nil {
 				return state, err
 			}
+			if backup.Phase == domainmaintenance.BackupNeedsYou {
+				return state, ErrNeedsYou
+			}
 		case domainmaintenance.BackupDispatching:
 			observation, err := service.backend.ObserveBackup(ctx, backup.ID)
 			if err != nil {
@@ -192,9 +331,50 @@ func (service *Service) reconcileBackup(ctx context.Context, state domainmainten
 			if err != nil {
 				return state, err
 			}
+			if backup.Phase == domainmaintenance.BackupNeedsYou {
+				return state, ErrNeedsYou
+			}
 		case domainmaintenance.BackupValidationRequired:
-			validated, err := service.backend.ValidateBackup(ctx, backup)
-			if err != nil || !domainmaintenance.ValidStoreObservation(validated.Source) ||
+			if backup.ValidationAttempt >= 2 {
+				backup.Phase, backup.NeedsYouCode = domainmaintenance.BackupNeedsYou, "backup_restore_validation_failed"
+				next := state
+				replaceBackup(&next, backup)
+				state, err = service.save(ctx, state, next)
+				if err != nil {
+					return state, err
+				}
+				return state, ErrNeedsYou
+			}
+			backup.ValidationAttempt++
+			backup.Phase = domainmaintenance.BackupValidationDispatching
+			next := state
+			replaceBackup(&next, backup)
+			state, err = service.save(ctx, state, next)
+			if err != nil {
+				return state, err
+			}
+			fallthrough
+		case domainmaintenance.BackupValidationDispatching:
+			backup = state.Backups[domainmaintenance.BackupIndex(state, backupID)]
+			validated, validationErr := service.backend.ValidateBackup(ctx, backup)
+			if validationErr != nil {
+				if backup.ValidationAttempt >= 2 {
+					backup.Phase, backup.NeedsYouCode = domainmaintenance.BackupNeedsYou, "backup_restore_validation_failed"
+				} else {
+					backup.Phase = domainmaintenance.BackupValidationRequired
+				}
+				next := state
+				replaceBackup(&next, backup)
+				state, err = service.save(ctx, state, next)
+				if err != nil {
+					return state, err
+				}
+				if backup.Phase == domainmaintenance.BackupNeedsYou {
+					return state, ErrNeedsYou
+				}
+				return state, externalFailure(ctx)
+			}
+			if !domainmaintenance.ValidStoreObservation(validated.Source) ||
 				validated.Source.SchemaVersion != backup.SourceSchemaVersion || validated.Source.Fingerprint != backup.SourceFingerprint ||
 				validated.RestoredFingerprint != backup.SourceFingerprint {
 				backup.Phase = domainmaintenance.BackupNeedsYou
@@ -206,6 +386,10 @@ func (service *Service) reconcileBackup(ctx context.Context, state domainmainten
 			}
 			next := state
 			replaceBackup(&next, backup)
+			if backup.Phase == domainmaintenance.BackupValidated && backup.RecoveryAttempt > 0 &&
+				!appendRecoveryAudit(&next, backup, domainmaintenance.RecoveryBackupValidated, nowMillis) {
+				return state, ErrInvalidState
+			}
 			state, err = service.save(ctx, state, next)
 			if err != nil {
 				return state, err
@@ -215,6 +399,18 @@ func (service *Service) reconcileBackup(ctx context.Context, state domainmainten
 		}
 	}
 	return state, ErrInvalidState
+}
+
+func pendingDailyBackup(state domainmaintenance.State) (string, bool) {
+	for index := len(state.Backups) - 1; index >= 0; index-- {
+		backup := state.Backups[index]
+		if backup.Purpose != domainmaintenance.BackupDaily || backup.Phase == domainmaintenance.BackupValidated ||
+			backup.Phase == domainmaintenance.BackupExpired || backup.Phase == domainmaintenance.BackupExpiryDispatching {
+			continue
+		}
+		return backup.ID, true
+	}
+	return "", false
 }
 
 func (service *Service) beginBackup(ctx context.Context, state domainmaintenance.State, command Command, purpose domainmaintenance.BackupPurpose, migrationID string, source domainmaintenance.StoreObservation) (domainmaintenance.State, string, error) {
@@ -253,6 +449,10 @@ func (service *Service) ReconcileDaily(ctx context.Context, command Command) (Re
 	}
 	if !domainmaintenance.DailyBackupDue(state, command.NowMillis) {
 		return Result{State: state}, nil
+	}
+	if id, ok := pendingDailyBackup(state); ok {
+		state, err = service.reconcileBackup(ctx, state, id, command.NowMillis)
+		return Result{State: state, Progressed: err == nil}, err
 	}
 	source, err := service.backend.ObserveStore(ctx)
 	if err != nil || !domainmaintenance.ValidStoreObservation(source) {
@@ -359,6 +559,9 @@ func (service *Service) Migrate(ctx context.Context, command MigrationCommand) (
 			}
 			state, err = service.reconcileBackup(ctx, state, migration.BackupID, command.NowMillis)
 			if err != nil {
+				if errors.Is(err, ErrExternalUnavailable) || errors.Is(err, ErrConcurrentTransition) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return Result{State: state, Progressed: true}, err
+				}
 				migration = *state.Migration
 				migration.Phase, migration.NeedsYouCode = domainmaintenance.MigrationNeedsYou, "migration_backup_validation_failed"
 				next = state

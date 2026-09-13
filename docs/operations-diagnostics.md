@@ -72,6 +72,14 @@ state machine documented in [TaskStore maintenance](taskstore-maintenance.md).
 Its recurring failures reuse the bounded `taskstore_unhealthy` technical-log
 code. Below the fixed free-space floor, maintenance appends no diagnostic log:
 bounded cleanup runs first and a continuing violation consumes no more disk.
+Production bootstrap and startup additionally use only the closed
+`taskstore_authority_*` codes for configuration, principal, grant, attestation,
+or availability failure. Those codes contain no user, grant text, SQL,
+credential, privilege-file location, backup path, or raw Dolt output. A failed
+denied-first-backup recovery remains `backup_handoff_ambiguous` unless every
+fresh-empty and exact-artifact predicate passes; successful automatic recovery
+is visible only through the private chained maintenance audit and normal
+validated-backup health.
 
 ## Structured audit
 
