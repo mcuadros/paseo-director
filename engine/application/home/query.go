@@ -139,9 +139,13 @@ func (source *StaticSource) Observe(ctx context.Context, requested string, proje
 			observation.GitSync = SyncNotConfigured
 			observation.GitSyncDetail = homeport.SyncStreamObservation{State: homeport.SyncNotConfigured,
 				Reason: homeport.SyncReasonNotConfigured, ObservedAtMillis: source.now(), Retryable: false}
-			observation.TaskStoreSync = SyncCurrent
-			observation.TaskStoreSyncDetail = homeport.SyncStreamObservation{State: homeport.SyncCurrent,
-				Reason: homeport.SyncReasonAligned, ObservedAtMillis: source.now(), LastSuccessAtMillis: source.now(), Retryable: false}
+			// StaticSource has no remote TaskStore revision observer. Reporting
+			// current/aligned here would require two exact fingerprints and would
+			// fabricate synchronization health, so the local-only stream is
+			// explicitly not configured until a real observer is installed.
+			observation.TaskStoreSync = SyncNotConfigured
+			observation.TaskStoreSyncDetail = homeport.SyncStreamObservation{State: homeport.SyncNotConfigured,
+				Reason: homeport.SyncReasonNotConfigured, ObservedAtMillis: source.now(), Retryable: false}
 			observation.SyncObservedAtMillis = source.now()
 			observation.SyncMaximumAgeMillis = HostObservationMaximumAgeMillis
 			observation.Reconciliation = homeport.ReconciliationObservation{State: homeport.ReconciliationCurrent,
@@ -211,51 +215,6 @@ func decodeCursor(raw *string, hostID, instanceID string, snapshot uint64, total
 		return 0, ErrCursorInvalid
 	}
 	return value.Offset, nil
-}
-
-func validObservation(value HostObservation, requested string, projectIDs []string, now int64) bool {
-	if value.HostID != requested || !boundedHomeText(value.Label, 512) || !boundedHomeText(value.InstanceID, 128) || value.ObservedAtMillis < 0 ||
-		value.ObservedAtMillis > now || value.MaximumAgeMillis <= 0 || value.MaximumAgeMillis > HostObservationMaximumAgeMillis ||
-		(value.State != "current" && value.State != "degraded" && value.State != "disconnected" && value.State != "stale") {
-		return false
-	}
-	if len(value.Projects) != len(projectIDs) {
-		return false
-	}
-	for _, projectID := range projectIDs {
-		project, ok := value.Projects[projectID]
-		if !ok || !validSyncStream(project.GitSync) || !validSyncStream(project.TaskStoreSync) || project.SyncObservedAtMillis < 0 || project.SyncObservedAtMillis > now ||
-			(project.SyncObservedAtMillis == 0 && project.SyncMaximumAgeMillis != 0) ||
-			(project.SyncObservedAtMillis > 0 && (project.SyncMaximumAgeMillis <= 0 || project.SyncMaximumAgeMillis > 5*60*1000)) {
-			return false
-		}
-		if (project.GitSyncDetail.State != "" && !validSyncDetail(project.GitSyncDetail, now)) ||
-			(project.TaskStoreSyncDetail.State != "" && !validSyncDetail(project.TaskStoreSyncDetail, now)) ||
-			(project.Reconciliation.State != "" && !validReconciliation(project.Reconciliation, now)) {
-			return false
-		}
-		for _, entry := range project.TechnicalLogs {
-			if !validLog(entry, now) {
-				return false
-			}
-		}
-		for _, workspace := range project.Workspaces {
-			if workspace.Health != "healthy" && workspace.Health != "degraded" && workspace.Health != "disconnected" && workspace.Health != "stale" && workspace.Health != "unknown" {
-				return false
-			}
-		}
-		seenCapabilities := make(map[homeport.PreflightCapability]struct{}, len(project.Preflight))
-		for _, preflight := range project.Preflight {
-			if !validPreflightCapability(preflight.Capability) || !validPreflightState(preflight.State) {
-				return false
-			}
-			if _, duplicate := seenCapabilities[preflight.Capability]; duplicate {
-				return false
-			}
-			seenCapabilities[preflight.Capability] = struct{}{}
-		}
-	}
-	return true
 }
 
 func validPreflightCapability(value homeport.PreflightCapability) bool {
@@ -723,8 +682,8 @@ func (reader *Reader) Query(ctx context.Context, input planningport.HomeQueryInp
 			return planningport.HomeSnapshot{}, err
 		}
 		now := reader.now()
-		if !validObservation(host, input.HostID, projectIDs, now) {
-			return planningport.HomeSnapshot{}, ErrHostFacts
+		if err := validateObservation(host, input.HostID, projectIDs, now); err != nil {
+			return planningport.HomeSnapshot{}, err
 		}
 		offset, err := decodeCursor(input.Cursor, host.HostID, host.InstanceID, before, len(projects))
 		if err != nil {

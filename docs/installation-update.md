@@ -100,8 +100,11 @@ and preserves persistent data and verified caches.
 
 Success requires plugin status `running` and the latest bounded log record
 `code=DIRECTOR_ACTIVATION_READY`, `result=running-current`, the expected exact
-connector commit, Engine/Dolt release identities, and current supervisor
-binding. A full Paseo restart or machine reboot is neither a supported
+connector commit, Engine/Dolt release identities, current supervisor binding,
+and positive distinct Engine and Dolt process identities. A supervisor that is
+merely present, reports `degraded`, has another binding, or has not proved both
+owned children emits its deepest `DIRECTOR_RUNTIME_*` code and never reports
+ready. A full Paseo restart or machine reboot is neither a supported
 activation step nor a troubleshooting remedy, and reload does not stop
 unrelated agents or workspaces.
 
@@ -144,12 +147,27 @@ After correcting the channel with a new reviewed fast-forward commit, rerun
 `paseo plugin update director`. After correcting a transient runtime condition,
 run `paseo plugin reload director`; repeating reload is safe. To deliberately roll back, first record the
 current commit and confirm external state is healthy, then remove the connector
-and install a previously reviewed immutable tag or exact commit:
+and verify the public registration is absent before installing a previously
+reviewed immutable tag or exact commit. Paseo 0.7.2 can leave the registration
+behind after the first successful removal, so issue the same public, name-based
+removal a bounded second time:
 
 ```text
-paseo plugin remove director
+paseo plugin remove director --json
+paseo plugin ls --json
+# Only if the director entry remains:
+paseo plugin remove director --json
+paseo plugin ls --json
 paseo plugin add mcuadros/paseo-director --ref <reviewed-tag-or-commit>
 ```
+
+Run the second remove only when the first `plugin ls` still contains
+`director`; a repeated rollback therefore does not turn an already-absent
+plugin into an error. For either remove, stop on any other error. Run `add`
+only when the following `plugin ls` contains no `director` entry. If the entry
+remains after two removes, stop and keep the preserved data untouched; do not
+use a private identifier, edit Paseo state, or delete Director data to force
+reinstall.
 
 This replaces only Paseo's managed connector checkout. The XDG release cache,
 managed TaskStore, Organizer,
@@ -159,7 +177,8 @@ deleting or overwriting them.
 
 For pre-load or activation failure, use `paseo plugin ls --json` and
 `paseo plugin logs director --json`. `DIRECTOR_RUNTIME_RELEASE_UNPUBLISHED`,
-`DIRECTOR_RUNTIME_EXTERNAL_OWNER`, `ENGINE_INSTALL_NOT_PREPARED`, and
+`DIRECTOR_RUNTIME_EXTERNAL_OWNER`, `DIRECTOR_RUNTIME_CHILDREN_NOT_READY`,
+`DIRECTOR_RUNTIME_BINDING_MISMATCH`, `ENGINE_INSTALL_NOT_PREPARED`, and
 `DIRECTOR_ACTIVATION_FAILED` are bounded path-free causes. Correct the release
 or runtime condition, then invoke only the public plugin-scoped
 reload/update command. Director Home, Doctor, and Repair are unavailable until
@@ -177,6 +196,22 @@ Engine, and Dolt processes. It intentionally does not delete the XDG release
 cache, managed TaskStore, Organizer,
 Project repositories, or recovery state. Their later removal is a separate,
 explicit owner operation with its own identity, backup, and cleanup checks.
+
+If activation reports `DIRECTOR_TASKSTORE_CONFIG_OUTPUT_MISMATCH`, the existing
+private configuration output differs from the configuration the verified
+runtime would write. This refusal concerns only that output file: the
+TaskStore/database is not the cause and must not be deleted. After the failed
+startup has stopped its owned children, move the existing configuration file
+to an owner-only backup, repeat the same plugin reload to generate a
+replacement, compare the two files without printing credentials, then
+deliberately restore the backup or adopt the replacement and reload once.
+Director never overwrites, removes, or silently chooses between the files.
+
+`ENGINE_HOME_HOST_FACT_REJECTED` identifies an invalid operational observation
+without collapsing it into generic `HOME_UNAVAILABLE`. Its `field`, `expected`,
+and `observed` values come from closed vocabularies and contain no rejected raw
+value, identifier, path, or credential. Correct the named observation producer
+and retry the same exact host; Director never selects another host.
 
 Common bounded preparation codes include
 `DIRECTOR_INSTALL_PASEO_UNSUPPORTED`, `DIRECTOR_INSTALL_PLATFORM_UNSUPPORTED`,

@@ -77,6 +77,7 @@ func TestDoctorHTTPMapsStaleAndHostMismatchWithoutFallback(t *testing.T) {
 	}{
 		"host":  {homeapp.ErrHostMismatch, http.StatusConflict, "DOCTOR_HOST_MISMATCH"},
 		"stale": {homeapp.ErrDoctorVersionStale, http.StatusConflict, "DOCTOR_FACTS_STALE"},
+		"fact":  {boundedHostFactFailure(), http.StatusServiceUnavailable, "DOCTOR_HOST_FACT_REJECTED"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			handler := newDoctorHandler(doctorReaderFunction(func(context.Context, planningport.DoctorQueryInput) (planningport.DoctorReport, error) {

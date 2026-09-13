@@ -273,6 +273,7 @@ export class PaseoHostConnector implements DirectorHost {
   readonly #planningTransport: PlanningTransport;
   readonly #ready: Promise<void>;
   readonly #activation: ConnectorStartupStatus["activation"];
+  readonly #runtimeRequired: boolean;
   #hostServer: Promise<() => Promise<void>> | null = null;
   #runtimeSupervisor: Promise<{
     supervisor: RuntimeSupervisorHandle;
@@ -317,6 +318,7 @@ export class PaseoHostConnector implements DirectorHost {
       legacyEnvironment: "absent",
       settings: [],
     },
+    runtimeRequired = false,
   ) {
     this.#client = client;
     this.#selection = selection;
@@ -325,6 +327,7 @@ export class PaseoHostConnector implements DirectorHost {
     this.#engine = engine;
     this.#compatibility = compatibility;
     this.#activation = activation;
+    this.#runtimeRequired = runtimeRequired;
     assertHostDescriptor(EXPECTED_HOST_DESCRIPTOR);
     this.#ready = Promise.all([
       clientReady ?? (client.connect ? client.connect() : Promise.resolve()),
@@ -1136,6 +1139,9 @@ export class PaseoHostConnector implements DirectorHost {
   async status(): Promise<ConnectorStartupStatus> {
     await this.#ready;
     const engine = await this.#engine;
+    if (this.#runtimeRequired && this.#runtimeSupervisor === null) {
+      throw new PaseoHostEffectError("DIRECTOR_RUNTIME_NOT_ATTACHED");
+    }
     const runtime = await this.#runtimeSupervisor ?? {
       supervisor: {
         binding: "0".repeat(64),
@@ -1155,7 +1161,18 @@ export class PaseoHostConnector implements DirectorHost {
     };
     const supervisor = await runtime.supervisor.status();
     if (supervisor.state !== "current") {
-      throw new Error("DIRECTOR_RUNTIME_DEGRADED");
+      throw new PaseoHostEffectError("DIRECTOR_RUNTIME_DEGRADED");
+    }
+    if (supervisor.binding !== runtime.supervisor.binding) {
+      throw new PaseoHostEffectError("DIRECTOR_RUNTIME_BINDING_MISMATCH");
+    }
+    if (
+      this.#runtimeRequired &&
+      (!Number.isSafeInteger(supervisor.enginePid) || supervisor.enginePid! <= 0 ||
+        !Number.isSafeInteger(supervisor.doltPid) || supervisor.doltPid! <= 0 ||
+        supervisor.enginePid === supervisor.doltPid)
+    ) {
+      throw new PaseoHostEffectError("DIRECTOR_RUNTIME_CHILDREN_NOT_READY");
     }
     return {
       state: "board-ready",
@@ -1448,6 +1465,7 @@ export function startInstalledConnectorShell(options: {
     compatibility,
     deploymentReady,
     activation,
+    true,
   );
   connector.attachRuntimeSupervisor(runtimeSupervisor);
   connector.attachHostServer(startHostContractServer(connector, configuration.engine.hostSocket));

@@ -20,6 +20,12 @@ type operationsHTTPStub struct {
 	actor         homeapp.AuthenticatedOperationsActor
 }
 
+type operationsReaderError struct{ err error }
+
+func (stub operationsReaderError) Operations(context.Context, planningport.OperationsQueryInput) (planningport.OperationsReport, error) {
+	return planningport.OperationsReport{}, stub.err
+}
+
 func (stub *operationsHTTPStub) Operations(_ context.Context, input planningport.OperationsQueryInput) (planningport.OperationsReport, error) {
 	stub.queryInput = input
 	version, hash := planningContractIdentity()
@@ -91,5 +97,15 @@ func TestOperationsHTTPRejectsUnknownFieldsAndWrongContractBeforeService(t *test
 	newOperationsHandler(stub).ServeHTTP(response, request)
 	if response.Code != http.StatusConflict || stub.queryInput.HostID != "" {
 		t.Fatalf("contract response=%d input=%#v", response.Code, stub.queryInput)
+	}
+}
+
+func TestOperationsHTTPPreservesBoundedRejectedFieldDiagnosis(t *testing.T) {
+	response := httptest.NewRecorder()
+	newOperationsHandler(operationsReaderError{boundedHostFactFailure()}).ServeHTTP(response, operationsRequest(t,
+		planningport.OperationsQueryPath, planningport.OperationsQueryInput{HostID: "host-a", ProjectID: "project-a", ExpectedProjectVersion: "3"}))
+	if response.Code != http.StatusServiceUnavailable || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"OPERATIONS_HOST_FACT_REJECTED"`)) ||
+		!bytes.Contains(response.Body.Bytes(), []byte(`"observed":"empty"`)) {
+		t.Fatalf("typed Operations failure=%d %s", response.Code, response.Body.String())
 	}
 }

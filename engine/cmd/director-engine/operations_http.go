@@ -42,6 +42,9 @@ func newOperationsMutationHandler(service operationsMutator) http.Handler {
 }
 
 func operationsFailure(response http.ResponseWriter, err error, inputCode string) {
+	if writeHostFactRejection(response, http.StatusServiceUnavailable, "OPERATIONS_HOST_FACT_REJECTED", err) {
+		return
+	}
 	switch {
 	case errors.Is(err, homeapp.ErrHostMismatch):
 		writePlanningError(response, http.StatusConflict, "OPERATIONS_HOST_MISMATCH")

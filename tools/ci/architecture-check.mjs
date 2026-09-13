@@ -343,7 +343,8 @@ export function typescriptBoundaryErrors(files) {
         continue;
       }
       const dependency = packageName(specifier);
-      if (!TS_ALLOWED_EXTERNAL_IMPORTS[role].has(dependency)) {
+      const handlerRegistrationApi = path === "connector/contributions.server.ts" && dependency === "@getpaseo/plugin";
+      if (!TS_ALLOWED_EXTERNAL_IMPORTS[role].has(dependency) && !handlerRegistrationApi) {
         errors.push(
           `${path}: ${role} boundary cannot import external package ${specifier}`,
         );

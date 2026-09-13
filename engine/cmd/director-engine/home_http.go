@@ -87,6 +87,9 @@ func (handler *homeHandler) ServeHTTP(response http.ResponseWriter, request *htt
 	}
 	snapshot, err := handler.reader.Query(request.Context(), input)
 	if err != nil {
+		if writeHostFactRejection(response, http.StatusServiceUnavailable, "HOME_HOST_FACT_REJECTED", err) {
+			return
+		}
 		switch {
 		case errors.Is(err, homeapp.ErrHostMismatch):
 			writePlanningError(response, http.StatusConflict, "HOME_HOST_MISMATCH")

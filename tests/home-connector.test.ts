@@ -131,6 +131,25 @@ test("the Home transport refuses another host, contract drift, stale cursors, an
   assert.equal(calls, 0);
 });
 
+test("the Home transport preserves only the bounded rejected-field diagnosis", async () => {
+  const transport = createPlanningTransport({
+    baseUrl: "http://127.0.0.1:7041",
+    fetch: async () => responseAt(`http://127.0.0.1:7041${PLANNING_HOME_QUERY_PATH}`, JSON.stringify({
+      code: "HOME_HOST_FACT_REJECTED",
+      field: "project.taskstore_sync_detail.local_revision_fingerprint",
+      expected: "nonempty_sha256",
+      observed: "empty",
+    }), { status: 503 }),
+  });
+  await assert.rejects(transport.home!(query), (error: unknown) =>
+    error instanceof PlanningTransportError &&
+    error.code === "ENGINE_HOME_HOST_FACT_REJECTED" &&
+    error.diagnosis?.field === "project.taskstore_sync_detail.local_revision_fingerprint" &&
+    error.diagnosis.expected === "nonempty_sha256" &&
+    error.diagnosis.observed === "empty" &&
+    !JSON.stringify(error).includes("private"));
+});
+
 test("Organizer Preview/Apply transport is human-authenticated and exact-host bound", async () => {
   const input: OrganizerBootstrapInput = {
     schemaVersion: 1,

@@ -106,6 +106,9 @@ func (handler *doctorHandler) ServeHTTP(response http.ResponseWriter, request *h
 	}
 	report, err := handler.reader.Doctor(request.Context(), input)
 	if err != nil {
+		if writeHostFactRejection(response, http.StatusServiceUnavailable, "DOCTOR_HOST_FACT_REJECTED", err) {
+			return
+		}
 		switch {
 		case errors.Is(err, homeapp.ErrHostMismatch):
 			writePlanningError(response, http.StatusConflict, "DOCTOR_HOST_MISMATCH")
