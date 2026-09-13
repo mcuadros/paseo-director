@@ -250,6 +250,7 @@ test("release validation rejects empty digests, dot segments, and assets while u
     name: "director-engine-linux-amd64",
     url: "https://github.com/mcuadros/paseo-director/releases/download/v1/director-engine",
     sha256: "1".repeat(64),
+    size: 1,
   };
   const published = {
     schemaVersion: 2,
@@ -265,6 +266,18 @@ test("release validation rejects empty digests, dot segments, and assets while u
       name: "THIRD_PARTY_NOTICES.txt",
       url: "https://github.com/mcuadros/paseo-director/releases/download/v1.0.0/THIRD_PARTY_NOTICES.txt",
       sha256: "2".repeat(64),
+      size: 1,
+    },
+    dolt: {
+      version: "2.3.2",
+      archive: {
+        name: "dolt-linux-amd64.tar.gz",
+        url: "https://github.com/dolthub/dolt/releases/download/v2.3.2/dolt-linux-amd64.tar.gz",
+        sha256: "4".repeat(64),
+        size: 1,
+      },
+      executableSha256: "5".repeat(64),
+      executableSize: 1,
     },
   };
   assert.deepEqual(releaseMetadataErrors(published), []);

@@ -305,7 +305,8 @@ function followsDirectorRuntimeConvention(path, role) {
   if (role === "rpc" || role === "generated") return /\.shared\.ts$/.test(path);
   if (
     path === "connector/runtime-configuration.server.mjs" ||
-    path === "connector/runtime-configuration.server.d.mts"
+    path === "connector/runtime-configuration.server.d.mts" ||
+    path === "connector/runtime-supervisor-process.linux.server.mjs"
   ) return true;
   return /\.server\.ts$/.test(path);
 }

@@ -39,12 +39,13 @@
       "severity": "P0",
       "categories": ["credentials", "secrets"],
       "threats": ["SEC-1", "SEC-2"],
-      "mitigation": "Credential bytes and credential-shaped values are rejected or redacted by one bounded classifier; connector and coordinator credentials remain in their narrow owner processes.",
+      "mitigation": "Credential bytes and credential-shaped values are rejected or redacted by one bounded classifier; plugin handlers borrow Paseo authority without copying a daemon credential, and generated runtime credentials remain in the detached supervisor and Engine boundary.",
       "implementation": [
         "engine/domain/safedata/safedata.go#ClassifyJSON",
         "engine/domain/planning.go#boundedPlanningText",
         "engine/domain/project.go#ValidateProject",
-        "connector/credential.server.ts#loadConnectorCredential",
+        "connector/runtime-supervisor-process.linux.server.mjs#privateSecret",
+        "index.ts#contribute",
         "tools/coordinator/coordinator.mjs#selectedEnvironment"
       ],
       "tests": [
@@ -52,7 +53,8 @@
         "engine/domain/planning_test.go#TestPlanningRejectsSecretAndPrivatePathBeforeDurableAdmission",
         "engine/domain/project_test.go#TestProjectAndWorkspaceRejectCredentialShapedDurableFields",
         "engine/adapters/dolt/store_adversarial_test.go#credential-bearing Project name",
-        "tests/connector-boundary.test.ts#the connector descriptor and engine environment never propagate its credential",
+        "tests/paseo-commonjs-load.test.ts#the real connector loads from Paseo 0.7.2's CommonJS backend shape",
+        "tests/runtime-supervisor.test.ts#installed runtime has no compiler, source, PATH-binary, or system-service fallback",
         "tools/coordinator/paseo-auth.test.mjs#protected Paseo lifecycle reads isolate credentials and fail closed"
       ],
       "status": "closed"

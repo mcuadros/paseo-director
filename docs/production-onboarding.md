@@ -6,78 +6,31 @@ surfaces, and the generated HTTP/plugin contracts. It requires no raw SQL,
 test fixture, private mutation endpoint, Paseo state edit, or daemon/machine
 restart.
 
-## 1. Start a private direct-Dolt store
+## 1. Let the plugin establish its managed runtime
 
-Create owner-only data/configuration directories, initialize an ordinary Dolt
-database, and run the public loopback SQL server with one explicit private
-configuration. The supervised global safe-commit value must be zero and the
-exact privilege file must be inside its canonical owner-only configuration
-directory. The directory basename is the database name passed to Director.
+Install an exact published `alpha`, `beta`, or `stable` ref and open Director.
+The first server RPC uses Paseo's handler-scoped public API and creates or
+adopts one Director supervisor. No daemon URL, connector password, Go toolchain,
+system Dolt, service unit, raw SQL, or manual bootstrap command is required.
 
-```text
-install -d -m 0700 /absolute/private/director-dolt/director /absolute/private/director-dolt/.doltcfg
-cd /absolute/private/director-dolt/director
-dolt init --name "Director" --email director@example.invalid
-dolt sql-server --config /absolute/private/director-dolt/server.yaml
-```
+The release manifest pins a precompiled Director Engine and the canonical Dolt
+archive for `linux-amd64`. Director downloads both, verifies their archive,
+executable, notices, source, target, and contract identities, and atomically
+publishes them below the private XDG cache. An unpublished or invalid release
+keeps the UI available with a bounded diagnostic and never compiles a fallback.
 
-The owner-only `server.yaml` binds `data_dir`, `cfg_dir`, and
-`privilege_file` to those exact directories, binds the listener to
-`127.0.0.1:3307`, and sets `system_variables.dolt_force_transaction_commit`
-to `0`. Director refuses a different listener, database, privilege-file
-identity, file mode, digest, or global safe value. This Director-owned Dolt
-server remains separate from every Beads server.
+The supervisor starts its exact Dolt executable on `127.0.0.1:3307`, creates a
+fresh private database only when no managed store exists, generates separated
+runtime credentials, invokes the precompiled Engine's idempotent
+`bootstrap-taskstore`, removes transient bootstrap authority, and starts Engine
+on `127.0.0.1:7041` only after schema/grant/backup/cursor readback succeeds.
+Dolt remains separate from Beads on `127.0.0.1:3308`.
 
-In another terminal, ask the engine to create and verify its complete schema,
-identity, event cursor, and Project readback while atomically writing the
-owner-only runtime configuration:
-
-```text
-director-engine bootstrap-taskstore \
-  --config-output /absolute/private/director-runtime/taskstore.json \
-  --address 127.0.0.1:3307 \
-  --database director \
-  --store-id director-local \
-  --owner-user root \
-  --control-user director_control \
-  --writer-user director_writer \
-  --maintenance-user director_maintenance \
-  --control-password-file /absolute/private/director-runtime/dolt-control.password \
-  --writer-password-file /absolute/private/director-runtime/dolt-writer.password \
-  --maintenance-password-file /absolute/private/director-runtime/dolt-maintenance.password \
-  --privilege-file /absolute/private/director-dolt/.doltcfg/privileges.db
-```
-
-The successful JSON result is path- and credential-free. Repeating the exact
-command is idempotent. A different store identity, an unknown/partial schema,
-unsafe file ownership or mode, a dirty migration frontier, or changed
-configuration is refused. The three runtime password files must be non-empty
-absolute owner-only regular files. Only the transient owner-local bootstrap
-connection may omit `--owner-password-file`; it is never written into the
-runtime configuration. Bootstrap installs schema version two, resets only the
-three exact runtime identities, grants their closed capabilities, reads the
-grants back, seals the grant and privilege-file digests, and then verifies the
-new runtime configuration. Users run no raw SQL and `serve-board` receives no
-owner credential.
-
-`serve-board` does not guess or replace a store. It starts only after the
-bootstrap readback succeeds:
-
-```text
-director-engine serve-board \
-  --listen 127.0.0.1:7041 \
-  --taskstore-config /absolute/private/director-runtime/taskstore.json \
-  --host-id local-paseo \
-  --host-label "Local Paseo" \
-  --host-socket /absolute/private/director-runtime/host.sock \
-  --runtime-root /absolute/private/director-runtime/work
-```
-
-Use the same owner-only host-socket path for the plugin connector. Follow the
-safe non-secret defaults and live plugin activation procedure owned by M6.10;
-do not restart the shared Paseo daemon. A missing host socket, runtime root,
-credential, exact version, provider tuple, or TaskStore fact keeps production
-readiness closed.
+Reload and update adopt the same supervisor through an owner-only control
+channel and 30-second lease. Removing the plugin stops lease renewal and its
+owned processes while retaining the database and verified cache. Unknown
+listeners or process identities are never killed and produce
+`DIRECTOR_RUNTIME_EXTERNAL_OWNER`.
 
 ## 2. Create from a native Paseo Project
 

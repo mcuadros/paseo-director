@@ -37,7 +37,8 @@
         "target",
         "sourceCandidate",
         "binary",
-        "notices"
+        "notices",
+        "dolt"
       ],
       "properties": {
         "schemaVersion": {
@@ -62,6 +63,9 @@
         },
         "notices": {
           "$ref": "#/$defs/notices"
+        },
+        "dolt": {
+          "$ref": "#/$defs/dolt"
         }
       }
     }
@@ -80,7 +84,8 @@
       "required": [
         "name",
         "url",
-        "sha256"
+        "sha256",
+        "size"
       ],
       "properties": {
         "name": {
@@ -92,6 +97,11 @@
         },
         "sha256": {
           "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 268435456
         }
       }
     },
@@ -101,7 +111,8 @@
       "required": [
         "name",
         "url",
-        "sha256"
+        "sha256",
+        "size"
       ],
       "properties": {
         "name": {
@@ -113,6 +124,61 @@
         },
         "sha256": {
           "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        }
+      }
+    },
+    "dolt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "archive",
+        "executableSha256",
+        "executableSize"
+      ],
+      "properties": {
+        "version": {
+          "const": "2.3.2"
+        },
+        "archive": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "url",
+            "sha256",
+            "size"
+          ],
+          "properties": {
+            "name": {
+              "const": "dolt-linux-amd64.tar.gz"
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^https://github\\.com/dolthub/dolt/releases/download/v[^/?#]+/dolt-linux-amd64\\.tar\\.gz$"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 536870912
+            }
+          }
+        },
+        "executableSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "executableSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 268435456
         }
       }
     }

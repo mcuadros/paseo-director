@@ -27,7 +27,6 @@ import {
 import {
   EngineSelectionError,
   selectEngine,
-  type DevelopmentEngineSelection,
   type ReleaseEngineSelection,
 } from "../connector/engine-selection.server.ts";
 
@@ -56,16 +55,29 @@ function releaseFixture() {
       name: "director-engine-linux-amd64",
       url: "https://github.com/mcuadros/paseo-director/releases/download/v1.2.3/director-engine-linux-amd64",
       sha256: digest(binary),
+      size: binary.byteLength,
     },
     notices: {
       name: "THIRD_PARTY_NOTICES.txt",
       url: "https://github.com/mcuadros/paseo-director/releases/download/v1.2.3/THIRD_PARTY_NOTICES.txt",
       sha256: digest(notices),
+      size: notices.byteLength,
+    },
+    dolt: {
+      version: "2.3.2",
+      archive: {
+        name: "dolt-linux-amd64.tar.gz",
+        url: "https://github.com/dolthub/dolt/releases/download/v2.3.2/dolt-linux-amd64.tar.gz",
+        sha256: digest("fake-dolt-archive"),
+        size: Buffer.byteLength("fake-dolt-archive"),
+      },
+      executableSha256: digest("fake-dolt-binary"),
+      executableSize: Buffer.byteLength("fake-dolt-binary"),
     },
   } as const;
   mkdirSync(checkoutRoot, { mode: 0o700 });
   writeFileSync(metadataPath, `${JSON.stringify(metadata)}\n`);
-  const selection: ReleaseEngineSelection = { mode: "release", checkoutRoot, cacheRoot, metadataPath };
+  const selection: ReleaseEngineSelection = { mode: "release", checkoutRoot, cacheRoot, metadataPath, connectorCommit: CONNECTOR };
   const identity = (overrides: Partial<EngineBinaryIdentity> = {}): EngineBinaryIdentity => ({
     name: "director-engine",
     version: metadata.version,
@@ -90,7 +102,6 @@ function releaseDependencies(fixture: ReturnType<typeof releaseFixture>) {
         fetches += 1;
         return url.endsWith("THIRD_PARTY_NOTICES.txt") ? fixture.notices : fixture.binary;
       },
-      connectorCommit() { return CONNECTOR; },
       inspectBinary() { return fixture.identity(); },
     },
     fetches: () => fetches,
@@ -100,12 +111,8 @@ function releaseDependencies(fixture: ReturnType<typeof releaseFixture>) {
 test("release mode verifies identity and atomically caches the complete installed pin", async () => {
   const fixture = releaseFixture();
   const probe = releaseDependencies(fixture);
-  let compiles = 0;
   try {
-    const first = await resolveEngine(fixture.selection, {
-      ...probe.dependencies,
-      compile() { compiles += 1; },
-    });
+    const first = await resolveEngine(fixture.selection, probe.dependencies);
     assert.deepEqual({
       mode: first.mode,
       version: first.version,
@@ -135,7 +142,6 @@ test("release mode verifies identity and atomically caches the complete installe
 
     await resolveEngine(fixture.selection, probe.dependencies);
     assert.equal(probe.fetches(), 2, "verified cache must be adopted without another download");
-    assert.equal(compiles, 0);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -145,15 +151,12 @@ test("unpublished metadata fails before fetch or compilation", async () => {
   const root = mkdtempSync(join(tmpdir(), "director-unpublished-test-"));
   const metadataPath = join(root, "engine.json");
   let fetches = 0;
-  let compiles = 0;
   try {
     writeFileSync(metadataPath, JSON.stringify({ schemaVersion: 2, state: "unpublished", version: "0.0.0-scaffold", target: "linux-amd64" }));
-    await assert.rejects(resolveEngine({ mode: "release", checkoutRoot: root, cacheRoot: join(root, "cache"), metadataPath }, {
+    await assert.rejects(resolveEngine({ mode: "release", checkoutRoot: root, cacheRoot: join(root, "cache"), metadataPath, connectorCommit: CONNECTOR }, {
       async fetchAsset() { fetches += 1; return new Uint8Array(); },
-      compile() { compiles += 1; },
     }), (error: unknown) => error instanceof EngineDistributionError && error.code === "ENGINE_RELEASE_UNPUBLISHED");
     assert.equal(fetches, 0);
-    assert.equal(compiles, 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -177,6 +180,17 @@ test("published metadata closes source, target, asset name, URL, digest, and fie
       assert.throws(() => parseReleaseMetadata(Buffer.from(JSON.stringify(metadata))), (error: unknown) =>
         error instanceof EngineDistributionError && error.code === "ENGINE_RELEASE_METADATA");
     }
+    for (const dolt of [
+      { ...valid.dolt, version: "2.3.3" },
+      { ...valid.dolt, executableSha256: EMPTY_SHA256 },
+      { ...valid.dolt, executableSize: 0 },
+      { ...valid.dolt, archive: { ...valid.dolt.archive, url: "https://example.invalid/dolt.tar.gz" } },
+    ]) {
+      assert.throws(
+        () => parseReleaseMetadata(Buffer.from(JSON.stringify({ ...valid, dolt }))),
+        (error: unknown) => error instanceof EngineDistributionError && error.code === "DOLT_RELEASE_METADATA",
+      );
+    }
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -188,13 +202,13 @@ test("binary or notices failure leaves no final cache and a clean retry succeeds
     const finalRoot = join(fixture.selection.cacheRoot, "release", "1.2.3", "linux-amd64", fixture.metadata.binary.sha256);
     try {
       await assert.rejects(resolveEngine(fixture.selection, {
-        connectorCommit() { return CONNECTOR; },
         inspectBinary() { return fixture.identity(); },
         async fetchAsset(url) {
           if ((failingAsset === "binary") === !url.endsWith("THIRD_PARTY_NOTICES.txt")) return Buffer.from("corrupt");
           return url.endsWith("THIRD_PARTY_NOTICES.txt") ? fixture.notices : fixture.binary;
         },
-      }), (error: unknown) => error instanceof EngineDistributionError && error.code === "ENGINE_RELEASE_DIGEST");
+      }), (error: unknown) => error instanceof EngineDistributionError &&
+        ["ENGINE_RELEASE_DIGEST", "ENGINE_RELEASE_SIZE"].includes(error.code));
       assert.equal(existsSync(finalRoot), false);
       const retry = releaseDependencies(fixture);
       await resolveEngine(fixture.selection, retry.dependencies);
@@ -207,14 +221,11 @@ test("binary or notices failure leaves no final cache and a clean retry succeeds
 
 test("identity mismatch fails closed without publishing or compiling", async () => {
   const fixture = releaseFixture();
-  let compiles = 0;
   try {
     await assert.rejects(resolveEngine(fixture.selection, {
       ...releaseDependencies(fixture).dependencies,
       inspectBinary() { return fixture.identity({ sourceCandidate: "9".repeat(40) }); },
-      compile() { compiles += 1; },
     }), (error: unknown) => error instanceof EngineDistributionError && error.code === "ENGINE_IDENTITY_MISMATCH");
-    assert.equal(compiles, 0);
     assert.equal(existsSync(join(fixture.selection.cacheRoot, "release", "1.2.3", "linux-amd64", fixture.metadata.binary.sha256)), false);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -233,11 +244,10 @@ test("notices source identity and bounded asset size fail before cache publicati
         noticesSha256 = digest(notices);
         writeFileSync(fixture.selection.metadataPath, JSON.stringify({
           ...fixture.metadata,
-          notices: { ...fixture.metadata.notices, sha256: noticesSha256 },
+          notices: { ...fixture.metadata.notices, sha256: noticesSha256, size: notices.byteLength },
         }));
       }
       await assert.rejects(resolveEngine(fixture.selection, {
-        connectorCommit() { return CONNECTOR; },
         inspectBinary() { inspections += 1; return fixture.identity({ noticesSha256 }); },
         async fetchAsset(url) {
           if (kind === "size" && url.endsWith("THIRD_PARTY_NOTICES.txt")) {
@@ -292,16 +302,17 @@ test("compatible release upgrade is additive and a later failure preserves both 
         ...fixture.metadata.binary,
         url: "https://github.com/mcuadros/paseo-director/releases/download/v1.2.4/director-engine-linux-amd64",
         sha256: digest(upgradedBinary),
+        size: upgradedBinary.byteLength,
       },
       notices: {
         ...fixture.metadata.notices,
         url: "https://github.com/mcuadros/paseo-director/releases/download/v1.2.4/THIRD_PARTY_NOTICES.txt",
         sha256: digest(upgradedNotices),
+        size: upgradedNotices.byteLength,
       },
     };
     writeFileSync(fixture.selection.metadataPath, JSON.stringify(upgraded));
     const second = await resolveEngine(fixture.selection, {
-      connectorCommit() { return CONNECTOR; },
       inspectBinary() { return fixture.identity({ version: "1.2.4", executableSha256: upgraded.binary.sha256, noticesSha256: upgraded.notices.sha256 }); },
       async fetchAsset(url) { return url.endsWith("THIRD_PARTY_NOTICES.txt") ? upgradedNotices : upgradedBinary; },
     });
@@ -317,10 +328,10 @@ test("compatible release upgrade is additive and a later failure preserves both 
     };
     writeFileSync(fixture.selection.metadataPath, JSON.stringify(failed));
     await assert.rejects(resolveEngine(fixture.selection, {
-      connectorCommit() { return CONNECTOR; },
       inspectBinary() { return fixture.identity({ version: "1.2.5", executableSha256: failed.binary.sha256, noticesSha256: failed.notices.sha256 }); },
       async fetchAsset() { return Buffer.from("corrupt"); },
-    }), (error: unknown) => error instanceof EngineDistributionError && error.code === "ENGINE_RELEASE_DIGEST");
+    }), (error: unknown) => error instanceof EngineDistributionError &&
+      ["ENGINE_RELEASE_DIGEST", "ENGINE_RELEASE_SIZE"].includes(error.code));
     assert.equal(existsSync(first.binaryPath), true);
     assert.equal(existsSync(second.binaryPath), true);
   } finally {
@@ -343,7 +354,6 @@ test("cache poisoning, symlinks, and unsafe permissions fail without replacement
       }
       if (poison === "permissions") chmodSync(finalRoot, 0o777);
       await assert.rejects(resolveEngine(fixture.selection, {
-        connectorCommit() { return CONNECTOR; },
         inspectBinary() { return fixture.identity(); },
         async fetchAsset() { fetches += 1; return new Uint8Array(); },
       }), (error: unknown) => error instanceof EngineDistributionError &&
@@ -371,84 +381,16 @@ test("restart removes only an exact stale owned partial", async () => {
   }
 });
 
-test("development mode builds one exact source Candidate and never downloads", async () => {
-  const root = mkdtempSync(join(tmpdir(), "director-development-test-"));
-  const selection: DevelopmentEngineSelection = {
-    mode: "development",
-    checkoutRoot: join(root, "checkout"),
-    sourceRoot: join(root, "source"),
-    cacheRoot: join(root, "cache"),
-    moduleCache: join(root, "module-cache"),
-  };
-  for (const path of [selection.checkoutRoot, selection.sourceRoot, selection.moduleCache]) mkdirSync(path, { recursive: true, mode: 0o700 });
-  let compiles = 0;
-  let downloads = 0;
-  const inspectBinary = (): EngineBinaryIdentity => ({
-    name: "director-engine", version: "0.0.0-dev", buildMode: "development",
-    sourceCandidate: SOURCE, target: "linux-amd64", executableSha256: digest("compiled"), noticesSha256: EMPTY_SHA256,
-    contractVersion: "director-host/v1", contractSha256: CONTRACT, productBehavior: true,
-  });
-  try {
-    const dependencies = {
-      sourceCandidate() { return SOURCE; }, connectorCommit() { return CONNECTOR; }, inspectBinary,
-      compile(_selection: DevelopmentEngineSelection, destination: string) {
-        compiles += 1; mkdirSync(dirname(destination), { recursive: true }); writeFileSync(destination, "compiled", { mode: 0o500 });
-      },
-      async fetchAsset() { downloads += 1; return new Uint8Array(); },
-    };
-    const first = await resolveEngine(selection, dependencies);
-    const replay = await resolveEngine(selection, dependencies);
-    assert.equal(first.binaryPath, replay.binaryPath);
-    assert.equal(first.sourceCandidate, SOURCE);
-    assert.equal(first.noticesSha256, EMPTY_SHA256);
-    assert.equal(compiles, 1);
-    assert.equal(downloads, 0);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("failed development replacement preserves the prior Candidate cache", async () => {
-  const root = mkdtempSync(join(tmpdir(), "director-development-preserve-"));
-  const selection: DevelopmentEngineSelection = {
-    mode: "development", checkoutRoot: join(root, "checkout"), sourceRoot: join(root, "source"),
-    cacheRoot: join(root, "cache"), moduleCache: join(root, "module-cache"),
-  };
-  for (const path of [selection.checkoutRoot, selection.sourceRoot, selection.moduleCache]) mkdirSync(path, { recursive: true, mode: 0o700 });
-  let candidate = SOURCE;
-  const identity = (): EngineBinaryIdentity => ({
-    name: "director-engine", version: "0.0.0-dev", buildMode: "development", sourceCandidate: candidate,
-    target: "linux-amd64", executableSha256: digest("good"), noticesSha256: EMPTY_SHA256, contractVersion: "director-host/v1",
-    contractSha256: CONTRACT, productBehavior: true,
-  });
-  try {
-    const first = await resolveEngine(selection, {
-      sourceCandidate() { return candidate; }, connectorCommit() { return CONNECTOR; }, inspectBinary: identity,
-      compile(_selection, destination) { mkdirSync(dirname(destination), { recursive: true }); writeFileSync(destination, "good", { mode: 0o500 }); },
-    });
-    candidate = "8".repeat(40);
-    await assert.rejects(resolveEngine(selection, {
-      sourceCandidate() { return candidate; }, connectorCommit() { return CONNECTOR; }, inspectBinary: identity,
-      compile() { throw new EngineDistributionError("ENGINE_DEVELOPMENT_BUILD", "build failed"); },
-    }), (error: unknown) => error instanceof EngineDistributionError && error.code === "ENGINE_DEVELOPMENT_BUILD");
-    assert.equal(readFileSync(first.binaryPath, "utf8"), "good");
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("engine mode and canonical paths are explicit and disjoint", () => {
+test("installed runtime refuses development compilation inputs", () => {
   const root = mkdtempSync(join(tmpdir(), "director-mode-test-"));
   const checkoutRoot = join(root, "checkout");
   mkdirSync(checkoutRoot);
   try {
     assert.throws(() => selectEngine({ XDG_CACHE_HOME: join(root, "cache") }, checkoutRoot), (error: unknown) =>
-      error instanceof EngineSelectionError && error.code === "ENGINE_MODE_REQUIRED");
-    assert.throws(() => selectEngine({ DIRECTOR_ENGINE_MODE: "release", DIRECTOR_ENGINE_SOURCE_ROOT: join(root, "source"), XDG_CACHE_HOME: join(root, "cache") }, checkoutRoot), (error: unknown) =>
-      error instanceof EngineSelectionError && error.code === "ENGINE_MODE_CONFLICT");
-    assert.equal(selectEngine({ DIRECTOR_ENGINE_MODE: "development", DIRECTOR_ENGINE_SOURCE_ROOT: join(root, "source"), XDG_CACHE_HOME: join(root, "cache") }, checkoutRoot).mode, "development");
-    assert.throws(() => selectEngine({ DIRECTOR_ENGINE_MODE: "development", DIRECTOR_ENGINE_SOURCE_ROOT: join(root, "source"), XDG_CACHE_HOME: join(root, "cache"), GOMODCACHE: join(checkoutRoot, "module-cache") }, checkoutRoot), (error: unknown) =>
-      error instanceof EngineSelectionError && error.code === "ENGINE_MODULE_CACHE_IN_CHECKOUT");
+      error instanceof EngineSelectionError && error.code === "ENGINE_DEVELOPMENT_DISABLED");
+    assert.equal(selectEngine({ DIRECTOR_ENGINE_MODE: "release", DIRECTOR_ENGINE_SOURCE_ROOT: join(root, "source"), XDG_CACHE_HOME: join(root, "cache") }, checkoutRoot).mode, "release");
+    assert.throws(() => selectEngine({ DIRECTOR_ENGINE_MODE: "development", DIRECTOR_ENGINE_SOURCE_ROOT: join(root, "source"), XDG_CACHE_HOME: join(root, "cache") }, checkoutRoot), (error: unknown) =>
+      error instanceof EngineSelectionError && error.code === "ENGINE_DEVELOPMENT_DISABLED");
     const cacheLink = join(root, "cache-link");
     symlinkSync(checkoutRoot, cacheLink);
     assert.throws(() => selectEngine({ DIRECTOR_ENGINE_MODE: "release", XDG_CACHE_HOME: cacheLink }, checkoutRoot), (error: unknown) =>

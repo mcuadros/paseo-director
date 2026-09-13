@@ -1,33 +1,15 @@
 # Director for Paseo
 
 > **Authority warning — read before installation:** on exact Paseo 0.7.2,
-> Director for Paseo requires a full daemon-operator credential. The trusted,
-> unsandboxed connector can invoke the daemon user's complete public API.
-> Install only if you accept this bounded P2 residual risk.
+> trusted plugin handlers receive the daemon user's complete public Paseo API.
+> Director uses only that handler-scoped object. It never copies the daemon
+> password into a runtime file, process argument, or secondary WebSocket.
 
-The credential must be a non-empty owner-only file outside both the repository
-and every Paseo-managed plugin checkout. Candidate preparation proves the
-private runtime file and credential are disjoint from the candidate checkout;
-the connector proves the credential is disjoint from every configured or
-derived engine path before constructing its public SDK client, then uses a
-public SDK configuration read to recheck the active checkout before engine
-attachment or host mutation. It checks that directory and every canonical
-ancestor through the filesystem root, rejecting group/other-writable ancestors
-unless Linux sticky-bit semantics protect a trusted-owner child in a directory
-owned by the connector user or root (for example, an owner-only credential
-directory under root-owned `/tmp`). It also rechecks the credential file and
-ancestor identities while loading: the path must match the `O_NOFOLLOW` file
-descriptor before the read, mutable file metadata must remain unchanged across
-the read, and every checked ancestor must retain its identity afterward. A
-detected pre-open substitution, read-time metadata change, or ancestor
-substitution fails closed. Its bytes and path never enter Director Engine
-arguments, environment, protocol, UI, store, projections, logs, timelines,
-diagnostics, or support bundles. Connector startup, update, and reload fail
-closed before host mutation when the file is absent, empty, broadly readable,
-in an unsafe directory, or overlaps any protected path. The connector advertises only
-`credentialScope=full-daemon-operator`, the exact contract version/hash, and the
-fixed capability set. Director will narrow this authority when a supported
-connector-scoped Paseo mechanism is available and evidenced.
+The plugin owns a release-only runtime supervisor. It downloads exact
+precompiled Director Engine and Dolt artifacts, verifies their closed release
+identity, and starts only those private cached executables. It never invokes Go,
+compiles a runtime fallback, discovers Engine or Dolt through `PATH`, installs a
+system service, or restarts Paseo.
 
 Director Engine is standalone Go software for planning, executing, reviewing,
 and delivering medium-to-large software products. It is usable and publishable
@@ -123,12 +105,12 @@ paseo plugin update director
 paseo plugin reload director
 ```
 
-`update` activates a changed Git candidate and `reload` re-reads Director's
-private runtime file without restarting Paseo or interrupting other agents or
-workspaces. Tags and exact commits are immutable pins and do not advance through update.
+`update` activates a changed Git candidate and `reload` creates or adopts the
+same plugin-owned supervisor without restarting Paseo or interrupting other
+agents or workspaces. Tags and exact commits are immutable pins and do not advance through update.
 See [installation, update, rollback, and compatibility](docs/installation-update.md)
-before installing; it includes the full-daemon-operator warning, release and
-development modes, diagnostics, failure recovery, and removal behavior.
+before installing; it includes release artifacts, diagnostics, failure
+recovery, and removal behavior.
 
 ## Development
 
@@ -155,43 +137,18 @@ npm run smoke
 temporary cache, runs its `version` and side-effect-free startup paths with an
 empty environment, and removes the temporary cache.
 
-## Paseo host configuration
+## Paseo host and managed runtime
 
-Director for Paseo targets exact Paseo 0.7.2. Plugin-specific settings live in
-the owner-only XDG runtime file at
-`$XDG_CONFIG_HOME/director/runtime.json`, or `~/.config/director/runtime.json`
-when `XDG_CONFIG_HOME` is unset. Create its directory with mode `0700` and the
-file with mode `0600` before Git installation. The credential itself remains a
-separate non-empty mode-`0600` file; create it with a private editor or
-credential tool so its bytes never enter command arguments or documentation.
+Director for Paseo targets exact Paseo 0.7.2. Each RPC receives the public
+Paseo API from its plugin handler, so no daemon URL or connector credential is
+configured and a Tailscale-only listener works unchanged. Legacy runtime files,
+`DIRECTOR_PASEO_*`, `sourceRoot`, module-cache, and development-mode values have
+no runtime authority.
 
-The minimal release configuration is:
-
-```json
-{
-  "schemaVersion": 1,
-  "paseo": {
-    "credentialFile": "/absolute/private/connector.password"
-  },
-  "engine": {}
-}
-```
-
-Safe defaults are `release` engine mode, the exact same-host Paseo 0.7.2 SDK
-endpoint `ws://127.0.0.1:6767/ws`, the loopback Director Engine endpoint
-`http://127.0.0.1:7041`, the standard XDG user cache base, and the standard Go
-module cache in development mode. `engine.mode` and `engine.url` are strict
-explicit overrides. Development mode additionally requires an explicit
-absolute `engine.sourceRoot`; `engine.moduleCache` is an optional absolute
-override. Release mode rejects either development path. Unknown fields,
-non-loopback endpoints, unsafe permissions, symlinks, overlaps, and invalid
-values fail closed with bounded codes.
-
-Legacy `DIRECTOR_PASEO_*` and `DIRECTOR_ENGINE_*` daemon environment values are
-ignored and reported only as `legacyEnvironment=ignored`; they never override
-the runtime file, and removing them is not a prerequisite for live activation.
-No Paseo daemon or machine restart is supported or required. After editing the
-runtime file, activate it only with:
+The first RPC downloads or adopts the release artifacts and one detached
+supervisor. That supervisor owns Dolt on `127.0.0.1:3307`, Engine on
+`127.0.0.1:7041`, private runtime credentials, bootstrap, health, backoff, and
+lease expiry. No Paseo daemon or machine restart is supported or required.
 
 ```text
 paseo plugin reload director
@@ -199,10 +156,9 @@ paseo plugin ls --json
 paseo plugin logs director --json
 ```
 
-The bounded `DIRECTOR_ACTIVATION_READY` record reports the exact connector
-commit, configuration SHA-256, `running-current` result, and only whether each
-non-secret setting was defaulted or overridden. It contains no URL, path,
-credential, raw environment, or secret. The native selection resolver accepts
+The bounded `DIRECTOR_ACTIVATION_READY` record reports the exact connector,
+Engine, Dolt, and supervisor identities with a `running-current` result. It
+contains no URL, private path, credential, raw environment, or secret. The native selection resolver accepts
 one current public Paseo Project/workspace pair and derives its Project ID/name,
 repository root, Workspace identity/name, and working directory for the M6.11
 selector; none of those facts belongs in this runtime JSON.
@@ -211,36 +167,21 @@ The schema-2 committed release descriptor explicitly marks `0.0.0-scaffold` as
 unpublished and declares no assets or digests. Release resolution rejects that
 state before any fetch. A later coordinator-owned release commit must pin the
 semantic engine version, `linux-amd64` target, exact reviewed source Candidate,
-canonical asset names, and non-empty binary/notices SHA-256 values under the exact
-`https://github.com/mcuadros/paseo-director/releases/download/` origin/path
-prefix. The executable-reported version, mode, source, target, notices digest,
+canonical asset names, non-empty Engine/notices SHA-256 values, and the exact
+Dolt version/archive/executable SHA-256 under the exact Director and DoltHub
+GitHub Release origin/path prefixes. The executable-reported version, mode, source, target, notices digest,
 and engine contract must match before the cache is published or product work runs.
 Dot-segment traversal that normalizes outside that prefix, another origin/path,
 URL credentials, query, or fragment is invalid. Empty-input digests are invalid.
-Release mode never compiles as a fallback.
-Development mode compiles one exact clean selected Git Candidate with the local
-Go 1.26.5 contract and never downloads or falls back to release mode. A missing
-or conflicting mode fails closed. Both modes use content-addressed atomic cache
-directories outside the checkout and expose only bounded identity diagnostics.
+The installed plugin never compiles as a fallback. Content-addressed release
+caches remain outside the checkout and expose only bounded identity diagnostics.
 
 ## Director Home and Board/List runtime
 
-The separately supervised engine opens an existing exact schema-1 or schema-2
-direct-Dolt TaskStore, performs gated startup maintenance (including automatic
-schema-1 migration), and serves the host-bound Home plus Board/List contracts
-on an explicit loopback address. The public host identity and label must match
-the exact Paseo host passed by the client surface; a mismatch is rejected and
-never selects another host.
-
-```text
-director-engine serve-board \
-  --listen 127.0.0.1:7041 \
-  --taskstore-config /absolute/private/director-engine.json \
-  --host-id paseo-host-id \
-  --host-label "Paseo host label" \
-  --host-socket /absolute/private/director-runtime/host.sock \
-  --runtime-root /absolute/private/director-runtime/work
-```
+The plugin-owned supervisor starts the exact precompiled Engine only after its
+managed direct-Dolt store passes bootstrap and maintenance readback. It serves
+the host-bound Home plus Board/List contracts on loopback. Users do not invoke
+`serve-board`, select an executable, or maintain a service unit.
 
 The Home, Board, and Doctor query endpoints are unauthenticated. Organizer
 Preview/Apply and operational mutations require the connector's
@@ -392,7 +333,7 @@ The engine-owned [`TaskStore` port](engine/ports/taskstore/taskstore.go) exposes
 only typed Project, Task, Run, Candidate, Command, and Event records. It has no
 SQL, connection, credential, database-selection, or Beads surface. The one
 runtime implementation is [`DoltTaskStore`](engine/adapters/dolt/taskstore.go),
-which talks to a separately supervised Dolt 2.3.2 SQL server through distinct
+which talks to the supervisor-owned Dolt 2.3.2 SQL server through distinct
 private control, writer, and exact-routine maintenance identities.
 
 `Bootstrap` installs schema version 2 only into an empty, explicitly selected

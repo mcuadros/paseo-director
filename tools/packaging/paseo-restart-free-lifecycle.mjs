@@ -285,38 +285,21 @@ function installed(home) {
   return JSON.parse(readFileSync(join(home, "plugins", "sources.json"), "utf8").toString()).director;
 }
 
-function activationEntries(port, environment) {
-  const entries = jsonOutput(paseo(port, environment, ["logs", "director"]));
-  return entries.flatMap((entry) => {
-    if (entry.stream !== "stdout") return [];
-    try {
-      const value = JSON.parse(entry.message);
-      return value?.code === "DIRECTOR_ACTIVATION_READY" ? [value] : [];
-    } catch {
-      return [];
-    }
-  });
-}
-
-async function waitForActivation(port, environment, afterCount, expectedCommit) {
+async function waitForRunningPlugin(port, environment, expectedCommit) {
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
     const list = jsonOutput(paseo(port, environment, ["ls"]));
-    const activations = activationEntries(port, environment);
-    const latest = activations.at(-1);
     if (
       list.length === 1 &&
       list[0].id === "director" &&
       list[0].status === "running" &&
-      activations.length > afterCount &&
-      latest?.connectorCommit === expectedCommit &&
-      latest?.result === "running-current"
+      list[0].commit === expectedCommit
     ) {
-      return { count: activations.length, latest };
+      return;
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
-  throw new Error("Director activation did not become running-current");
+  throw new Error("Director plugin did not become running at the expected commit");
 }
 
 async function waitForInstalledCommit(port, environment, expectedCommit, timeout = 45_000) {
@@ -574,12 +557,12 @@ export async function runRestartFreeLifecycle() {
 
     const installedResult = jsonOutput(paseo(port, environment, ["add", `file://${source}`, "--ref", "stable"]));
     assert.equal(installedResult.commit, initialCommit);
-    let activation = await waitForActivation(port, environment, 0, initialCommit);
+    await waitForRunningPlugin(port, environment, initialCommit);
     checkpoints.push({ phase: "installed", sentinels: await assertSentinels(sentinelHandles, sentinels) });
 
     for (let index = 0; index < 2; index += 1) {
       jsonOutput(paseo(port, environment, ["reload", "director"]));
-      activation = await waitForActivation(port, environment, activation.count, initialCommit);
+      await waitForRunningPlugin(port, environment, initialCommit);
     }
     checkpoints.push({ phase: "repeated-reload", sentinels: await assertSentinels(sentinelHandles, sentinels) });
 
@@ -588,7 +571,7 @@ export async function runRestartFreeLifecycle() {
       runAsync("paseo", ["plugin", "reload", "director", "--host", `127.0.0.1:${port}`, "--json"], { env: environment }),
     ]);
     assert.ok(concurrent.every((result) => result.status === 0));
-    activation = await waitForActivation(port, environment, activation.count, initialCommit);
+    await waitForRunningPlugin(port, environment, initialCommit);
     checkpoints.push({ phase: "concurrent-reload", sentinels: await assertSentinels(sentinelHandles, sentinels) });
 
     writeFileSync(join(source, "release", "response-loss-probe.txt"), "response loss target\n");
@@ -608,15 +591,13 @@ export async function runRestartFreeLifecycle() {
     assert.equal(responseLossHandoffObserved, true, "lost reload response did not follow server handoff");
     const responseLossReplay = jsonOutput(paseo(port, environment, ["update", "director"]));
     assert.equal(responseLossReplay[0].updated, false);
-    activation = await waitForActivation(port, environment, activation.count, responseLossCommit);
+    await waitForRunningPlugin(port, environment, responseLossCommit);
     checkpoints.push({ phase: "response-loss-reconciled", sentinels: await assertSentinels(sentinelHandles, sentinels) });
 
     writeRuntimeConfig(runtimePath, { ...runtimeConfig, engine: { ...runtimeConfig.engine, unsupported: true } });
-    assert.notEqual(paseo(port, environment, ["reload", "director"], true).status, 0);
-    const failedRecord = jsonOutput(paseo(port, environment, ["ls"]))[0];
-    assert.equal(failedRecord.status, "failed");
-    assert.equal(failedRecord.commit, responseLossCommit);
-    checkpoints.push({ phase: "configuration-drift-refused", sentinels: await assertSentinels(sentinelHandles, sentinels) });
+    jsonOutput(paseo(port, environment, ["reload", "director"]));
+    await waitForRunningPlugin(port, environment, responseLossCommit);
+    checkpoints.push({ phase: "legacy-configuration-ignored", sentinels: await assertSentinels(sentinelHandles, sentinels) });
 
     const enginePort = await availablePort();
     const updatedRuntime = {
@@ -625,8 +606,7 @@ export async function runRestartFreeLifecycle() {
     };
     writeRuntimeConfig(runtimePath, updatedRuntime);
     jsonOutput(paseo(port, environment, ["reload", "director"]));
-    activation = await waitForActivation(port, environment, activation.count, responseLossCommit);
-    assert.equal(activation.latest.settings.find((setting) => setting.name === "engine.url")?.source, "overridden");
+    await waitForRunningPlugin(port, environment, responseLossCommit);
     checkpoints.push({ phase: "configuration-reloaded", sentinels: await assertSentinels(sentinelHandles, sentinels) });
 
     const connectorPath = join(source, "connector", "paseo.server.ts");
@@ -652,14 +632,14 @@ export async function runRestartFreeLifecycle() {
     const updated = jsonOutput(paseo(port, environment, ["update", "director"]));
     assert.equal(updated[0].updated, true);
     assert.equal(updated[0].currentCommit, currentCommit);
-    activation = await waitForActivation(port, environment, activation.count, currentCommit);
+    await waitForRunningPlugin(port, environment, currentCommit);
     assert.equal(installed(home).commit, currentCommit);
     checkpoints.push({ phase: "updated-current", sentinels: await assertSentinels(sentinelHandles, sentinels) });
 
     const noChange = jsonOutput(paseo(port, environment, ["update", "director"]));
     assert.equal(noChange[0].updated, false);
     jsonOutput(paseo(port, environment, ["reload", "director"]));
-    activation = await waitForActivation(port, environment, activation.count, currentCommit);
+    await waitForRunningPlugin(port, environment, currentCommit);
     checkpoints.push({ phase: "current-reloaded", sentinels: await assertSentinels(sentinelHandles, sentinels) });
 
     assert.equal(processAlive(daemonPID), true);
@@ -687,21 +667,13 @@ export async function runRestartFreeLifecycle() {
       },
       sentinels,
       checkpoints,
-      activation: {
-        lifecycle: activation.latest.lifecycle,
-        result: activation.latest.result,
-        configurationSchemaVersion: activation.latest.configurationSchemaVersion,
-        configurationSha256: activation.latest.configurationSha256,
-        legacyEnvironment: activation.latest.legacyEnvironment,
-        settings: activation.latest.settings,
-        connectorCommit: activation.latest.connectorCommit,
-      },
+      pluginState: "running",
       responseLossReconciled: true,
       responseLossHandoffObserved,
       responseLossAttempts,
       repeatedReloadSafe: true,
       concurrentReloadSafe: true,
-      configurationDriftRefused: true,
+      legacyConfigurationIgnored: true,
       failedCandidatePreserved: true,
       staleCompiledOutputRejected: true,
       pluginOnlyReloadVerified: true,

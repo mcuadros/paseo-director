@@ -21,10 +21,7 @@ import {
 import { dirname, join } from "node:path";
 
 import {
-  developmentEnginePaths,
-  engineProcessEnvironment,
   pathIsWithin,
-  type DevelopmentEngineSelection,
   type EngineSelection,
   type ReleaseEngineSelection,
 } from "./engine-selection.server.ts";
@@ -49,6 +46,7 @@ export type ReleaseAsset = {
   name: string;
   url: string;
   sha256: string;
+  size: number;
 };
 
 export type PublishedReleaseMetadata = {
@@ -59,6 +57,12 @@ export type PublishedReleaseMetadata = {
   sourceCandidate: string;
   binary: ReleaseAsset;
   notices: ReleaseAsset;
+  dolt: {
+    version: string;
+    archive: ReleaseAsset;
+    executableSha256: string;
+    executableSize: number;
+  };
 };
 
 export type UnpublishedReleaseMetadata = {
@@ -84,7 +88,7 @@ export type EngineBinaryIdentity = {
 };
 
 export type ResolvedEngine = {
-  mode: "release" | "development";
+  mode: "release";
   version: string;
   sourceCandidate: string;
   target: "linux-amd64";
@@ -97,22 +101,9 @@ export type ResolvedEngine = {
   contractSha256: string;
 };
 
-type DevelopmentBuildIdentity = {
-  version: "0.0.0-dev";
-  sourceCandidate: string;
-  noticesSha256: string;
-};
-
 export type DistributionDependencies = {
   fetchAsset?: (url: string) => Promise<Uint8Array>;
-  compile?: (
-    selection: DevelopmentEngineSelection,
-    destination: string,
-    identity: DevelopmentBuildIdentity,
-  ) => void;
   inspectBinary?: (path: string) => EngineBinaryIdentity;
-  connectorCommit?: (checkoutRoot: string) => string;
-  sourceCandidate?: (sourceRoot: string) => string;
   afterPublish?: (resolved: ResolvedEngine) => void;
 };
 
@@ -155,21 +146,60 @@ function releaseAssetURL(version: string, name: string, value: unknown): value i
 
 function validateAsset(value: unknown, field: "binary" | "notices", version: string): ReleaseAsset {
   const name = field === "binary" ? BINARY_NAME : NOTICES_NAME;
+  const maximum = field === "binary" ? MAXIMUM_BINARY_BYTES : MAXIMUM_NOTICES_BYTES;
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new EngineDistributionError("ENGINE_RELEASE_METADATA", `release ${field} metadata is invalid`);
   }
   const asset = value as Record<string, unknown>;
   if (
-    !strictKeys(asset, ["name", "sha256", "url"]) ||
+    !strictKeys(asset, ["name", "sha256", "size", "url"]) ||
     asset.name !== name ||
     !releaseAssetURL(version, name, asset.url) ||
     typeof asset.sha256 !== "string" ||
     !SHA256_PATTERN.test(asset.sha256) ||
-    asset.sha256 === EMPTY_SHA256
+    asset.sha256 === EMPTY_SHA256 || !Number.isSafeInteger(asset.size) ||
+    (asset.size as number) <= 0 || (asset.size as number) > maximum
   ) {
     throw new EngineDistributionError("ENGINE_RELEASE_METADATA", `release ${field} identity is invalid`);
   }
-  return { name, url: asset.url, sha256: asset.sha256 };
+  return { name, url: asset.url, sha256: asset.sha256, size: asset.size as number };
+}
+
+function validateDolt(value: unknown): PublishedReleaseMetadata["dolt"] {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new EngineDistributionError("DOLT_RELEASE_METADATA", "Dolt release metadata is invalid");
+  }
+  const dolt = value as Record<string, unknown>;
+  if (
+    !strictKeys(dolt, ["archive", "executableSha256", "executableSize", "version"]) ||
+    dolt.version !== "2.3.2" ||
+    typeof dolt.executableSha256 !== "string" ||
+    !SHA256_PATTERN.test(dolt.executableSha256) ||
+    dolt.executableSha256 === EMPTY_SHA256 ||
+    !Number.isSafeInteger(dolt.executableSize) || (dolt.executableSize as number) <= 0 ||
+    (dolt.executableSize as number) > MAXIMUM_BINARY_BYTES ||
+    dolt.archive === null || typeof dolt.archive !== "object" || Array.isArray(dolt.archive)
+  ) {
+    throw new EngineDistributionError("DOLT_RELEASE_METADATA", "Dolt release identity is invalid");
+  }
+  const archive = dolt.archive as Record<string, unknown>;
+  const name = "dolt-linux-amd64.tar.gz";
+  const expectedURL = `https://github.com/dolthub/dolt/releases/download/v${dolt.version}/${name}`;
+  if (
+    !strictKeys(archive, ["name", "sha256", "size", "url"]) ||
+    archive.name !== name || archive.url !== expectedURL ||
+    typeof archive.sha256 !== "string" || !SHA256_PATTERN.test(archive.sha256) ||
+    archive.sha256 === EMPTY_SHA256 || !Number.isSafeInteger(archive.size) ||
+    (archive.size as number) <= 0 || (archive.size as number) > 512 * 1024 * 1024
+  ) {
+    throw new EngineDistributionError("DOLT_RELEASE_METADATA", "Dolt archive identity is invalid");
+  }
+  return {
+    version: dolt.version,
+    archive: { name, url: expectedURL, sha256: archive.sha256, size: archive.size as number },
+    executableSha256: dolt.executableSha256,
+    executableSize: dolt.executableSize as number,
+  };
 }
 
 export function parseReleaseMetadata(bytes: Uint8Array): ReleaseMetadata {
@@ -199,7 +229,7 @@ export function parseReleaseMetadata(bytes: Uint8Array): ReleaseMetadata {
   }
   if (
     !VERSION_PATTERN.test(metadata.version) ||
-    !strictKeys(metadata, ["binary", "notices", "schemaVersion", "sourceCandidate", "state", "target", "version"]) ||
+    !strictKeys(metadata, ["binary", "dolt", "notices", "schemaVersion", "sourceCandidate", "state", "target", "version"]) ||
     typeof metadata.sourceCandidate !== "string" ||
     !GIT_SHA_PATTERN.test(metadata.sourceCandidate)
   ) {
@@ -213,6 +243,7 @@ export function parseReleaseMetadata(bytes: Uint8Array): ReleaseMetadata {
     sourceCandidate: metadata.sourceCandidate,
     binary: validateAsset(metadata.binary, "binary", metadata.version),
     notices: validateAsset(metadata.notices, "notices", metadata.version),
+    dolt: validateDolt(metadata.dolt),
   };
 }
 
@@ -263,12 +294,8 @@ function releaseMetadataBytes(selection: ReleaseEngineSelection): Uint8Array {
 
 function resolvedConnectorCommit(
   selection: EngineSelection,
-  dependencies: DistributionDependencies,
 ): string {
-  const commit = dependencies.connectorCommit
-    ? dependencies.connectorCommit(selection.checkoutRoot ?? "")
-    : selection.connectorCommit ??
-      (selection.checkoutRoot ? gitCommit(selection.checkoutRoot) : "");
+  const commit = selection.connectorCommit ?? "";
   if (!GIT_SHA_PATTERN.test(commit)) {
     throw new EngineDistributionError(
       "ENGINE_SOURCE_IDENTITY",
@@ -305,19 +332,13 @@ function releaseEnginePaths(selection: ReleaseEngineSelection, metadata: Release
 }
 
 export function engineBoundaryPaths(selection: EngineSelection): string[] {
-  if (selection.mode === "release") {
-    return releaseEnginePaths(selection, parseReleaseMetadata(releaseMetadataBytes(selection)));
+  if (selection.mode !== "release") {
+    throw new EngineDistributionError(
+      "ENGINE_DEVELOPMENT_DISABLED",
+      "installed Director runtime accepts release artifacts only",
+    );
   }
-  const paths = developmentEnginePaths(selection);
-  return [
-    ...(selection.checkoutRoot ? [selection.checkoutRoot] : []),
-    selection.sourceRoot,
-    selection.cacheRoot,
-    selection.moduleCache,
-    paths.binaryPath,
-    paths.temporaryBinaryPath,
-    paths.goCache,
-  ];
+  return releaseEnginePaths(selection, parseReleaseMetadata(releaseMetadataBytes(selection)));
 }
 
 function ensurePrivateDirectory(path: string): void {
@@ -365,31 +386,6 @@ function fsyncDirectory(path: string): void {
   }
 }
 
-function gitCommit(path: string): string {
-  const result = spawnSync("git", ["-C", path, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-    env: process.env.PATH ? { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1" } : { GIT_CONFIG_NOSYSTEM: "1" },
-    shell: false,
-    timeout: 10_000,
-    maxBuffer: 16 * 1024,
-  });
-  const commit = result.stdout?.trim() ?? "";
-  if (result.status !== 0 || (result.error && result.status === null) || !GIT_SHA_PATTERN.test(commit)) {
-    throw new EngineDistributionError("ENGINE_SOURCE_IDENTITY", "exact Git source identity is unavailable");
-  }
-  const status = spawnSync("git", ["-C", path, "status", "--porcelain"], {
-    encoding: "utf8",
-    env: process.env.PATH ? { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1" } : { GIT_CONFIG_NOSYSTEM: "1" },
-    shell: false,
-    timeout: 10_000,
-    maxBuffer: 64 * 1024,
-  });
-  if (status.status !== 0 || (status.error && status.status === null) || status.stdout !== "") {
-    throw new EngineDistributionError("ENGINE_SOURCE_IDENTITY", "Git source has tracked changes");
-  }
-  return commit;
-}
-
 function defaultInspectBinary(path: string): EngineBinaryIdentity {
   const result = spawnSync(path, ["version"], {
     encoding: "utf8",
@@ -409,7 +405,7 @@ function defaultInspectBinary(path: string): EngineBinaryIdentity {
 }
 
 function verifyIdentity(identity: EngineBinaryIdentity, expected: {
-  mode: "release" | "development";
+  mode: "release";
   version: string;
   sourceCandidate: string;
   noticesSha256: string;
@@ -432,7 +428,7 @@ function verifyIdentity(identity: EngineBinaryIdentity, expected: {
 }
 
 function verifiedResolved(options: {
-  mode: "release" | "development";
+  mode: "release";
   version: string;
   sourceCandidate: string;
   binaryPath: string;
@@ -441,6 +437,8 @@ function verifiedResolved(options: {
   inspectBinary: (path: string) => EngineBinaryIdentity;
   expectedBinarySha256?: string;
   expectedNoticesSha256?: string;
+  expectedBinarySize?: number;
+  expectedNoticesSize?: number;
   digestMismatchCode?: string;
 }): ResolvedEngine {
   const binary = readPrivateCacheFile(options.binaryPath);
@@ -449,7 +447,9 @@ function verifiedResolved(options: {
   const noticesSha256 = sha256(notices);
   if (
     (options.expectedBinarySha256 && binarySha256 !== options.expectedBinarySha256) ||
-    (options.expectedNoticesSha256 && noticesSha256 !== options.expectedNoticesSha256)
+    (options.expectedNoticesSha256 && noticesSha256 !== options.expectedNoticesSha256) ||
+    (options.expectedBinarySize && binary.byteLength !== options.expectedBinarySize) ||
+    (options.expectedNoticesSize && notices.byteLength !== options.expectedNoticesSize)
   ) {
     throw new EngineDistributionError(
       options.digestMismatchCode ?? "ENGINE_RELEASE_DIGEST",
@@ -545,14 +545,14 @@ async function resolveRelease(selection: ReleaseEngineSelection, dependencies: D
     throw new EngineDistributionError("ENGINE_RELEASE_UNPUBLISHED", "the scaffold release is explicitly unpublished");
   }
   assertCacheOutsideCheckout(selection);
-  const connectorCommit = resolvedConnectorCommit(selection, dependencies);
+  const connectorCommit = resolvedConnectorCommit(selection);
   const inspectBinary = dependencies.inspectBinary ?? defaultInspectBinary;
   const root = releaseRoot(selection, metadata);
   const binaryPath = join(root, "director-engine");
   const noticesPath = join(root, NOTICES_NAME);
   if (existsSync(root)) {
     ensurePrivateDirectory(root);
-    const resolved = verifiedResolved({ mode: "release", version: metadata.version, sourceCandidate: metadata.sourceCandidate, binaryPath, noticesPath, connectorCommit, inspectBinary, expectedBinarySha256: metadata.binary.sha256, expectedNoticesSha256: metadata.notices.sha256, digestMismatchCode: "ENGINE_CACHE_POISONED" });
+    const resolved = verifiedResolved({ mode: "release", version: metadata.version, sourceCandidate: metadata.sourceCandidate, binaryPath, noticesPath, connectorCommit, inspectBinary, expectedBinarySha256: metadata.binary.sha256, expectedNoticesSha256: metadata.notices.sha256, expectedBinarySize: metadata.binary.size, expectedNoticesSize: metadata.notices.size, digestMismatchCode: "ENGINE_CACHE_POISONED" });
     if (resolved.binarySha256 !== metadata.binary.sha256 || resolved.noticesSha256 !== metadata.notices.sha256) {
       throw new EngineDistributionError("ENGINE_CACHE_POISONED", "cached engine digests do not match the installed pin");
     }
@@ -575,16 +575,16 @@ async function resolveRelease(selection: ReleaseEngineSelection, dependencies: D
   try {
     const fetchAsset = dependencies.fetchAsset ?? defaultFetchAsset;
     const binary = await fetchAsset(metadata.binary.url);
-    if (binary.byteLength > MAXIMUM_BINARY_BYTES) {
+    if (binary.byteLength !== metadata.binary.size || binary.byteLength > MAXIMUM_BINARY_BYTES) {
       throw new EngineDistributionError("ENGINE_RELEASE_SIZE", "release binary exceeds its bounded size");
     }
     writeVerifiedFile(temporaryBinary, binary, metadata.binary.sha256, 0o500);
     const notices = await fetchAsset(metadata.notices.url);
-    if (notices.byteLength > MAXIMUM_NOTICES_BYTES) {
+    if (notices.byteLength !== metadata.notices.size || notices.byteLength > MAXIMUM_NOTICES_BYTES) {
       throw new EngineDistributionError("ENGINE_RELEASE_SIZE", "release notices exceed their bounded size");
     }
     writeVerifiedFile(temporaryNotices, notices, metadata.notices.sha256, 0o400);
-    const staged = verifiedResolved({ mode: "release", version: metadata.version, sourceCandidate: metadata.sourceCandidate, binaryPath: temporaryBinary, noticesPath: temporaryNotices, connectorCommit, inspectBinary, expectedBinarySha256: metadata.binary.sha256, expectedNoticesSha256: metadata.notices.sha256 });
+    const staged = verifiedResolved({ mode: "release", version: metadata.version, sourceCandidate: metadata.sourceCandidate, binaryPath: temporaryBinary, noticesPath: temporaryNotices, connectorCommit, inspectBinary, expectedBinarySha256: metadata.binary.sha256, expectedNoticesSha256: metadata.notices.sha256, expectedBinarySize: metadata.binary.size, expectedNoticesSize: metadata.notices.size });
     if (staged.binarySha256 !== metadata.binary.sha256 || staged.noticesSha256 !== metadata.notices.sha256) {
       throw new EngineDistributionError("ENGINE_RELEASE_DIGEST", "staged engine digests changed");
     }
@@ -596,7 +596,7 @@ async function resolveRelease(selection: ReleaseEngineSelection, dependencies: D
     } catch (error) {
       if (!existsSync(root)) throw error;
     }
-    const resolved = verifiedResolved({ mode: "release", version: metadata.version, sourceCandidate: metadata.sourceCandidate, binaryPath, noticesPath, connectorCommit, inspectBinary, expectedBinarySha256: metadata.binary.sha256, expectedNoticesSha256: metadata.notices.sha256, digestMismatchCode: "ENGINE_CACHE_POISONED" });
+    const resolved = verifiedResolved({ mode: "release", version: metadata.version, sourceCandidate: metadata.sourceCandidate, binaryPath, noticesPath, connectorCommit, inspectBinary, expectedBinarySha256: metadata.binary.sha256, expectedNoticesSha256: metadata.notices.sha256, expectedBinarySize: metadata.binary.size, expectedNoticesSize: metadata.notices.size, digestMismatchCode: "ENGINE_CACHE_POISONED" });
     if (resolved.binarySha256 !== metadata.binary.sha256 || resolved.noticesSha256 !== metadata.notices.sha256) {
       throw new EngineDistributionError("ENGINE_CACHE_POISONED", "published engine cache does not match the installed pin");
     }
@@ -607,72 +607,15 @@ async function resolveRelease(selection: ReleaseEngineSelection, dependencies: D
   }
 }
 
-function defaultCompile(selection: DevelopmentEngineSelection, destination: string, identity: DevelopmentBuildIdentity): void {
-  const { goCache } = developmentEnginePaths(selection);
-  ensurePrivateDirectory(goCache);
-  const result = spawnSync("go", [
-    "build", "-trimpath", "-buildvcs=false", "-ldflags",
-    `-X main.buildMode=development -X main.version=${identity.version} -X main.sourceCandidate=${identity.sourceCandidate} -X main.noticesSha=${identity.noticesSha256}`,
-    "-o", destination, "./cmd/director-engine",
-  ], {
-    cwd: selection.sourceRoot,
-    encoding: "utf8",
-    env: engineProcessEnvironment(process.env, goCache, selection.moduleCache),
-  });
-  if (result.status !== 0 || (result.error && result.status === null)) {
-    throw new EngineDistributionError("ENGINE_DEVELOPMENT_BUILD", "development engine compilation failed");
-  }
-  chmodSync(destination, 0o500);
-}
-
-function resolveDevelopment(selection: DevelopmentEngineSelection, dependencies: DistributionDependencies): ResolvedEngine {
-  assertCacheOutsideCheckout(selection);
-  const connectorCommit = resolvedConnectorCommit(selection, dependencies);
-  const sourceCandidate = (dependencies.sourceCandidate ?? gitCommit)(selection.sourceRoot);
-  if (!GIT_SHA_PATTERN.test(sourceCandidate)) {
-    throw new EngineDistributionError("ENGINE_SOURCE_IDENTITY", "development source Candidate is invalid");
-  }
-  const paths = developmentEnginePaths(selection, sourceCandidate);
-  const finalRoot = dirname(paths.binaryPath);
-  const sourceCacheRoot = dirname(finalRoot);
-  for (const directory of [selection.cacheRoot, join(selection.cacheRoot, "development"), sourceCacheRoot]) {
-    ensurePrivateDirectory(directory);
-  }
-  const noticesPath = join(finalRoot, NOTICES_NAME);
-  const identity: DevelopmentBuildIdentity = { version: "0.0.0-dev", sourceCandidate, noticesSha256: EMPTY_SHA256 };
-  const inspectBinary = dependencies.inspectBinary ?? defaultInspectBinary;
-  if (existsSync(finalRoot)) {
-    ensurePrivateDirectory(finalRoot);
-    return verifiedResolved({ mode: "development", version: identity.version, sourceCandidate, binaryPath: paths.binaryPath, noticesPath, connectorCommit, inspectBinary });
-  }
-  const temporaryRoot = join(sourceCacheRoot, `.partial-${sourceCandidate}-${randomUUID()}`);
-  mkdirSync(temporaryRoot, { mode: 0o700 });
-  const temporary = join(temporaryRoot, "director-engine");
-  const temporaryNotices = join(temporaryRoot, NOTICES_NAME);
-  try {
-    (dependencies.compile ?? defaultCompile)(selection, temporary, identity);
-    writeVerifiedFile(temporaryNotices, new Uint8Array(), EMPTY_SHA256, 0o400);
-    verifiedResolved({ mode: "development", version: identity.version, sourceCandidate, binaryPath: temporary, noticesPath: temporaryNotices, connectorCommit, inspectBinary });
-    fsyncDirectory(temporaryRoot);
-    try {
-      renameSync(temporaryRoot, finalRoot);
-      fsyncDirectory(sourceCacheRoot);
-    } catch (error) {
-      if (!existsSync(finalRoot)) throw error;
-    }
-    const resolved = verifiedResolved({ mode: "development", version: identity.version, sourceCandidate, binaryPath: paths.binaryPath, noticesPath, connectorCommit, inspectBinary });
-    dependencies.afterPublish?.(resolved);
-    return resolved;
-  } finally {
-    if (existsSync(temporaryRoot)) rmSync(temporaryRoot, { recursive: true, force: true });
-  }
-}
-
 export async function resolveEngine(selection: EngineSelection, dependencies: DistributionDependencies = {}): Promise<ResolvedEngine> {
   try {
-    return selection.mode === "release"
-      ? await resolveRelease(selection, dependencies)
-      : resolveDevelopment(selection, dependencies);
+    if (selection.mode !== "release") {
+      throw new EngineDistributionError(
+        "ENGINE_DEVELOPMENT_DISABLED",
+        "installed Director runtime accepts release artifacts only",
+      );
+    }
+    return await resolveRelease(selection, dependencies);
   } catch (error) {
     if (error instanceof EngineDistributionError) throw error;
     throw new EngineDistributionError("ENGINE_DISTRIBUTION_IO", "engine distribution I/O failed");

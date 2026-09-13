@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -17,20 +17,11 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
   const root = mkdtempSync(join(tmpdir(), "director-paseo-commonjs-"));
   const configBase = join(root, "config");
   const cacheBase = join(root, "cache");
+  const runtimeBase = join(root, "runtime");
   const checkout = join(root, "checkout");
-  const sourceRoot = join(root, "source");
-  const credential = join(root, "authority", "connector.password");
-  for (const path of [configBase, cacheBase, checkout, sourceRoot, dirname(credential)]) {
+  for (const path of [configBase, cacheBase, runtimeBase, checkout]) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
   }
-  writeFileSync(credential, "commonjs-test-secret\n", { mode: 0o600 });
-  const runtimePath = join(configBase, "director", "runtime.json");
-  mkdirSync(dirname(runtimePath), { recursive: true, mode: 0o700 });
-  writeFileSync(runtimePath, `${JSON.stringify({
-    schemaVersion: 1,
-    paseo: { credentialFile: credential },
-    engine: { mode: "development", sourceRoot },
-  })}\n`, { mode: 0o600 });
 
   try {
     const result = await build({
@@ -58,6 +49,7 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
     const output = result.outputFiles[0]?.text;
     assert.ok(output);
     assert.doesNotMatch(output, /import\.meta|import_meta|fileURLToPath\([^)]*\.url\)/u);
+    assert.doesNotMatch(output, /createPaseoClient|CONNECTOR_CREDENTIAL_REQUIRED|ENGINE_DEVELOPMENT_BUILD|sourceRoot|GOMODCACHE|go-build-cache/u);
     const factory = globalThis.eval(`(function(require) { const module = { exports: {} }; const exports = module.exports; ${output}; return module.exports; })`);
     const exports = factory(createRequire(import.meta.url)) as {
       startInstalledConnectorShell(options: unknown): {
@@ -65,12 +57,34 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
         close(): Promise<void>;
       };
     };
-    let closed = false;
-    let paseoURL = "";
+    let supervisorClosed = false;
+    let configReads = 0;
+    const paseo = {
+      config: {
+        async get() {
+          configReads += 1;
+          return {
+            requestId: "commonjs-config",
+            config: { plugins: { director: { source: "directory", path: checkout } } },
+          };
+        },
+      },
+      projects: {},
+      workspaces: {},
+      agents: {
+        subscribe() { return () => undefined; },
+        async list() {
+          return { requestId: "commonjs-agents", entries: [], pageInfo: { hasMore: false } };
+        },
+      },
+      providers: {},
+    };
     const connector = exports.startInstalledConnectorShell({
+      paseo,
       environment: {
         XDG_CONFIG_HOME: configBase,
         XDG_CACHE_HOME: cacheBase,
+        XDG_RUNTIME_DIR: runtimeBase,
       },
       installation: {
         schemaVersion: 1,
@@ -78,9 +92,33 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
         connectorCommit: "1".repeat(40),
         releaseMetadata: {
           schemaVersion: 2,
-          state: "unpublished",
-          version: "0.0.0-scaffold",
+          state: "published",
+          version: "1.0.0-alpha.1",
           target: "linux-amd64",
+          sourceCandidate: "2".repeat(40),
+          binary: {
+            name: "director-engine-linux-amd64",
+            url: "https://github.com/mcuadros/paseo-director/releases/download/v1.0.0-alpha.1/director-engine-linux-amd64",
+            sha256: "3".repeat(64),
+            size: 1,
+          },
+          notices: {
+            name: "THIRD_PARTY_NOTICES.txt",
+            url: "https://github.com/mcuadros/paseo-director/releases/download/v1.0.0-alpha.1/THIRD_PARTY_NOTICES.txt",
+            sha256: "4".repeat(64),
+            size: 1,
+          },
+          dolt: {
+            version: "2.3.2",
+            archive: {
+              name: "dolt-linux-amd64.tar.gz",
+              url: "https://github.com/dolthub/dolt/releases/download/v2.3.2/dolt-linux-amd64.tar.gz",
+              sha256: "6".repeat(64),
+              size: 1,
+            },
+            executableSha256: "7".repeat(64),
+            executableSize: 1,
+          },
         },
       },
       reportActivation: false,
@@ -94,21 +132,6 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
             target: "linux-amd64",
           };
         },
-        createClient(configuration: { url: string }) {
-          paseoURL = configuration.url;
-          return {
-            async connect() {},
-            async close() { closed = true; },
-            config: {
-              async get() {
-                return {
-                  requestId: "commonjs-config",
-                  config: { plugins: { director: { source: "directory", path: checkout } } },
-                };
-              },
-            },
-          };
-        },
         boardTransport: { async load() { return { schemaVersion: 1, cursor: "0", tasks: [] }; } },
         planningTransport: {
           async query() { throw new Error("not called"); },
@@ -117,8 +140,8 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
         },
         async resolveEngine() {
           return {
-            mode: "development",
-            version: "0.0.0-dev",
+            mode: "release",
+            version: "1.0.0-alpha.1",
             sourceCandidate: "2".repeat(40),
             target: "linux-amd64",
             binaryPath: "/not-exposed/director-engine",
@@ -130,10 +153,29 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
             contractSha256: "5".repeat(64),
           };
         },
+        async resolveDolt() {
+          return {
+            version: "2.3.2",
+            target: "linux-amd64",
+            binaryPath: "/not-exposed/dolt",
+            binarySha256: "7".repeat(64),
+            archiveSha256: "6".repeat(64),
+          };
+        },
+        async ensureRuntimeSupervisor() {
+          return {
+            binding: "8".repeat(64),
+            async status() {
+              return { state: "current", binding: "8".repeat(64), enginePid: 1, doltPid: 2, restartCount: 0 };
+            },
+            async close() { supervisorClosed = true; },
+            async release() { supervisorClosed = true; },
+          };
+        },
       },
     });
     const status = await connector.status();
-    assert.equal(paseoURL, "ws://127.0.0.1:6767/ws");
+    assert.equal(configReads, 1);
     assert.equal(status.state, "board-ready");
     assert.ok(status.activation && typeof status.activation === "object");
     const activation = status.activation as {
@@ -147,20 +189,18 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
     assert.deepEqual(activation, {
       lifecycle: "plugin-reload",
       result: "running-current",
-      configurationSchemaVersion: 1,
+      configurationSchemaVersion: 2,
       configurationSha256: activation.configurationSha256,
       legacyEnvironment: "absent",
       settings: [
-        { name: "paseo.url", source: "defaulted" },
-        { name: "engine.mode", source: "overridden" },
+        { name: "engine.mode", source: "defaulted" },
         { name: "engine.url", source: "defaulted" },
         { name: "engine.cache-base", source: "overridden" },
         { name: "engine.runtime-base", source: "overridden" },
-        { name: "engine.module-cache", source: "defaulted" },
       ],
     });
     await connector.close();
-    assert.equal(closed, true);
+    assert.equal(supervisorClosed, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

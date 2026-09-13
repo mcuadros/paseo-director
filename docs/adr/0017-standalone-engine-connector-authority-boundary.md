@@ -1,7 +1,11 @@
 # ADR-0017: Bound the standalone engine connector authority on Paseo 0.7.2
 
 - **Status:** Accepted
-- **Amended by:** [ADR-0020](0020-zero-work-bootstrap-and-terminal-event-dispatch.md); project-owner decision `dir-m6.9` comment `01a09682-1168-70ca-841a-4ef6a4aabedb` for deterministic locked npm candidate preparation
+- **Amended by:** [ADR-0020](0020-zero-work-bootstrap-and-terminal-event-dispatch.md);
+  [ADR-0023](0023-plugin-owned-release-runtime.md) for handler-scoped Paseo
+  authority and release-only plugin-owned runtime supervision; project-owner
+  decision `dir-m6.9` comment `01a09682-1168-70ca-841a-4ef6a4aabedb` for
+  deterministic locked npm candidate preparation
 - **Date:** 2026-09-07
 - **Beads Task:** `dir-m1.12`
 - **Plan gate:** M1 engine/process/host boundary before scaffolding
@@ -46,14 +50,14 @@ local channel is an implementation detail beneath that contract.
 ADR-0002 found that the top-level Paseo 0.7.2 plugin context has no injected
 `PaseoApi`; only an inbound handler receives one. The missing startup authority
 does not make the standalone boundary optional. The verified headless mechanism
-has Director for Paseo create its own public supported Paseo SDK client and keep
-all host credential material on the connector side. The project owner accepted
-that mechanism and its bounded full daemon-operator authority.
+had Director for Paseo create its own public supported Paseo SDK client and keep
+all host credential material on the connector side. ADR-0023 supersedes that
+mechanism with the public `PaseoApi` already supplied to each plugin handler.
 
 The owner also fixed engine distribution. Release mode downloads a versioned,
-digest-pinned Director binary from GitHub Releases. Development mode compiles
-the Go engine. Mode selection is explicit and deterministic, and neither mode
-falls back to the other. Paseo plugin installation is a Git clone followed by
+digest-pinned Director binary from GitHub Releases. This ADR originally admitted
+a separate development compilation mode; ADR-0023 removes it from the installed
+plugin and permits Engine compilation only in release CI. Paseo plugin installation is a Git clone followed by
 the manifest's reviewed direct-argv candidate preparation: the exact locked
 production npm closure is installed with package lifecycle scripts disabled,
 then compatibility and dependency integrity are verified before Paseo compiles

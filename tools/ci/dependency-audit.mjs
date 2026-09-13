@@ -26,6 +26,7 @@ const VERSION_PATTERN = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$/u;
 const ALLOWED_INSTALL_SCRIPTS = new Map([
   ["node_modules/esbuild", "0.25.12"],
   ["node_modules/fsevents", "2.3.3"],
+  ["node_modules/node-pty", "1.2.0-beta.15"],
 ]);
 
 function readJSON(path, label) {

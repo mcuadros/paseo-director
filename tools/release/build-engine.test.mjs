@@ -36,22 +36,44 @@ func main(){ path,_:=os.Executable(); bytes,_:=os.ReadFile(path); executable:=sh
   const candidate = run("git", ["rev-parse", "HEAD"], source);
   const notices = join(root, "THIRD_PARTY_NOTICES.txt");
   writeFileSync(notices, `Director release fixture\nsource-candidate: ${candidate}\n`);
-  return { root, source, candidate, notices, output: join(root, "release", "1.2.3") };
+  const doltArchive = join(root, "dolt-linux-amd64.tar.gz");
+  const doltExecutable = join(root, "dolt");
+  writeFileSync(doltArchive, "verified Dolt archive fixture");
+  writeFileSync(doltExecutable, "#!/bin/sh\necho 'dolt version 2.3.2'\n", { mode: 0o500 });
+  chmodSync(doltExecutable, 0o500);
+  return { root, source, candidate, notices, doltArchive, doltExecutable, output: join(root, "release", "1.2.3") };
+}
+
+function buildArguments(value) {
+  return [
+    "--source", value.source,
+    "--candidate", value.candidate,
+    "--version", "1.2.3",
+    "--notices", value.notices,
+    "--dolt-version", "2.3.2",
+    "--dolt-archive", value.doltArchive,
+    "--dolt-executable", value.doltExecutable,
+    "--output", value.output,
+  ];
 }
 
 test("release builder emits one verified static asset closure from an exact Candidate", () => {
   const value = fixture();
   try {
-    const result = buildRelease(["--source", value.source, "--candidate", value.candidate, "--version", "1.2.3", "--notices", value.notices, "--output", value.output]);
+    const result = buildRelease(buildArguments(value));
     assert.equal(result.metadata.sourceCandidate, value.candidate);
     assert.equal(result.identity.sourceCandidate, value.candidate);
     assert.equal(result.identity.noticesSha256, result.metadata.notices.sha256);
+    assert.equal(result.metadata.dolt.version, "2.3.2");
+    assert.equal(result.metadata.dolt.archive.name, "dolt-linux-amd64.tar.gz");
+    assert.match(result.metadata.dolt.archive.sha256, /^[0-9a-f]{64}$/u);
+    assert.match(result.metadata.dolt.executableSha256, /^[0-9a-f]{64}$/u);
     assert.deepEqual(JSON.parse(readFileSync(join(value.output, "engine.json"), "utf8")), result.metadata);
-    const replay = buildRelease(["--source", value.source, "--candidate", value.candidate, "--version", "1.2.3", "--notices", value.notices, "--output", value.output]);
+    const replay = buildRelease(buildArguments(value));
     assert.deepEqual(replay.metadata, result.metadata);
     chmodSync(join(value.output, "THIRD_PARTY_NOTICES.txt"), 0o600);
     writeFileSync(join(value.output, "THIRD_PARTY_NOTICES.txt"), "poisoned\n");
-    assert.throws(() => buildRelease(["--source", value.source, "--candidate", value.candidate, "--version", "1.2.3", "--notices", value.notices, "--output", value.output]), (error) => error.code === "RELEASE_OUTPUT_POISONED");
+    assert.throws(() => buildRelease(buildArguments(value)), (error) => error.code === "RELEASE_OUTPUT_POISONED");
   } finally {
     rmSync(value.root, { recursive: true, force: true });
   }
@@ -61,8 +83,10 @@ test("release builder fails closed on source or notices identity without partial
   const value = fixture();
   try {
     writeFileSync(value.notices, "wrong source\n");
-    assert.throws(() => buildRelease(["--source", value.source, "--candidate", value.candidate, "--version", "1.2.3", "--notices", value.notices, "--output", value.output]), (error) => error.code === "RELEASE_NOTICES_IDENTITY");
-    assert.throws(() => buildRelease(["--source", value.source, "--candidate", "9".repeat(40), "--version", "1.2.3", "--notices", value.notices, "--output", value.output]), (error) => error.code === "RELEASE_SOURCE_IDENTITY");
+    assert.throws(() => buildRelease(buildArguments(value)), (error) => error.code === "RELEASE_NOTICES_IDENTITY");
+    const wrongCandidate = buildArguments(value);
+    wrongCandidate[wrongCandidate.indexOf("--candidate") + 1] = "9".repeat(40);
+    assert.throws(() => buildRelease(wrongCandidate), (error) => error.code === "RELEASE_SOURCE_IDENTITY");
   } finally {
     rmSync(value.root, { recursive: true, force: true });
   }

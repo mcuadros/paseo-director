@@ -36,17 +36,16 @@ test("the generated host descriptor accepts only the exact engine contract", () 
 test("the Paseo startup RPC is strict and exposes no credential field", () => {
   const startup = {
     state: "board-ready",
-    engineMode: "development",
+    engineMode: "release",
     productBehavior: true,
     activation: {
       lifecycle: "plugin-reload",
       result: "running-current",
-      configurationSchemaVersion: 1,
+      configurationSchemaVersion: 2,
       configurationSha256: "6".repeat(64),
       legacyEnvironment: "absent",
       settings: [
-        { name: "paseo.url", source: "defaulted" },
-        { name: "engine.mode", source: "overridden" },
+        { name: "engine.mode", source: "defaulted" },
         { name: "engine.url", source: "defaulted" },
       ],
     },
@@ -58,8 +57,8 @@ test("the Paseo startup RPC is strict and exposes no credential field", () => {
       target: "linux-amd64",
     },
     engine: {
-      mode: "development",
-      version: "0.0.0-dev",
+      mode: "release",
+      version: "1.0.0-alpha.1",
       sourceCandidate: "1".repeat(40),
       target: "linux-amd64",
       binarySha256: "2".repeat(64),
@@ -67,6 +66,14 @@ test("the Paseo startup RPC is strict and exposes no credential field", () => {
       connectorCommit: "4".repeat(40),
       contractVersion: "director.host/v1",
       contractSha256: "5".repeat(64),
+    },
+    runtime: {
+      supervisorBinding: "7".repeat(64),
+      supervisorState: "current",
+      doltVersion: "2.3.2",
+      doltTarget: "linux-amd64",
+      doltBinarySha256: "8".repeat(64),
+      doltArchiveSha256: "9".repeat(64),
     },
     descriptor: EXPECTED_HOST_DESCRIPTOR,
   } as const;

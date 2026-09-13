@@ -31,8 +31,6 @@ import {
 import { HostCompatibilityError } from "../connector/compatibility.server.ts";
 import { BoardTransportError } from "../connector/engine-board.server.ts";
 import {
-  developmentEnginePaths,
-  engineProcessEnvironment,
   selectEngine,
 } from "../connector/engine-selection.server.ts";
 
@@ -51,6 +49,13 @@ function temporaryBoundary() {
   for (const path of [checkoutRoot, sourceRoot, cacheBase, credentialDirectory]) {
     secureDirectory(path);
   }
+  secureDirectory(join(checkoutRoot, "release"));
+  writeFileSync(join(checkoutRoot, "release", "engine.json"), JSON.stringify({
+    schemaVersion: 2,
+    state: "unpublished",
+    version: "0.0.0-scaffold",
+    target: "linux-amd64",
+  }));
   writeFileSync(credentialPath, "boundary-secret\n", { mode: 0o600 });
   return {
     root,
@@ -72,9 +77,9 @@ function hostCompatibility() {
   };
 }
 
-function resolvedEngine(selection: { mode: "release" | "development" }): Promise<ResolvedEngine> {
+function resolvedEngine(_selection: { mode: "release" }): Promise<ResolvedEngine> {
   return Promise.resolve({
-    mode: selection.mode,
+    mode: "release",
     version: "1.0.0",
     sourceCandidate: "1".repeat(40),
     target: "linux-amd64",
@@ -347,8 +352,7 @@ test("connector startup fails before constructing a client when credential is ab
           checkoutRoot: boundary.checkoutRoot,
           environment: {
             DIRECTOR_PASEO_URL: "ws://127.0.0.1:6767/ws",
-            DIRECTOR_ENGINE_MODE: "development",
-            DIRECTOR_ENGINE_SOURCE_ROOT: boundary.sourceRoot,
+            DIRECTOR_ENGINE_MODE: "release",
             XDG_CACHE_HOME: boundary.cacheBase,
           },
           dependencies: {
@@ -400,8 +404,7 @@ test("connector startup requires the explicit engine Board endpoint before const
           environment: {
             DIRECTOR_PASEO_CREDENTIAL_FILE: boundary.credentialPath,
             DIRECTOR_PASEO_URL: "ws://127.0.0.1:6767/ws",
-            DIRECTOR_ENGINE_MODE: "development",
-            DIRECTOR_ENGINE_SOURCE_ROOT: boundary.sourceRoot,
+            DIRECTOR_ENGINE_MODE: "release",
             XDG_CACHE_HOME: boundary.cacheBase,
           },
           dependencies: {
@@ -422,186 +425,21 @@ test("connector startup requires the explicit engine Board endpoint before const
   }
 });
 
-test("credential directory is bidirectionally disjoint from every canonical engine path", () => {
-  const root = mkdtempSync(join(tmpdir(), "director-disjoint-test-"));
-  let clients = 0;
-
-  function rejectCase(options: {
-    name: string;
-    checkoutRoot: string;
-    sourceRoot: string;
-    cacheBase: string;
-    moduleCache?: string;
-    credentialDirectory: string;
-    credentialPath?: string;
-    expectedCode?: string;
-  }): void {
-    for (const path of [
-      options.checkoutRoot,
-      options.sourceRoot,
-      options.cacheBase,
-      options.moduleCache,
-      options.credentialDirectory,
-    ].filter((path): path is string => path !== undefined)) {
-      secureDirectory(path);
-    }
-    const credentialPath =
-      options.credentialPath ??
-      join(options.credentialDirectory, "connector.password");
-    writeFileSync(credentialPath, "boundary-secret\n", { mode: 0o600 });
-    assert.throws(
-      () =>
-        startConnectorShell({
-          checkoutRoot: options.checkoutRoot,
-          environment: {
-            DIRECTOR_PASEO_CREDENTIAL_FILE: credentialPath,
-            DIRECTOR_PASEO_URL: "ws://127.0.0.1:6767/ws",
-            DIRECTOR_ENGINE_MODE: "development",
-            DIRECTOR_ENGINE_SOURCE_ROOT: options.sourceRoot,
-            XDG_CACHE_HOME: options.cacheBase,
-            GOMODCACHE: options.moduleCache,
-          },
-          dependencies: {
-            hostCompatibility,
-            createClient() {
-              clients += 1;
-              return { async close() {} };
-            },
-          },
-        }),
-      (error: unknown) =>
-        error instanceof ConnectorCredentialError &&
-        error.code ===
-          (options.expectedCode ?? "CONNECTOR_CREDENTIAL_ENGINE_PATH"),
-      options.name,
-    );
-  }
-
-  try {
-    const credentialContainsCheckout = join(root, "credential-contains-checkout");
-    rejectCase({
-      name: "credential directory contains checkout root",
-      checkoutRoot: join(credentialContainsCheckout, "credential", "checkout"),
-      sourceRoot: join(credentialContainsCheckout, "source"),
-      cacheBase: join(credentialContainsCheckout, "cache"),
-      credentialDirectory: join(credentialContainsCheckout, "credential"),
-      expectedCode: "CONNECTOR_CREDENTIAL_IN_CHECKOUT",
-    });
-
-    const sourceContainsCredential = join(root, "source-contains-credential");
-    rejectCase({
-      name: "credential directory inside source root",
-      checkoutRoot: join(sourceContainsCredential, "checkout"),
-      sourceRoot: join(sourceContainsCredential, "source"),
-      cacheBase: join(sourceContainsCredential, "cache"),
-      credentialDirectory: join(sourceContainsCredential, "source", "secrets"),
-    });
-
-    const credentialContainsSource = join(root, "credential-contains-source");
-    rejectCase({
-      name: "credential directory contains source root",
-      checkoutRoot: join(credentialContainsSource, "checkout"),
-      sourceRoot: join(credentialContainsSource, "credential", "source"),
-      cacheBase: join(credentialContainsSource, "cache"),
-      credentialDirectory: join(credentialContainsSource, "credential"),
-    });
-
-    const cacheContainsCredential = join(root, "cache-contains-credential");
-    rejectCase({
-      name: "credential directory inside derived cache root",
-      checkoutRoot: join(cacheContainsCredential, "checkout"),
-      sourceRoot: join(cacheContainsCredential, "source"),
-      cacheBase: join(cacheContainsCredential, "cache-base"),
-      credentialDirectory: join(
-        cacheContainsCredential,
-        "cache-base",
-        "director",
-        "engines",
-        "development",
-        "go-build-cache",
-        "secrets",
-      ),
-    });
-
-    const credentialContainsCache = join(root, "credential-contains-cache");
-    rejectCase({
-      name: "credential directory contains cache root",
-      checkoutRoot: join(credentialContainsCache, "checkout"),
-      sourceRoot: join(credentialContainsCache, "source"),
-      cacheBase: join(credentialContainsCache, "credential", "cache-base"),
-      credentialDirectory: join(credentialContainsCache, "credential"),
-    });
-
-    const moduleCacheContainsCredential = join(root, "module-cache-contains-credential");
-    rejectCase({
-      name: "credential directory inside development module cache",
-      checkoutRoot: join(moduleCacheContainsCredential, "checkout"),
-      sourceRoot: join(moduleCacheContainsCredential, "source"),
-      cacheBase: join(moduleCacheContainsCredential, "cache"),
-      moduleCache: join(moduleCacheContainsCredential, "module-cache"),
-      credentialDirectory: join(
-        moduleCacheContainsCredential,
-        "module-cache",
-        "secrets",
-      ),
-    });
-
-    const symlinkCase = join(root, "symlink-source-overlap");
-    const sourceRoot = join(symlinkCase, "source");
-    const actualCredentialDirectory = join(sourceRoot, "secrets");
-    const credentialLink = join(symlinkCase, "credential-link");
-    for (const path of [
-      join(symlinkCase, "checkout"),
-      sourceRoot,
-      join(symlinkCase, "cache"),
-      actualCredentialDirectory,
-    ]) {
-      secureDirectory(path);
-    }
-    writeFileSync(
-      join(actualCredentialDirectory, "connector.password"),
-      "boundary-secret\n",
-      { mode: 0o600 },
-    );
-    symlinkSync(actualCredentialDirectory, credentialLink);
-    rejectCase({
-      name: "symlinked credential directory resolves inside source root",
-      checkoutRoot: join(symlinkCase, "checkout"),
-      sourceRoot,
-      cacheBase: join(symlinkCase, "cache"),
-      credentialDirectory: actualCredentialDirectory,
-      credentialPath: join(credentialLink, "connector.password"),
-    });
-
-    assert.equal(clients, 0, "path rejection must happen before client construction");
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("development boundary enumerates every derived path passed to the engine", () => {
+test("release boundary enumerates only checkout, metadata, and cache paths", () => {
   const boundary = temporaryBoundary();
   try {
     const selection = selectEngine(
       {
-        DIRECTOR_ENGINE_MODE: "development",
-        DIRECTOR_ENGINE_SOURCE_ROOT: boundary.sourceRoot,
+        DIRECTOR_ENGINE_MODE: "release",
         XDG_CACHE_HOME: boundary.cacheBase,
       },
       boundary.checkoutRoot,
     );
-    assert.equal(selection.mode, "development");
-    if (selection.mode !== "development") return;
-    const derived = developmentEnginePaths(selection);
     const boundaryPaths = engineBoundaryPaths(selection);
     for (const path of [
       selection.checkoutRoot,
-      selection.sourceRoot,
       selection.cacheRoot,
-      selection.moduleCache,
-      derived.binaryPath,
-      derived.temporaryBinaryPath,
-      derived.goCache,
+      selection.metadataPath,
     ]) {
       assert.ok(boundaryPaths.includes(path), `missing engine boundary path ${path}`);
     }
@@ -610,7 +448,7 @@ test("development boundary enumerates every derived path passed to the engine", 
   }
 });
 
-test("the connector descriptor and engine environment never propagate its credential", async () => {
+test("the legacy external connector descriptor never propagates its credential", async () => {
   const boundary = temporaryBoundary();
   let configuration: PaseoClientConfig | undefined;
   let closed = false;
@@ -621,8 +459,7 @@ test("the connector descriptor and engine environment never propagate its creden
         DIRECTOR_PASEO_CREDENTIAL_FILE: boundary.credentialPath,
         DIRECTOR_PASEO_URL: "ws://127.0.0.1:6767/ws",
         DIRECTOR_ENGINE_URL: "http://127.0.0.1:7041",
-        DIRECTOR_ENGINE_MODE: "development",
-        DIRECTOR_ENGINE_SOURCE_ROOT: boundary.sourceRoot,
+        DIRECTOR_ENGINE_MODE: "release",
         XDG_CACHE_HOME: boundary.cacheBase,
       },
       dependencies: {
@@ -649,28 +486,6 @@ test("the connector descriptor and engine environment never propagate its creden
       "contractVersion",
       "credentialScope",
     ]);
-
-    const engineEnvironment = engineProcessEnvironment(
-      {
-        PATH: "/usr/bin",
-        DIRECTOR_PASEO_CREDENTIAL_FILE: boundary.credentialPath,
-        DIRECTOR_PASEO_PASSWORD: "boundary-secret",
-      },
-      join(boundary.root, "go-cache"),
-      join(boundary.root, "module-cache"),
-    );
-    assert.deepEqual(Object.keys(engineEnvironment).sort(), [
-      "CGO_ENABLED",
-      "GOCACHE",
-      "GOMODCACHE",
-      "GOTOOLCHAIN",
-      "GOWORK",
-      "PATH",
-    ]);
-    assert.doesNotMatch(
-      JSON.stringify(engineEnvironment),
-      /boundary-secret|connector\.password/,
-    );
 
     await assert.rejects(
       connector.invoke({
@@ -713,8 +528,7 @@ test("engine verification failure closes connector authority before startup beco
         DIRECTOR_PASEO_CREDENTIAL_FILE: boundary.credentialPath,
         DIRECTOR_PASEO_URL: "ws://127.0.0.1:6767/ws",
         DIRECTOR_ENGINE_URL: "http://127.0.0.1:7041",
-        DIRECTOR_ENGINE_MODE: "development",
-        DIRECTOR_ENGINE_SOURCE_ROOT: boundary.sourceRoot,
+        DIRECTOR_ENGINE_MODE: "release",
         XDG_CACHE_HOME: boundary.cacheBase,
       },
       dependencies: {
