@@ -242,6 +242,24 @@ async function waitForDaemon(port, started, environment) {
   throw new Error("Paseo daemon did not become ready");
 }
 
+async function reserveLoopbackPort() {
+  const server = createServer();
+  server.unref();
+  await new Promise((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolveListen);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    server.close();
+    throw new Error("Paseo activation lifecycle could not reserve a loopback port");
+  }
+  await new Promise((resolveClose, rejectClose) => {
+    server.close((error) => error ? rejectClose(error) : resolveClose());
+  });
+  return address.port;
+}
+
 async function stopDaemon(started, environment) {
   if (closed(started.child)) return;
   await runAsync("paseo", ["daemon", "stop", "--home", started.home], { env: environment, timeout: 30_000 });
@@ -414,12 +432,13 @@ export async function runRestartFreeLifecycle() {
   const home = join(root, "paseo-home");
   const configBase = join(root, "operator-config");
   const cacheBase = join(root, "engine-cache");
+  const runtimeBase = join(root, "operator-runtime");
   const authority = join(root, "authority");
   const credentialFile = join(authority, "connector.password");
   const sentinelRoot = join(root, "sentinels");
   const password = `${randomUUID()}${randomUUID()}`;
-  const port = 6767;
-  for (const path of [source, home, configBase, cacheBase, authority, sentinelRoot]) {
+  const port = await reserveLoopbackPort();
+  for (const path of [source, home, configBase, cacheBase, runtimeBase, authority, sentinelRoot]) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
     chmodSync(path, 0o700);
   }
@@ -439,7 +458,7 @@ export async function runRestartFreeLifecycle() {
   const runtimePath = join(runtimeDirectory, "runtime.json");
   const runtimeConfig = {
     schemaVersion: 1,
-    paseo: { credentialFile },
+    paseo: { credentialFile, url: `ws://127.0.0.1:${port}/ws` },
     engine: { mode: "development", sourceRoot: join(engineSource, "engine") },
   };
   writeRuntimeConfig(runtimePath, runtimeConfig);
@@ -478,6 +497,7 @@ export async function runRestartFreeLifecycle() {
     PASEO_LOG_LEVEL: "warn",
     XDG_CONFIG_HOME: configBase,
     XDG_CACHE_HOME: cacheBase,
+    XDG_RUNTIME_DIR: runtimeBase,
   };
   for (const name of [
     "DIRECTOR_ENGINE_MODE",

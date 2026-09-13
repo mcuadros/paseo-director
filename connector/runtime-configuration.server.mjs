@@ -52,15 +52,16 @@ export function directorRuntimePaths(environment = process.env, home = homedir()
 }
 
 export class RuntimeConfigurationError extends Error {
-  constructor(code, message) {
+  constructor(code, message, state = "invalid") {
     super(message);
     this.name = "RuntimeConfigurationError";
     this.code = code;
+    this.state = state;
   }
 }
 
-function fail(code, message) {
-  throw new RuntimeConfigurationError(code, message);
+function fail(code, message, state = "invalid") {
+  throw new RuntimeConfigurationError(code, message, state);
 }
 
 function strictKeys(value, expected) {
@@ -215,7 +216,7 @@ function readPrivateRegularFile(filePath, maximumBytes, code) {
   try {
     before = lstatSync(filePath);
   } catch {
-    fail(code, "Director runtime configuration is unavailable");
+    fail(code, "Director runtime configuration is unavailable", "absent");
   }
   const uid = currentUID();
   if (

@@ -34,17 +34,21 @@ fails closed with a bounded code and never falls back to another connector.
 
 ## Install and update
 
-Before installation, create the owner-only runtime file documented below and
-its separately protected credential. This is candidate-preparation input, not
-daemon-start environment.
+Installation does not require a pre-existing Director runtime file,
+`DIRECTOR_*` process values, or credentials. Candidate preparation verifies
+only the supported host, locked dependency closure, exact Git identity, and
+release metadata needed for Paseo to compile the plugin. Runtime configuration
+and credentials are read only when the connector starts; missing private
+authority may leave the installed plugin failed closed until it is configured
+and reloaded, but it never rejects `plugin add` or corrupts the prior install.
 
 After the release coordinator publishes the protected `stable` channel:
 
 ```text
 paseo plugin add mcuadros/paseo-director --ref stable
 paseo plugin status director
-paseo plugin update director
 paseo plugin reload director
+paseo plugin update director
 ```
 
 Paseo clones a candidate first. Its declared preparation is exactly:
@@ -57,7 +61,9 @@ node tools/packaging/verify-install.mjs
 The first command accepts only `package-lock.json`; it omits development
 packages and disables dependency lifecycle scripts. The second proves the
 installed production versions, real directories, exact registry/integrity
-closure, dependency edges, audited lifecycle-script set, and supported host.
+closure, dependency edges, audited lifecycle-script set, supported host, and
+exact connector/release identity. It does not read or validate runtime
+configuration.
 CI applies the same audit to every change. Neither step vendors
 `@getpaseo/client` or selects an unrecorded dependency.
 
@@ -116,6 +122,11 @@ paseo plugin reload director
 paseo plugin ls --json
 paseo plugin logs director --json
 ```
+
+An unconfigured clean add keeps the plugin process running with every
+connector operation failed closed before SDK-ready or Engine attachment. After
+supplying configuration, `reload` starts the connector within that plugin
+only. The daemon and unrelated agents and workspaces remain uninterrupted.
 
 Success requires plugin status `running` and the latest bounded log record
 `code=DIRECTOR_ACTIVATION_READY`, `result=running-current`, the expected exact

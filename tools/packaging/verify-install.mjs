@@ -16,11 +16,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { auditDependencyClosure } from "../ci/dependency-audit.mjs";
-import {
-  RuntimeConfigurationError,
-  assertRuntimeDeployment,
-  loadRuntimeConfiguration,
-} from "../../connector/runtime-configuration.server.mjs";
 
 const SUPPORTED_PASEO_VERSION = "0.7.2";
 const MINIMUM_NODE_MAJOR = 22;
@@ -141,11 +136,8 @@ function writePreparedMetadata(repositoryRoot, source) {
   return "generated";
 }
 
-export function prepareRuntimeInstallation(options = {}) {
+export function prepareCandidateInstallation(options = {}) {
   const repositoryRoot = options.repositoryRoot ?? resolve(fileURLToPath(new URL("../..", import.meta.url)));
-  const environment = options.environment ?? process.env;
-  const loaded = loadRuntimeConfiguration(environment, options.home);
-  const configuration = assertRuntimeDeployment(repositoryRoot, loaded, environment);
   const connectorCommit = git(repositoryRoot, ["rev-parse", "HEAD"]);
   let releaseMetadata;
   try {
@@ -158,11 +150,8 @@ export function prepareRuntimeInstallation(options = {}) {
     preparedConnectorMetadataSource(connectorCommit, releaseMetadata),
   );
   return {
-    code: "DIRECTOR_INSTALL_RUNTIME_READY",
-    configurationSha256: configuration.diagnostics.sha256,
-    legacyEnvironment: configuration.diagnostics.legacyEnvironment,
+    code: "DIRECTOR_INSTALL_CANDIDATE_READY",
     metadataState: state,
-    settings: configuration.diagnostics.settings,
   };
 }
 
@@ -172,15 +161,13 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import
     process.exitCode = fail(result.code, result.message);
   } else {
     try {
-      const runtime = prepareRuntimeInstallation();
-      process.stdout.write(`${result.code}: ${result.message}; ${JSON.stringify(runtime)}\n`);
+      const candidate = prepareCandidateInstallation();
+      process.stdout.write(`${result.code}: ${result.message}; ${JSON.stringify(candidate)}\n`);
     } catch (error) {
-      const code = error instanceof RuntimeConfigurationError
-        ? error.code
-        : /^[A-Z0-9_]{3,96}$/u.test(error instanceof Error ? error.message : "")
-          ? error.message
-          : "DIRECTOR_INSTALL_RUNTIME_CONFIGURATION";
-      process.exitCode = fail(code, "Director runtime preparation failed closed");
+      const code = /^[A-Z0-9_]{3,96}$/u.test(error instanceof Error ? error.message : "")
+        ? error.message
+        : "DIRECTOR_INSTALL_CANDIDATE_PREPARATION";
+      process.exitCode = fail(code, "Director candidate preparation failed closed");
     }
   }
 }

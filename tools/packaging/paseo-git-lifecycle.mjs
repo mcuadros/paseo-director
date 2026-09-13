@@ -21,6 +21,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -140,6 +141,24 @@ async function waitForDaemon(port, started) {
   throw new Error(`Paseo daemon did not become ready: ${started.output()}`);
 }
 
+async function reserveLoopbackPort() {
+  const server = createServer();
+  server.unref();
+  await new Promise((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolveListen);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    server.close();
+    throw new Error("Paseo lifecycle could not reserve a loopback port");
+  }
+  await new Promise((resolveClose, rejectClose) => {
+    server.close((error) => error ? rejectClose(error) : resolveClose());
+  });
+  return address.port;
+}
+
 async function stopDaemon(started) {
   if (childClosed(started.child)) return;
   await runAsync("paseo", ["daemon", "stop", "--home", started.home], { timeout: 30_000 });
@@ -173,6 +192,16 @@ function assertPreserved(home, port, commitSHA) {
   assert.deepEqual(existsSync(staging) ? readdirSync(staging) : [], []);
 }
 
+async function waitForInstalledCommit(port, expectedCommit, timeout = 30_000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const plugin = JSONOutput(paseo(port, ["ls"]))[0];
+    if (plugin?.commit === expectedCommit && plugin.status === "running") return true;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  return false;
+}
+
 export async function runLifecycle() {
   const root = mkdtempSync(join(tmpdir(), "director-paseo-lifecycle-"));
   const source = join(root, "source");
@@ -180,14 +209,16 @@ export async function runLifecycle() {
   const external = join(root, "operator-state");
   const configBase = join(root, "operator-config");
   const cacheBase = join(root, "engine-cache");
+  const runtimeBase = join(root, "operator-runtime");
   const authority = join(root, "authority");
   const credentialFile = join(authority, "connector.password");
   const stateSentinel = join(external, "director-state.json");
   const cacheSentinel = join(external, "engine-cache.marker");
-  const port = 6767;
+  const port = await reserveLoopbackPort();
   mkdirSync(source, { recursive: true, mode: 0o700 });
+  mkdirSync(home, { mode: 0o700 });
   mkdirSync(external, { mode: 0o700 });
-  for (const path of [configBase, cacheBase, authority]) mkdirSync(path, { mode: 0o700 });
+  for (const path of [configBase, cacheBase, runtimeBase, authority]) mkdirSync(path, { mode: 0o700 });
   writeFileSync(stateSentinel, "preserved-state\n", { mode: 0o600 });
   writeFileSync(cacheSentinel, "preserved-cache\n", { mode: 0o600 });
   repositoryCopy(source);
@@ -196,18 +227,25 @@ export async function runLifecycle() {
   git(source, "config", "user.email", "director-lifecycle@example.invalid");
   const initial = commit(source, "fixture: clean Director install", ["."]);
   const password = `${randomUUID()}${randomUUID()}`;
-  writeFileSync(credentialFile, `${password}\n`, { mode: 0o600 });
-  const runtimeDirectory = join(configBase, "director");
-  mkdirSync(runtimeDirectory, { mode: 0o700 });
-  writeFileSync(join(runtimeDirectory, "runtime.json"), `${JSON.stringify({
-    schemaVersion: 1,
-    paseo: { credentialFile },
-    engine: { mode: "development", sourceRoot: join(source, "engine") },
+  writeFileSync(join(home, "config.json"), `${JSON.stringify({
+    version: 1,
+    daemon: {
+      mcp: { enabled: false, injectIntoAgents: false },
+      browserTools: { enabled: false },
+      relay: { enabled: false },
+    },
+    features: {
+      dictation: { enabled: false },
+      voiceMode: { enabled: false },
+      webUi: { enabled: false },
+    },
+    pluginsEnabled: true,
   }, null, 2)}\n`, { mode: 0o600 });
   Object.assign(commandEnvironment, {
     PASEO_PASSWORD: password,
     XDG_CONFIG_HOME: configBase,
     XDG_CACHE_HOME: cacheBase,
+    XDG_RUNTIME_DIR: runtimeBase,
   });
   const packageBytes = readFileSync(join(source, "package.json"));
   const lockBytes = readFileSync(join(source, "package-lock.json"));
@@ -215,6 +253,7 @@ export async function runLifecycle() {
   const observed = { cleanInstall: initial, compatibleUpdate: "", recoveryUpdate: "" };
   try {
     await waitForDaemon(port, daemon);
+    const activationDaemonPID = daemon.child.pid;
     const installed = JSONOutput(paseo(port, ["add", `file://${source}`, "--ref", "stable"]));
     assert.equal(installed.id, "director");
     assert.equal(installed.commit, initial);
@@ -222,6 +261,27 @@ export async function runLifecycle() {
     assert.equal(firstRecord.commit, initial);
     assert.equal(existsSync(join(firstRecord.checkoutRoot, "node_modules/@getpaseo/client/package.json")), true);
     assert.equal(existsSync(join(firstRecord.checkoutRoot, "node_modules/typescript")), false, "Paseo installation must omit development dependencies");
+    const unconfigured = JSONOutput(paseo(port, ["ls"]));
+    assert.equal(unconfigured.length, 1);
+    assert.equal(unconfigured[0].commit, initial);
+    assert.equal(unconfigured[0].status, "running");
+
+    writeFileSync(credentialFile, `${password}\n`, { mode: 0o600 });
+    const runtimeDirectory = join(configBase, "director");
+    mkdirSync(runtimeDirectory, { mode: 0o700 });
+    writeFileSync(join(runtimeDirectory, "runtime.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      paseo: { credentialFile, url: `ws://127.0.0.1:${port}/ws` },
+      engine: { mode: "development", sourceRoot: join(source, "engine") },
+    }, null, 2)}\n`, { mode: 0o600 });
+    paseo(port, ["reload", "director"]);
+    assert.equal(await waitForInstalledCommit(port, initial), true, "plugin-scoped reload did not activate Director");
+    const activated = JSONOutput(paseo(port, ["ls"]));
+    assert.equal(activated.length, 1);
+    assert.equal(activated[0].commit, initial);
+    assert.equal(activated[0].status, "running");
+    assert.equal(daemon.child.pid, activationDaemonPID);
+    assert.equal(childClosed(daemon.child), false);
 
     writeFileSync(join(source, "release", "lifecycle-probe.txt"), "compatible update\n");
     observed.compatibleUpdate = commit(source, "fixture: compatible update", ["release/lifecycle-probe.txt"]);
@@ -285,6 +345,8 @@ export async function runLifecycle() {
       target: "linux-amd64",
       nodeVersion: process.versions.node,
       ...observed,
+      cleanInstallWithoutRuntimeConfiguration: true,
+      pluginScopedActivationWithoutRestart: true,
       failedUpdatePreserved: true,
       restartPreserved: true,
       incompatibleDiagnostic: incompatible.code,

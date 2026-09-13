@@ -9,7 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
-  prepareRuntimeInstallation,
+  prepareCandidateInstallation,
   preparedConnectorMetadataSource,
   verifyInstall,
 } from "./verify-install.mjs";
@@ -36,24 +36,12 @@ test("install verification rejects incompatible hosts with bounded path-free dia
   assert.doesNotMatch(unsafe.message, /secret|path|credential|value/u);
 });
 
-test("candidate preparation embeds exact Git identity without paths or secrets", () => {
+test("declared candidate preparation needs no pre-existing runtime configuration", () => {
   const root = mkdtempSync(join(tmpdir(), "director-install-metadata-"));
   const checkout = join(root, "checkout");
-  const configBase = join(root, "config");
-  const cacheBase = join(root, "cache");
-  const authority = join(root, "authority");
-  for (const path of [join(checkout, "connector"), join(checkout, "release"), configBase, cacheBase, authority]) {
+  for (const path of [join(checkout, "connector"), join(checkout, "release")]) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
   }
-  const credential = join(authority, "connector.password");
-  writeFileSync(credential, "metadata-test-secret\n", { mode: 0o600 });
-  const runtimeDirectory = join(configBase, "director");
-  mkdirSync(runtimeDirectory, { mode: 0o700 });
-  writeFileSync(join(runtimeDirectory, "runtime.json"), `${JSON.stringify({
-    schemaVersion: 1,
-    paseo: { credentialFile: credential },
-    engine: {},
-  })}\n`, { mode: 0o600 });
   const release = {
     schemaVersion: 2,
     state: "unpublished",
@@ -75,13 +63,21 @@ test("candidate preparation embeds exact Git identity without paths or secrets",
     assert.equal(git("-c", "user.name=Director Test", "-c", "user.email=director@example.invalid", "commit", "-m", "fixture").status, 0);
     const commit = git("rev-parse", "HEAD").stdout.trim();
     assert.equal(git("status", "--porcelain=v1", "--untracked-files=no").stdout.trim(), "");
-    const environment = { XDG_CONFIG_HOME: configBase, XDG_CACHE_HOME: cacheBase, PATH: process.env.PATH };
-    const first = prepareRuntimeInstallation({ repositoryRoot: checkout, environment, home: root });
+    const first = prepareCandidateInstallation({
+      repositoryRoot: checkout,
+      environment: {
+        XDG_CONFIG_HOME: join(root, "missing-config"),
+        XDG_CACHE_HOME: join(root, "missing-cache"),
+        PATH: process.env.PATH,
+      },
+      home: join(root, "missing-home"),
+    });
     assert.equal(first.metadataState, "generated");
+    assert.equal(first.code, "DIRECTOR_INSTALL_CANDIDATE_READY");
     const source = readFileSync(join(checkout, "connector", "install-metadata.server.ts"), "utf8");
     assert.match(source, new RegExp(commit, "u"));
-    assert.doesNotMatch(source, /metadata-test-secret|connector\.password|director-install-metadata/u);
-    assert.equal(prepareRuntimeInstallation({ repositoryRoot: checkout, environment, home: root }).metadataState, "adopted");
+    assert.doesNotMatch(source, /missing-config|missing-cache|missing-home|director-install-metadata/u);
+    assert.equal(prepareCandidateInstallation({ repositoryRoot: checkout }).metadataState, "adopted");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
