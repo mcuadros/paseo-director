@@ -702,6 +702,10 @@ test("the connector descriptor and engine environment never propagate its creden
 test("engine verification failure closes connector authority before startup becomes ready", async () => {
   const boundary = temporaryBoundary();
   let closed = false;
+  let rejectEngine!: (reason: unknown) => void;
+  const engine = new Promise<ResolvedEngine>((_resolve, reject) => {
+    rejectEngine = reject;
+  });
   try {
     const connector = startConnectorShell({
       checkoutRoot: boundary.checkoutRoot,
@@ -715,11 +719,13 @@ test("engine verification failure closes connector authority before startup beco
       },
       dependencies: {
         hostCompatibility,
-        async resolveEngine() { throw new EngineDistributionError("ENGINE_IDENTITY_MISMATCH", "engine identity does not match the installed pin"); },
+        resolveEngine() { return engine; },
         createClient() { return { async close() { closed = true; } }; },
       },
     });
-    await assert.rejects(connector.status(), (error: unknown) =>
+    const status = connector.status();
+    rejectEngine(new EngineDistributionError("ENGINE_IDENTITY_MISMATCH", "engine identity does not match the installed pin"));
+    await assert.rejects(status, (error: unknown) =>
       error instanceof EngineDistributionError && error.code === "ENGINE_IDENTITY_MISMATCH");
     assert.equal(closed, true);
   } finally {

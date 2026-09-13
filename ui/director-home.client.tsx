@@ -779,7 +779,7 @@ export function DirectorHome({ theme, layout, host, navigation }: PluginSurfaceP
               <>
                 <Text style={styles.body}>
                   {entry.flow === "native"
-                    ? "Select an existing native Paseo Project. Director derives its stable identity, repository root, candidate Organizer location, and exact visible Workspaces before generating paseo-director.json for Preview."
+                    ? "Select an existing native Paseo Project. Director derives its stable identity, repository root, proposed Organizer path, and exact visible Workspaces before generating paseo-director.json for Preview."
                     : "Advanced import is only for an existing Director setup. Director Engine validates its marker, schema, Git state, dynamic state, and every Workspace identity before Apply."}
                 </Text>
                 {entry.requestId === null ? (

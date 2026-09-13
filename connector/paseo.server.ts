@@ -345,6 +345,9 @@ export class PaseoHostConnector implements DirectorHost {
       !(hostname === "::1" || hostname.startsWith("127."))) {
       throw new Error("DIRECTOR_ENGINE_URL must be an exact loopback origin for terminal callbacks");
     }
+    // Startup methods retain and expose the authoritative rejection. The
+    // background attachment consumes only that source rejection; failures in
+    // its fulfillment callback remain observable instead of being suppressed.
     void this.#ready.then(async () => {
       if (!this.#client.agents || this.#terminalUnsubscribe) return;
       this.#terminalUnsubscribe = this.#client.agents.subscribe((update: PaseoAgentUpdate) => {
@@ -376,7 +379,7 @@ export class PaseoHostConnector implements DirectorHost {
         }).catch(() => undefined);
       });
       await this.#client.agents.list({ page: { limit: 100 }, subscribe: {} });
-    });
+    }, () => undefined);
   }
 
   #observation(
