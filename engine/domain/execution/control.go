@@ -51,6 +51,7 @@ type ControlActorKind string
 
 const (
 	ControlActorHuman       ControlActorKind = "human"
+	ControlActorAgent       ControlActorKind = "agent"
 	ControlActorBudget      ControlActorKind = "system_budget"
 	ControlActorCoordinator ControlActorKind = "system_coordinator"
 )
@@ -243,7 +244,7 @@ func ValidControlIntent(intent ControlIntent) bool {
 	if intent.ConfirmationID != "" {
 		return false
 	}
-	return intent.ActorKind == ControlActorHuman || intent.ActorKind == ControlActorBudget ||
+	return intent.ActorKind == ControlActorHuman || intent.ActorKind == ControlActorAgent || intent.ActorKind == ControlActorBudget ||
 		intent.ActorKind == ControlActorCoordinator
 }
 

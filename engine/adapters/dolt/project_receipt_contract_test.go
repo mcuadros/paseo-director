@@ -4,12 +4,14 @@ package dolt_test
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/mcuadros/director-engine/adapters/dolt"
 	"github.com/mcuadros/director-engine/domain"
+	projectadmindomain "github.com/mcuadros/director-engine/domain/projectadmin"
 	domainscheduling "github.com/mcuadros/director-engine/domain/scheduling"
 )
 
@@ -47,6 +49,19 @@ func TestDoltProjectCASReceiptSurvivesRestartAndLeaseMutation(t *testing.T) {
 		event("scheduler-batch-contract-event", "", 3, project.ID, 2, "scheduler.reserved"))
 	requireApplied(t, result, err)
 	want := project.Scheduling
+	project.ProjectAdmin = projectadmindomain.State{Sessions: []projectadmindomain.SessionRecord{{
+		Binding: projectadmindomain.SessionBinding{SchemaVersion: projectadmindomain.SessionSchemaVersion, SessionID: "session-contract",
+			ProjectID: project.ID, NativeWorkspaceID: "native-workspace", NativeAgentID: "native-agent", Audience: "audience-contract"},
+		TokenSHA256: strings.Repeat("b", 64), State: projectadmindomain.SessionActive, CreatedAtMillis: 1_000,
+	}}, Receipts: []projectadmindomain.Receipt{{Key: "receipt-contract", SessionID: "session-contract",
+		ToolName: "director_admin_planning_command", RequestID: "request-contract", PayloadSHA256: strings.Repeat("c", 64),
+		Output: json.RawMessage(`{"status":"accepted"}`), RecordedAtMillis: 1_001}}}
+	project.Version = 3
+	result, err = store.UpdateProject(context.Background(),
+		command("project-admin-contract", "project.admin_mcp.receipt_recorded", project.ID, 2, `{}`), project,
+		event("project-admin-contract-event", "", 4, project.ID, 3, "project.admin_mcp.receipt_recorded"))
+	requireApplied(t, result, err)
+	wantAdmin := projectadmindomain.Clone(project.ProjectAdmin)
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -54,8 +69,8 @@ func TestDoltProjectCASReceiptSurvivesRestartAndLeaseMutation(t *testing.T) {
 	restarted := openContractStore(t, fixture, storeID, false)
 	t.Cleanup(func() { _ = restarted.Close() })
 	project, err = restarted.Project(context.Background(), project.ID)
-	if err != nil || !reflect.DeepEqual(project.Scheduling, want) {
-		t.Fatalf("restarted scheduling ledger = %#v, %v", project.Scheduling, err)
+	if err != nil || !reflect.DeepEqual(project.Scheduling, want) || !reflect.DeepEqual(project.ProjectAdmin, wantAdmin) {
+		t.Fatalf("restarted Project ledgers = scheduling %#v, admin %#v, %v", project.Scheduling, project.ProjectAdmin, err)
 	}
 	nowMillis = 2_000
 	dolt.UseTransactionTimestampForTest(restarted, &nowMillis)
@@ -66,7 +81,7 @@ func TestDoltProjectCASReceiptSurvivesRestartAndLeaseMutation(t *testing.T) {
 		typedCommand(t, "scheduler-lease-renew", "project.lease.renew", project.ID, project.Version, renew), renew)
 	requireApplied(t, result, err)
 	project, err = restarted.Project(context.Background(), project.ID)
-	if err != nil || !reflect.DeepEqual(project.Scheduling, want) {
-		t.Fatalf("lease mutation lost scheduling ledger = %#v, %v", project.Scheduling, err)
+	if err != nil || !reflect.DeepEqual(project.Scheduling, want) || !reflect.DeepEqual(project.ProjectAdmin, wantAdmin) {
+		t.Fatalf("lease mutation lost Project ledgers = scheduling %#v, admin %#v, %v", project.Scheduling, project.ProjectAdmin, err)
 	}
 }

@@ -57,6 +57,10 @@ export function generateAgentMCPClient(repositoryRoot, schemaPath) {
   return generate(repositoryRoot, schemaPath, "./cmd/generate-agent-mcp-client");
 }
 
+export function generateProjectAdminMCPClient(repositoryRoot, schemaPath) {
+  return generate(repositoryRoot, schemaPath, "./cmd/generate-project-admin-mcp-client");
+}
+
 export function generatedClientMatches(repositoryRoot, schemaPath) {
   const generated = generateClient(repositoryRoot, schemaPath);
   const committed = readFileSync(
@@ -81,6 +85,14 @@ export function generatedAgentMCPClientMatches(repositoryRoot, schemaPath) {
   return generated.equals(committed);
 }
 
+export function generatedProjectAdminMCPClientMatches(repositoryRoot, schemaPath) {
+  const generated = generateProjectAdminMCPClient(repositoryRoot, schemaPath);
+  const committed = readFileSync(
+    resolve(repositoryRoot, "generated/project-admin-mcp-contract.shared.ts"),
+  );
+  return generated.equals(committed);
+}
+
 function run(repositoryRoot) {
   const hostSchemaPath = resolve(
     repositoryRoot,
@@ -93,6 +105,10 @@ function run(repositoryRoot) {
   const agentMCPSchemaPath = resolve(
     repositoryRoot,
     "engine/domain/agentbridge/schemas/director-agent-mcp.v1.json",
+  );
+  const projectAdminMCPSchemaPath = resolve(
+    repositoryRoot,
+    "engine/domain/projectadmin/schemas/director-project-admin-mcp.v1.json",
   );
   if (!generatedClientMatches(repositoryRoot, hostSchemaPath)) {
     console.error(
@@ -112,7 +128,13 @@ function run(repositoryRoot) {
     );
     return 1;
   }
-  console.log("Engine-owned host, planning, and agent MCP schemas match their generated TypeScript clients.");
+  if (!generatedProjectAdminMCPClientMatches(repositoryRoot, projectAdminMCPSchemaPath)) {
+    console.error(
+      "Generated Project administration MCP client drifted; run npm run contract:generate and review the result.",
+    );
+    return 1;
+  }
+  console.log("Engine-owned host, planning, agent MCP, and Project administration MCP schemas match their generated TypeScript clients.");
   return 0;
 }
 

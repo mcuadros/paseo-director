@@ -15,11 +15,13 @@ import (
 	"strings"
 
 	applicationbridge "github.com/mcuadros/director-engine/application/agentbridge"
+	applicationadmin "github.com/mcuadros/director-engine/application/projectadmin"
 	domainbridge "github.com/mcuadros/director-engine/domain/agentbridge"
 	"github.com/mcuadros/director-engine/domain/jsondocument"
 )
 
-const serverName = "director-session-mcp"
+const runServerName = "director-session-mcp"
+const projectAdminServerName = "director-project-admin"
 
 type rpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -159,7 +161,25 @@ func writeResponse(writer *bufio.Writer, response rpcResponse) error {
 	return writer.Flush()
 }
 
-func toolsList(descriptor applicationbridge.Descriptor) []mcpTool {
+type runtimeTool struct {
+	Name        string
+	Description string
+	InputSchema json.RawMessage
+}
+
+type runtimeDescriptor struct {
+	ServerName      string
+	ContractVersion string
+	Tools           []runtimeTool
+}
+
+type authorizedRuntimeSession struct {
+	descriptor func() runtimeDescriptor
+	call       func(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
+	errorCode  func(error) string
+}
+
+func toolsList(descriptor runtimeDescriptor) []mcpTool {
 	tools := make([]mcpTool, 0, len(descriptor.Tools))
 	for _, tool := range descriptor.Tools {
 		tools = append(tools, mcpTool{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema})
@@ -185,7 +205,7 @@ func validProtocolVersion(value string) bool {
 	return true
 }
 
-func initializeResult(request rpcRequest, descriptor applicationbridge.Descriptor) any {
+func initializeResult(request rpcRequest, descriptor runtimeDescriptor) any {
 	protocolVersion := "2025-06-18"
 	if len(request.Params) > 0 {
 		var parameters struct {
@@ -206,13 +226,13 @@ func initializeResult(request rpcRequest, descriptor applicationbridge.Descripto
 		ProtocolVersion: protocolVersion,
 		Capabilities:    map[string]any{"tools": map[string]any{"listChanged": false}},
 		ServerInfo: map[string]any{
-			"name": serverName, "version": descriptor.ContractVersion,
+			"name": descriptor.ServerName, "version": descriptor.ContractVersion,
 		},
 		Instructions: "Use only the tools listed for this immutable Director session scope.",
 	}
 }
 
-func handleRequest(ctx context.Context, session *applicationbridge.Session, request rpcRequest) *rpcResponse {
+func handleRequest(ctx context.Context, session authorizedRuntimeSession, request rpcRequest) *rpcResponse {
 	if request.JSONRPC != "2.0" || request.Method == "" {
 		response := responseError(request.ID, -32600, "Invalid Request")
 		return &response
@@ -225,7 +245,7 @@ func handleRequest(ctx context.Context, session *applicationbridge.Session, requ
 		response := responseError(json.RawMessage("null"), -32600, "Invalid Request")
 		return &response
 	}
-	descriptor := session.Descriptor()
+	descriptor := session.descriptor()
 	response := rpcResponse{JSONRPC: "2.0", ID: request.ID}
 	switch request.Method {
 	case "initialize":
@@ -243,11 +263,11 @@ func handleRequest(ctx context.Context, session *applicationbridge.Session, requ
 			returnValue := responseError(request.ID, -32602, "Invalid params")
 			return &returnValue
 		}
-		result, err := session.Call(ctx, stableRequestID(request.ID, parameters.Name, parameters.Arguments), parameters.Name, parameters.Arguments)
+		result, err := session.call(ctx, stableRequestID(request.ID, parameters.Name, parameters.Arguments), parameters.Name, parameters.Arguments)
 		if err != nil {
-			response.Result = callResult{Content: []content{{Type: "text", Text: boundedCode(err)}}, IsError: true}
+			response.Result = callResult{Content: []content{{Type: "text", Text: session.errorCode(err)}}, IsError: true}
 		} else {
-			response.Result = callResult{Content: []content{{Type: "text", Text: string(result.Payload)}}, IsError: false}
+			response.Result = callResult{Content: []content{{Type: "text", Text: string(result)}}, IsError: false}
 		}
 	default:
 		returnValue := responseError(request.ID, -32601, "Method not found")
@@ -258,8 +278,8 @@ func handleRequest(ctx context.Context, session *applicationbridge.Session, requ
 
 // Serve runs one newline-delimited stdio MCP session. The authorized Session
 // is created by the standalone engine application before this transport starts.
-func Serve(ctx context.Context, input io.Reader, output io.Writer, session *applicationbridge.Session) error {
-	if session == nil {
+func serve(ctx context.Context, input io.Reader, output io.Writer, session authorizedRuntimeSession) error {
+	if session.descriptor == nil || session.call == nil || session.errorCode == nil {
 		return errors.New("authorized MCP session is required")
 	}
 	scanner := bufio.NewScanner(input)
@@ -288,6 +308,51 @@ func Serve(ctx context.Context, input io.Reader, output io.Writer, session *appl
 		return fmt.Errorf("bounded MCP input failed")
 	}
 	return writer.Flush()
+}
+
+// Serve retains the Run-scoped Worker/Reviewer v1 entry point.
+func Serve(ctx context.Context, input io.Reader, output io.Writer, session *applicationbridge.Session) error {
+	if session == nil {
+		return errors.New("authorized MCP session is required")
+	}
+	return serve(ctx, input, output, authorizedRuntimeSession{
+		descriptor: func() runtimeDescriptor {
+			value := session.Descriptor()
+			tools := make([]runtimeTool, 0, len(value.Tools))
+			for _, tool := range value.Tools {
+				tools = append(tools, runtimeTool{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema})
+			}
+			return runtimeDescriptor{ServerName: runServerName, ContractVersion: value.ContractVersion, Tools: tools}
+		},
+		call: func(ctx context.Context, requestID, toolName string, arguments json.RawMessage) (json.RawMessage, error) {
+			result, err := session.Call(ctx, requestID, toolName, arguments)
+			return result.Payload, err
+		},
+		errorCode: boundedCode,
+	})
+}
+
+// ServeProjectAdmin exposes the same bounded MCP transport over a distinct
+// Project-scoped application session.
+func ServeProjectAdmin(ctx context.Context, input io.Reader, output io.Writer, session *applicationadmin.Session) error {
+	if session == nil {
+		return errors.New("authorized MCP session is required")
+	}
+	return serve(ctx, input, output, authorizedRuntimeSession{
+		descriptor: func() runtimeDescriptor {
+			value := session.Descriptor()
+			tools := make([]runtimeTool, 0, len(value.Tools))
+			for _, tool := range value.Tools {
+				tools = append(tools, runtimeTool{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema})
+			}
+			return runtimeDescriptor{ServerName: projectAdminServerName, ContractVersion: value.ContractVersion, Tools: tools}
+		},
+		call: func(ctx context.Context, requestID, toolName string, arguments json.RawMessage) (json.RawMessage, error) {
+			result, err := session.Call(ctx, requestID, toolName, arguments)
+			return result.Payload, err
+		},
+		errorCode: applicationadmin.ErrorCode,
+	})
 }
 
 func slicesTrimSpace(value []byte) []byte { return bytes.TrimSpace(value) }

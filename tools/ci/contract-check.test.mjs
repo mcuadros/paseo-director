@@ -16,9 +16,11 @@ import {
   generateAgentMCPClient,
   generateClient,
   generatePlanningClient,
+  generateProjectAdminMCPClient,
   generatedAgentMCPClientMatches,
   generatedClientMatches,
   generatedPlanningClientMatches,
+  generatedProjectAdminMCPClientMatches,
 } from "./contract-check.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -34,6 +36,10 @@ const agentMCPSchemaPath = resolve(
   repositoryRoot,
   "engine/domain/agentbridge/schemas/director-agent-mcp.v1.json",
 );
+const projectAdminMCPSchemaPath = resolve(
+  repositoryRoot,
+  "engine/domain/projectadmin/schemas/director-project-admin-mcp.v1.json",
+);
 
 test("the committed client is generated from the exact engine schema", () => {
   assert.equal(generatedClientMatches(repositoryRoot, schemaPath), true);
@@ -45,6 +51,30 @@ test("the committed client is generated from the exact engine schema", () => {
     generatedAgentMCPClientMatches(repositoryRoot, agentMCPSchemaPath),
     true,
   );
+  assert.equal(
+    generatedProjectAdminMCPClientMatches(repositoryRoot, projectAdminMCPSchemaPath),
+    true,
+  );
+});
+
+test("the Project administration MCP client drifts with its canonical engine schema", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "director-project-admin-mcp-drift-"));
+  try {
+    const changedSchema = join(temporaryRoot, "changed.json");
+    writeFileSync(
+      changedSchema,
+      readFileSync(projectAdminMCPSchemaPath, "utf8").replace(
+        "director.project-admin-mcp/v1",
+        "director.project-admin-mcp/v999",
+      ),
+    );
+    assert.throws(
+      () => generateProjectAdminMCPClient(repositoryRoot, changedSchema),
+      /project administration MCP contract is invalid/,
+    );
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 test("the agent MCP client drifts with its canonical engine schema", () => {

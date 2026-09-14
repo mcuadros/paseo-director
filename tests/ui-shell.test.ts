@@ -32,6 +32,7 @@ test("Director for Paseo retains every planned top-level UI shell", () => {
     'id: "task-inspector"',
     'id: "open-project-board"',
     'id: "open-director-workers"',
+    'id: "create-director-administration-session"',
     'id: "open-task-inspector"',
   ]) {
     assert.ok(entry.includes(registration), `missing ${registration}`);

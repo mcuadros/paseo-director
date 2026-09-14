@@ -61,6 +61,18 @@ import type { ConnectorStartupStatus } from "../rpc/startup.shared.ts";
 import { loadConnectorCredential } from "./credential.server.ts";
 import { createPaseoSessionMCPInjection } from "./agent-mcp.server.ts";
 import {
+  createProjectAdminMCPInjection,
+  registerProjectAdminSession,
+  revokeProjectAdminSession,
+} from "./project-admin-mcp.server.ts";
+import { PROJECT_ADMIN_RECONNECT_INSTRUCTION } from "../rpc/project-admin.shared.ts";
+import {
+  PROJECT_ADMIN_MCP_CONTRACT_SHA256,
+  PROJECT_ADMIN_MCP_CONTRACT_VERSION,
+  PROJECT_ADMIN_MCP_TOOLS,
+  type ProjectAdminMCPSessionLaunch,
+} from "../generated/project-admin-mcp-contract.shared.ts";
+import {
   createBoardTransport,
   type BoardTransport,
 } from "./engine-board.server.ts";
@@ -274,6 +286,7 @@ export class PaseoHostConnector implements DirectorHost {
   readonly #ready: Promise<void>;
   readonly #activation: ConnectorStartupStatus["activation"];
   readonly #runtimeRequired: boolean;
+  readonly #engineURL: string;
   #hostServer: Promise<() => Promise<void>> | null = null;
   #runtimeSupervisor: Promise<{
     supervisor: RuntimeSupervisorHandle;
@@ -319,6 +332,7 @@ export class PaseoHostConnector implements DirectorHost {
       settings: [],
     },
     runtimeRequired = false,
+    engineURL: string = DEFAULT_ENGINE_URL,
   ) {
     this.#client = client;
     this.#selection = selection;
@@ -328,6 +342,7 @@ export class PaseoHostConnector implements DirectorHost {
     this.#compatibility = compatibility;
     this.#activation = activation;
     this.#runtimeRequired = runtimeRequired;
+    this.#engineURL = engineURL;
     assertHostDescriptor(EXPECTED_HOST_DESCRIPTOR);
     this.#ready = Promise.all([
       clientReady ?? (client.connect ? client.connect() : Promise.resolve()),
@@ -1145,6 +1160,7 @@ export class PaseoHostConnector implements DirectorHost {
     const runtime = await this.#runtimeSupervisor ?? {
       supervisor: {
         binding: "0".repeat(64),
+        projectAdminAuthorization() { return "0".repeat(64); },
         async status() {
           return { state: "current" as const, binding: "0".repeat(64), enginePid: null, doltPid: null, restartCount: 0 };
         },
@@ -1287,6 +1303,94 @@ export class PaseoHostConnector implements DirectorHost {
     return this.#planningTransport.taskDetail(input);
   }
 
+  async recreateProjectAdminSession(input: {
+    readonly requestId: string;
+    readonly sourceWorkspaceId: string;
+    readonly sourceAgentId: string;
+  }): Promise<{ status: "created"; agentId: string; instruction: typeof PROJECT_ADMIN_RECONNECT_INSTRUCTION }> {
+    await this.#ready;
+    if (!IDENTITY_PATTERN.test(input.requestId) || !IDENTITY_PATTERN.test(input.sourceWorkspaceId) ||
+      !IDENTITY_PATTERN.test(input.sourceAgentId) || !this.#runtimeSupervisor) {
+      throw new PaseoHostEffectError("PROJECT_ADMIN_SESSION_INPUT_INVALID");
+    }
+    const roots = this.#roots();
+    const [source, workspace, engine, runtime] = await Promise.all([
+      roots.agents.ref(input.sourceAgentId).refresh(`${input.requestId}-source-agent`),
+      roots.workspaces.ref(input.sourceWorkspaceId).refresh({ requestId: `${input.requestId}-source-workspace` }),
+      this.#engine,
+      this.#runtimeSupervisor,
+    ]);
+    if (!source?.agent || !workspace || source.agent.id !== input.sourceAgentId ||
+      source.agent.workspaceId !== workspace.id || workspace.id !== input.sourceWorkspaceId ||
+      source.agent.status === "closed" || source.agent.archivedAt || !source.agent.model ||
+      source.agent.capabilities?.supportsMcpServers !== true ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(source.agent.provider) ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$/u.test(source.agent.model)) {
+      throw new PaseoHostEffectError("PROJECT_ADMIN_NATIVE_IDENTITY_REFUSED");
+    }
+    const authorization = runtime.supervisor.projectAdminAuthorization();
+    if (!HASH_PATTERN.test(authorization)) {
+      throw new PaseoHostEffectError("PROJECT_ADMIN_AUTHORIZATION_UNAVAILABLE");
+    }
+    const sessionDigest = sha256(`${authorization}\x1f${input.requestId}\x1f${workspace.id}\x1f${source.agent.id}`);
+    const sessionId = `admin-session-${sessionDigest.slice(0, 32)}`;
+    const audience = `paseo-session-${sessionDigest.slice(32)}`;
+    const token = sha256(`${authorization}\x1fproject-admin-token\x1f${sessionDigest}`);
+    const launch: ProjectAdminMCPSessionLaunch = {
+      contractVersion: PROJECT_ADMIN_MCP_CONTRACT_VERSION,
+      contractHash: PROJECT_ADMIN_MCP_CONTRACT_SHA256,
+      sessionSha256: sha256(`${sessionId}\x1f${audience}`),
+      sessionId,
+      audience,
+      tools: PROJECT_ADMIN_MCP_TOOLS.map((tool) => tool.name),
+      server: {
+        name: "director-project-admin",
+        command: engine.binaryPath,
+        args: ["project-admin-mcp", "--engine-url", this.#engineURL, "--session", sessionId, "--audience", audience],
+        env: { DIRECTOR_PROJECT_ADMIN_TOKEN: token },
+      },
+    };
+    const injection = createProjectAdminMCPInjection(launch);
+    const created = await roots.workspaces.ref(workspace).agents.create({
+      config: {
+        provider: `${source.agent.provider}/${source.agent.model}`,
+        ...(source.agent.currentModeId ? { modeId: source.agent.currentModeId } : {}),
+        ...(source.agent.thinkingOptionId ? { thinkingOptionId: source.agent.thinkingOptionId } : {}),
+        featureValues: { permissionMode: "read-only" },
+        mcpServers: injection.mcpServers,
+        toolPolicy: injection.toolPolicy,
+      },
+      title: `${source.agent.title ?? "Agent"} — Director administration`,
+      labels: { "director.project-admin-session": sessionId },
+      requestId: input.requestId,
+      autoArchive: false,
+    });
+    try {
+      await registerProjectAdminSession({
+        baseUrl: this.#engineURL,
+        authorization,
+        registration: {
+          requestId: input.requestId,
+          sessionId,
+          nativeWorkspaceId: workspace.id,
+          nativeAgentId: created.id,
+          audience,
+          tokenSha256: sha256(token),
+        },
+      });
+      await created.send(
+        "Director Project administration MCP is connected to this immutable Project scope. Ask the user to re-send the request they want performed in this session. Never suggest restarting Paseo, forging headers, or using direct storage.",
+        { messageId: `${input.requestId}-connected` },
+      );
+    } catch (error) {
+      await revokeProjectAdminSession({ baseUrl: this.#engineURL, authorization,
+        requestId: `${input.requestId}-revoke`, sessionId }).catch(() => undefined);
+      await created.archive().catch(() => undefined);
+      throw error;
+    }
+    return { status: "created", agentId: created.id, instruction: PROJECT_ADMIN_RECONNECT_INSTRUCTION };
+  }
+
   async mutatePlanning(
 	input: PlanningMutationInput,
   ): Promise<PlanningMutationResult> {
@@ -1352,6 +1456,10 @@ export function startConnectorShell(options: {
     planningTransport,
     engine,
     compatibility,
+    undefined,
+    undefined,
+    false,
+    options.environment.DIRECTOR_ENGINE_URL,
   );
   if (options.environment.DIRECTOR_HOST_SOCKET) {
     connector.attachHostServer(startHostContractServer(connector, options.environment.DIRECTOR_HOST_SOCKET));
@@ -1466,6 +1574,7 @@ export function startInstalledConnectorShell(options: {
     deploymentReady,
     activation,
     true,
+    configuration.engine.url,
   );
   connector.attachRuntimeSupervisor(runtimeSupervisor);
   connector.attachHostServer(startHostContractServer(connector, configuration.engine.hostSocket));

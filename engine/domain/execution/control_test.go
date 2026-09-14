@@ -69,6 +69,23 @@ func TestControlIntentCannotInferEmergencyFromAgentOrConfirmationBoolean(t *test
 	}
 }
 
+func TestProjectAdministrationAgentMayUseOnlyNonConfirmingControls(t *testing.T) {
+	for _, kind := range []ControlKind{ControlPauseProject, ControlResumeProject, ControlCancelTask} {
+		value := testControlIntent(kind)
+		value.ActorKind = ControlActorAgent
+		value.ID = ControlIntentID(value)
+		if !ValidControlIntent(value) {
+			t.Fatalf("agent control %q was rejected", kind)
+		}
+	}
+	value := testControlIntent(ControlEmergencyStop)
+	value.ActorKind = ControlActorAgent
+	value.ID = ControlIntentID(value)
+	if ValidControlIntent(value) {
+		t.Fatal("Project administration agent confirmed emergency stop")
+	}
+}
+
 func TestControlledAgentSetBindsIdentityNotMutableProgress(t *testing.T) {
 	targets := []ControlledAgent{{Identity: ControlledAgentIdentity{
 		ID: "worker", Role: ControlledTaskAgent, WorkspaceID: "workspace",

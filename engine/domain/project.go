@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mcuadros/director-engine/domain/execution"
+	"github.com/mcuadros/director-engine/domain/projectadmin"
 	repositorydomain "github.com/mcuadros/director-engine/domain/repository"
 	"github.com/mcuadros/director-engine/domain/safedata"
 )
@@ -225,6 +226,7 @@ func ValidateProject(project Project) error {
 		(project.Lease != nil && project.LastLeaseEpoch != project.Lease.Epoch) ||
 		!validLeaseObservation(project.ID, project.Lease, project.LeaseObservation) ||
 		!ValidSchedulingLedger(project.Scheduling) ||
+		!projectadmin.ValidState(project.ProjectAdmin, project.ID) ||
 		!execution.ValidProjectControl(project.Control, project.ID) ||
 		!execution.ValidProjectControlState(project.Control, project.State) {
 		return ErrInvalidProject

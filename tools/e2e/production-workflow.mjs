@@ -632,13 +632,15 @@ async function main() {
   const password = randomBytes(32).toString("hex");
   const credential = join(root, "private", "paseo.credential");
   writePrivate(credential, password + "\n");
+  const projectAdminToken = join(root, "private", "project-admin.token");
+  writePrivate(projectAdminToken, randomBytes(32).toString("hex") + "\n");
   const configRoot = join(root, "config");
   writePrivate(join(configRoot, "director", "runtime.json"), JSON.stringify({ schemaVersion: 1,
     paseo: { credentialFile: credential, url: `ws://${paseoHost}:${paseoPort}/ws` }, engine: { mode: "development", url: `http://127.0.0.1:${enginePort}`,
       sourceRoot: join(repositoryRoot, "engine"), moduleCache: join(root, "go-path", "pkg", "mod") } }) + "\n");
   const engineArguments = ["serve-board", "--listen", `127.0.0.1:${enginePort}`,
     "--taskstore-config", taskstoreConfig, "--host-id", "production-host", "--host-label", "Production harness",
-    "--host-socket", hostSocket, "--runtime-root", runtimeRoot];
+    "--host-socket", hostSocket, "--runtime-root", runtimeRoot, "--project-admin-token-file", projectAdminToken];
   const engineEnvironment = { PATH: harnessPath, XDG_CACHE_HOME: cacheRoot, XDG_CONFIG_HOME: configRoot,
     XDG_STATE_HOME: join(root, "state") };
   const startEngine = () => {

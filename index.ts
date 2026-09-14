@@ -9,6 +9,7 @@ import { DirectorWorkers } from "./ui/director-workers-panel.client";
 import { contributeTaskNavigation } from "./ui/task-navigation.client";
 import { registerInstalledConnectorHandlers } from "./connector/contributions.server";
 import { connectorStartupStatus } from "./rpc/startup.shared";
+import { recreateProjectAdminSessionRpc } from "./rpc/project-admin.shared";
 
 export default function contribute(plugin: PluginContext) {
   let serverCleanup: () => void | Promise<void> = () => {};
@@ -50,6 +51,20 @@ export default function contribute(plugin: PluginContext) {
     context: "workspace",
     onSelect({ openPanel }) {
       openPanel("director-workers");
+    },
+  });
+  plugin.addCommandCenterItem({
+    id: "create-director-administration-session",
+    title: "Create Director administration session",
+    icon: "ShieldCheck",
+    keywords: ["director", "admin", "mcp", "reconnect"],
+    context: "agent",
+    async onSelect({ rpc, workspace, agent }) {
+      await rpc(recreateProjectAdminSessionRpc, {
+        requestId: `admin-open-${Date.now().toString(36)}-${agent.id.slice(0, 24)}`,
+        sourceWorkspaceId: workspace.id,
+        sourceAgentId: agent.id,
+      });
     },
   });
   plugin.addCommandCenterItem({

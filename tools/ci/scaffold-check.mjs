@@ -56,6 +56,7 @@ const REQUIRED_UI_REGISTRATIONS = [
   'id: "project-board"',
   'id: "task-inspector"',
   'id: "open-project-board"',
+  'id: "create-director-administration-session"',
   'id: "open-task-inspector"',
 ];
 const ENGINE_ALLOWED_PREFIXES = [
@@ -66,6 +67,7 @@ const ENGINE_ALLOWED_PREFIXES = [
   "engine/cmd/generate-host-client/",
   "engine/cmd/generate-planning-client/",
   "engine/cmd/generate-agent-mcp-client/",
+  "engine/cmd/generate-project-admin-mcp-client/",
   "engine/domain/",
   "engine/internal/planningtestkit/",
   "engine/internal/testkit/projectionoracle/",

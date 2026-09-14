@@ -109,6 +109,8 @@ func TestReadBoardServerConfigRejectsUnsafeOrDriftingInputsWithoutSecretLeak(t *
 
 func TestBoardServerFailsBeforeListeningWithInvalidConfiguration(t *testing.T) {
 	var stdout, stderr bytes.Buffer
+	adminToken := filepath.Join(t.TempDir(), "project-admin.token")
+	writePrivateFile(t, adminToken, strings.Repeat("a", 64))
 	status := runBoardServer([]string{
 		"--listen", "127.0.0.1:7041",
 		"--taskstore-config", "/missing/private/director-engine.json",
@@ -116,6 +118,7 @@ func TestBoardServerFailsBeforeListeningWithInvalidConfiguration(t *testing.T) {
 		"--host-label", "Test host",
 		"--host-socket", "/tmp/director-test-host.sock",
 		"--runtime-root", "/tmp/director-test-runtime",
+		"--project-admin-token-file", adminToken,
 	}, &stdout, &stderr)
 	if status != 1 || stdout.Len() != 0 || stderr.String() != "director-engine: Board server configuration is invalid\n" {
 		t.Fatalf("status = %d, stdout bytes = %d, stderr = %q", status, stdout.Len(), stderr.String())

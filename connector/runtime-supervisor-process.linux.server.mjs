@@ -25,6 +25,7 @@ const MAXIMUM_MESSAGE_BYTES = 64 * 1024;
 const MAXIMUM_RESTARTS = 3;
 let configuration = null;
 let token = "";
+let projectAdminToken = "";
 let control = null;
 let dolt = null;
 let engine = null;
@@ -256,6 +257,7 @@ async function startRuntime() {
       "--host-label=Local Paseo",
       `--host-socket=${configuration.hostSocket}`,
       `--runtime-root=${join(configuration.paths.root, "work")}`,
+      `--project-admin-token-file=${configuration.paths.projectAdminToken}`,
     ], configuration.paths.data);
     watchChild(engine);
     await waitForPort(configuration.ports.engine, engine);
@@ -370,7 +372,7 @@ async function shutdown() {
   await terminateChild(engine);
   await terminateChild(dolt);
   if (control) await new Promise((accept) => control.close(() => accept()));
-  for (const path of [configuration?.paths.socket, configuration?.paths.state, configuration?.paths.token]) {
+  for (const path of [configuration?.paths.socket, configuration?.paths.state, configuration?.paths.token, configuration?.paths.projectAdminToken]) {
     if (path && existsSync(path)) rmSync(path, { force: false });
   }
   process.exit(0);
@@ -396,7 +398,9 @@ process.once("message", (message) => {
     configuration = message;
     for (const path of [configuration.paths.root, configuration.paths.data, configuration.paths.config]) ensurePrivateDirectory(path);
     token = randomBytes(32).toString("hex");
+    projectAdminToken = randomBytes(32).toString("hex");
     writePrivate(configuration.paths.token, token, 0o600);
+    writePrivate(configuration.paths.projectAdminToken, projectAdminToken, 0o600);
     await startControl();
     leaseDeadline = Date.now() + configuration.leaseMillis;
     await startRuntime();
