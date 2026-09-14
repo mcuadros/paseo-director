@@ -12,7 +12,7 @@ with, endorsed by, maintained by, or sponsored by Paseo.
 
 The Director 1.0 packaged target is exactly:
 
-- Linux amd64;
+- Linux amd64 with glibc;
 - Paseo `0.7.2`, not another `0.7.x` and not the `0.8` preview;
 - Node.js 22 or newer;
 - npm with lockfile-version-3 support.
@@ -22,6 +22,11 @@ the Go bootstrap and Engine and records the canonical Dolt archive before publis
 The shipped manifest-pinned bootstrap downloads only those precompiled,
 digest-bound runtime artifacts. Git and
 feature-specific GitHub/provider tools remain explicit feature prerequisites.
+
+Supported activation is live and plugin-scoped through
+`paseo plugin reload director`. It preserves unrelated agents/workspaces and
+never restarts the daemon or machine. Reload only adopts or retries previously
+prepared channel artifacts; reload never compiles.
 
 Candidate preparation and every connector start check the supported Linux,
 architecture, Node, and exact Paseo CLI tuple. Paseo itself compiles the plugin
@@ -42,17 +47,29 @@ State `published` is the alpha/beta/stable download-only channel, ships the
 precompiled bootstrap pinned by `release/bootstrap-linux-amd64.json`, and needs
 no Go, Git, or compiler. No missing or invalid release can fall back from one
 channel to the other.
+It also requires no service unit.
 
-After the release coordinator publishes the protected `stable` channel:
+Default-main preparation is the only installed-host compilation boundary.
+Both channels download and verify canonical precompiled Dolt `2.3.2`; neither
+selects a system Dolt or a `PATH` result.
+
+Install the default-main development channel without `--ref`:
 
 ```text
-paseo plugin add mcuadros/paseo-director --ref stable
-paseo plugin status director
+paseo plugin add mcuadros/paseo-director
+```
+
+After the release coordinator publishes a tagged channel:
+
+```text
+paseo plugin add mcuadros/paseo-director --ref <alpha-beta-or-stable>
+paseo plugin ls --json
 paseo plugin reload director
 paseo plugin update director
 ```
 
-Paseo clones a candidate first. Its declared preparation is exactly:
+Paseo clones a candidate first. Every channel starts with the locked production
+closure and verifier:
 
 ```text
 npm ci --omit=dev --ignore-scripts --no-audit --no-fund
@@ -137,7 +154,7 @@ The authenticated status RPC may return the Director host identity to its
 client. Public logs, error text, and generic activation diagnostics never print
 the raw identity, credentials, private paths, or compiler output.
 
-## Precompiled release assets
+## Tagged precompiled release assets
 
 Schema-2 `release/engine.json` plus schema-1
 `release/bootstrap-linux-amd64.json` pin the semantic version,
@@ -157,6 +174,14 @@ refused and preserved for inspection. An owned interrupted staging directory
 is recovered only after its Linux process identity is absent. Release failure
 never compiles and never executes an unverified product path.
 
+Release CI generates and verifies `THIRD_PARTY_NOTICES.txt` from the exact
+source Candidate, shipped plugin closure, exact Go modules, and Go `1.26.5`
+toolchain before passing it to the release builder with the canonical Dolt
+archive and executable. Tagged installed plugins never generate notices or
+invoke a compiler. Default-main notice generation and compilation occur only
+in declared add/update preparation and never on reload. See
+[licensing and third-party notices](licensing.md).
+
 Startup diagnostics contain only mode, version, exact source Candidate,
 target, Engine/notices/Dolt SHA-256, connector commit, supervisor state, and
 contract version/hash. They contain no credential, private path, URL, or raw
@@ -174,12 +199,17 @@ closed.
 
 After correcting the channel with a new reviewed fast-forward commit, rerun
 `paseo plugin update director`. After correcting a transient runtime condition,
-run `paseo plugin reload director`; repeating reload is safe. To deliberately roll back, first record the
-current commit and confirm external state is healthy, then remove the connector
-and verify the public registration is absent before installing a previously
-reviewed immutable tag or exact commit. Paseo 0.7.2 can leave the registration
-behind after the first successful removal, so issue the same public, name-based
-removal a bounded second time:
+run `paseo plugin reload director`; repeating reload is safe.
+
+Historical incident snapshot `3168ea518f4fb400551fca8221d6477466f8a2cd`
+is not a reviewed rollback target and must not be installed.
+
+To deliberately roll back, first record the current commit and confirm external
+state is healthy, then remove the connector and verify the public registration
+is absent before installing a previously reviewed immutable tag or exact
+commit. Paseo 0.7.2 can leave the registration behind after the first
+successful removal, so issue the same public, name-based removal a bounded
+second time:
 
 ```text
 paseo plugin remove director --json
@@ -245,7 +275,13 @@ and retry the same exact host; Director never selects another host.
 
 Common bounded preparation codes include
 `DIRECTOR_INSTALL_PASEO_UNSUPPORTED`, `DIRECTOR_INSTALL_PLATFORM_UNSUPPORTED`,
-`DIRECTOR_INSTALL_TARGET_UNSUPPORTED`, `DIRECTOR_INSTALL_NODE_UNSUPPORTED`,
-and `DIRECTOR_INSTALL_DEPENDENCY_AUDIT`. Engine resolution uses corresponding
+`DIRECTOR_INSTALL_TARGET_UNSUPPORTED`, `DIRECTOR_INSTALL_LIBC_UNSUPPORTED`,
+`DIRECTOR_INSTALL_NODE_UNSUPPORTED`,
+`DIRECTOR_INSTALL_DEPENDENCY_AUDIT`, and `DIRECTOR_INSTALL_LICENSE_AUDIT`.
+Engine resolution uses corresponding
 `ENGINE_*`, `DOLT_*`, and `DIRECTOR_RUNTIME_*` codes for metadata, fetch, size,
 digest, archive, identity, permission, cache, ownership, and supervision failures.
+
+The complete support boundary and reporting routes are in
+[SUPPORT.md](../SUPPORT.md), [the compatibility policy](compatibility.md), and
+[SECURITY.md](../SECURITY.md).

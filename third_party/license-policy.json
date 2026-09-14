@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "npm": {
+    "shippedAllowedSpdx": [
+      "Apache-2.0",
+      "MIT",
+      "Unlicense"
+    ],
+    "buildOnlyAllowedSpdx": [
+      "(AFL-2.1 OR BSD-3-Clause)",
+      "(MIT OR CC0-1.0)",
+      "0BSD",
+      "Apache-2.0",
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "BlueOak-1.0.0",
+      "CC-BY-4.0",
+      "ISC",
+      "MIT",
+      "Unlicense"
+    ],
+    "missingMetadataOverrides": [
+      {
+        "name": "@getpaseo/cli",
+        "version": "0.7.2",
+        "spdx": "Apache-2.0",
+        "attribution": "Paseo contributors",
+        "source": "https://github.com/getpaseo/paseo/tree/9400a49af670fdb5db4af58e73f8df98588dbea9/",
+        "licenseSource": "https://github.com/getpaseo/paseo/blob/9400a49af670fdb5db4af58e73f8df98588dbea9/LICENSE",
+        "licenseSha256": "79d5aedce6aa0adc547336dc1bd34c5cc9308ba110fac7079ed97515ee573ad3"
+      },
+      {
+        "name": "@getpaseo/client",
+        "version": "0.7.2",
+        "spdx": "Apache-2.0",
+        "attribution": "Paseo contributors",
+        "source": "https://github.com/getpaseo/paseo/tree/9400a49af670fdb5db4af58e73f8df98588dbea9/",
+        "licenseSource": "https://github.com/getpaseo/paseo/blob/9400a49af670fdb5db4af58e73f8df98588dbea9/LICENSE",
+        "licenseSha256": "79d5aedce6aa0adc547336dc1bd34c5cc9308ba110fac7079ed97515ee573ad3"
+      },
+      {
+        "name": "@getpaseo/highlight",
+        "version": "0.7.2",
+        "spdx": "Apache-2.0",
+        "attribution": "Paseo contributors",
+        "source": "https://github.com/getpaseo/paseo/tree/9400a49af670fdb5db4af58e73f8df98588dbea9/",
+        "licenseSource": "https://github.com/getpaseo/paseo/blob/9400a49af670fdb5db4af58e73f8df98588dbea9/LICENSE",
+        "licenseSha256": "79d5aedce6aa0adc547336dc1bd34c5cc9308ba110fac7079ed97515ee573ad3"
+      },
+      {
+        "name": "@getpaseo/plugin",
+        "version": "0.7.2",
+        "spdx": "Apache-2.0",
+        "attribution": "Paseo contributors",
+        "source": "https://github.com/getpaseo/paseo/tree/9400a49af670fdb5db4af58e73f8df98588dbea9/",
+        "licenseSource": "https://github.com/getpaseo/paseo/blob/9400a49af670fdb5db4af58e73f8df98588dbea9/LICENSE",
+        "licenseSha256": "79d5aedce6aa0adc547336dc1bd34c5cc9308ba110fac7079ed97515ee573ad3"
+      },
+      {
+        "name": "@getpaseo/protocol",
+        "version": "0.7.2",
+        "spdx": "Apache-2.0",
+        "attribution": "Paseo contributors",
+        "source": "https://github.com/getpaseo/paseo/tree/9400a49af670fdb5db4af58e73f8df98588dbea9/",
+        "licenseSource": "https://github.com/getpaseo/paseo/blob/9400a49af670fdb5db4af58e73f8df98588dbea9/LICENSE",
+        "licenseSha256": "79d5aedce6aa0adc547336dc1bd34c5cc9308ba110fac7079ed97515ee573ad3"
+      },
+      {
+        "name": "@getpaseo/relay",
+        "version": "0.7.2",
+        "spdx": "Apache-2.0",
+        "attribution": "Paseo contributors",
+        "source": "https://github.com/getpaseo/paseo/tree/9400a49af670fdb5db4af58e73f8df98588dbea9/",
+        "licenseSource": "https://github.com/getpaseo/paseo/blob/9400a49af670fdb5db4af58e73f8df98588dbea9/LICENSE",
+        "licenseSha256": "79d5aedce6aa0adc547336dc1bd34c5cc9308ba110fac7079ed97515ee573ad3"
+      },
+      {
+        "name": "@getpaseo/server",
+        "version": "0.7.2",
+        "spdx": "Apache-2.0",
+        "attribution": "Paseo contributors",
+        "source": "https://github.com/getpaseo/paseo/tree/9400a49af670fdb5db4af58e73f8df98588dbea9/",
+        "licenseSource": "https://github.com/getpaseo/paseo/blob/9400a49af670fdb5db4af58e73f8df98588dbea9/LICENSE",
+        "licenseSha256": "79d5aedce6aa0adc547336dc1bd34c5cc9308ba110fac7079ed97515ee573ad3"
+      }
+    ],
+    "missingShippedNoticeOverrides": [
+      { "name": "@getpaseo/client", "version": "0.7.2", "attribution": "Paseo contributors" },
+      { "name": "@getpaseo/protocol", "version": "0.7.2", "attribution": "Paseo contributors" },
+      { "name": "@getpaseo/relay", "version": "0.7.2", "attribution": "Paseo contributors" }
+    ],
+    "buildOnlyLicenseReferences": [
+      {
+        "name": "@anthropic-ai/claude-agent-sdk",
+        "version": "0.3.246",
+        "declaredLicense": "SEE LICENSE IN README.md",
+        "attribution": "Anthropic PBC",
+        "licenseFile": "LICENSE.md",
+        "licenseSha256": "8ce94b9478bb9868f9641f818e06cd722fbe55d4c22e2d2ed11971b20146173a"
+      },
+      {
+        "name": "@anthropic-ai/claude-agent-sdk-linux-x64",
+        "version": "0.3.246",
+        "declaredLicense": "SEE LICENSE IN LICENSE.md",
+        "attribution": "Anthropic PBC",
+        "licenseFile": "LICENSE.md",
+        "licenseSha256": "8ce94b9478bb9868f9641f818e06cd722fbe55d4c22e2d2ed11971b20146173a"
+      }
+    ],
+    "platformExcludedLicenseReferences": [
+      { "name": "@anthropic-ai/claude-agent-sdk-darwin-arm64", "version": "0.3.246", "declaredLicense": "SEE LICENSE IN LICENSE.md" },
+      { "name": "@anthropic-ai/claude-agent-sdk-darwin-x64", "version": "0.3.246", "declaredLicense": "SEE LICENSE IN LICENSE.md" },
+      { "name": "@anthropic-ai/claude-agent-sdk-linux-arm64", "version": "0.3.246", "declaredLicense": "SEE LICENSE IN LICENSE.md" },
+      { "name": "@anthropic-ai/claude-agent-sdk-linux-arm64-musl", "version": "0.3.246", "declaredLicense": "SEE LICENSE IN LICENSE.md" },
+      { "name": "@anthropic-ai/claude-agent-sdk-linux-x64-musl", "version": "0.3.246", "declaredLicense": "SEE LICENSE IN LICENSE.md" },
+      { "name": "@anthropic-ai/claude-agent-sdk-win32-arm64", "version": "0.3.246", "declaredLicense": "SEE LICENSE IN LICENSE.md" },
+      { "name": "@anthropic-ai/claude-agent-sdk-win32-x64", "version": "0.3.246", "declaredLicense": "SEE LICENSE IN LICENSE.md" }
+    ]
+  },
+  "go": {
+    "toolchain": {
+      "version": "go1.26.5",
+      "spdx": "BSD-3-Clause",
+      "attribution": "The Go Authors",
+      "source": "https://go.googlesource.com/go/+/refs/tags/go1.26.5",
+      "licenseFiles": [
+        { "name": "LICENSE", "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad" },
+        { "name": "PATENTS", "sha256": "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc" }
+      ]
+    },
+    "modules": [
+      {
+        "name": "filippo.io/edwards25519",
+        "version": "v1.2.0",
+        "spdx": "BSD-3-Clause",
+        "attribution": "The edwards25519 contributors",
+        "source": "https://github.com/FiloSottile/edwards25519/tree/v1.2.0",
+        "licenseFiles": [
+          {
+            "name": "LICENSE",
+            "path": "third_party/licenses/filippo.io-edwards25519-v1.2.0/LICENSE",
+            "sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067"
+          }
+        ]
+      },
+      {
+        "name": "github.com/go-sql-driver/mysql",
+        "version": "v1.10.1",
+        "spdx": "MPL-2.0",
+        "attribution": "The Go-MySQL-Driver authors",
+        "source": "https://github.com/go-sql-driver/mysql/tree/v1.10.1",
+        "licenseFiles": [
+          {
+            "name": "LICENSE",
+            "path": "third_party/licenses/github.com-go-sql-driver-mysql-v1.10.1/LICENSE",
+            "sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85"
+          }
+        ]
+      }
+    ]
+  }
+}

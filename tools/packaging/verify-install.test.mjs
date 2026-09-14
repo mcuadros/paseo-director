@@ -15,6 +15,23 @@ test("install verification remains exact Paseo 0.7.2 and path-safe", () => {
   assert.equal(unsafe.code, "DIRECTOR_INSTALL_PASEO_UNSUPPORTED"); assert.doesNotMatch(unsafe.message, /secret|path|token|value/u);
 });
 
+test("musl fails with an exact host diagnostic before dependency or license audit", () => {
+  let licenseAuditCalled = false;
+  const result = verifyInstall({
+    platform: "linux",
+    architecture: "x64",
+    libc: "musl",
+    nodeVersion: "22.0.0",
+    paseoVersion: "0.7.2",
+    licenseAudit() { licenseAuditCalled = true; },
+  });
+  assert.deepEqual(result, {
+    code: "DIRECTOR_INSTALL_LIBC_UNSUPPORTED",
+    message: "Director 1.0 supports glibc on Linux amd64 only",
+  });
+  assert.equal(licenseAuditCalled, false);
+});
+
 function fixture(state) {
   const root = mkdtempSync(join(tmpdir(), "director-install-bootstrap-"));
   const checkout = join(root, "checkout");
@@ -57,4 +74,20 @@ test("failed Go preparation preserves the prior installed metadata", () => {
       runBootstrapPreparation() { throw new Error("DIRECTOR_MAIN_BUILD_FAILED"); } }), /DIRECTOR_MAIN_BUILD_FAILED/u);
     assert.equal(readFileSync(target, "utf8"), before);
   } finally { rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("install verification rejects an unapproved production license without exposing source paths", () => {
+  const result = verifyInstall({
+    platform: "linux",
+    architecture: "x64",
+    nodeVersion: "22.0.0",
+    paseoVersion: "0.7.2",
+    repositoryRoot: process.cwd(),
+    licenseAudit() { throw new Error("/home/operator/private/license-token"); },
+  });
+  assert.deepEqual(result, {
+    code: "DIRECTOR_INSTALL_LICENSE_AUDIT",
+    message: "locked production license metadata is incomplete or unapproved",
+  });
+  assert.doesNotMatch(JSON.stringify(result), /home|operator|private|token/u);
 });

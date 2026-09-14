@@ -7,7 +7,6 @@ import {
   chmodSync,
   closeSync,
   constants,
-  copyFileSync,
   existsSync,
   fsyncSync,
   lstatSync,
@@ -22,6 +21,8 @@ import {
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+
+import { verifyReleaseBinaryModules, verifyThirdPartyNotices } from "./notices.mjs";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$/u;
@@ -126,7 +127,15 @@ function ensurePrivateDirectory(path) {
   }
 }
 
-function verifyExistingOutput(options) {
+export function verifyReleaseNotices(repositoryRoot, candidate, noticesBytes, verifier) {
+  return (verifier ?? verifyThirdPartyNotices)(repositoryRoot, candidate, noticesBytes);
+}
+
+export function verifyReleaseBinaryClosure(repositoryRoot, binaryPath, kind, verifier) {
+  return (verifier ?? verifyReleaseBinaryModules)(repositoryRoot, binaryPath, { kind });
+}
+
+function verifyExistingOutput(options, noticesBytes, layout, dependencies) {
   try {
     const status = lstatSync(options.output);
     if (!status.isDirectory() || status.isSymbolicLink() || (status.mode & 0o077) !== 0 || status.uid !== process.geteuid()) {
@@ -164,7 +173,7 @@ function verifyExistingOutput(options) {
       metadata.dolt?.executableSize !== lstatSync(options.doltExecutable).size ||
       metadata.binary?.sha256 !== sha256(binaryPath) ||
       metadata.notices?.sha256 !== sha256(noticesPath) ||
-      metadata.notices.sha256 !== sha256(options.notices) ||
+      metadata.notices.sha256 !== createHash("sha256").update(noticesBytes).digest("hex") ||
       JSON.stringify(Object.keys(bootstrapMetadata).sort()) !== JSON.stringify(["binary", "schemaVersion", "sourceCandidate", "state", "target", "version"]) ||
       bootstrapMetadata.schemaVersion !== 1 || bootstrapMetadata.state !== "published" || bootstrapMetadata.version !== options.version ||
       bootstrapMetadata.target !== "linux-amd64" || bootstrapMetadata.sourceCandidate !== options.candidate ||
@@ -187,6 +196,8 @@ function verifyExistingOutput(options) {
     const bootstrapIdentity = JSON.parse(command(bootstrapPath, ["version"], { env: {}, code: "RELEASE_OUTPUT_POISONED", timeout: 10_000 }));
     if (bootstrapIdentity.name !== "director-bootstrap" || bootstrapIdentity.version !== options.version || bootstrapIdentity.buildMode !== "release" ||
       bootstrapIdentity.sourceCandidate !== options.candidate || bootstrapIdentity.target !== "linux-amd64") fail("RELEASE_OUTPUT_POISONED", "existing bootstrap identity does not match");
+    verifyReleaseBinaryClosure(layout.repositoryRoot, binaryPath, "engine", dependencies.verifyBinaryModules);
+    verifyReleaseBinaryClosure(layout.repositoryRoot, bootstrapPath, "bootstrap", dependencies.verifyBinaryModules);
     return { metadata, identity, bootstrapMetadata, bootstrapIdentity, output: options.output };
   } catch (error) {
     if (error?.code === "RELEASE_OUTPUT_POISONED") throw error;
@@ -196,14 +207,29 @@ function verifyExistingOutput(options) {
 
 function assertGoToolchain() {
   const output = command("go", ["version"], { code: "RELEASE_GO_TOOLCHAIN", timeout: 10_000 });
-  const match = /\bgo1\.(\d+)\.(\d+)\b/u.exec(output);
-  if (!match || Number(match[1]) < 26) fail("RELEASE_GO_TOOLCHAIN", "Go 1.26 or newer is required");
+  if (output !== "go version go1.26.5 linux/amd64") {
+    fail("RELEASE_GO_TOOLCHAIN", "exact Go 1.26.5 linux/amd64 is required");
+  }
 }
 
 function assertSource(source, candidate) {
   const head = command("git", ["-C", source, "rev-parse", "HEAD"], { code: "RELEASE_SOURCE_IDENTITY", timeout: 10_000 });
   const status = command("git", ["-C", source, "status", "--porcelain"], { code: "RELEASE_SOURCE_IDENTITY", timeout: 10_000 });
   if (head !== candidate || status !== "") fail("RELEASE_SOURCE_IDENTITY", "release source does not match the exact clean Candidate");
+}
+
+function sourceLayout(source) {
+  if (existsSync(join(source, "engine", "go.mod"))) {
+    return { repositoryRoot: source, engineRoot: join(source, "engine") };
+  }
+  if (existsSync(join(source, "go.mod"))) {
+    const parent = dirname(source);
+    return {
+      repositoryRoot: existsSync(join(parent, "package-lock.json")) ? parent : source,
+      engineRoot: source,
+    };
+  }
+  fail("RELEASE_SOURCE_IDENTITY", "release source does not contain the Director Engine module");
 }
 
 function buildEnvironment() {
@@ -223,9 +249,10 @@ function buildEnvironment() {
   };
 }
 
-export function buildRelease(argumentsValue) {
+export function buildRelease(argumentsValue, dependencies = {}) {
   const options = parseArguments(argumentsValue);
-  assertSource(options.source, options.candidate);
+  const layout = sourceLayout(options.source);
+  assertSource(layout.repositoryRoot, options.candidate);
   assertRegular(options.notices, "RELEASE_NOTICES_IDENTITY");
   assertRegular(options.doltArchive, "RELEASE_DOLT_IDENTITY");
   assertRegular(options.doltExecutable, "RELEASE_DOLT_IDENTITY");
@@ -239,31 +266,32 @@ export function buildRelease(argumentsValue) {
   } finally {
     rmSync(doltIdentityHome, { recursive: true, force: true });
   }
-  if (!readFileSync(options.notices, "utf8").split("\n").includes(`source-candidate: ${options.candidate}`)) {
+  const noticesBytes = readFileSync(options.notices);
+  verifyReleaseNotices(layout.repositoryRoot, options.candidate, noticesBytes, dependencies.verifyNotices);
+  if (!noticesBytes.toString("utf8").split("\n").includes(`source-candidate: ${options.candidate}`)) {
     fail("RELEASE_NOTICES_IDENTITY", "notices do not identify the exact source Candidate");
   }
-  if (existsSync(options.output)) return verifyExistingOutput(options);
+  if (existsSync(options.output)) return verifyExistingOutput(options, noticesBytes, layout, dependencies);
   assertGoToolchain();
   const parent = dirname(options.output);
   ensurePrivateDirectory(parent);
   const temporary = join(parent, `.partial-${options.candidate}-${randomUUID()}`);
   mkdirSync(temporary, { mode: 0o700 });
   const binaryName = "director-engine-linux-amd64";
-    const noticesName = "THIRD_PARTY_NOTICES.txt";
-    const bootstrapName = "director-bootstrap-linux-amd64";
-    const binary = join(temporary, binaryName);
-    const notices = join(temporary, noticesName);
-    const bootstrap = join(temporary, bootstrapName);
+  const noticesName = "THIRD_PARTY_NOTICES.txt";
+  const bootstrapName = "director-bootstrap-linux-amd64";
+  const binary = join(temporary, binaryName);
+  const notices = join(temporary, noticesName);
+  const bootstrap = join(temporary, bootstrapName);
   try {
-    copyFileSync(options.notices, notices);
-    chmodSync(notices, 0o400);
+    writeFileSync(notices, noticesBytes, { mode: 0o400 });
     fsyncPath(notices);
     const noticesSha256 = sha256(notices);
     command("go", [
       "build", "-trimpath", "-buildvcs=false", "-mod=readonly", "-ldflags",
       `-s -w -X main.buildMode=release -X main.version=${options.version} -X main.sourceCandidate=${options.candidate} -X main.noticesSha=${noticesSha256}`,
       "-o", binary, "./cmd/director-engine",
-    ], { cwd: options.source, env: buildEnvironment(), code: "RELEASE_BUILD_FAILED" });
+    ], { cwd: layout.engineRoot, env: buildEnvironment(), code: "RELEASE_BUILD_FAILED" });
     chmodSync(binary, 0o500);
     fsyncPath(binary);
     const identity = JSON.parse(command(binary, ["version"], { env: {}, code: "RELEASE_IDENTITY_MISMATCH", timeout: 10_000 }));
@@ -276,16 +304,18 @@ export function buildRelease(argumentsValue) {
     ) {
       fail("RELEASE_IDENTITY_MISMATCH", "built engine identity does not match release inputs");
     }
+    verifyReleaseBinaryClosure(layout.repositoryRoot, binary, "engine", dependencies.verifyBinaryModules);
     command("go", [
       "build", "-trimpath", "-buildvcs=false", "-mod=readonly", "-ldflags",
       `-s -w -X main.bootstrapMode=release -X main.bootstrapVersion=${options.version} -X main.bootstrapCandidate=${options.candidate}`,
       "-o", bootstrap, "./cmd/director-bootstrap",
-    ], { cwd: options.source, env: buildEnvironment(), code: "RELEASE_BOOTSTRAP_BUILD_FAILED" });
+    ], { cwd: layout.engineRoot, env: buildEnvironment(), code: "RELEASE_BOOTSTRAP_BUILD_FAILED" });
     chmodSync(bootstrap, 0o500);
     fsyncPath(bootstrap);
     const bootstrapIdentity = JSON.parse(command(bootstrap, ["version"], { env: {}, code: "RELEASE_BOOTSTRAP_IDENTITY", timeout: 10_000 }));
     if (bootstrapIdentity.name !== "director-bootstrap" || bootstrapIdentity.version !== options.version || bootstrapIdentity.buildMode !== "release" ||
       bootstrapIdentity.sourceCandidate !== options.candidate || bootstrapIdentity.target !== "linux-amd64") fail("RELEASE_BOOTSTRAP_IDENTITY", "built bootstrap identity does not match release inputs");
+    verifyReleaseBinaryClosure(layout.repositoryRoot, bootstrap, "bootstrap", dependencies.verifyBinaryModules);
     const metadata = {
       schemaVersion: 2,
       state: "published",
