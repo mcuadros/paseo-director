@@ -1,4 +1,4 @@
-# ADR-0023: Let the plugin own a release-only portable runtime
+# ADR-0023: Let the plugin own a portable runtime
 
 - **Status:** Accepted
 - **Date:** 2026-09-13
@@ -14,6 +14,10 @@
   Go Engine boundary, direct-Dolt schema and least-privilege identities,
   exact-source release identity, no-fallback failures, and all cleanup and
   secret-safety requirements
+- **Amended by:** [ADR-0025](0025-main-source-testing-and-director-host-identity.md)
+  for the Go-owned two-channel controller, explicit unpublished-main
+  source-testing channel, and Director-owned host identity; published releases
+  remain precompiled and release-only
 
 ## Context
 
@@ -34,34 +38,37 @@ The installed plugin uses only the public `PaseoApi` supplied to its server RPC
 handlers. It never copies the daemon password or opens a second daemon
 connection.
 
-The first Director RPC resolves one closed release descriptor and starts or
-adopts one detached plugin-owned supervisor. The descriptor pins a precompiled
-Director Engine from the matching Director GitHub Release and a canonical
-DoltHub Dolt archive, including archive, executable, notices, source, target,
-and contract digests. The installed plugin may download, verify, atomically
-cache, and execute those artifacts. It may not invoke Go, compile either
+The first Director RPC asks one manifest-pinned Go bootstrap to start or adopt
+the detached plugin-owned runtime. Published packages ship that precompiled
+bootstrap. It—not TypeScript—downloads, verifies, atomically caches, and
+executes the exact Engine/notices and canonical DoltHub artifacts named by the
+release manifests. The published path may not invoke Go, compile either
 runtime, discover Engine or Dolt through `PATH`, use a development source, or
 fall back when a release is absent.
 
-The supervisor is a separate process, so the Engine remains standalone and
-Dolt remains separately supervised. It owns only Director's loopback listeners,
-private XDG runtime/data/configuration, generated scoped database credentials,
-typed schema bootstrap, child health/backoff, and a short plugin lease. A
-compatible plugin reload or update adopts the same supervisor and children.
-When no plugin renews the lease, the supervisor stops its owned processes but
-preserves the TaskStore and verified caches. It never kills a listener or
+The Go bootstrap stays alive as the runtime controller, so the Engine remains
+standalone and Dolt remains a separately supervised child. Go owns only
+Director's loopback listeners, private XDG runtime/data/configuration,
+generated scoped database credentials, typed schema bootstrap, child
+health/backoff, controlled handoff, and a short plugin lease. A compatible
+plugin reload or update adopts the same controller and children. When no plugin
+renews the lease, it stops its exact owned processes but preserves identity,
+TaskStore, credentials, and verified caches. It never kills a listener or
 process whose exact ownership cannot be proved.
 
-Release CI is the only Engine compiler. An unpublished descriptor keeps the UI
-registered with a bounded failure and cannot trigger local compilation. Linux
-amd64 remains the only 1.0 support claim; process, filesystem, and control
-operations sit behind a platform boundary so another OS can be added only by a
-future approved decision and evidence.
+Published-release preparation never compiles. ADR-0025 adds the separately
+declared unpublished-main path: the install adapter builds only the Go
+bootstrap, and that controller builds the exact Engine. It does not weaken the
+release no-fallback rule. Linux amd64 remains the only 1.0 support claim;
+process, filesystem, and authenticated local-control operations sit behind the
+Go platform boundary so another OS can be added only by a future approved
+decision and evidence.
 
 ## Consequences
 
-- Installation requires no Go toolchain, system Dolt, service unit, daemon
-  credential file, loopback Paseo listener, or machine restart.
+- Published-release installation requires no Go toolchain. Neither channel
+  requires a system Dolt, service unit, daemon credential file, loopback Paseo
+  listener, or machine restart.
 - Release publication must verify and disclose both Engine and Dolt artifacts
   before promoting a channel.
 - Existing machine services are migration inputs only. Unknown occupied ports

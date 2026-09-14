@@ -85,9 +85,7 @@ function loadTaskDetailViewModule() {
   const require = (specifier: string): unknown => {
     switch (specifier) {
       case "@getpaseo/plugin":
-        return { useRpc: () => async () => undefined };
-      case "@getpaseo/plugin/react-native":
-        return { Icon: "Icon" };
+        return { Icon: "Icon", useRpc: () => async () => undefined };
       case "@tanstack/react-query":
         return ReactQuery;
       case "react":
@@ -163,9 +161,7 @@ function loadTaskInspectorModule(injectedRpc: (contract: unknown) => unknown) {
   const require = (specifier: string): unknown => {
     switch (specifier) {
       case "@getpaseo/plugin":
-        return { useRpc: injectedRpc };
-      case "@getpaseo/plugin/react-native":
-        return { Icon: "Icon" };
+        return { Icon: "Icon", useRpc: injectedRpc };
       case "@tanstack/react-query":
         return ReactQuery;
       case "react":
@@ -187,6 +183,8 @@ function loadTaskInspectorModule(injectedRpc: (contract: unknown) => unknown) {
       case "./accessibility.client.tsx":
       case "./accessibility.client":
         return loadClientModule("ui/accessibility.client.tsx", require);
+      case "./director-host.client.ts":
+        return { useDirectorHostIdentity: () => ({ identity: { schemaVersion: 1, id: "host-a", label: "Director" }, isPending: false, isError: false, error: null }) };
       case "../generated/planning-contract.shared.ts":
         return PlanningContract;
       case "../rpc/planning.shared.ts":
@@ -263,9 +261,7 @@ function loadTaskNavigationModule() {
   const require = (specifier: string): unknown => {
     switch (specifier) {
       case "@getpaseo/plugin":
-        return { useAgent: () => null };
-      case "@getpaseo/plugin/react-native":
-        return { Icon: "Icon" };
+        return { Icon: "Icon", useAgent: () => null };
       case "react":
         return reactModule;
       case "react/jsx-runtime":
@@ -407,7 +403,8 @@ test("TaskDetailView renders tabs, exact agent navigation, execution binding, bu
 
   assert.match(text, /run-task-0/);
   assert.match(text, /candidate-task-0/);
-  assert.match(text, /host-a/);
+  assert.match(text, /Verified Director identity/);
+  assert.doesNotMatch(text, /host-a/);
   assert.match(text, /Send feedback/);
   const feedbackInput = renderer.root.findByProps({
     accessibilityLabel: "Feedback for the exact current Candidate",

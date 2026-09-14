@@ -73,8 +73,8 @@ function loadComponent(queryRpc: (input: unknown) => Promise<unknown>, mutationR
   Modal.Content = ({ children }: { children?: React.ReactNode }) => React.createElement("ModalContent", {}, children);
   const require = (specifier: string): unknown => {
     switch (specifier) {
-      case "@getpaseo/plugin": return { useRpc: (contract: unknown) => contract === PlanningRpc.operationsQueryRpc ? queryRpc : mutationRpc };
-      case "@getpaseo/plugin/react-native": return { Icon: "Icon", Modal, useToast: () => ({ show() {}, error() {} }) };
+      case "@getpaseo/plugin": return { Icon: "Icon", useRpc: (contract: unknown) => contract === PlanningRpc.operationsQueryRpc ? queryRpc : mutationRpc };
+      case "./paseo-ui.client.tsx": return { Modal, useToast: () => ({ show() {}, error() {} }) };
       case "@tanstack/react-query": return ReactQuery;
       case "react": return reactModule;
       case "react/jsx-runtime": return JsxRuntime;

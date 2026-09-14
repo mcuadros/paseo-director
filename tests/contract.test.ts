@@ -56,6 +56,11 @@ test("the Paseo startup RPC is strict and exposes no credential field", () => {
       architecture: "x64",
       target: "linux-amd64",
     },
+    host: {
+      schemaVersion: 1,
+      id: `director-${"a".repeat(32)}`,
+      label: "Director",
+    },
     engine: {
       mode: "release",
       version: "1.0.0-alpha.1",

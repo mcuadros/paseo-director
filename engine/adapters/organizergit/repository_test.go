@@ -113,13 +113,12 @@ func TestGitCommandBoundsOutputWhileItIsWritten(t *testing.T) {
 	if err := os.WriteFile(gitPath, []byte("#!/bin/sh\nexec /usr/bin/head -c 131072 /dev/zero\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", root)
-	output, err := gitCommand(context.Background(), root, "status")
+	outputBytes, err := runGitCommandBytesWithExecutable(context.Background(), gitPath, root, baseGitArguments(), []string{"status"})
 	if !errors.Is(err, repoport.ErrGitOutputLimit) || err.Error() != repoport.ErrGitOutputLimit.Error() {
 		t.Fatalf("gitCommand() error = %T %v", err, err)
 	}
-	if output != "" {
-		t.Fatalf("gitCommand() returned oversized output: %d bytes", len(output))
+	if len(outputBytes) != 0 {
+		t.Fatalf("gitCommand() returned oversized output: %d bytes", len(outputBytes))
 	}
 }
 

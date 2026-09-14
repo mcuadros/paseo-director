@@ -6,7 +6,7 @@ import type {
   PluginSurfaceProps,
   PluginTheme,
 } from "@getpaseo/plugin";
-import { Icon } from "@getpaseo/plugin/react-native";
+import { Icon } from "@getpaseo/plugin";
 import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -1150,7 +1150,7 @@ export function TaskDetailView({
             </View>
             <View style={styles.gridCard}>
               <Text style={styles.gridCardTitle}>Paseo host / agent</Text>
-              <Text style={styles.gridCardValue}>{binding.hostId}</Text>
+              <Text style={styles.gridCardValue}>Verified Director identity</Text>
               <Text style={styles.gridCardMeta}>
                 {binding.paseoWorkspaceId ?? "No Execution Workspace"}{" · "}
                 {binding.paseoAgentId ?? "No agent"}

@@ -81,22 +81,13 @@ import {
   type PlanningTransport,
 } from "./engine-planning.server.ts";
 import {
-  engineBoundaryPaths,
-  parseReleaseMetadata,
-  resolveEngine,
-  type PublishedReleaseMetadata,
+  ensureBootstrapRuntime,
+  type BootstrapRuntimeHandle,
+  type DirectorHostIdentity,
+  type ResolvedDolt,
   type ResolvedEngine,
-} from "./engine-distribution.server.ts";
-import { resolveDolt, type ResolvedDolt } from "./dolt-distribution.server.ts";
-import {
-  ensureRuntimeSupervisor,
-  type RuntimeSupervisorHandle,
-} from "./runtime-supervisor.server.ts";
-import {
-  selectEngine,
-  selectInstalledEngine,
-  type EngineSelection,
-} from "./engine-selection.server.ts";
+} from "./bootstrap-launcher.server.ts";
+import { selectInstalledBootstrap, type InstalledBootstrapSelection } from "./bootstrap-selection.server.ts";
 import {
   assertHostCompatibility,
   type HostCompatibility,
@@ -107,6 +98,8 @@ import {
   directorRuntimePaths,
 } from "./runtime-configuration.server.mjs";
 import { startHostContractServer } from "./host-ipc.server.ts";
+
+export type ConnectorEngineSelection = { readonly mode: "main" | "release" };
 
 export type ConnectorClient = Partial<
   Pick<PaseoClient, "connect" | "close" | "projects" | "workspaces" | "agents" | "config">
@@ -271,14 +264,13 @@ export type ConnectorDependencies = {
   boardTransport?: BoardTransport;
   planningTransport?: PlanningTransport;
   hostCompatibility?: () => HostCompatibility;
-  resolveEngine?: (selection: EngineSelection) => Promise<ResolvedEngine>;
-  resolveDolt?: (metadata: PublishedReleaseMetadata["dolt"], cacheRoot: string) => Promise<ResolvedDolt>;
-  ensureRuntimeSupervisor?: typeof ensureRuntimeSupervisor;
+  resolveEngine?: (selection: ConnectorEngineSelection) => Promise<ResolvedEngine>;
+  ensureBootstrapRuntime?: typeof ensureBootstrapRuntime;
 };
 
 export class PaseoHostConnector implements DirectorHost {
   readonly #client: ConnectorClient;
-  readonly #selection: EngineSelection;
+  readonly #selection: ConnectorEngineSelection;
   readonly #compatibility: HostCompatibility;
   readonly #engine: Promise<ResolvedEngine>;
   readonly #boardTransport: BoardTransport;
@@ -287,9 +279,10 @@ export class PaseoHostConnector implements DirectorHost {
   readonly #activation: ConnectorStartupStatus["activation"];
   readonly #runtimeRequired: boolean;
   readonly #engineURL: string;
+  readonly #hostIdentity: Promise<DirectorHostIdentity>;
   #hostServer: Promise<() => Promise<void>> | null = null;
-  #runtimeSupervisor: Promise<{
-    supervisor: RuntimeSupervisorHandle;
+  #runtimeBootstrap: Promise<{
+    bootstrap: BootstrapRuntimeHandle;
     dolt: ResolvedDolt;
   }> | null = null;
   #terminalUnsubscribe: (() => void) | null = null;
@@ -299,7 +292,7 @@ export class PaseoHostConnector implements DirectorHost {
 
   constructor(
     client: ConnectorClient,
-    selection: EngineSelection,
+    selection: ConnectorEngineSelection,
     boardTransport: BoardTransport,
     planningTransport: PlanningTransport,
     engine: Promise<ResolvedEngine> = Promise.resolve({
@@ -333,6 +326,11 @@ export class PaseoHostConnector implements DirectorHost {
     },
     runtimeRequired = false,
     engineURL: string = DEFAULT_ENGINE_URL,
+    hostIdentity: DirectorHostIdentity | Promise<DirectorHostIdentity> = {
+      schemaVersion: 1,
+      id: `director-${"0".repeat(32)}`,
+      label: "Director",
+    },
   ) {
     this.#client = client;
     this.#selection = selection;
@@ -343,10 +341,12 @@ export class PaseoHostConnector implements DirectorHost {
     this.#activation = activation;
     this.#runtimeRequired = runtimeRequired;
     this.#engineURL = engineURL;
+    this.#hostIdentity = Promise.resolve(hostIdentity);
     assertHostDescriptor(EXPECTED_HOST_DESCRIPTOR);
     this.#ready = Promise.all([
       clientReady ?? (client.connect ? client.connect() : Promise.resolve()),
       engine,
+      this.#hostIdentity,
     ]).then(
       () => undefined,
       async (error: unknown) => {
@@ -368,14 +368,14 @@ export class PaseoHostConnector implements DirectorHost {
     this.#hostServer = server;
   }
 
-  attachRuntimeSupervisor(runtime: Promise<{
-    supervisor: RuntimeSupervisorHandle;
+  attachBootstrapRuntime(runtime: Promise<{
+    bootstrap: BootstrapRuntimeHandle;
     dolt: ResolvedDolt;
   }>): void {
-    if (this.#runtimeSupervisor !== null) {
-      throw new Error("RUNTIME_SUPERVISOR_ALREADY_ATTACHED");
+    if (this.#runtimeBootstrap !== null) {
+      throw new Error("RUNTIME_BOOTSTRAP_ALREADY_ATTACHED");
     }
-    this.#runtimeSupervisor = runtime;
+    this.#runtimeBootstrap = runtime;
   }
 
   attachTerminalEvents(baseUrl: string): void {
@@ -495,9 +495,7 @@ export class PaseoHostConnector implements DirectorHost {
     input: NativePaseoProjectsInput,
   ): Promise<NativePaseoProjectsSnapshot> {
     await this.#ready;
-    if (!IDENTITY_PATTERN.test(input.hostId) || input.hostId.length > 128) {
-      throw new PaseoHostEffectError("HOST_NATIVE_PROJECT_QUERY_INVALID");
-    }
+    const hostId = (await this.#hostIdentity).id;
     const [projects, listedWorkspaces] = await Promise.all([
       this.#projects(),
       this.#workspaces(),
@@ -510,7 +508,7 @@ export class PaseoHostConnector implements DirectorHost {
     for (const workspace of listedWorkspaces) {
       if (workspace.archivingAt) continue;
       const current = await this.#roots().workspaces.ref(workspace.id).refresh({
-        requestId: `director-native-refresh-${sha256(`${input.hostId}\u0000${workspace.id}`).slice(0, 32)}`,
+        requestId: `director-native-refresh-${sha256(`${hostId}\u0000${workspace.id}`).slice(0, 32)}`,
       });
       if (current && !current.archivingAt) allWorkspaces.push(current);
     }
@@ -554,7 +552,7 @@ export class PaseoHostConnector implements DirectorHost {
       schemaVersion: 1,
       contractVersion: PLANNING_CONTRACT_VERSION,
       contractHash: PLANNING_CONTRACT_SHA256,
-      hostId: input.hostId,
+      hostId,
       observedAt: new Date().toISOString(),
       projects: values,
     });
@@ -1154,32 +1152,40 @@ export class PaseoHostConnector implements DirectorHost {
   async status(): Promise<ConnectorStartupStatus> {
     await this.#ready;
     const engine = await this.#engine;
-    if (this.#runtimeRequired && this.#runtimeSupervisor === null) {
+    if (this.#runtimeRequired && this.#runtimeBootstrap === null) {
       throw new PaseoHostEffectError("DIRECTOR_RUNTIME_NOT_ATTACHED");
     }
-    const runtime = await this.#runtimeSupervisor ?? {
-      supervisor: {
+    const runtime = await this.#runtimeBootstrap ?? {
+      bootstrap: {
         binding: "0".repeat(64),
+        host: await this.#hostIdentity,
+        engine,
+        dolt: {
+          version: "2.3.2" as const,
+          target: "linux-amd64" as const,
+          binaryPath: "/not-exposed/dolt",
+          binarySha256: "0".repeat(64),
+          archiveSha256: "0".repeat(64),
+        },
         projectAdminAuthorization() { return "0".repeat(64); },
         async status() {
-          return { state: "current" as const, binding: "0".repeat(64), enginePid: null, doltPid: null, restartCount: 0 };
+          return { state: "current" as const, binding: "0".repeat(64), enginePid: 1, doltPid: 2, restartCount: 0 };
         },
         async close() {},
-        async release() {},
       },
       dolt: {
-        version: "0.0.0",
+        version: "2.3.2" as const,
         target: "linux-amd64" as const,
         binaryPath: "/not-exposed/dolt",
         binarySha256: "0".repeat(64),
         archiveSha256: "0".repeat(64),
       },
     };
-    const supervisor = await runtime.supervisor.status();
+    const supervisor = await runtime.bootstrap.status();
     if (supervisor.state !== "current") {
       throw new PaseoHostEffectError("DIRECTOR_RUNTIME_DEGRADED");
     }
-    if (supervisor.binding !== runtime.supervisor.binding) {
+    if (supervisor.binding !== runtime.bootstrap.binding) {
       throw new PaseoHostEffectError("DIRECTOR_RUNTIME_BINDING_MISMATCH");
     }
     if (
@@ -1196,6 +1202,7 @@ export class PaseoHostConnector implements DirectorHost {
       productBehavior: true,
       activation: this.#activation,
       compatibility: this.#compatibility,
+      host: await this.#hostIdentity,
       engine: {
         mode: engine.mode,
         version: engine.version,
@@ -1208,7 +1215,7 @@ export class PaseoHostConnector implements DirectorHost {
         contractSha256: engine.contractSha256,
       },
       runtime: {
-        supervisorBinding: runtime.supervisor.binding,
+        supervisorBinding: runtime.bootstrap.binding,
         supervisorState: "current",
         doltVersion: runtime.dolt.version,
         doltTarget: runtime.dolt.target,
@@ -1237,7 +1244,7 @@ export class PaseoHostConnector implements DirectorHost {
     if (!this.#planningTransport.home) {
       throw new Error("HOME_SURFACE_NOT_WIRED");
     }
-    return this.#planningTransport.home(input);
+    return this.#planningTransport.home({ ...input, hostId: (await this.#hostIdentity).id });
   }
 
   async queryDoctor(input: DoctorQueryInput): Promise<DoctorReport> {
@@ -1245,7 +1252,7 @@ export class PaseoHostConnector implements DirectorHost {
     if (!this.#planningTransport.doctor) {
       throw new Error("DOCTOR_SURFACE_NOT_WIRED");
     }
-    return this.#planningTransport.doctor(input);
+    return this.#planningTransport.doctor({ ...input, hostId: (await this.#hostIdentity).id });
   }
 
   async queryOperations(input: OperationsQueryInput): Promise<OperationsReport> {
@@ -1253,7 +1260,7 @@ export class PaseoHostConnector implements DirectorHost {
     if (!this.#planningTransport.operations) {
       throw new Error("OPERATIONS_SURFACE_NOT_WIRED");
     }
-    return this.#planningTransport.operations(input);
+    return this.#planningTransport.operations({ ...input, hostId: (await this.#hostIdentity).id });
   }
 
   async mutateOperations(input: OperationsMutationInput): Promise<OperationsMutationResult> {
@@ -1261,7 +1268,7 @@ export class PaseoHostConnector implements DirectorHost {
     if (!this.#planningTransport.mutateOperations) {
       throw new Error("OPERATIONS_MUTATION_NOT_WIRED");
     }
-    return this.#planningTransport.mutateOperations(input);
+    return this.#planningTransport.mutateOperations({ ...input, hostId: (await this.#hostIdentity).id });
   }
 
   async repairProject(input: RepairInput): Promise<RepairResult> {
@@ -1269,7 +1276,7 @@ export class PaseoHostConnector implements DirectorHost {
     if (!this.#planningTransport.repair) {
       throw new Error("REPAIR_SURFACE_NOT_WIRED");
     }
-    return this.#planningTransport.repair(input);
+    return this.#planningTransport.repair({ ...input, hostId: (await this.#hostIdentity).id });
   }
 
   async bootstrapOrganizer(input: OrganizerBootstrapInput): Promise<OrganizerBootstrapResult> {
@@ -1281,7 +1288,8 @@ export class PaseoHostConnector implements DirectorHost {
       if (!input.nativeProject) {
         throw new Error("NATIVE_PROJECT_FACTS_REQUIRED");
       }
-      const current = await this.queryNativePaseoProjects({ hostId: input.hostId });
+      const hostId = (await this.#hostIdentity).id;
+      const current = await this.queryNativePaseoProjects({ hostId });
       const project = current.projects.find(
         (value) => value.projectId === input.nativeProject?.projectId,
       );
@@ -1290,17 +1298,18 @@ export class PaseoHostConnector implements DirectorHost {
       }
       return this.#planningTransport.bootstrapOrganizer({
         ...input,
+        hostId,
         nativeProject: project,
       });
     }
-    return this.#planningTransport.bootstrapOrganizer(input);
+    return this.#planningTransport.bootstrapOrganizer({ ...input, hostId: (await this.#hostIdentity).id });
   }
 
   async queryPlanningTask(
     input: TaskDetailQueryInput,
   ): Promise<TaskDetailSnapshot> {
     await this.#ready;
-    return this.#planningTransport.taskDetail(input);
+    return this.#planningTransport.taskDetail({ ...input, hostId: (await this.#hostIdentity).id });
   }
 
   async recreateProjectAdminSession(input: {
@@ -1310,7 +1319,7 @@ export class PaseoHostConnector implements DirectorHost {
   }): Promise<{ status: "created"; agentId: string; instruction: typeof PROJECT_ADMIN_RECONNECT_INSTRUCTION }> {
     await this.#ready;
     if (!IDENTITY_PATTERN.test(input.requestId) || !IDENTITY_PATTERN.test(input.sourceWorkspaceId) ||
-      !IDENTITY_PATTERN.test(input.sourceAgentId) || !this.#runtimeSupervisor) {
+      !IDENTITY_PATTERN.test(input.sourceAgentId) || !this.#runtimeBootstrap) {
       throw new PaseoHostEffectError("PROJECT_ADMIN_SESSION_INPUT_INVALID");
     }
     const roots = this.#roots();
@@ -1318,7 +1327,7 @@ export class PaseoHostConnector implements DirectorHost {
       roots.agents.ref(input.sourceAgentId).refresh(`${input.requestId}-source-agent`),
       roots.workspaces.ref(input.sourceWorkspaceId).refresh({ requestId: `${input.requestId}-source-workspace` }),
       this.#engine,
-      this.#runtimeSupervisor,
+      this.#runtimeBootstrap,
     ]);
     if (!source?.agent || !workspace || source.agent.id !== input.sourceAgentId ||
       source.agent.workspaceId !== workspace.id || workspace.id !== input.sourceWorkspaceId ||
@@ -1328,7 +1337,7 @@ export class PaseoHostConnector implements DirectorHost {
       !/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$/u.test(source.agent.model)) {
       throw new PaseoHostEffectError("PROJECT_ADMIN_NATIVE_IDENTITY_REFUSED");
     }
-    const authorization = runtime.supervisor.projectAdminAuthorization();
+    const authorization = runtime.bootstrap.projectAdminAuthorization();
     if (!HASH_PATTERN.test(authorization)) {
       throw new PaseoHostEffectError("PROJECT_ADMIN_AUTHORIZATION_UNAVAILABLE");
     }
@@ -1405,7 +1414,7 @@ export class PaseoHostConnector implements DirectorHost {
 		const closeHostServer = await this.#hostServer;
 		await closeHostServer();
 	}
-    await this.#runtimeSupervisor?.then((runtime) => runtime.supervisor.close()).catch(() => undefined);
+    await this.#runtimeBootstrap?.then((runtime) => runtime.bootstrap.close()).catch(() => undefined);
     await this.#client.close?.();
   }
 }
@@ -1416,11 +1425,11 @@ export function startConnectorShell(options: {
   dependencies?: ConnectorDependencies;
 }): PaseoHostConnector {
   const compatibility = (options.dependencies?.hostCompatibility ?? assertHostCompatibility)();
-  const selection = selectEngine(options.environment, options.checkoutRoot);
+  const selection: ConnectorEngineSelection = { mode: "release" };
   const credential = loadConnectorCredential({
     credentialPath: options.environment.DIRECTOR_PASEO_CREDENTIAL_FILE,
     checkoutRoot: options.checkoutRoot,
-    disjointEnginePaths: engineBoundaryPaths(selection),
+    disjointEnginePaths: [],
   });
   const url = options.environment.DIRECTOR_PASEO_URL;
   if (!url) {
@@ -1448,7 +1457,7 @@ export function startConnectorShell(options: {
     clientId: `director-connector-${process.pid}`,
     reconnect: { enabled: false },
   });
-  const engine = (options.dependencies?.resolveEngine ?? resolveEngine)(selection);
+  const engine = options.dependencies?.resolveEngine?.(selection) ?? Promise.reject(new PaseoHostEffectError("DIRECTOR_EXTERNAL_ENGINE_IDENTITY_REQUIRED"));
   const connector = new PaseoHostConnector(
     client,
     selection,
@@ -1474,21 +1483,20 @@ export function startInstalledConnectorShell(options: {
   paseo: PaseoApi;
   environment?: NodeJS.ProcessEnv;
   dependencies?: ConnectorDependencies;
-  installation?: typeof INSTALLED_CONNECTOR_METADATA | {
-    readonly schemaVersion: 1;
-    readonly state: "prepared";
-    readonly connectorCommit: string;
-    readonly releaseMetadata: Readonly<Record<string, unknown>>;
-  };
+  installation?: typeof INSTALLED_CONNECTOR_METADATA | Readonly<Record<string, unknown>>;
   reportActivation?: boolean;
 }): PaseoHostConnector {
   const environment = options.environment ?? process.env;
   const runtime = directorRuntimePaths(environment);
-  const configurationBytes = Buffer.from("director-release-runtime/v1\n");
+  const selection: InstalledBootstrapSelection = selectInstalledBootstrap(
+    options.installation ?? INSTALLED_CONNECTOR_METADATA,
+  );
+  const connectorSelection: ConnectorEngineSelection = { mode: selection.channel };
+  const configurationBytes = Buffer.from(`director-go-bootstrap/v1\nengine.mode=${selection.channel}\n`);
   const configuration = {
     schemaVersion: 2 as const,
     engine: {
-      mode: "release",
+      mode: selection.channel,
       url: DEFAULT_ENGINE_URL,
       hostSocket: runtime.hostSocket,
       runtimeRoot: runtime.workRoot,
@@ -1506,10 +1514,6 @@ export function startInstalledConnectorShell(options: {
     },
   } as const;
   const compatibility = (options.dependencies?.hostCompatibility ?? assertHostCompatibility)();
-  const selection = selectInstalledEngine(
-    options.installation ?? INSTALLED_CONNECTOR_METADATA,
-    environment,
-  );
   const boardTransport = options.dependencies?.boardTransport ??
     createBoardTransport({ baseUrl: configuration.engine.url });
   const planningTransport = options.dependencies?.planningTransport ??
@@ -1522,40 +1526,17 @@ export function startInstalledConnectorShell(options: {
       },
     });
   const client = options.paseo as ConnectorClient;
-  if (!client.config) {
-    throw new PaseoHostEffectError("HOST_PUBLIC_PLUGIN_API_UNAVAILABLE");
-  }
-  const configActions = client.config;
-  const sourcePath = Promise.resolve().then(async () => {
-    const snapshot = await configActions.get(`director-activation-${process.pid}`);
-    const source = snapshot.config.plugins?.director;
-    if (!source || source.source !== "directory" || !isAbsolute(source.path)) {
-      throw new PaseoHostEffectError("HOST_PLUGIN_SOURCE_UNAVAILABLE");
-    }
-    return source.path;
-  });
-  const deploymentReady = sourcePath.then(() => undefined);
-  const runtimeSupervisor = sourcePath.then(async (pluginRoot) => {
-    const metadata = parseReleaseMetadata(
-      Buffer.from(JSON.stringify((options.installation ?? INSTALLED_CONNECTOR_METADATA).releaseMetadata)),
-    );
-    if (metadata.state !== "published") {
-      throw new PaseoHostEffectError("DIRECTOR_RUNTIME_RELEASE_UNPUBLISHED");
-    }
-    const [engine, dolt] = await Promise.all([
-      (options.dependencies?.resolveEngine ?? resolveEngine)(selection),
-      (options.dependencies?.resolveDolt ?? resolveDolt)(metadata.dolt, selection.cacheRoot),
-    ]);
-    const supervisor = await (options.dependencies?.ensureRuntimeSupervisor ?? ensureRuntimeSupervisor)({
-      pluginRoot,
+  const runtimeBootstrap = Promise.resolve().then(async () => {
+    const bootstrap = await (options.dependencies?.ensureBootstrapRuntime ?? ensureBootstrapRuntime)({
+      selection,
       environment,
-      engine,
-      dolt,
       hostSocket: configuration.engine.hostSocket,
     });
-    return { engine, dolt, supervisor };
+    return { engine: bootstrap.engine, dolt: bootstrap.dolt, bootstrap };
   });
-  const engine = runtimeSupervisor.then((runtime) => runtime.engine);
+  const engine = runtimeBootstrap.then((runtime) => runtime.engine);
+  const hostIdentity = runtimeBootstrap.then((runtime) => runtime.bootstrap.host);
+  const deploymentReady = runtimeBootstrap.then(() => undefined);
   const activation: ConnectorStartupStatus["activation"] = {
     lifecycle: "plugin-reload",
     result: "running-current",
@@ -1566,7 +1547,7 @@ export function startInstalledConnectorShell(options: {
   };
   const connector = new PaseoHostConnector(
     client,
-    selection,
+    connectorSelection,
     boardTransport,
     planningTransport,
     engine,
@@ -1575,8 +1556,9 @@ export function startInstalledConnectorShell(options: {
     activation,
     true,
     configuration.engine.url,
+    hostIdentity,
   );
-  connector.attachRuntimeSupervisor(runtimeSupervisor);
+  connector.attachBootstrapRuntime(runtimeBootstrap);
   connector.attachHostServer(startHostContractServer(connector, configuration.engine.hostSocket));
   connector.attachTerminalEvents(configuration.engine.url);
   if (options.reportActivation !== false) void connector.status().then(

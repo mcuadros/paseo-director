@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { PluginSurfaceProps } from "@getpaseo/plugin";
-import { useRpc } from "@getpaseo/plugin";
-import { Icon, Modal, useToast } from "@getpaseo/plugin/react-native";
+import { Icon, useRpc } from "@getpaseo/plugin";
+import { Modal, useToast } from "./paseo-ui.client.tsx";
 import { useMutation } from "@tanstack/react-query";
 import React, { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -331,7 +331,7 @@ export function ProjectOperations({ theme, layout, hostId, open, project, initia
   }
 
   return (
-    <Modal icon={<Icon color={theme.colors.foreground} name="Activity" size={18} />} onOpenChange={onOpenChange} open={open} title={`Project operations · ${project?.name ?? "Project"}`}>
+    <Modal theme={theme} icon={<Icon color={theme.colors.foreground} name="Activity" size={18} />} onOpenChange={onOpenChange} open={open} title={`Project operations · ${project?.name ?? "Project"}`}>
       <Modal.Content>
         <ScrollView contentContainerStyle={styles.content}>
           {query.isPending ? (

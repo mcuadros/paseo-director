@@ -28,10 +28,18 @@ var sourceCandidate="uncommitted"
 var noticesSha=""
 func main(){ path,_:=os.Executable(); bytes,_:=os.ReadFile(path); executable:=sha256.Sum256(bytes); sum:=sha256.Sum256([]byte("contract")); _=json.NewEncoder(os.Stdout).Encode(map[string]any{"name":"director-engine","version":version,"buildMode":buildMode,"sourceCandidate":sourceCandidate,"target":"linux-amd64","executableSha256":hex.EncodeToString(executable[:]),"noticesSha256":noticesSha,"contractVersion":"fixture/v1","contractSha256":hex.EncodeToString(sum[:]),"productBehavior":true}) }
 `);
+  mkdirSync(join(source, "cmd/director-bootstrap"), { recursive: true });
+  writeFileSync(join(source, "cmd/director-bootstrap/main.go"), `package main
+import ("encoding/json"; "os"; "runtime")
+var bootstrapVersion="dev"
+var bootstrapMode="development"
+var bootstrapCandidate="uncommitted"
+func main(){ _=json.NewEncoder(os.Stdout).Encode(map[string]any{"name":"director-bootstrap","version":bootstrapVersion,"buildMode":bootstrapMode,"sourceCandidate":bootstrapCandidate,"target":runtime.GOOS+"-"+runtime.GOARCH}) }
+`);
   run("git", ["init", "-b", "main"], source);
   run("git", ["config", "user.name", "Release Fixture"], source);
   run("git", ["config", "user.email", "release@example.invalid"], source);
-  run("git", ["add", "go.mod", "cmd/director-engine/main.go"], source);
+  run("git", ["add", "go.mod", "cmd/director-engine/main.go", "cmd/director-bootstrap/main.go"], source);
   run("git", ["commit", "-m", "fixture source"], source);
   const candidate = run("git", ["rev-parse", "HEAD"], source);
   const notices = join(root, "THIRD_PARTY_NOTICES.txt");
@@ -68,6 +76,9 @@ test("release builder emits one verified static asset closure from an exact Cand
     assert.equal(result.metadata.dolt.archive.name, "dolt-linux-amd64.tar.gz");
     assert.match(result.metadata.dolt.archive.sha256, /^[0-9a-f]{64}$/u);
     assert.match(result.metadata.dolt.executableSha256, /^[0-9a-f]{64}$/u);
+    assert.equal(result.bootstrapMetadata.sourceCandidate, value.candidate);
+    assert.equal(result.bootstrapIdentity.buildMode, "release");
+    assert.match(result.bootstrapMetadata.binary.sha256, /^[0-9a-f]{64}$/u);
     assert.deepEqual(JSON.parse(readFileSync(join(value.output, "engine.json"), "utf8")), result.metadata);
     const replay = buildRelease(buildArguments(value));
     assert.deepEqual(replay.metadata, result.metadata);

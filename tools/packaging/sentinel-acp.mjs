@@ -66,8 +66,13 @@ function handle(message) {
         error(message.id, -32602, "Unknown session");
         return;
       }
+      const text = promptText(message.params?.prompt);
+      if (text.startsWith("Director Project administration MCP is connected")) {
+        result(message.id, { stopReason: "end_turn" });
+        return;
+      }
       const match = /DIRECTOR_SENTINEL\s+(\/[A-Za-z0-9_./-]+)\s+([A-Za-z0-9-]+)/u.exec(
-        promptText(message.params?.prompt),
+        text,
       );
       if (!match) {
         error(message.id, -32602, "Invalid sentinel prompt");
@@ -103,6 +108,69 @@ function handle(message) {
     }
     case "session/set_mode":
     case "session/set_model":
+      result(message.id, {});
+      return;
+    case "session/set_config_option":
+      result(message.id, { configOptions: [] });
+      return;
+    case "config/read":
+      result(message.id, { config: {} });
+      return;
+    case "collaborationMode/list":
+    case "skills/list":
+      result(message.id, { data: [] });
+      return;
+    case "model/list":
+      result(message.id, {
+        data: [{ id: "fixture", isDefault: true, defaultReasoningEffort: "medium" }],
+      });
+      return;
+    case "thread/start": {
+      const threadId = randomUUID();
+      sessions.add(threadId);
+      result(message.id, { thread: { id: threadId }, sandbox: { type: "readOnly" } });
+      return;
+    }
+    case "thread/loaded/list":
+      result(message.id, { data: [] });
+      return;
+    case "thread/resume": {
+      const threadId = message.params?.threadId;
+      if (typeof threadId !== "string" || threadId.length === 0) {
+        error(message.id, -32602, "Unknown thread");
+        return;
+      }
+      sessions.add(threadId);
+      result(message.id, { thread: { id: threadId }, sandbox: { type: "readOnly" } });
+      return;
+    }
+    case "turn/start": {
+      const threadId = message.params?.threadId;
+      if (!sessions.has(threadId)) {
+        error(message.id, -32602, "Unknown thread");
+        return;
+      }
+      const turnId = randomUUID();
+      const text = promptText(message.params?.input);
+      const match = /DIRECTOR_SENTINEL\s+(\/[A-Za-z0-9_./-]+)\s+([A-Za-z0-9-]+)/u.exec(
+        text,
+      );
+      if (match) {
+        writeFileSync(match[1], `${JSON.stringify({ pid: process.pid, token: match[2] })}\n`, {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+      }
+      result(message.id, { turn: { id: turnId } });
+      send({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { threadId, turn: { id: turnId, status: "inProgress" } },
+      });
+      return;
+    }
+    case "turn/interrupt":
+    case "thread/archive":
       result(message.id, {});
       return;
     default:

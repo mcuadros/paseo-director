@@ -17,7 +17,7 @@ import { dirname } from "node:path";
 import {
   canonicalProspectivePath,
   pathsAreDisjoint,
-} from "./engine-selection.server.ts";
+} from "./runtime-configuration.server.mjs";
 
 export class ConnectorCredentialError extends Error {
   readonly code: string;

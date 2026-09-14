@@ -152,14 +152,14 @@ test("Home actions require exact host, freshness, engine availability, and nativ
 test("Director Home uses host-scoped pagination, current-data action gates, tokens, and touch-safe responsive controls", () => {
   const source = readFileSync("ui/director-home.client.tsx", "utf8");
   for (const token of [
-    '["director", "home", host.id]',
+    '["director", "home", hostId]',
     "useInfiniteQuery",
     "pageSize: HOME_PAGE_SIZE",
     "refetchOnMount: \"always\"",
     "refetchOnReconnect: true",
     "refetchInterval: 30_000",
     "homeActionEnabled",
-    "entry.hostId !== host.id",
+    "entry.hostId !== hostId",
     "useEffect",
     "navigation?.openWorkspace({ workspaceId: action.paseoWorkspaceId })",
     "Refresh exact host",
@@ -181,7 +181,7 @@ test("Director Home uses host-scoped pagination, current-data action gates, toke
     "No effect, retry, installation, or cross-host fallback",
     "Apply exact Preview",
     "Nothing is applied without a fresh server-authenticated human confirmation",
-    'from "@getpaseo/plugin/react-native"',
+    "useDirectorHostIdentity",
     "<Modal",
     "useToast",
     "minHeight: 44",

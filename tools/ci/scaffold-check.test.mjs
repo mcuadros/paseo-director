@@ -48,7 +48,13 @@ function trackedRepositoryCopy(prefix) {
   for (const path of listed.stdout.split("\0").filter(Boolean)) {
     const source = resolve(repositoryRoot, path);
     const destination = resolve(temporaryRoot, path);
-    const status = lstatSync(source);
+    let status;
+    try {
+      status = lstatSync(source);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
     mkdirSync(dirname(destination), { recursive: true });
     if (status.isSymbolicLink()) {
       symlinkSync(readlinkSync(source), destination);
@@ -92,6 +98,33 @@ async function loadMutatedScaffoldCheck(mutate) {
 
 test("the maintained scaffold and workflow satisfy their contracts", () => {
   assert.deepEqual(lintRepository(repositoryRoot).errors, []);
+});
+
+test("the retired disposable activation gate cannot be restored", () => {
+  const temporaryRoot = trackedRepositoryCopy("director-retired-activation-");
+  const packagePath = resolve(temporaryRoot, "package.json");
+  try {
+    const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
+    packageJson.scripts["test:activation:real"] =
+      "node obsolete-activation-fixture.mjs";
+    writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    assert.ok(
+      lintRepository(temporaryRoot).errors.includes(
+        "package.json: retired script test:activation:real must remain absent",
+      ),
+    );
+
+    delete packageJson.scripts["test:activation:real"];
+    packageJson.scripts.ci += " && npm run test:activation:real";
+    writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    assert.ok(
+      lintRepository(temporaryRoot).errors.includes(
+        "package.json: script ci invokes retired script test:activation:real",
+      ),
+    );
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 test("ADR lifecycle rejects compound status and missing reciprocal amendment links", () => {

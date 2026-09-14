@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -24,6 +25,12 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
   }
 
   try {
+    const bootstrapBytes = Buffer.from("private exact bootstrap fixture\n");
+    const bootstrapSha256 = createHash("sha256").update(bootstrapBytes).digest("hex");
+    const bootstrapRoot = join(cacheBase, "director", "bootstraps", "1".repeat(40), "linux-amd64", bootstrapSha256);
+    mkdirSync(bootstrapRoot, { recursive: true, mode: 0o700 });
+    const bootstrapPath = join(bootstrapRoot, "director-bootstrap");
+    writeFileSync(bootstrapPath, bootstrapBytes, { mode: 0o500 });
     const result = await build({
       stdin: {
         contents: "export { startInstalledConnectorShell } from './connector/paseo.server.ts';",
@@ -38,7 +45,6 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
       external: [
         "@getpaseo/plugin",
         "@getpaseo/plugin/server",
-        "@getpaseo/plugin/react-native",
         "@getpaseo/plugin/host",
         "zod",
       ],
@@ -49,7 +55,7 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
     const output = result.outputFiles[0]?.text;
     assert.ok(output);
     assert.doesNotMatch(output, /import\.meta|import_meta|fileURLToPath\([^)]*\.url\)/u);
-    assert.doesNotMatch(output, /createPaseoClient|CONNECTOR_CREDENTIAL_REQUIRED|ENGINE_DEVELOPMENT_BUILD|sourceRoot|GOMODCACHE|go-build-cache/u);
+    assert.doesNotMatch(output, /createPaseoClient|CONNECTOR_CREDENTIAL_REQUIRED|resolveDolt|resolveEngine|runtime-supervisor-process|sourceRoot|GOMODCACHE|go-build-cache/u);
     const factory = globalThis.eval(`(function(require) { const module = { exports: {} }; const exports = module.exports; ${output}; return module.exports; })`);
     const exports = factory(createRequire(import.meta.url)) as {
       startInstalledConnectorShell(options: unknown): {
@@ -57,19 +63,9 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
         close(): Promise<void>;
       };
     };
-    let supervisorClosed = false;
-    let configReads = 0;
-    let supervisorStatus = { state: "current" as const, binding: "8".repeat(64), enginePid: null as number | null, doltPid: null as number | null, restartCount: 0 };
+    let bootstrapClosed = false;
+    let bootstrapStatus = { state: "current" as const, binding: "8".repeat(64), enginePid: 1, doltPid: 2, restartCount: 0 };
     const paseo = {
-      config: {
-        async get() {
-          configReads += 1;
-          return {
-            requestId: "commonjs-config",
-            config: { plugins: { director: { source: "directory", path: checkout } } },
-          };
-        },
-      },
       projects: {},
       workspaces: {},
       agents: {
@@ -88,39 +84,11 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
         XDG_RUNTIME_DIR: runtimeBase,
       },
       installation: {
-        schemaVersion: 1,
+        schemaVersion: 3,
         state: "prepared",
         connectorCommit: "1".repeat(40),
-        releaseMetadata: {
-          schemaVersion: 2,
-          state: "published",
-          version: "1.0.0-alpha.1",
-          target: "linux-amd64",
-          sourceCandidate: "2".repeat(40),
-          binary: {
-            name: "director-engine-linux-amd64",
-            url: "https://github.com/mcuadros/paseo-director/releases/download/v1.0.0-alpha.1/director-engine-linux-amd64",
-            sha256: "3".repeat(64),
-            size: 1,
-          },
-          notices: {
-            name: "THIRD_PARTY_NOTICES.txt",
-            url: "https://github.com/mcuadros/paseo-director/releases/download/v1.0.0-alpha.1/THIRD_PARTY_NOTICES.txt",
-            sha256: "4".repeat(64),
-            size: 1,
-          },
-          dolt: {
-            version: "2.3.2",
-            archive: {
-              name: "dolt-linux-amd64.tar.gz",
-              url: "https://github.com/dolthub/dolt/releases/download/v2.3.2/dolt-linux-amd64.tar.gz",
-              sha256: "6".repeat(64),
-              size: 1,
-            },
-            executableSha256: "7".repeat(64),
-            executableSize: 1,
-          },
-        },
+        channel: "release",
+        bootstrap: { schemaVersion: 1, target: "linux-amd64", path: bootstrapPath, sha256: bootstrapSha256, size: bootstrapBytes.byteLength },
       },
       reportActivation: false,
       dependencies: {
@@ -139,12 +107,12 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
           async taskDetail() { throw new Error("not called"); },
           async mutate() { throw new Error("not called"); },
         },
-        async resolveEngine() {
-          return {
+        async ensureBootstrapRuntime() {
+          const engine = {
             mode: "release",
             version: "1.0.0-alpha.1",
-            sourceCandidate: "2".repeat(40),
-            target: "linux-amd64",
+            sourceCandidate: "1".repeat(40),
+            target: "linux-amd64" as const,
             binaryPath: "/not-exposed/director-engine",
             noticesPath: "/not-exposed/THIRD_PARTY_NOTICES.txt",
             binarySha256: "3".repeat(64),
@@ -153,33 +121,25 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
             contractVersion: "director-host/v1",
             contractSha256: "5".repeat(64),
           };
-        },
-        async resolveDolt() {
-          return {
+          const dolt = {
             version: "2.3.2",
-            target: "linux-amd64",
+            target: "linux-amd64" as const,
             binaryPath: "/not-exposed/dolt",
             binarySha256: "7".repeat(64),
             archiveSha256: "6".repeat(64),
           };
-        },
-        async ensureRuntimeSupervisor() {
           return {
             binding: "8".repeat(64),
-            async status() {
-              return supervisorStatus;
-            },
-            async close() { supervisorClosed = true; },
-            async release() { supervisorClosed = true; },
+            host: { schemaVersion: 1 as const, id: `director-${"9".repeat(32)}`, label: "Director" as const },
+            engine, dolt,
+            projectAdminAuthorization() { return "a".repeat(64); },
+            async status() { return bootstrapStatus; },
+            async close() { bootstrapClosed = true; },
           };
         },
       },
     });
-    await assert.rejects(connector.status(), (error: unknown) =>
-      error !== null && typeof error === "object" && Reflect.get(error, "code") === "DIRECTOR_RUNTIME_CHILDREN_NOT_READY");
-    supervisorStatus = { ...supervisorStatus, enginePid: 1, doltPid: 2 };
     const status = await connector.status();
-    assert.equal(configReads, 1);
     assert.equal(status.state, "board-ready");
     assert.ok(status.activation && typeof status.activation === "object");
     const activation = status.activation as {
@@ -204,7 +164,7 @@ test("the real connector loads from Paseo 0.7.2's CommonJS backend shape", async
       ],
     });
     await connector.close();
-    assert.equal(supervisorClosed, true);
+    assert.equal(bootstrapClosed, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

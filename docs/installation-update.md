@@ -17,9 +17,10 @@ The Director 1.0 packaged target is exactly:
 - Node.js 22 or newer;
 - npm with lockfile-version-3 support.
 
-Release users need neither Go nor a system Dolt installation. Release CI builds
-the Engine and records the canonical Dolt archive before publishing a channel.
-The plugin downloads only those precompiled, digest-bound artifacts. Git and
+Published-release users need neither Go nor a system Dolt installation. Release CI builds
+the Go bootstrap and Engine and records the canonical Dolt archive before publishing a channel.
+The shipped manifest-pinned bootstrap downloads only those precompiled,
+digest-bound runtime artifacts. Git and
 feature-specific GitHub/provider tools remain explicit feature prerequisites.
 
 Candidate preparation and every connector start check the supported Linux,
@@ -32,11 +33,15 @@ fails closed with a bounded code and never falls back to another connector.
 ## Install and update
 
 Installation does not require a Director runtime file, `DIRECTOR_*` process
-values, a connector credential, Go, or Dolt on `PATH`. Candidate preparation verifies
-only the supported host, locked dependency closure, exact Git identity, and
-release metadata needed for Paseo to compile the plugin. An unpublished release
-keeps the interface registered with `DIRECTOR_RUNTIME_RELEASE_UNPUBLISHED`; it
-never compiles a local fallback.
+values, a connector credential, or Dolt on `PATH`. The committed descriptor is
+the complete channel selector. State `unpublished` is the default-main
+source-testing channel: candidate preparation requires a trusted fixed/system
+Go 1.26.5 executable and existing Go-sum-verified module cache, builds the small
+Go bootstrap once, and lets that bootstrap build the exact clean Engine once.
+State `published` is the alpha/beta/stable download-only channel, ships the
+precompiled bootstrap pinned by `release/bootstrap-linux-amd64.json`, and needs
+no Go, Git, or compiler. No missing or invalid release can fall back from one
+channel to the other.
 
 After the release coordinator publishes the protected `stable` channel:
 
@@ -58,7 +63,12 @@ The first command accepts only `package-lock.json`; it omits development
 packages and disables dependency lifecycle scripts. The second proves the
 installed production versions, real directories, exact registry/integrity
 closure, dependency edges, audited lifecycle-script set, supported host, and
-exact connector/release identity. It does not read or validate runtime
+exact connector/channel identity. For unpublished main only, a narrow adapter
+invokes the fixed direct-argv bootstrap build. The resulting Go bootstrap then
+invokes the exact Engine build with `-trimpath`, `-buildvcs=false`, and
+`-mod=readonly`, proves both executable identities, and atomically publishes
+the private caches. JavaScript never invokes the Engine build. Neither layer
+executes a repository lifecycle script or arbitrary command or reads runtime
 configuration.
 CI applies the same audit to every change. Neither step vendors
 `@getpaseo/client` or selects an unrecorded dependency.
@@ -79,12 +89,27 @@ daemon connection and therefore works when Paseo listens only on a non-loopback
 interface. Legacy `runtime.json`, `DIRECTOR_PASEO_*`, `sourceRoot`, module-cache,
 and development-mode values have no runtime authority.
 
-The first Director RPC resolves the published release, downloads the exact
-Engine and Dolt artifacts, and creates or adopts one detached Director
-supervisor. The supervisor owns the loopback Engine and Dolt listeners, private
-credentials, schema bootstrap, health checks, child restart backoff, and a
-30-second plugin lease. Reload and update renew the same lease without changing
-the supervisor or unrelated Paseo agents.
+The first Director RPC resolves only the static installed bootstrap pin and
+executes its policy-free control command. The long-lived Go bootstrap has
+already prepared, or now adopts, canonical Dolt and the selected main/release
+Engine. Runtime and reload never invoke Go builds or depend on a source
+checkout. Go owns the private XDG paths, loopback Engine and Dolt listeners,
+credentials, schema bootstrap, TaskStore authority, locks, health checks,
+child restart backoff, controlled update handoff, and 30-second plugin lease.
+Reload renews the same controller and children; update hands off only when the
+exact binding changes. JavaScript performs no download, Engine build,
+supervision, signal, recovery, or fallback effect.
+
+The trusted Go bootstrap generates an opaque public host identity and
+persists it mode `0600` outside the checkout. Authenticated Director RPC returns
+that identity to the client. Client-supplied host values are ignored; the same
+server identity binds TaskStore bootstrap, Engine service, controller adoption,
+and all connector requests. Reload, update, removal, and reinstall preserve it.
+An identity change invalidates adoption and performs a controlled handoff while
+retaining existing credentials and TaskStore data. The one exact legacy
+`local-paseo` TaskStore binding migrates through Engine-owned bootstrap
+authority with an owner-only backup; a foreign or ambiguous identity fails
+closed without deletion or reseeding.
 
 Activate or retry only through the public plugin lifecycle:
 
@@ -95,7 +120,7 @@ paseo plugin logs director --json
 ```
 
 The daemon and unrelated agents and workspaces remain uninterrupted. Removing
-the plugin stops lease renewal; the supervisor then stops its owned children
+the plugin stops lease renewal; the Go controller then stops its owned children
 and preserves persistent data and verified caches.
 
 Success requires plugin status `running` and the latest bounded log record
@@ -108,13 +133,17 @@ ready. A full Paseo restart or machine reboot is neither a supported
 activation step nor a troubleshooting remedy, and reload does not stop
 unrelated agents or workspaces.
 
+The authenticated status RPC may return the Director host identity to its
+client. Public logs, error text, and generic activation diagnostics never print
+the raw identity, credentials, private paths, or compiler output.
+
 ## Precompiled release assets
 
-Schema-2 `release/engine.json` (defined by
-`release/engine.schema.json`) pins the semantic version,
+Schema-2 `release/engine.json` plus schema-1
+`release/bootstrap-linux-amd64.json` pin the semantic version,
 `linux-amd64`, exact reviewed source Candidate, canonical Director-owned GitHub
-Release Engine/notices URLs and canonical Dolt release archive, plus every
-archive and executable SHA-256. Redirects outside the GitHub asset boundary,
+Release bootstrap/Engine/notices URLs and canonical Dolt release archive, plus
+every archive and executable SHA-256. Redirects outside the GitHub asset boundary,
 credentials, query strings, fragments, names, targets, unsafe archive paths,
 links, empty digests, or extra fields fail closed.
 
@@ -176,7 +205,8 @@ migration is required. If their identity cannot be proved, stop instead of
 deleting or overwriting them.
 
 For pre-load or activation failure, use `paseo plugin ls --json` and
-`paseo plugin logs director --json`. `DIRECTOR_RUNTIME_RELEASE_UNPUBLISHED`,
+`paseo plugin logs director --json`. `DIRECTOR_MAIN_GO_TOOLCHAIN_MISSING`,
+`DIRECTOR_MAIN_GO_TOOLCHAIN_VERSION`, `DIRECTOR_MAIN_BUILD_FAILED`,
 `DIRECTOR_RUNTIME_EXTERNAL_OWNER`, `DIRECTOR_RUNTIME_CHILDREN_NOT_READY`,
 `DIRECTOR_RUNTIME_BINDING_MISMATCH`, `ENGINE_INSTALL_NOT_PREPARED`, and
 `DIRECTOR_ACTIVATION_FAILED` are bounded path-free causes. Correct the release
@@ -191,8 +221,8 @@ not install, reload, restart, signal, or rewrite plugin state.
 paseo plugin remove director
 ```
 
-Paseo removes its managed Git checkout. Lease expiry stops the owned supervisor,
-Engine, and Dolt processes. It intentionally does not delete the XDG release
+Paseo removes its managed Git checkout. Lease expiry stops the owned Go
+controller, Engine, and Dolt processes. It intentionally does not delete the XDG release
 cache, managed TaskStore, Organizer,
 Project repositories, or recovery state. Their later removal is a separate,
 explicit owner operation with its own identity, backup, and cleanup checks.

@@ -25,7 +25,10 @@ import (
 	repoport "github.com/mcuadros/director-engine/ports/organizer"
 )
 
-const maximumGitOutputBytes = 64 * 1024
+const (
+	maximumGitOutputBytes = 64 * 1024
+	gitExecutable         = "/usr/bin/git"
+)
 
 type boundedOutput struct {
 	mu       sync.Mutex
@@ -390,8 +393,12 @@ func baseGitArguments() []string {
 }
 
 func runGitCommandBytes(ctx context.Context, directory string, configuration, arguments []string) ([]byte, error) {
+	return runGitCommandBytesWithExecutable(ctx, gitExecutable, directory, configuration, arguments)
+}
+
+func runGitCommandBytesWithExecutable(ctx context.Context, executable, directory string, configuration, arguments []string) ([]byte, error) {
 	commandArguments := append(slices.Clone(configuration), arguments...)
-	command := exec.CommandContext(ctx, "git", commandArguments...)
+	command := exec.CommandContext(ctx, executable, commandArguments...)
 	command.Dir = directory
 	command.Env = append(os.Environ(),
 		"GIT_CONFIG_NOSYSTEM=1",

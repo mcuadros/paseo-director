@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mcuadros/paseo-director/release/bootstrap-linux-amd64.schema.json",
+  "title": "Director bootstrap Linux amd64 release manifest",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "state", "version", "target"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "state": { "const": "unpublished" },
+        "version": { "const": "0.0.0-scaffold" },
+        "target": { "const": "linux-amd64" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "state", "version", "target", "sourceCandidate", "binary"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "state": { "const": "published" },
+        "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$" },
+        "target": { "const": "linux-amd64" },
+        "sourceCandidate": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "binary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "url", "sha256", "size"],
+          "properties": {
+            "name": { "const": "director-bootstrap-linux-amd64" },
+            "url": { "type": "string", "pattern": "^https://github\\.com/mcuadros/paseo-director/releases/download/v[^/?#]+/director-bootstrap-linux-amd64$" },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "size": { "type": "integer", "minimum": 1, "maximum": 268435456 }
+          }
+        }
+      }
+    }
+  ]
+}

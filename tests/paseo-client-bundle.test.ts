@@ -33,16 +33,18 @@ test("the Paseo 0.7.2 client bundle contains no Director server runtime symbol",
 
   const nodeRequire = createRequire(import.meta.url);
   const noop = () => undefined;
+  const requestedModules: string[] = [];
   const hostRequire = (specifier: string): unknown => {
+    requestedModules.push(specifier);
     if (specifier === "zod") return nodeRequire(specifier);
     if (specifier === "@getpaseo/plugin/server") {
       return { defineRpc: (definition: unknown) => definition };
     }
     if (specifier === "@getpaseo/plugin") {
-      return { useHost: noop, useRpc: noop };
+      return { Icon: noop, useHost: noop, useRpc: noop };
     }
     if (specifier === "@getpaseo/plugin/react-native") {
-      return { Icon: noop, Modal: noop, ToastProvider: noop, useToast: () => ({ show: noop, error: noop }) };
+      throw new Error("PASEO_0_7_2_CLIENT_MODULE_REJECTED");
     }
     if (specifier === "react") {
       const react = {
@@ -80,8 +82,6 @@ test("the Paseo 0.7.2 client bundle contains no Director server runtime symbol",
     addSidebarItem(value) { contributions.sidebar.push(String((value as { id: string }).id)); },
     addWorkspacePanel(value) { contributions.panels.push(String((value as { id: string }).id)); },
     addCommandCenterItem(value) { contributions.commands.push(String((value as { id: string }).id)); },
-    addClientSide() { contributions.clientSides++; },
-    handle() { contributions.handles++; },
   });
   assert.deepEqual(contributions, {
     surfaces: ["home"],
@@ -94,7 +94,7 @@ test("the Paseo 0.7.2 client bundle contains no Director server runtime symbol",
       "open-project-board",
       "open-task-inspector",
     ],
-    clientSides: 1,
+    clientSides: 0,
     handles: 0,
   });
   assert.equal(
@@ -102,7 +102,19 @@ test("the Paseo 0.7.2 client bundle contains no Director server runtime symbol",
     1,
     "Project administration session command must be registered exactly once",
   );
+  assert.equal(requestedModules.includes("@getpaseo/plugin/react-native"), false);
   await cleanup();
+
+  const optionalFailure = { surfaces: 0, sidebar: 0, panels: 0, commands: 0 };
+  const cleanupAfterOptionalFailure = factory(hostRequire).default({
+    addSurface() { optionalFailure.surfaces += 1; },
+    addSidebarItem() { optionalFailure.sidebar += 1; },
+    addWorkspacePanel() { optionalFailure.panels += 1; },
+    addCommandCenterItem() { optionalFailure.commands += 1; },
+    addClientSide() { throw new Error("OPTIONAL_CLIENT_CONTRIBUTION_UNAVAILABLE"); },
+  });
+  assert.deepEqual(optionalFailure, { surfaces: 1, sidebar: 1, panels: 3, commands: 5 });
+  await cleanupAfterOptionalFailure();
 });
 
 test("the maintained pre-fix fixture reproduces the Paseo 0.7.2 server-symbol ReferenceError", async () => {

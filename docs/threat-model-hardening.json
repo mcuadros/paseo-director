@@ -32,7 +32,8 @@
     "docs/adr/0019-event-driven-delivery-fast-path.md",
     "docs/adr/0020-zero-work-bootstrap-and-terminal-event-dispatch.md",
     "docs/adr/0021-recover-exact-leased-ref-cleanup.md",
-    "docs/adr/0024-project-agent-administration-mcp.md"
+    "docs/adr/0024-project-agent-administration-mcp.md",
+    "docs/adr/0025-main-source-testing-and-director-host-identity.md"
   ],
   "controls": [
     {
@@ -40,12 +41,12 @@
       "severity": "P0",
       "categories": ["credentials", "secrets"],
       "threats": ["SEC-1", "SEC-2"],
-      "mitigation": "Credential bytes and credential-shaped values are rejected or redacted by one bounded classifier; plugin handlers borrow Paseo authority without copying a daemon credential, generated runtime credentials remain in the detached supervisor and Engine boundary, and the Project-admin session persists only a token digest.",
+      "mitigation": "Credential bytes and credential-shaped values are rejected or redacted by one bounded classifier; plugin handlers borrow Paseo authority without copying a daemon credential, the Go bootstrap keeps generated runtime credentials behind its authenticated owner-only control boundary, and the Project-admin session persists only a token digest.",
       "implementation": [
         "engine/domain/safedata/safedata.go#ClassifyJSON",
         "engine/domain/planning.go#boundedPlanningText",
         "engine/domain/project.go#ValidateProject",
-        "connector/runtime-supervisor-process.linux.server.mjs#privateSecret",
+        "engine/cmd/director-bootstrap/bootstrap_types.go#privateSecret",
         "engine/domain/projectadmin/state.go#TokenMatches",
         "index.ts#contribute",
         "tools/coordinator/coordinator.mjs#selectedEnvironment"
@@ -56,7 +57,7 @@
         "engine/domain/project_test.go#TestProjectAndWorkspaceRejectCredentialShapedDurableFields",
         "engine/adapters/dolt/store_adversarial_test.go#credential-bearing Project name",
         "tests/paseo-commonjs-load.test.ts#the real connector loads from Paseo 0.7.2's CommonJS backend shape",
-        "tests/runtime-supervisor.test.ts#installed runtime has no compiler, source, PATH-binary, or system-service fallback",
+        "tests/bootstrap-launcher.test.ts#TypeScript contains no Engine/Dolt distribution, child supervision, or recovery implementation",
         "tools/coordinator/paseo-auth.test.mjs#public local Paseo MCP lifecycle reads isolate credentials and fail closed",
         "engine/domain/projectadmin/contract_test.go#TestSessionStateIsProjectBoundAndStoresOnlyTokenDigest"
       ],
@@ -72,7 +73,7 @@
         "engine/cmd/director-engine/planning_http.go#encodeSafeBoundaryJSON",
         "engine/application/home/host_fact_diagnostics.go#HostFactRejection",
         "connector/engine-planning.server.ts#hostFactTransportError",
-        "connector/runtime-supervisor-process.linux.server.mjs#DIRECTOR_TASKSTORE_CONFIG_OUTPUT_MISMATCH",
+        "engine/cmd/director-bootstrap/bootstrap_runtime.go#runBounded",
         "engine/application/home/operations.go#diagnosticBytesSafe",
         "engine/adapters/diagnostics/bundle.go#safeEntry"
       ],
@@ -109,17 +110,21 @@
       "severity": "P0",
       "categories": ["process_arguments_environment", "credentials"],
       "threats": ["CMD-1", "CMD-2"],
-      "mitigation": "Processes use direct argument vectors, fixed commands, exact working directories, credential-free arguments, bounded output, and no shell expansion. Run MCP environments remain empty; the Project-admin stdio child receives only its scoped session token.",
+      "mitigation": "Processes use direct argument vectors, fixed commands, exact working directories, credential-free arguments, bounded output, and no shell expansion. The Go bootstrap exclusively launches and supervises Engine and Dolt; the policy-free Node launcher can execute only its manifest-pinned bootstrap. Run MCP environments remain empty; the Project-admin stdio child receives only its scoped session token.",
       "implementation": [
         "engine/domain/execution/primary.go#validMCPServer",
         "engine/ports/host/host-interface.v1.json#arguments",
         "connector/paseo.server.ts#assertCreate",
         "connector/project-admin-mcp.server.ts#createProjectAdminMCPInjection",
+        "engine/cmd/director-bootstrap/bootstrap_prepare.go#buildMainEngine",
+        "engine/cmd/director-bootstrap/bootstrap_runtime.go#startChildren",
         "tools/coordinator/coordinator.mjs#defaultCommandRunner"
       ],
       "tests": [
         "engine/domain/execution/primary_test.go#TestPrimarySessionRejectsCredentialAndControlEnvironment",
         "tests/primary-host-connector.test.ts#primary creation fails before Paseo when frozen profile or session correlation drifts",
+        "engine/cmd/director-bootstrap/bootstrap_test.go#TestMainEngineBuildUsesOnlyFixedGoExactPackageAndReplaysWithoutBuild",
+        "tests/bootstrap-launcher.test.ts#minimal JavaScript launcher executes only the pinned Go bootstrap control command",
         "tools/coordinator/coordinator.test.mjs#argument arrays preserve hostile PR title text without shell execution",
         "tests/project-admin-mcp-connector.test.ts#project administration injection rejects drift, selectors, non-loopback transport, and environment expansion"
       ],

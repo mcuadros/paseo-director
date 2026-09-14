@@ -95,11 +95,21 @@ export default function contribute(plugin: PluginContext) {
       openPanel("task-inspector");
     },
   });
-  plugin.handle(
-    connectorStartupStatus,
-    registerInstalledConnectorHandlers(plugin, (cleanup) => { serverCleanup = cleanup; }),
-  );
-  plugin.addClientSide(contributeTaskNavigation);
+  if (
+    typeof plugin.handle === "function" &&
+    typeof registerInstalledConnectorHandlers === "function"
+  ) {
+    plugin.handle(
+      connectorStartupStatus,
+      registerInstalledConnectorHandlers(plugin, (cleanup) => { serverCleanup = cleanup; }),
+    );
+  }
+  if (typeof plugin.addClientSide === "function") {
+    // 0.7.2 catalog evaluation does not guarantee this optional capability.
+    // Core Director catalog contributions above remain registered if it is
+    // unavailable or rejects the optional client-side navigation enhancer.
+    try { plugin.addClientSide(contributeTaskNavigation); } catch { /* optional */ }
+  }
 
   return () => serverCleanup();
 }

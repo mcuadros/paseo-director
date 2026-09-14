@@ -3,7 +3,7 @@
 
 import type { PluginAgentPanelProps } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin";
-import { Icon } from "@getpaseo/plugin/react-native";
+import { Icon } from "@getpaseo/plugin";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -34,6 +34,7 @@ import {
   useAccessibilityPreferences,
   useResponsiveCompactLayout,
 } from "./accessibility.client.tsx";
+import { useDirectorHostIdentity } from "./director-host.client.ts";
 
 type TaskInspectorClient = Pick<PlanningClient, "taskDetail" | "mutate">;
 
@@ -43,7 +44,6 @@ export type TaskInspectorProps = PluginAgentPanelProps & {
 
 export function TaskInspector({
   theme,
-  host,
   layout,
   navigation,
   workspaceId,
@@ -51,6 +51,8 @@ export function TaskInspector({
   client: directClient,
 }: TaskInspectorProps) {
   const accessibilityPreferences = useAccessibilityPreferences();
+  const directorIdentity = useDirectorHostIdentity();
+  const hostId = directorIdentity.identity?.id ?? "";
   const queryTaskDetail = useRpc(planningTaskDetailRpc);
   const mutatePlanning = useRpc(planningMutationRpc);
   const client = useMemo<TaskInspectorClient>(
@@ -66,10 +68,10 @@ export function TaskInspector({
   const [pendingApply, setPendingApply] = useState<AllowedAction | null>(null);
 
   const detailQuery = useQuery({
-    queryKey: ["director", "task-inspector", host.id, workspaceId, agentId],
+    queryKey: ["director", "task-inspector", hostId, workspaceId, agentId],
     queryFn: () =>
       client.taskDetail({
-        hostId: host.id,
+        hostId,
         context: "agent",
         taskId: null,
         paseoWorkspaceId: workspaceId,
@@ -77,6 +79,7 @@ export function TaskInspector({
         afterCursor: null,
       }),
     gcTime: 0,
+    enabled: hostId !== "",
     retry: false,
   });
 

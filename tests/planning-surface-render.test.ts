@@ -105,9 +105,9 @@ function loadPlanningModule(): PlanningSurfaceModule {
   const require = (specifier: string): unknown => {
     switch (specifier) {
       case "@getpaseo/plugin":
-        return { useRpc: () => async () => undefined };
-      case "@getpaseo/plugin/react-native":
-        return { Icon: "Icon", Modal: MockModal };
+        return { Icon: "Icon", useRpc: () => async () => undefined };
+      case "./paseo-ui.client.tsx":
+        return { Modal: MockModal };
       case "@tanstack/react-query":
         return ReactQuery;
       case "react":
@@ -130,6 +130,8 @@ function loadPlanningModule(): PlanningSurfaceModule {
       case "./accessibility.client.tsx":
       case "./accessibility.client":
         return loadClientModule("ui/accessibility.client.tsx", require);
+      case "./director-host.client.ts":
+        return { useDirectorHostIdentity: () => ({ identity: { schemaVersion: 1, id: "host-a", label: "Director" }, isPending: false, isError: false, error: null }) };
       case "../generated/planning-contract.shared.ts":
         return PlanningContract;
       case "../rpc/planning.shared.ts":
@@ -208,7 +210,7 @@ const colors = {
 function props(client: PlanningClient, compact: boolean) {
   return {
     client,
-    host: { id: "host-a", label: "Host A" },
+    directorHostId: "host-a",
     layout: { compact, platform: compact ? "ios" : "web" },
     theme: { colors },
   };

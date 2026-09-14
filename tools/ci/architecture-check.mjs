@@ -84,7 +84,6 @@ const TS_ALLOWED_EXTERNAL_IMPORTS = {
   composition: new Set(["@getpaseo/plugin"]),
   ui: new Set([
     "@getpaseo/plugin",
-    "@getpaseo/plugin/react-native",
     "@tanstack/react-query",
     "react",
     "react-native",
@@ -305,8 +304,7 @@ function followsDirectorRuntimeConvention(path, role) {
   if (role === "rpc" || role === "generated") return /\.shared\.ts$/.test(path);
   if (
     path === "connector/runtime-configuration.server.mjs" ||
-    path === "connector/runtime-configuration.server.d.mts" ||
-    path === "connector/runtime-supervisor-process.linux.server.mjs"
+    path === "connector/runtime-configuration.server.d.mts"
   ) return true;
   return /\.server\.ts$/.test(path);
 }
