@@ -55,7 +55,7 @@
         "engine/adapters/dolt/store_adversarial_test.go#credential-bearing Project name",
         "tests/paseo-commonjs-load.test.ts#the real connector loads from Paseo 0.7.2's CommonJS backend shape",
         "tests/runtime-supervisor.test.ts#installed runtime has no compiler, source, PATH-binary, or system-service fallback",
-        "tools/coordinator/paseo-auth.test.mjs#protected Paseo lifecycle reads isolate credentials and fail closed"
+        "tools/coordinator/paseo-auth.test.mjs#public local Paseo MCP lifecycle reads isolate credentials and fail closed"
       ],
       "status": "closed"
     },

@@ -13,15 +13,26 @@ import {
 let command = null;
 let ownership;
 let ownershipFile;
+let paseoPassword;
+let paseoCredentialFile;
 try {
   const parsed = parseCli(process.argv.slice(2));
   command = parsed.command;
   ownership = parsed.options.ownership;
   ownershipFile = parsed.options.ownershipFile;
+  paseoPassword = parsed.options.paseoPassword;
+  paseoCredentialFile = parsed.options.paseoCredentialFile;
   const output = await execute(parsed.command, parsed.options);
   process.stdout.write(`${canonicalJson(output)}\n`);
 } catch (error) {
-  process.stdout.write(`${canonicalJson(errorOutput(command, error, ownership, ownershipFile))}\n`);
+  process.stdout.write(`${canonicalJson(errorOutput(
+    command,
+    error,
+    ownership,
+    ownershipFile,
+    paseoPassword,
+    paseoCredentialFile,
+  ))}\n`);
   process.exitCode =
     error instanceof CoordinatorError || error instanceof CoordinatorInterruption ? 2 : 1;
 }

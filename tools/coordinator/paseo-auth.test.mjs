@@ -6,6 +6,7 @@ import {
   accessSync,
   chmodSync,
   constants,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -17,6 +18,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
 import {
@@ -24,6 +28,7 @@ import {
   defaultCommandRunner,
   errorOutput,
   execute,
+  parseCli,
 } from "./coordinator.mjs";
 
 const TASK = "dir-m1.23";
@@ -33,6 +38,7 @@ const BRANCH = "task/dir-m1.23-paseo-auth-test";
 const AGENT_ID = "agent-auth-0001";
 const WORKSPACE_ID = "workspace-auth-0001";
 const REPOSITORY = "acme/director";
+const MCP_FIXTURE = fileURLToPath(new URL("./paseo-mcp.fixture.mjs", import.meta.url));
 
 function command(executable, args, options = {}) {
   const result = defaultCommandRunner(executable, args, options);
@@ -84,30 +90,22 @@ function replaceEnvironment(changes) {
 }
 
 function writeFakeCommands(fixture) {
-  const passwordHash = createHash("sha256")
-    .update(fixture.password)
-    .digest("hex");
   const realGit = executableOnPath("git");
   const script = `#!${process.execPath}
-const { createHash } = require("node:crypto");
-const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, writeFileSync } = require("node:fs");
 const { basename } = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const expectedPasswordHash = ${JSON.stringify(passwordHash)};
-const logPath = ${JSON.stringify(fixture.logPath)};
-const modePath = ${JSON.stringify(fixture.modePath)};
+const logPath = ${JSON.stringify(fixture.processLogPath)};
+const socketPath = ${JSON.stringify(fixture.socketPath)};
 const checkout = ${JSON.stringify(fixture.checkout)};
 const title = ${JSON.stringify(TITLE)};
 const task = ${JSON.stringify(TASK)};
 const actor = ${JSON.stringify(ACTOR)};
-const agentId = ${JSON.stringify(AGENT_ID)};
-const workspaceId = ${JSON.stringify(WORKSPACE_ID)};
 const repository = ${JSON.stringify(REPOSITORY)};
 const realGit = ${JSON.stringify(realGit)};
 const name = basename(process.argv[1]);
 const args = process.argv.slice(2);
-const password = process.env.PASEO_PASSWORD;
 const forbiddenAmbient = [
   "AWS_SECRET_ACCESS_KEY",
   "DIRECTOR_PRIVATE_TOKEN",
@@ -115,37 +113,19 @@ const forbiddenAmbient = [
   "GITHUB_TOKEN",
   "GOAUTH",
   "NPM_TOKEN",
+  "PASEO_PASSWORD",
+  "PASEO_PASSWORD_FILE",
+  "DIRECTOR_PASEO_CREDENTIAL_FILE",
 ].filter((key) => process.env[key] !== undefined);
-const passwordInArgv =
-  password !== undefined && args.some((value) => value.includes(password));
-const host = process.env.PASEO_HOST;
-appendFileSync(
-  logPath,
-  JSON.stringify({
-    name,
-    args,
-    hasPassword: password !== undefined,
-    host: host ?? null,
-    hostHasPassword: host !== undefined && /password/iu.test(host),
-    forbiddenAmbient,
-    passwordInArgv,
-  }) + "\\n",
-);
-
-if (forbiddenAmbient.length > 0 || passwordInArgv) process.exit(86);
+appendFileSync(logPath, JSON.stringify({ name, args, forbiddenAmbient }) + "\\n");
+if (forbiddenAmbient.length > 0) process.exit(86);
 
 function output(value) {
   writeFileSync(1, value);
   process.exit(0);
 }
 
-function diagnostic(value, status) {
-  writeFileSync(2, value);
-  process.exit(status);
-}
-
 if (name === "git") {
-  if (password !== undefined) process.exit(87);
   const remoteIndex = args.indexOf("remote");
   if (
     remoteIndex >= 0 && args[remoteIndex + 1] === "get-url" &&
@@ -154,15 +134,12 @@ if (name === "git") {
     output("https://github.com/acme/director.git\\n");
   }
   const result = spawnSync(realGit, args, {
-    cwd: process.cwd(),
-    env: process.env,
-    stdio: "inherit",
+    cwd: process.cwd(), env: process.env, stdio: "inherit",
   });
   process.exit(result.status ?? 88);
 }
 
 if (name === "bd") {
-  if (password !== undefined) process.exit(89);
   if (args.includes("comments")) output("[]");
   output(JSON.stringify([{
     id: task,
@@ -175,7 +152,6 @@ if (name === "bd") {
 }
 
 if (name === "gh") {
-  if (password !== undefined) process.exit(90);
   const endpoint = args[1] ?? "";
   if (endpoint === "repos/" + repository) {
     output(JSON.stringify({
@@ -190,43 +166,17 @@ if (name === "gh") {
 }
 
 if (name === "paseo") {
-  const inspect =
-    args.length === 3 && args[0] === "inspect" && args[2] === "--json";
-  const workspaceList =
-    args.length === 3 && args[0] === "workspace" && args[1] === "ls" &&
-    args[2] === "--json";
-  if (!inspect && !workspaceList) {
-    if (password !== undefined) process.exit(92);
-    output("{}");
+  if (
+    args.length === 3 && args[0] === "daemon" && args[1] === "status" &&
+    args[2] === "--json"
+  ) {
+    output(JSON.stringify({ localDaemon: "running", listen: "unix://" + socketPath }));
   }
-  if (password === undefined) diagnostic("Password required", 19);
-  if (createHash("sha256").update(password).digest("hex") !== expectedPasswordHash) {
-    diagnostic("Incorrect password: " + password, 20);
-  }
-  const mode = readFileSync(modePath, "utf8").trim();
-  if (mode === "interrupted") process.kill(process.pid, "SIGTERM");
-  if (mode === "hostile-error") {
-    diagnostic("Incorrect password: " + password.repeat(50_000), 21);
-  }
-  if (inspect) {
-    output(JSON.stringify({
-      Id: agentId,
-      Name: title,
-      Status: mode === "hostile-output" ? password : "idle",
-      Archived: false,
-      ArchivedAt: null,
-      Cwd: checkout,
-      ParentAgentId: null,
-    }));
-  }
-  output(JSON.stringify([{
-    workspaceId,
-    isolation: "worktree",
-    cwd: checkout,
-  }]));
+  // The corrected path must never return to these subprotocol-based reads.
+  if (args[0] === "inspect" || args[0] === "workspace") process.exit(92);
+  output("{}");
 }
 
-if (password !== undefined) process.exit(93);
 output("{}");
 `;
   for (const name of ["bd", "gh", "git", "go", "npm", "paseo", "paseo-sibling"]) {
@@ -243,10 +193,18 @@ function createFixture() {
   const checkout = join(root, "checkout");
   const bin = join(root, "bin");
   const validationFile = join(root, "validation.json");
-  const logPath = join(root, "process-log.jsonl");
+  const processLogPath = join(root, "process-log.jsonl");
+  const requestLogPath = join(root, "request-log.jsonl");
   const modePath = join(root, "mode");
-  const password = `director-adversarial-${randomBytes(24).toString("hex")}-"\\\nline`;
-  const wrongPassword = `director-wrong-${randomBytes(24).toString("hex")}`;
+  const readyPath = join(root, "ready");
+  const socketPath = join(root, "paseo.sock");
+  const credentialFile = join(root, "paseo-password");
+  const ownershipFile = join(root, "ownership");
+  const serverFixturePath = join(root, "server-fixture.json");
+  const password = `valid,slash/equal=semi;colon:quote"backslash\\plus+at@${randomBytes(16).toString("hex")}`;
+  const wrongPassword = `wrong,credential/${randomBytes(16).toString("hex")}`;
+  const ambientPassword = `ambient,ignored/${randomBytes(16).toString("hex")}`;
+  const ownership = "dir-m1.23-auth-fixture-0001";
   mkdirSync(control);
   mkdirSync(bin);
   git(root, ["init", "--bare", "--quiet", origin]);
@@ -274,8 +232,17 @@ function createFixture() {
       checks: [{ id: "focused", command: ["node", "--test"], status: "passed" }],
     })}\n`,
   );
-  writeFileSync(logPath, "");
+  writeFileSync(processLogPath, "");
+  writeFileSync(requestLogPath, "");
   writeFileSync(modePath, "success\n");
+  writeFileSync(credentialFile, password, { mode: 0o600 });
+  writeFileSync(ownershipFile, ownership, { mode: 0o600 });
+  writeFileSync(serverFixturePath, JSON.stringify({
+    agentId: AGENT_ID,
+    checkout,
+    title: TITLE,
+    workspaceId: WORKSPACE_ID,
+  }));
   const fixture = {
     root,
     origin,
@@ -283,14 +250,21 @@ function createFixture() {
     checkout,
     bin,
     validationFile,
-    logPath,
+    processLogPath,
+    requestLogPath,
     modePath,
+    readyPath,
+    socketPath,
+    credentialFile,
+    ownershipFile,
+    serverFixturePath,
     password,
     wrongPassword,
+    ambientPassword,
+    ownership,
     base,
     candidate,
   };
-  writeFakeCommands(fixture);
   fixture.options = {
     task: TASK,
     actor: ACTOR,
@@ -302,7 +276,7 @@ function createFixture() {
     branch: BRANCH,
     candidate,
     "head-owner": "acme",
-    ownership: "dir-m1.23-auth-fixture-0001",
+    ownership,
     checkout,
     "checkout-state": "present",
     "control-repo": control,
@@ -312,33 +286,106 @@ function createFixture() {
     pr: "absent",
     "validation-file": validationFile,
   };
+  writeFakeCommands(fixture);
   return fixture;
 }
 
+function cliArguments(fixture) {
+  const argv = ["review-handoff"];
+  for (const [key, value] of Object.entries(fixture.options)) {
+    if (key !== "ownership") argv.push(`--${key}`, String(value));
+  }
+  argv.push("--ownership-file", fixture.ownershipFile);
+  return argv;
+}
+
 function processLog(fixture) {
-  return readFileSync(fixture.logPath, "utf8")
+  return readFileSync(fixture.processLogPath, "utf8")
     .trim()
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line));
 }
 
-function assertRefusal(error, code, secret) {
+function requestLog(fixture) {
+  return readFileSync(fixture.requestLogPath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+async function startMcpServer(fixture) {
+  rmSync(fixture.readyPath, { force: true });
+  rmSync(fixture.socketPath, { force: true });
+  const passwordHash = createHash("sha256").update(fixture.password).digest("hex");
+  const child = spawn(process.execPath, [
+    MCP_FIXTURE,
+    fixture.socketPath,
+    fixture.modePath,
+    fixture.readyPath,
+    fixture.requestLogPath,
+    passwordHash,
+    fixture.serverFixturePath,
+  ], {
+    env: { PATH: process.env.PATH },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let diagnostic = "";
+  child.stderr.on("data", (chunk) => {
+    diagnostic += chunk.toString("utf8");
+  });
+  assert.equal(child.spawnargs.some((value) => value.includes(fixture.password)), false);
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(fixture.readyPath)) {
+    if (child.exitCode !== null) {
+      throw new Error(`Paseo MCP fixture exited before ready: ${diagnostic}`);
+    }
+    if (Date.now() >= deadline) throw new Error("Paseo MCP fixture did not become ready");
+    await delay(10);
+  }
+  return child;
+}
+
+async function stopMcpServer(child) {
+  if (child.exitCode !== null) return;
+  child.kill("SIGTERM");
+  await new Promise((resolve) => child.once("exit", resolve));
+}
+
+function assertRefusal(error, code, options, secrets) {
   assert.ok(error instanceof CoordinatorError);
   assert.equal(error.code, code);
-  const output = JSON.stringify(errorOutput("review-handoff", error));
-  assert.equal(output.includes(secret), false);
+  const output = JSON.stringify(errorOutput(
+    "review-handoff",
+    error,
+    options.ownership,
+    options.ownershipFile,
+    options.paseoPassword,
+    options.paseoCredentialFile,
+  ));
+  for (const secret of secrets) assert.equal(output.includes(secret), false);
   assert.ok(Buffer.byteLength(output) < 1_024, output);
   return true;
 }
 
-test("protected Paseo lifecycle reads isolate credentials and fail closed", async () => {
+test("exact Paseo 0.7.2 WebSocket bearer shape rejects delimiter-rich valid passwords", () => {
+  const password = "valid,password/with=delimiters;and:quotes\"";
+  assert.throws(
+    () => new WebSocket("ws://127.0.0.1:1", [`paseo.bearer.${password}`]),
+    { name: "SyntaxError" },
+  );
+});
+
+test("public local Paseo MCP lifecycle reads isolate credentials and fail closed", async () => {
   const fixture = createFixture();
+  let server;
   const previousPath = process.env.PATH;
   const restore = replaceEnvironment({
     PATH: `${fixture.bin}:${previousPath}`,
-    PASEO_HOST: "127.0.0.1:17693",
-    PASEO_PASSWORD: fixture.password,
+    PASEO_HOST: undefined,
+    PASEO_PASSWORD: fixture.ambientPassword,
+    DIRECTOR_PASEO_CREDENTIAL_FILE: fixture.credentialFile,
     AWS_SECRET_ACCESS_KEY: "ambient-aws-secret",
     DIRECTOR_PRIVATE_TOKEN: "ambient-director-secret",
     GH_TOKEN: "ambient-gh-secret",
@@ -347,7 +394,14 @@ test("protected Paseo lifecycle reads isolate credentials and fail closed", asyn
     NPM_TOKEN: "ambient-npm-secret",
   });
   try {
-    const first = await execute("review-handoff", fixture.options);
+    server = await startMcpServer(fixture);
+    let parsed = parseCli(cliArguments(fixture));
+    assert.equal(parsed.options.paseoPassword, fixture.password);
+    assert.equal(parsed.options.paseoCredentialFile, fixture.credentialFile);
+    assert.equal(JSON.stringify(parsed).includes(fixture.password), false);
+    assert.equal(JSON.stringify(parsed).includes(fixture.credentialFile), false);
+
+    const first = await execute(parsed.command, parsed.options);
     assert.equal(first.result.snapshot.paseo.verified, true);
     assert.equal(first.result.snapshot.paseo.agent.id, AGENT_ID);
     assert.equal(first.result.snapshot.paseo.workspace.id, WORKSPACE_ID);
@@ -358,136 +412,219 @@ test("protected Paseo lifecycle reads isolate credentials and fail closed", asyn
     );
 
     for (const executable of ["npm", "go", "paseo-sibling"]) {
-      const result = defaultCommandRunner(executable, ["probe"]);
+      const result = defaultCommandRunner(executable, ["probe"], {
+        paseoPassword: parsed.options.paseoPassword,
+      });
       assert.equal(result.status, 0, `${executable}: ${result.stderr}`);
     }
-    const archive = defaultCommandRunner("paseo", ["archive", AGENT_ID, "--json"]);
+    const archive = defaultCommandRunner("paseo", ["archive", AGENT_ID, "--json"], {
+      paseoPassword: parsed.options.paseoPassword,
+    });
     assert.equal(archive.status, 0, archive.stderr);
-    process.env.PASEO_HOST = "ssh://operator@example.invalid";
-    const sshArchive = defaultCommandRunner("paseo", [
-      "archive",
-      AGENT_ID,
-      "--json",
+
+    let childEntries = processLog(fixture);
+    assert.deepEqual(
+      childEntries
+        .filter((entry) => entry.name === "paseo")
+        .map((entry) => entry.args),
+      [
+        ["daemon", "status", "--json"],
+        ["daemon", "status", "--json"],
+        ["archive", AGENT_ID, "--json"],
+      ],
+    );
+    assert.equal(childEntries.every((entry) => entry.forbiddenAmbient.length === 0), true);
+    const mcpEntries = requestLog(fixture);
+    assert.deepEqual(mcpEntries.map((entry) => entry.tool), [
+      "get_agent_status",
+      "list_workspaces",
     ]);
-    assert.equal(sshArchive.status, 0, sshArchive.stderr);
-    process.env.PASEO_HOST = "127.0.0.1:17693";
-
-    let entries = processLog(fixture);
-    assert.deepEqual(
-      entries
-        .filter((entry) => entry.hasPassword)
-        .map((entry) => [entry.name, entry.args]),
-      [
-        ["paseo", ["inspect", AGENT_ID, "--json"]],
-        ["paseo", ["workspace", "ls", "--json"]],
-      ],
+    assert.equal(mcpEntries.every((entry) => entry.authorizationPresent), true);
+    assert.equal(
+      mcpEntries.every((entry) =>
+        entry.authorizationHash === createHash("sha256").update(fixture.password).digest("hex")),
+      true,
     );
-    assert.equal(entries.every((entry) => entry.forbiddenAmbient.length === 0), true);
-    assert.equal(entries.every((entry) => entry.passwordInArgv === false), true);
+    assert.equal(JSON.stringify(mcpEntries).includes(fixture.password), false);
 
-    // The documented local secret profile exports the credential inside the
-    // connection URI. The CLI must consume that form natively, so no Task has
-    // to wrap it in a per-Task shell script, while still keeping the raw host
-    // out of every child process.
-    delete process.env.PASEO_PASSWORD;
-    process.env.PASEO_HOST = `tcp://127.0.0.1:17693/?password=${encodeURIComponent(fixture.password)}`;
-    const uriProbe = defaultCommandRunner("git", ["--version"]);
-    assert.equal(uriProbe.status, 0, uriProbe.stderr);
-    const uriHandoff = await execute("review-handoff", fixture.options);
-    assert.equal(uriHandoff.result.snapshot.paseo.verified, true);
-    assert.equal(JSON.stringify(uriHandoff).includes(fixture.password), false);
-    const uriEntries = processLog(fixture).slice(entries.length);
-    assert.equal(uriEntries.length > 0, true);
-    assert.equal(uriEntries.every((entry) => entry.hostHasPassword === false), true);
-    assert.deepEqual(
-      uriEntries
-        .filter((entry) => entry.hasPassword)
-        .map((entry) => [entry.name, entry.args]),
-      [
-        ["paseo", ["inspect", AGENT_ID, "--json"]],
-        ["paseo", ["workspace", "ls", "--json"]],
-      ],
+    // An explicit same-host Unix socket remains supported without putting the
+    // target or credential in child argv.
+    process.env.PASEO_HOST = `unix://${fixture.socketPath}`;
+    const beforeExplicit = processLog(fixture).filter(
+      (entry) => entry.name === "paseo" && entry.args[0] === "daemon",
+    ).length;
+    const explicit = await execute(parsed.command, parsed.options);
+    assert.equal(explicit.result.snapshot.paseo.verified, true);
+    assert.equal(
+      processLog(fixture).filter(
+        (entry) => entry.name === "paseo" && entry.args[0] === "daemon",
+      ).length,
+      beforeExplicit,
     );
 
-    // A host the CLI cannot separate from its credential, or one declaring two
-    // different credentials, still fails closed rather than guessing.
+    // Credentials in a connection URI are a second input authority and are
+    // refused before any child process starts.
     process.env.PASEO_HOST = `tcp://127.0.0.1:17693/?password=${encodeURIComponent(fixture.password)}`;
-    process.env.PASEO_PASSWORD = fixture.wrongPassword;
-    process.env.PASEO_HOST = `operator:${fixture.password}@127.0.0.1:17693`;
-    delete process.env.PASEO_PASSWORD;
     assert.throws(
-      () => defaultCommandRunner("git", ["--version"]),
-      (error) =>
-        assertRefusal(
-          error,
-          "PASEO_AUTH_LOCATION_UNSUPPORTED",
-          fixture.password,
-        ),
+      () => defaultCommandRunner("git", ["--version"], {
+        paseoPassword: parsed.options.paseoPassword,
+      }),
+      (error) => assertRefusal(
+        error,
+        "PASEO_AUTH_LOCATION_UNSUPPORTED",
+        parsed.options,
+        [fixture.password, fixture.credentialFile],
+      ),
     );
-    process.env.PASEO_HOST = "127.0.0.1:17693";
+    delete process.env.PASEO_HOST;
 
+    process.env.PASEO_HOST = "198.51.100.10:6767";
     await assert.rejects(
-      execute("review-handoff", fixture.options),
-      (error) =>
-        assertRefusal(error, "PASEO_AUTH_REQUIRED", fixture.password),
+      execute(parsed.command, parsed.options),
+      (error) => assertRefusal(
+        error,
+        "PASEO_LIFECYCLE_READ_FAILED",
+        parsed.options,
+        [fixture.password, fixture.credentialFile],
+      ),
     );
+    delete process.env.PASEO_HOST;
 
-    process.env.PASEO_PASSWORD = fixture.wrongPassword;
+    // Ambient plaintext is ignored; removing the owner-only credential-file
+    // authority fails before the lifecycle helper starts.
+    delete process.env.DIRECTOR_PASEO_CREDENTIAL_FILE;
+    parsed = parseCli(cliArguments(fixture));
     await assert.rejects(
-      execute("review-handoff", fixture.options),
-      (error) =>
-        assertRefusal(error, "PASEO_AUTH_FAILED", fixture.wrongPassword),
-    );
-
-    process.env.PASEO_PASSWORD = fixture.password;
-    writeFileSync(fixture.modePath, "hostile-error\n");
-    await assert.rejects(
-      execute("review-handoff", fixture.options),
-      (error) =>
-        assertRefusal(error, "PASEO_AUTH_FAILED", fixture.password),
-    );
-
-    writeFileSync(fixture.modePath, "hostile-output\n");
-    await assert.rejects(
-      execute("review-handoff", fixture.options),
-      (error) =>
-        assertRefusal(
-          error,
-          "PASEO_LIFECYCLE_RESPONSE_REDACTED",
-          fixture.password,
-        ),
+      execute(parsed.command, parsed.options),
+      (error) => assertRefusal(
+        error,
+        "PASEO_AUTH_REQUIRED",
+        parsed.options,
+        [fixture.ambientPassword],
+      ),
     );
 
-    writeFileSync(fixture.modePath, "interrupted\n");
+    process.env.DIRECTOR_PASEO_CREDENTIAL_FILE = fixture.credentialFile;
+    writeFileSync(fixture.credentialFile, fixture.wrongPassword, { mode: 0o600 });
+    parsed = parseCli(cliArguments(fixture));
     await assert.rejects(
-      execute("review-handoff", fixture.options),
-      (error) =>
-        assertRefusal(
+      execute(parsed.command, parsed.options),
+      (error) => assertRefusal(
+        error,
+        "PASEO_AUTH_FAILED",
+        parsed.options,
+        [fixture.wrongPassword],
+      ),
+    );
+
+    writeFileSync(fixture.credentialFile, fixture.password, { mode: 0o600 });
+    parsed = parseCli(cliArguments(fixture));
+    for (const mode of ["malformed-json", "malformed-output", "response-loss"]) {
+      writeFileSync(fixture.modePath, `${mode}\n`);
+      await assert.rejects(
+        execute(parsed.command, parsed.options),
+        (error) => assertRefusal(
           error,
           "PASEO_LIFECYCLE_READ_FAILED",
-          fixture.password,
+          parsed.options,
+          [fixture.password],
         ),
-    );
-    writeFileSync(fixture.modePath, "success\n");
-    const retry = await execute("review-handoff", fixture.options);
-    assert.deepEqual(retry, first);
-
-    entries = processLog(fixture);
-    assert.equal(entries.every((entry) => entry.passwordInArgv === false), true);
-    for (const path of filesBelow(fixture.root)) {
-      if (!lstatSync(path).isFile()) continue;
-      const contents = readFileSync(path);
-      assert.equal(
-        contents.includes(Buffer.from(fixture.password)),
-        false,
-        basename(path),
-      );
-      assert.equal(
-        contents.includes(Buffer.from(fixture.wrongPassword)),
-        false,
-        basename(path),
       );
     }
+
+    writeFileSync(fixture.modePath, "echo-secret\n");
+    await assert.rejects(
+      execute(parsed.command, parsed.options),
+      (error) => assertRefusal(
+        error,
+        "PASEO_LIFECYCLE_RESPONSE_REDACTED",
+        parsed.options,
+        [fixture.password],
+      ),
+    );
+
+    for (const [mode, code] of [
+      ["wrong-agent", "PASEO_AGENT_MISMATCH"],
+      ["wrong-workspace", "PASEO_WORKSPACE_AMBIGUOUS"],
+      ["parented", "PASEO_AGENT_PARENTED"],
+    ]) {
+      writeFileSync(fixture.modePath, `${mode}\n`);
+      await assert.rejects(
+        execute(parsed.command, parsed.options),
+        (error) => assertRefusal(error, code, parsed.options, [fixture.password]),
+      );
+    }
+
+    writeFileSync(fixture.modePath, "timeout\n");
+    const timeoutRun = (executable, args, options = {}) => defaultCommandRunner(
+      executable,
+      args,
+      { ...options, paseoPassword: parsed.options.paseoPassword, timeout: 100 },
+    );
+    await assert.rejects(
+      execute(parsed.command, parsed.options, { run: timeoutRun }),
+      (error) => assertRefusal(
+        error,
+        "PASEO_LIFECYCLE_READ_FAILED",
+        parsed.options,
+        [fixture.password],
+      ),
+    );
+
+    writeFileSync(fixture.modePath, "success\n");
+    await stopMcpServer(server);
+    server = undefined;
+    await assert.rejects(
+      execute(parsed.command, parsed.options),
+      (error) => assertRefusal(
+        error,
+        "PASEO_LIFECYCLE_READ_FAILED",
+        parsed.options,
+        [fixture.password],
+      ),
+    );
+
+    server = await startMcpServer(fixture);
+    const retry = await execute(parsed.command, parsed.options);
+    assert.deepEqual(retry, first);
+
+    childEntries = processLog(fixture);
+    assert.equal(childEntries.every((entry) => entry.forbiddenAmbient.length === 0), true);
+    assert.equal(lstatSync(fixture.credentialFile).mode & 0o077, 0);
+    assert.equal(readFileSync(fixture.credentialFile, "utf8"), fixture.password);
+    for (const path of filesBelow(fixture.root)) {
+      if (path === fixture.credentialFile || !lstatSync(path).isFile()) continue;
+      const contents = readFileSync(path);
+      for (const secret of [fixture.password, fixture.wrongPassword, fixture.ambientPassword]) {
+        assert.equal(contents.includes(Buffer.from(secret)), false, basename(path));
+      }
+    }
+  } finally {
+    if (server !== undefined) await stopMcpServer(server);
+    restore();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Paseo credential authority requires an absolute owner-only regular file", () => {
+  const fixture = createFixture();
+  const restore = replaceEnvironment({
+    DIRECTOR_PASEO_CREDENTIAL_FILE: fixture.credentialFile,
+  });
+  try {
+    chmodSync(fixture.credentialFile, 0o644);
+    assert.throws(
+      () => parseCli(cliArguments(fixture)),
+      (error) => error instanceof CoordinatorError &&
+        error.code === "PASEO_CREDENTIAL_FILE_INVALID",
+    );
+    chmodSync(fixture.credentialFile, 0o600);
+    process.env.DIRECTOR_PASEO_CREDENTIAL_FILE = "relative-password";
+    assert.throws(
+      () => parseCli(cliArguments(fixture)),
+      (error) => error instanceof CoordinatorError &&
+        error.code === "PASEO_CREDENTIAL_FILE_INVALID",
+    );
   } finally {
     restore();
     rmSync(fixture.root, { recursive: true, force: true });
