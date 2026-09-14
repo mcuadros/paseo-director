@@ -55,6 +55,14 @@ legacy derived cleanup-plan hash; derived schema-v1 cleanup plans must be
 regenerated and admitted as v2 plans after restart or response loss. PR
 metadata and child argv reject the token or ownership-file path.
 
+For active/restored readback on a password-protected exact Paseo `0.7.2`
+daemon, `DIRECTOR_PASEO_CREDENTIAL_FILE` names the existing separate owner-only
+mode-`0600` file containing the exact password bytes. Public Agent MCP reads
+use the documented local listener by default; an explicit host is limited to a
+credential-free local socket or loopback target. The password enters only the
+dedicated Paseo read child's environment and never its argv or any
+handoff/state artifact.
+
 The daemon's `finished`, `error`, and `permission` terminal callbacks
 synchronously enqueue coordinator reconciliation in less than one second.
 They are never Candidate, completion, liveness, capacity, or cleanup evidence.

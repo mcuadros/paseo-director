@@ -80,19 +80,35 @@ is an unexpected internal failure. Raw command output, credentials, paths from
 GitHub feedback, and comment bodies are not copied into refusals.
 
 For an active lifecycle binding on a password-protected exact Paseo `0.7.2`
-daemon, inject the documented `PASEO_PASSWORD` into the coordinator process
-environment and keep `PASEO_HOST` separate from it. Never place the password
-in an option, connection URI, evidence file, or state file. The minimized
-command runner selects the password only into the child environment of the
-exact public `paseo inspect <agent-id> --json` and
-`paseo workspace ls --json` reads. Git, GitHub CLI, Beads, npm, Go, other Paseo
-verbs, and sibling executables never receive it. Raw Paseo responses are not
-copied into coordinator output or diagnostics. Missing or rejected
-authentication returns `PASEO_AUTH_REQUIRED` or `PASEO_AUTH_FAILED`; an
-interrupted or unavailable read returns `PASEO_LIFECYCLE_READ_FAILED`; and a
-response that echoes the selected credential returns
-`PASEO_LIFECYCLE_RESPONSE_REDACTED`. Each is bounded and retains no daemon
-response content.
+daemon, `DIRECTOR_PASEO_CREDENTIAL_FILE` must name the existing absolute
+owner-only regular credential file with mode `0600`. The file contains only
+the exact password bytes, with no added line ending. It is the sole password
+authority: plaintext `PASEO_PASSWORD` is ignored, and a password in
+`PASEO_HOST`, an option, or a connection URI is refused. Keep this credential
+file separate from the required `--ownership-file`; neither raw value nor
+either file path may enter output, diagnostics, evidence, handoff/state, PR
+content, or Beads.
+
+The coordinator uses exact Paseo `0.7.2`'s public Agent MCP
+`get_agent_status` and `list_workspaces` reads. Without `PASEO_HOST`, a
+password-free `paseo daemon status --json` child discovers the documented
+same-host Unix socket, loopback, or active local-interface listener. An
+explicit host is bounded to a local Unix socket or loopback TCP target and
+must remain credential-free. Only the dedicated Agent MCP read child receives
+the password, through its exact `PASEO_PASSWORD` environment; its argv contains
+only the fixed reader, operation, and public agent ID. Git, GitHub CLI, Beads,
+npm, Go, Paseo status, other Paseo verbs, and sibling executables receive
+neither the password nor credential-file path. The reader emits only the
+lifecycle fields needed for the existing exact
+parentless-agent/workspace/worktree verification. It size-bounds and scrubs
+every response and error before returning anything to the coordinator.
+
+Missing or rejected authentication returns `PASEO_AUTH_REQUIRED` or
+`PASEO_AUTH_FAILED`; malformed output, process failure, timeout, response loss,
+or an unavailable target returns `PASEO_LIFECYCLE_READ_FAILED`; and a response
+that echoes the selected credential returns
+`PASEO_LIFECYCLE_RESPONSE_REDACTED`. Each refusal is bounded and retains no
+daemon response content.
 
 ## Commands
 

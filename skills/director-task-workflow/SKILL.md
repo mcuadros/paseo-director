@@ -44,7 +44,11 @@ When new work is discovered, create a sibling Task under the same milestone Epic
    resource bindings plus explicit checkout/lifecycle states and the structured
    author-validation file. Pass ownership only through an absolute owner-only
    mode-`0600` file, and use `--handoff-file` to atomically maintain the private
-   JSON outside every Git checkout. The handoff actor must be the Task assignee.
+   JSON outside every Git checkout. For active/restored exact-Paseo lifecycle
+   readback, pass the daemon password only through the separate absolute
+   owner-only mode-`0600` file named by `DIRECTOR_PASEO_CREDENTIAL_FILE`; never
+   export the plaintext password or embed it in `PASEO_HOST`. The handoff actor
+   must be the Task assignee.
    Hand its automatic non-authoritative Candidate/base/tree/diff/evidence
    manifest to the coordinator; do not substitute a prose snapshot or a
    sequence of unbound Git reads.

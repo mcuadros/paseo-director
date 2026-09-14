@@ -3,12 +3,17 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   readFileSync,
   realpathSync,
 } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   CoordinatorError,
@@ -43,6 +48,10 @@ const OWNERSHIP_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{15,127}$/u;
 const MAX_JSON_BYTES = 1_048_576;
 const MAX_COMMAND_OUTPUT = 4 * 1_048_576;
 const COMMAND_TIMEOUT_MS = 120_000;
+const MAXIMUM_PASEO_CREDENTIAL_BYTES = 4_096;
+const PASEO_LIFECYCLE_READER = fileURLToPath(
+  new URL("./paseo-lifecycle-read.mjs", import.meta.url),
+);
 const LEGACY_STATE_SCHEMA_VERSION = 1;
 const STATE_SCHEMA_VERSION = 2;
 const CLEANUP_PLAN_SCHEMA_VERSION = 2;
@@ -167,70 +176,23 @@ function paseoLifecycleOperation(args) {
 }
 
 /**
- * Splits a Paseo host into the credential-free address every child process may
- * see and the credential only the two public lifecycle reads may receive. The
- * documented local secret profile exports the password inside the connection
- * URI as well as in its own variable, and refusing that form forced every Task
- * to wrap this CLI in a per-Task shell script. Normalizing it here removes the
- * script without weakening the invariant: the raw host never reaches a child.
- */
-/**
  * A credential-free Paseo address carries no userinfo and no password
- * parameter. Anything still matching this shape after normalization is refused
- * rather than forwarded, so an unparsed or unexpected credential location can
- * never reach a child process.
+ * parameter. The owner-only credential file is the sole password authority;
+ * credentials embedded in a host are refused rather than normalized or
+ * forwarded.
  */
 function credentialShapedHost(value) {
   return /password/iu.test(value) || /^[^/?#]*@/u.test(value.replace(/^[a-z][a-z0-9+.-]*:\/\//iu, ""));
 }
 
-/**
- * Best-effort split of a Paseo host into its address and any credential it
- * carries. It never refuses, because the redaction guard runs on every output
- * path and must be total.
- */
-function splitPaseoHost(host) {
-  if (host === undefined) return { host: undefined, query: null, embedded: null };
-  try {
-    const parsed = new URL(host);
-    const query = parsed.searchParams.get("password");
-    const embedded = parsed.password.length > 0 ? parsed.password : null;
-    parsed.searchParams.delete("password");
-    parsed.password = "";
-    parsed.username = "";
-    return { host: parsed.toString(), query, embedded };
-  } catch {
-    return { host, query: null, embedded: null };
-  }
-}
-
-/**
- * The address a child process may see. Unlike splitPaseoHost this refuses a
- * host whose credential this CLI cannot separate, so an unexpected credential
- * location fails closed instead of being forwarded.
- */
 function normalizedPaseoHost(host) {
-  const split = splitPaseoHost(host);
-  if (split.host === undefined) return { host: undefined, password: null };
+  if (host === undefined) return undefined;
   refuse(
-    split.query !== null && split.embedded !== null && split.query !== split.embedded,
+    credentialShapedHost(host),
     "PASEO_AUTH_LOCATION_UNSUPPORTED",
-    "Paseo host declares two different credentials",
+    "Paseo host must be a credential-free address",
   );
-  refuse(
-    credentialShapedHost(split.host),
-    "PASEO_AUTH_LOCATION_UNSUPPORTED",
-    "Paseo host carries a credential this CLI cannot separate",
-  );
-  return { host: split.host, password: split.query ?? split.embedded };
-}
-
-function selectedPaseoPassword() {
-  const password = process.env.PASEO_PASSWORD;
-  if (password !== undefined && password.length > 0) return password;
-  const split = splitPaseoHost(process.env.PASEO_HOST);
-  const embedded = split.query ?? split.embedded;
-  return embedded !== null && embedded.length > 0 ? embedded : null;
+  return host;
 }
 
 function containsProtectedString(value, protectedValue) {
@@ -246,22 +208,28 @@ function containsProtectedString(value, protectedValue) {
   return visit(value);
 }
 
-function containsSelectedPaseoPassword(value) {
-  return containsProtectedString(value, selectedPaseoPassword());
-}
-
-function containsProtectedMaterial(value, ownership, ownershipFile = undefined) {
-  const ownershipFileVariants =
-    typeof ownershipFile === "string"
-      ? [ownershipFile, resolve(ownershipFile)]
-      : [];
-  return containsSelectedPaseoPassword(value) ||
-    [ownership, ...ownershipFileVariants].some((protectedValue) =>
+function containsProtectedMaterial(
+  value,
+  ownership,
+  ownershipFile = undefined,
+  paseoPassword = undefined,
+  paseoCredentialFile = undefined,
+) {
+  const protectedPaths = [ownershipFile, paseoCredentialFile]
+    .filter((path) => typeof path === "string")
+    .flatMap((path) => [path, resolve(path)]);
+  return [ownership, paseoPassword, ...protectedPaths].some((protectedValue) =>
       containsProtectedString(value, protectedValue),
     );
 }
 
-function containsProtectedError(error, ownership, ownershipFile = undefined) {
+function containsProtectedError(
+  error,
+  ownership,
+  ownershipFile = undefined,
+  paseoPassword = undefined,
+  paseoCredentialFile = undefined,
+) {
   return containsProtectedMaterial(
     {
       code: error?.code,
@@ -271,12 +239,13 @@ function containsProtectedError(error, ownership, ownershipFile = undefined) {
     },
     ownership,
     ownershipFile,
+    paseoPassword,
+    paseoCredentialFile,
   );
 }
 
-function selectedEnvironment(executable, args) {
+function selectedEnvironment(executable, args, paseoPassword = undefined) {
   const selected = {};
-  const password = selectedPaseoPassword();
   const host = normalizedPaseoHost(process.env.PASEO_HOST);
   for (const key of [
     "PATH",
@@ -289,23 +258,29 @@ function selectedEnvironment(executable, args) {
     "GH_HOST",
   ]) {
     const value = process.env[key];
-    if (
-      value !== undefined &&
-      (password === null || !value.includes(password))
-    ) {
+    if (value !== undefined && !containsProtectedString(value, paseoPassword)) {
       selected[key] = value;
     }
   }
-  if (host.host !== undefined) {
+  if (host !== undefined) {
     refuse(
-      password !== null && host.host.includes(password),
+      containsProtectedString(host, paseoPassword),
       "PASEO_AUTH_LOCATION_UNSUPPORTED",
-      "Paseo host still carries a credential after normalization",
+      "Paseo host carries credential material",
     );
-    selected.PASEO_HOST = host.host;
+    selected.PASEO_HOST = host;
   }
-  if (isPaseoLifecycleRead(executable, args) && password !== null) {
-    selected.PASEO_PASSWORD = password;
+  if (isPaseoLifecycleRead(executable, args)) {
+    const paseoHome = process.env.PASEO_HOME;
+    if (
+      paseoHome !== undefined &&
+      !containsProtectedString(paseoHome, paseoPassword)
+    ) {
+      selected.PASEO_HOME = paseoHome;
+    }
+  }
+  if (isPaseoLifecycleRead(executable, args) && paseoPassword !== undefined) {
+    selected.PASEO_PASSWORD = paseoPassword;
   }
   selected.GH_PROMPT_DISABLED = "1";
   selected.GH_PAGER = "cat";
@@ -317,10 +292,29 @@ function selectedEnvironment(executable, args) {
 }
 
 export function defaultCommandRunner(executable, args, options = {}) {
-  const result = spawnSync(executable, args, {
+  const lifecycleRead = isPaseoLifecycleRead(executable, args);
+  const paseoPassword = options.paseoPassword;
+  if (lifecycleRead && (typeof paseoPassword !== "string" || paseoPassword.length === 0)) {
+    return {
+      error: undefined,
+      status: 64,
+      stdout: "",
+      stderr: "PASEO_AUTH_REQUIRED\n",
+    };
+  }
+  const operation = lifecycleRead ? paseoLifecycleOperation(args) : null;
+  const childExecutable = lifecycleRead ? process.execPath : executable;
+  const childArgs = lifecycleRead
+    ? [
+        PASEO_LIFECYCLE_READER,
+        operation,
+        ...(operation === "agent.inspect" ? [args[1]] : []),
+      ]
+    : args;
+  const result = spawnSync(childExecutable, childArgs, {
     cwd: options.cwd,
     encoding: "utf8",
-    env: selectedEnvironment(executable, args),
+    env: selectedEnvironment(executable, args, paseoPassword),
     input: options.input,
     maxBuffer: MAX_COMMAND_OUTPUT,
     shell: false,
@@ -331,26 +325,50 @@ export function defaultCommandRunner(executable, args, options = {}) {
     status: result.status,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
+    protectedMaterialDetected:
+      lifecycleRead && containsProtectedString(
+        {
+          error: result.error?.message,
+          stderr: result.stderr,
+          stdout: result.stdout,
+        },
+        paseoPassword,
+      ),
   };
 }
 
 function checkedRun(run, executable, args, options = {}) {
   const result = run(executable, args, options);
+  const lifecycleRead = isPaseoLifecycleRead(executable, args);
+  if (lifecycleRead && result.protectedMaterialDetected === true) {
+    throw new CoordinatorError(
+      "PASEO_LIFECYCLE_RESPONSE_REDACTED",
+      "Paseo lifecycle response contained protected material",
+      { operation: paseoLifecycleOperation(args), status: result.status },
+    );
+  }
   if (result.error || result.status !== 0) {
-    if (isPaseoLifecycleRead(executable, args)) {
+    if (lifecycleRead) {
       const response = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
       const operation = paseoLifecycleOperation(args);
-      if (/Password required/iu.test(response)) {
+      if (/PASEO_AUTH_REQUIRED|Password required/iu.test(response)) {
         throw new CoordinatorError(
           "PASEO_AUTH_REQUIRED",
           "Paseo lifecycle authentication is required",
           { operation, status: result.status },
         );
       }
-      if (/Incorrect password/iu.test(response)) {
+      if (/PASEO_AUTH_FAILED|Incorrect password/iu.test(response)) {
         throw new CoordinatorError(
           "PASEO_AUTH_FAILED",
           "Paseo lifecycle authentication was rejected",
+          { operation, status: result.status },
+        );
+      }
+      if (/PASEO_LIFECYCLE_RESPONSE_REDACTED/iu.test(response)) {
+        throw new CoordinatorError(
+          "PASEO_LIFECYCLE_RESPONSE_REDACTED",
+          "Paseo lifecycle response contained protected material",
           { operation, status: result.status },
         );
       }
@@ -383,18 +401,7 @@ function parsedJson(output, source) {
 
 function runJson(run, executable, args, options = {}) {
   const output = checkedRun(run, executable, args, options);
-  const lifecycleRead = isPaseoLifecycleRead(executable, args);
-  refuse(
-    lifecycleRead && containsSelectedPaseoPassword(output),
-    "PASEO_LIFECYCLE_RESPONSE_REDACTED",
-    "Paseo lifecycle response contained protected material",
-  );
   const value = parsedJson(output, executable);
-  refuse(
-    lifecycleRead && containsSelectedPaseoPassword(value),
-    "PASEO_LIFECYCLE_RESPONSE_REDACTED",
-    "Paseo lifecycle response contained protected material",
-  );
   return value;
 }
 
@@ -455,6 +462,51 @@ function optionValues(argv) {
   return options;
 }
 
+function readPaseoCredentialFile() {
+  const credentialPath = process.env.DIRECTOR_PASEO_CREDENTIAL_FILE;
+  if (credentialPath === undefined) return null;
+  refuse(
+    !isAbsolute(credentialPath),
+    "PASEO_CREDENTIAL_FILE_INVALID",
+    "Paseo credential file must be absolute",
+  );
+  let descriptor;
+  try {
+    descriptor = openSync(
+      credentialPath,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+    );
+    const status = fstatSync(descriptor);
+    refuse(
+      !status.isFile() || (status.mode & 0o077) !== 0 ||
+        (typeof process.getuid === "function" && status.uid !== process.getuid()),
+      "PASEO_CREDENTIAL_FILE_INVALID",
+      "Paseo credential file must be an owner-only regular file with mode 0600",
+    );
+    refuse(
+      status.size < 1 || status.size > MAXIMUM_PASEO_CREDENTIAL_BYTES,
+      "PASEO_CREDENTIAL_FILE_INVALID",
+      "Paseo credential file has an invalid size",
+    );
+    const password = readFileSync(descriptor, "utf8");
+    refuse(
+      Buffer.byteLength(password) !== status.size || password.length === 0 ||
+        password.includes("\0"),
+      "PASEO_CREDENTIAL_FILE_INVALID",
+      "Paseo credential file contains an invalid password",
+    );
+    return { password, path: credentialPath };
+  } catch (error) {
+    if (error instanceof CoordinatorError) throw error;
+    throw new CoordinatorError(
+      "PASEO_CREDENTIAL_FILE_UNAVAILABLE",
+      "Paseo credential file is unavailable",
+    );
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
 export function parseCli(argv) {
   const [command, ...rest] = argv;
   refuse(!COMMANDS.has(command), "COMMAND_INVALID", "unknown coordinator command");
@@ -505,6 +557,17 @@ export function parseCli(argv) {
     value: ownershipPath,
     enumerable: false,
   });
+  const paseoCredential = readPaseoCredentialFile();
+  if (paseoCredential !== null) {
+    Object.defineProperty(options, "paseoPassword", {
+      value: paseoCredential.password,
+      enumerable: false,
+    });
+    Object.defineProperty(options, "paseoCredentialFile", {
+      value: paseoCredential.path,
+      enumerable: false,
+    });
+  }
   return { command, options };
 }
 
@@ -723,6 +786,18 @@ function validateOptions(command, rawOptions) {
       enumerable: false,
     });
   }
+  if (typeof rawOptions.paseoPassword === "string") {
+    Object.defineProperty(options, "paseoPassword", {
+      value: rawOptions.paseoPassword,
+      enumerable: false,
+    });
+  }
+  if (typeof rawOptions.paseoCredentialFile === "string") {
+    Object.defineProperty(options, "paseoCredentialFile", {
+      value: rawOptions.paseoCredentialFile,
+      enumerable: false,
+    });
+  }
   validatePullRequestInputs(options);
   return options;
 }
@@ -739,7 +814,13 @@ function validatePullRequestInputs(options) {
     ...(options.bodyFile === undefined ? {} : { bodyFile: options.bodyFile }),
   };
   refuse(
-    containsProtectedMaterial(fields, options.ownership, options.ownershipFile),
+    containsProtectedMaterial(
+      fields,
+      options.ownership,
+      options.ownershipFile,
+      options.paseoPassword,
+      options.paseoCredentialFile,
+    ),
     "PROTECTED_MATERIAL_REDACTED",
     "pull request inputs contained protected material",
   );
@@ -827,7 +908,13 @@ function loadState(options, { required = false } = {}) {
       binding: stateBinding(options),
     };
     refuse(
-      containsProtectedMaterial(migrated, options.ownership, options.ownershipFile),
+      containsProtectedMaterial(
+        migrated,
+        options.ownership,
+        options.ownershipFile,
+        options.paseoPassword,
+        options.paseoCredentialFile,
+      ),
       "STATE_LEGACY_OWNERSHIP_UNSAFE",
       "legacy coordinator state contains ownership material outside its migratable binding",
     );
@@ -840,7 +927,13 @@ function loadState(options, { required = false } = {}) {
     "state schema version is unsupported",
   );
   refuse(
-    containsProtectedMaterial(state, options.ownership, options.ownershipFile),
+    containsProtectedMaterial(
+      state,
+      options.ownership,
+      options.ownershipFile,
+      options.paseoPassword,
+      options.paseoCredentialFile,
+    ),
     "STATE_OWNERSHIP_MATERIAL_FORBIDDEN",
     "coordinator state contains raw ownership material",
   );
@@ -860,7 +953,13 @@ function loadState(options, { required = false } = {}) {
 
 function persistState(options, state) {
   refuse(
-    containsProtectedMaterial(state, options.ownership, options.ownershipFile),
+    containsProtectedMaterial(
+      state,
+      options.ownership,
+      options.ownershipFile,
+      options.paseoPassword,
+      options.paseoCredentialFile,
+    ),
     "PROTECTED_MATERIAL_REDACTED",
     "coordinator state contained protected material",
   );
@@ -1558,7 +1657,13 @@ function validateReviewManifestEvidence(options) {
     readJsonFile(options.manifestFile, "review handoff manifest"),
   );
   refuse(
-    containsProtectedMaterial(manifest, options.ownership, options.ownershipFile),
+    containsProtectedMaterial(
+      manifest,
+      options.ownership,
+      options.ownershipFile,
+      options.paseoPassword,
+      options.paseoCredentialFile,
+    ),
     "REVIEW_MANIFEST_OWNERSHIP_MATERIAL_FORBIDDEN",
     "review handoff manifest contains raw ownership material",
   );
@@ -2370,7 +2475,13 @@ function validateCleanupPlan(options) {
   refuse(!options.planFile, "OPTION_REQUIRED", "--plan-file is required");
   const document = readJsonFile(options.planFile, "cleanup plan");
   refuse(
-    containsProtectedMaterial(document, options.ownership, options.ownershipFile),
+    containsProtectedMaterial(
+      document,
+      options.ownership,
+      options.ownershipFile,
+      options.paseoPassword,
+      options.paseoCredentialFile,
+    ),
     "CLEANUP_PLAN_OWNERSHIP_MATERIAL_FORBIDDEN",
     "cleanup plan contains raw ownership material",
   );
@@ -2536,7 +2647,13 @@ function publicationBody(options) {
   const body = readFileSync(options.bodyFile, "utf8");
   refuse(body.includes("\0"), "BODY_FILE_INVALID", "PR body contains a NUL byte");
   refuse(
-    containsProtectedMaterial(body, options.ownership, options.ownershipFile),
+    containsProtectedMaterial(
+      body,
+      options.ownership,
+      options.ownershipFile,
+      options.paseoPassword,
+      options.paseoCredentialFile,
+    ),
     "PROTECTED_MATERIAL_REDACTED",
     "pull request body contained protected material",
   );
@@ -2954,7 +3071,11 @@ async function cleanupApply(run, options, deps) {
 
 export async function execute(command, rawOptions, dependencies = {}) {
   const options = validateOptions(command, rawOptions);
-  const run = dependencies.run ?? defaultCommandRunner;
+  const run = dependencies.run ?? ((executable, args, runOptions = {}) =>
+    defaultCommandRunner(executable, args, {
+      ...runOptions,
+      paseoPassword: options.paseoPassword,
+    }));
   const deps = { ...dependencies, run };
   const operation = async () => {
     let result;
@@ -3022,7 +3143,13 @@ export async function execute(command, rawOptions, dependencies = {}) {
       result,
     };
     refuse(
-      containsProtectedMaterial(output, options.ownership, options.ownershipFile),
+      containsProtectedMaterial(
+        output,
+        options.ownership,
+        options.ownershipFile,
+        options.paseoPassword,
+        options.paseoCredentialFile,
+      ),
       "PROTECTED_MATERIAL_REDACTED",
       "coordinator output contained protected material",
     );
@@ -3038,7 +3165,15 @@ export async function execute(command, rawOptions, dependencies = {}) {
     try {
       return await operation();
     } catch (error) {
-      if (containsProtectedError(error, options.ownership, options.ownershipFile)) {
+      if (
+        containsProtectedError(
+          error,
+          options.ownership,
+          options.ownershipFile,
+          options.paseoPassword,
+          options.paseoCredentialFile,
+        )
+      ) {
         throw new CoordinatorError(
           "PROTECTED_MATERIAL_REDACTED",
           "coordinator failure contained protected material",
@@ -3057,6 +3192,8 @@ export function errorOutput(
   error,
   ownership = undefined,
   ownershipFile = undefined,
+  paseoPassword = undefined,
+  paseoCredentialFile = undefined,
 ) {
   if (error instanceof CoordinatorInterruption) {
     const output = {
@@ -3067,7 +3204,15 @@ export function errorOutput(
       message: error.message,
       effect: error.effect,
     };
-    if (containsProtectedMaterial(output, ownership, ownershipFile)) {
+    if (
+      containsProtectedMaterial(
+        output,
+        ownership,
+        ownershipFile,
+        paseoPassword,
+        paseoCredentialFile,
+      )
+    ) {
       return {
         schemaVersion: OUTPUT_SCHEMA_VERSION,
         command,
@@ -3087,7 +3232,15 @@ export function errorOutput(
       message: boundedText(error.message),
       ...(error.details === undefined ? {} : { details: canonicalize(error.details) }),
     };
-    if (containsProtectedMaterial(output, ownership, ownershipFile)) {
+    if (
+      containsProtectedMaterial(
+        output,
+        ownership,
+        ownershipFile,
+        paseoPassword,
+        paseoCredentialFile,
+      )
+    ) {
       return {
         schemaVersion: OUTPUT_SCHEMA_VERSION,
         command,
