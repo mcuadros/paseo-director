@@ -100,6 +100,21 @@ test("the maintained scaffold and workflow satisfy their contracts", () => {
   assert.deepEqual(lintRepository(repositoryRoot).errors, []);
 });
 
+test("only an exact reviewed third-party license may preserve upstream whitespace", () => {
+  const root = mkdtempSync(join(tmpdir(), "director-third-party-license-format-"));
+  const path = "third_party/licenses/github.com-go-sql-driver-mysql-v1.10.1/LICENSE";
+  const target = resolve(root, path);
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(resolve(repositoryRoot, path), target);
+    assert.deepEqual(formatErrors(root, [path]), []);
+    writeFileSync(target, `${readFileSync(target, "utf8")}changed\n`);
+    assert.ok(formatErrors(root, [path]).some((error) => error.includes("trailing whitespace")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the retired disposable activation gate cannot be restored", () => {
   const temporaryRoot = trackedRepositoryCopy("director-retired-activation-");
   const packagePath = resolve(temporaryRoot, "package.json");

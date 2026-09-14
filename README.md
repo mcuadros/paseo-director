@@ -91,8 +91,8 @@ unintegrated recovery material. See
 ## Installation and updates
 
 Director uses Paseo's supported Git source lifecycle and targets only exact
-Paseo 0.7.2 on Linux amd64 with Node.js 22 or newer. Before Paseo compiles a
-candidate, the manifest installs only the production dependency closure with
+Paseo 0.7.2 on Linux amd64 with glibc and Node.js 22 or newer. Before Paseo
+compiles a candidate, the manifest installs only the production dependency closure with
 `npm ci --omit=dev --ignore-scripts --no-audit --no-fund` and runs the committed
 host/dependency verifier. The lock audit permits only integrity-pinned npm
 registry artifacts and executes no package lifecycle scripts. A registry,
@@ -113,7 +113,7 @@ Go-sum-verified module cache. Once a channel is published, install and update
 without Go:
 
 ```text
-paseo plugin add mcuadros/paseo-director --ref stable
+paseo plugin add mcuadros/paseo-director --ref <published-alpha-beta-or-stable-ref>
 paseo plugin status director
 paseo plugin update director
 paseo plugin reload director
@@ -125,6 +125,22 @@ agents or workspaces. Tags and exact commits are immutable pins and do not advan
 See [installation, update, rollback, and compatibility](docs/installation-update.md)
 before installing; it includes release artifacts, diagnostics, failure
 recovery, and removal behavior.
+
+## Public policies
+
+- [Apache-2.0 licensing and exact dependency notices](docs/licensing.md)
+- [Security and private vulnerability reporting](SECURITY.md)
+- [Support and escalation](SUPPORT.md)
+- [Exact compatibility](docs/compatibility.md)
+- [Changelog](CHANGELOG.md)
+- [Release process and channel gates](docs/release-process.md)
+
+No tagged alpha, public beta, or stable channel has been published. Activation
+is live and plugin-scoped and preserves unrelated agents/workspaces. Stopping
+the Paseo daemon or host is not a supported workaround. The first usable
+`1.0.0-alpha.1` still requires release-CI-built assets, a later reviewed
+metadata commit, and separately authorized tag, upload, and alpha-channel
+effects.
 
 ## Development
 

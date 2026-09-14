@@ -11,6 +11,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { auditDependencyClosure } from "../ci/dependency-audit.mjs";
+import { npmLicenseInventory } from "../release/notices.mjs";
 import { buildMainBootstrap, cachePublishedBootstrap, runBootstrapPreparation } from "./bootstrap-build.mjs";
 
 const SUPPORTED_PASEO_VERSION = "0.7.2";
@@ -19,12 +20,24 @@ const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/u;
 
 function fail(code, message) { process.stderr.write(`${code}: ${message}\n`); return 1; }
 
+function runningLibc() {
+  try {
+    const version = process.report.getReport().header.glibcVersionRuntime;
+    return typeof version === "string" && version.length > 0 ? "glibc" : "unsupported";
+  } catch {
+    return "unsupported";
+  }
+}
+
 export function verifyInstall(options = {}) {
   const platform = options.platform ?? process.platform;
   const architecture = options.architecture ?? process.arch;
   const nodeVersion = options.nodeVersion ?? process.versions.node;
   if (platform !== "linux") return { code: "DIRECTOR_INSTALL_PLATFORM_UNSUPPORTED", message: "Director 1.0 supports Linux only" };
   if (architecture !== "x64") return { code: "DIRECTOR_INSTALL_TARGET_UNSUPPORTED", message: "Director release target linux-amd64 is required" };
+  if ((options.libc ?? runningLibc()) !== "glibc") {
+    return { code: "DIRECTOR_INSTALL_LIBC_UNSUPPORTED", message: "Director 1.0 supports glibc on Linux amd64 only" };
+  }
   const nodeMajor = Number.parseInt(String(nodeVersion).split(".", 1)[0] ?? "", 10);
   if (!Number.isSafeInteger(nodeMajor) || nodeMajor < MINIMUM_NODE_MAJOR) return { code: "DIRECTOR_INSTALL_NODE_UNSUPPORTED", message: `Node.js ${MINIMUM_NODE_MAJOR} or newer is required` };
   const paseo = options.paseoVersion ?? (() => {
@@ -38,7 +51,14 @@ export function verifyInstall(options = {}) {
   }
   const repositoryRoot = options.repositoryRoot ?? resolve(fileURLToPath(new URL("../..", import.meta.url)));
   const audit = auditDependencyClosure(repositoryRoot, { installed: true });
-  if (audit.errors.length > 0) return { code: "DIRECTOR_INSTALL_DEPENDENCY_AUDIT", message: audit.errors[0] };
+  if (audit.errors.length > 0) {
+    return { code: "DIRECTOR_INSTALL_DEPENDENCY_AUDIT", message: audit.errors[0] };
+  }
+  try {
+    (options.licenseAudit ?? npmLicenseInventory)(repositoryRoot, { installedScope: "production" });
+  } catch {
+    return { code: "DIRECTOR_INSTALL_LICENSE_AUDIT", message: "locked production license metadata is incomplete or unapproved" };
+  }
   return { code: "DIRECTOR_INSTALL_READY", message: `exact Paseo ${SUPPORTED_PASEO_VERSION}; dependency ${audit.sha256}` };
 }
 

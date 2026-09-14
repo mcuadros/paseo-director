@@ -26,6 +26,12 @@ const LICENSE_SHA256 =
   "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30";
 const EMPTY_SHA256 =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const EXACT_THIRD_PARTY_TEXT_SHA256 = new Map([
+  [
+    "third_party/licenses/github.com-go-sql-driver-mysql-v1.10.1/LICENSE",
+    "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85",
+  ],
+]);
 const RELEASE_ORIGIN = "https://github.com";
 const RELEASE_PATH_PREFIX =
   "/mcuadros/paseo-director/releases/download/";
@@ -39,8 +45,11 @@ const REQUIRED_SCRIPTS = [
   "dependency:audit",
   "engine:check",
   "format:check",
+  "license:check",
   "lint",
+  "public:check",
   "release:build",
+  "release:notices",
   "smoke",
   "test",
   "test:baseline",
@@ -167,8 +176,11 @@ export function formatErrors(repositoryRoot, paths) {
     if (text.includes("\r")) {
       errors.push(`${path}: carriage returns are not allowed`);
     }
+    const exactThirdPartyText = EXACT_THIRD_PARTY_TEXT_SHA256.get(path);
+    const preservesReviewedWhitespace = exactThirdPartyText !== undefined &&
+      createHash("sha256").update(bytes).digest("hex") === exactThirdPartyText;
     for (const [index, line] of text.split("\n").entries()) {
-      if (/[ \t]+$/.test(line)) {
+      if (/[ \t]+$/.test(line) && !preservesReviewedWhitespace) {
         errors.push(`${path}:${index + 1}: trailing whitespace`);
       }
     }

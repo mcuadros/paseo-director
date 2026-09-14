@@ -21,6 +21,7 @@ import { startHostContractServer } from "../../connector/host-ipc.server.ts";
 import { EXPECTED_HOST_DESCRIPTOR } from "../../generated/host-contract.shared.ts";
 import { PLANNING_CONTRACT_SHA256, PLANNING_CONTRACT_VERSION } from "../../generated/planning-contract.shared.ts";
 import { buildRelease } from "../release/build-engine.mjs";
+import { renderThirdPartyNotices } from "../release/notices.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const innerRuntimeArgument = "--director-inner-release-runtime";
@@ -250,7 +251,7 @@ export async function runReleaseRuntimeLifecycle() {
   const notices = join(root, "THIRD_PARTY_NOTICES.txt");
   const archive = join(root, "dolt-linux-amd64.tar.gz");
   const fixtureDolt = join(root, "fixture", "dolt");
-  writePrivate(notices, `Director release runtime fixture\nsource-candidate: ${candidate}\n`);
+  writePrivate(notices, renderThirdPartyNotices(repositoryRoot, candidate));
   writePrivate(archive, "release builder identity fixture\n");
   mkdirSync(dirname(fixtureDolt), { recursive: true, mode: 0o700 });
   copyFileSync(command("/usr/bin/which", ["dolt"]), fixtureDolt); chmodSync(fixtureDolt, 0o500);

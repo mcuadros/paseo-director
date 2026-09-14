@@ -2,6 +2,10 @@
 
 Director is developed through dependency-ordered Beads Tasks and exact-commit independent review. The approved scope and architecture live in [docs/PLAN.md](docs/PLAN.md).
 
+Report suspected vulnerabilities only through the private process in
+[SECURITY.md](SECURITY.md). Use [SUPPORT.md](SUPPORT.md) for non-security
+diagnostics and issue-reporting guidance.
+
 Each development Task is owned by one normal top-level Paseo Task Agent whose parent field is omitted and whose visible title exactly matches the Task title. It runs in the Task's isolated Execution Workspace/worktree. The Task Agent may create internal helper subagents, but helpers are not Beads Tasks or Task owners. Independent Reviewer Agents are also top-level agents and never children of the Task Agent or a planning context. Task Agents hand off structured Candidate/outcome claims and may perform only authorized correction turns; the Director Engine or authorized coordinator alone reconciles and executes publication, pull-request creation or update, integration, lifecycle cleanup, and Task closure.
 
 ## Before starting
