@@ -2768,6 +2768,231 @@ test("cleanup reconciles exact public Paseo agent and workspace archival", async
   }
 });
 
+test("cleanup adopts terminal Paseo archival without dispatching a duplicate effect", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture);
+    const lifecycle = {
+      "agent-id": "agent-0001",
+      "lifecycle-state": "active",
+      "workspace-id": "workspace-0001",
+    };
+    rebindReviewRouting(fixture, {
+      agentId: "agent-0001",
+      lifecycleState: "active",
+      workspaceId: "workspace-0001",
+    });
+    await publishReadyFixture(fixture, fake, lifecycle);
+    const integratedOptions = {
+      ...gateOptions(fixture, lifecycle),
+      "state-file": fixture.stateFile,
+    };
+    await execute("integrate", integratedOptions, { run: fake.runner });
+    const plan = await execute("cleanup-plan", integratedOptions, { run: fake.runner });
+    writeFileSync(fixture.planFile, `${canonicalJson(plan)}\n`);
+
+    // The agent reached its terminal state outside this attempt. Cleanup must
+    // adopt that fact instead of archiving an already-archived resource.
+    fake.state.agentArchived = true;
+    const result = await execute(
+      "cleanup-apply",
+      { ...integratedOptions, "plan-file": fixture.planFile },
+      { run: fake.runner },
+    );
+    assert.equal(result.result.resources, "complete");
+    assert.equal(fake.state.agentArchiveDispatches, 0);
+    const state = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(state.effects["cleanup.agent"].phase, "complete");
+    assert.equal(state.effects["cleanup.agent"].attempts, 0);
+    assert.equal(state.effects["cleanup.workspace"].phase, "complete");
+    assert.deepEqual(fake.state.workspaces, []);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a lost archive response reconciles by authoritative readback, never by re-execution", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture);
+    const lifecycle = {
+      "agent-id": "agent-0001",
+      "lifecycle-state": "active",
+      "workspace-id": "workspace-0001",
+    };
+    rebindReviewRouting(fixture, {
+      agentId: "agent-0001",
+      lifecycleState: "active",
+      workspaceId: "workspace-0001",
+    });
+    await publishReadyFixture(fixture, fake, lifecycle);
+    const integratedOptions = {
+      ...gateOptions(fixture, lifecycle),
+      "state-file": fixture.stateFile,
+    };
+    await execute("integrate", integratedOptions, { run: fake.runner });
+    const plan = await execute("cleanup-plan", integratedOptions, { run: fake.runner });
+    writeFileSync(fixture.planFile, `${canonicalJson(plan)}\n`);
+
+    // Both mutations land and then lose their response. The bounded child can
+    // only report an unproven outcome; the readback supplies the completion.
+    const lostResponse = (executable, args, options = {}) => {
+      if (executable === "paseo" && args[0] === "archive") {
+        fake.state.agentArchiveDispatches += 1;
+        fake.state.agentArchived = true;
+        return {
+          error: undefined,
+          status: 68,
+          stdout: "",
+          stderr: "PASEO_LIFECYCLE_MUTATION_FAILED\n",
+        };
+      }
+      if (executable === "paseo" && args[0] === "workspace" && args[1] === "archive") {
+        fake.state.workspaces = [];
+        return {
+          error: undefined,
+          status: 68,
+          stdout: "",
+          stderr: "PASEO_LIFECYCLE_MUTATION_FAILED\n",
+        };
+      }
+      return fake.runner(executable, args, options);
+    };
+    const result = await execute(
+      "cleanup-apply",
+      { ...integratedOptions, "plan-file": fixture.planFile },
+      { run: lostResponse },
+    );
+    assert.equal(result.result.resources, "complete");
+    assert.equal(fake.state.agentArchiveDispatches, 1);
+    const state = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(state.effects["cleanup.agent"].phase, "complete");
+    assert.equal(state.effects["cleanup.agent"].attempts, 1);
+    assert.equal(state.effects["cleanup.workspace"].phase, "complete");
+    assert.equal(state.effects["cleanup.workspace"].attempts, 1);
+    assert.equal(existsSync(fixture.checkout), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("an unproven archive preserves its dispatching intent and completes on the next run", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture);
+    const lifecycle = {
+      "agent-id": "agent-0001",
+      "lifecycle-state": "active",
+      "workspace-id": "workspace-0001",
+    };
+    rebindReviewRouting(fixture, {
+      agentId: "agent-0001",
+      lifecycleState: "active",
+      workspaceId: "workspace-0001",
+    });
+    await publishReadyFixture(fixture, fake, lifecycle);
+    const integratedOptions = {
+      ...gateOptions(fixture, lifecycle),
+      "state-file": fixture.stateFile,
+    };
+    await execute("integrate", integratedOptions, { run: fake.runner });
+    const plan = await execute("cleanup-plan", integratedOptions, { run: fake.runner });
+    writeFileSync(fixture.planFile, `${canonicalJson(plan)}\n`);
+
+    let unavailable = true;
+    const flaky = (executable, args, options = {}) => {
+      if (executable === "paseo" && args[0] === "archive" && unavailable) {
+        unavailable = false;
+        return {
+          error: undefined,
+          status: 68,
+          stdout: "",
+          stderr: "PASEO_LIFECYCLE_MUTATION_FAILED\n",
+        };
+      }
+      return fake.runner(executable, args, options);
+    };
+    const applyOptions = { ...integratedOptions, "plan-file": fixture.planFile };
+    await assert.rejects(
+      execute("cleanup-apply", applyOptions, { run: flaky }),
+      (error) =>
+        error instanceof CoordinatorError && error.code === "AGENT_ARCHIVE_UNKNOWN",
+    );
+    const parked = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(parked.effects["cleanup.agent"].phase, "dispatching");
+    assert.equal(parked.effects["cleanup.agent"].attempts, 1);
+    assert.equal(fake.state.agentArchived, false);
+    assert.equal(fake.state.agentArchiveDispatches, 0);
+    assert.equal(existsSync(fixture.checkout), true);
+
+    const retried = await execute("cleanup-apply", applyOptions, { run: flaky });
+    assert.equal(retried.result.resources, "complete");
+    assert.equal(fake.state.agentArchiveDispatches, 1);
+    const settled = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(settled.effects["cleanup.agent"].phase, "complete");
+    assert.equal(settled.effects["cleanup.agent"].attempts, 2);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a refused archive credential is reported exactly and preserves every resource", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture);
+    const lifecycle = {
+      "agent-id": "agent-0001",
+      "lifecycle-state": "active",
+      "workspace-id": "workspace-0001",
+    };
+    rebindReviewRouting(fixture, {
+      agentId: "agent-0001",
+      lifecycleState: "active",
+      workspaceId: "workspace-0001",
+    });
+    await publishReadyFixture(fixture, fake, lifecycle);
+    const integratedOptions = {
+      ...gateOptions(fixture, lifecycle),
+      "state-file": fixture.stateFile,
+    };
+    await execute("integrate", integratedOptions, { run: fake.runner });
+    const plan = await execute("cleanup-plan", integratedOptions, { run: fake.runner });
+    writeFileSync(fixture.planFile, `${canonicalJson(plan)}\n`);
+
+    // The daemon rejected the credential, so no effect was executed. Reporting
+    // this as an unproven archive is what hid the M6.20/M6.4/M6.3 root cause.
+    for (const [stderr, code] of [
+      ["PASEO_AUTH_REQUIRED\n", "PASEO_AUTH_REQUIRED"],
+      ["PASEO_AUTH_FAILED\n", "PASEO_AUTH_FAILED"],
+      ["PASEO_LIFECYCLE_RESPONSE_REDACTED\n", "PASEO_LIFECYCLE_RESPONSE_REDACTED"],
+    ]) {
+      const refusing = (executable, args, options = {}) => {
+        if (executable === "paseo" && args[0] === "archive") {
+          return { error: undefined, status: 65, stdout: "", stderr };
+        }
+        return fake.runner(executable, args, options);
+      };
+      await assert.rejects(
+        execute(
+          "cleanup-apply",
+          { ...integratedOptions, "plan-file": fixture.planFile },
+          { run: refusing },
+        ),
+        (error) => error instanceof CoordinatorError && error.code === code,
+      );
+    }
+    assert.equal(fake.state.agentArchived, false);
+    assert.equal(fake.state.agentArchiveDispatches, 0);
+    assert.deepEqual(fake.state.workspaces.map((item) => item.workspaceId), ["workspace-0001"]);
+    assert.equal(existsSync(fixture.checkout), true);
+    const state = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(state.effects["cleanup.agent"].phase, "dispatching");
+    assert.equal(state.effects["cleanup.workspace"], undefined);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("cleanup preserves a Task ref acquired by a foreign worktree", async () => {
   const fixture = createRepositoryFixture();
   try {

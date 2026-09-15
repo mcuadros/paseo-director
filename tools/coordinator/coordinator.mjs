@@ -49,8 +49,8 @@ const MAX_JSON_BYTES = 1_048_576;
 const MAX_COMMAND_OUTPUT = 4 * 1_048_576;
 const COMMAND_TIMEOUT_MS = 120_000;
 const MAXIMUM_PASEO_CREDENTIAL_BYTES = 4_096;
-const PASEO_LIFECYCLE_READER = fileURLToPath(
-  new URL("./paseo-lifecycle-read.mjs", import.meta.url),
+const PASEO_LIFECYCLE_CHILD = fileURLToPath(
+  new URL("./paseo-lifecycle.mjs", import.meta.url),
 );
 const LEGACY_STATE_SCHEMA_VERSION = 1;
 const STATE_SCHEMA_VERSION = 2;
@@ -159,20 +159,33 @@ export class CoordinatorInterruption extends Error {
   }
 }
 
-function isPaseoLifecycleRead(executable, args) {
-  return executable === "paseo" &&
-    ((args.length === 3 &&
-      args[0] === "inspect" &&
-      ID_PATTERN.test(args[1]) &&
-      args[2] === "--json") ||
-      (args.length === 3 &&
-        args[0] === "workspace" &&
-        args[1] === "ls" &&
-        args[2] === "--json"));
-}
-
-function paseoLifecycleOperation(args) {
-  return args[0] === "inspect" ? "agent.inspect" : "workspace.list";
+/**
+ * Resolves a documented Paseo lifecycle verb to the one bounded child operation
+ * that may perform it. Reads and mutations share this boundary deliberately:
+ * both authenticate over HTTP bearer, which accepts the valid delimiter-rich
+ * daemon password that the CLI's WebSocket subprotocol grammar rejects. Any
+ * other Paseo verb resolves to null and never sees the password.
+ */
+function paseoLifecycleCall(executable, args) {
+  if (executable !== "paseo") return null;
+  if (args.length === 3 && args[2] === "--json") {
+    if (args[0] === "inspect" && ID_PATTERN.test(args[1])) {
+      return { operation: "agent.inspect", identifier: args[1], mutation: false };
+    }
+    if (args[0] === "archive" && ID_PATTERN.test(args[1])) {
+      return { operation: "agent.archive", identifier: args[1], mutation: true };
+    }
+    if (args[0] === "workspace" && args[1] === "ls") {
+      return { operation: "workspace.list", identifier: null, mutation: false };
+    }
+  }
+  if (
+    args.length === 4 && args[0] === "workspace" && args[1] === "archive" &&
+    ID_PATTERN.test(args[2]) && args[3] === "--json"
+  ) {
+    return { operation: "workspace.archive", identifier: args[2], mutation: true };
+  }
+  return null;
 }
 
 /**
@@ -254,6 +267,7 @@ function selectedEnvironment(executable, args, paseoPassword = undefined) {
     "TMPDIR",
     "HOME",
     "XDG_CONFIG_HOME",
+    "BEADS_DIR",
     "GH_CONFIG_DIR",
     "GH_HOST",
   ]) {
@@ -270,7 +284,7 @@ function selectedEnvironment(executable, args, paseoPassword = undefined) {
     );
     selected.PASEO_HOST = host;
   }
-  if (isPaseoLifecycleRead(executable, args)) {
+  if (paseoLifecycleCall(executable, args) !== null) {
     const paseoHome = process.env.PASEO_HOME;
     if (
       paseoHome !== undefined &&
@@ -278,9 +292,7 @@ function selectedEnvironment(executable, args, paseoPassword = undefined) {
     ) {
       selected.PASEO_HOME = paseoHome;
     }
-  }
-  if (isPaseoLifecycleRead(executable, args) && paseoPassword !== undefined) {
-    selected.PASEO_PASSWORD = paseoPassword;
+    if (paseoPassword !== undefined) selected.PASEO_PASSWORD = paseoPassword;
   }
   selected.GH_PROMPT_DISABLED = "1";
   selected.GH_PAGER = "cat";
@@ -292,9 +304,9 @@ function selectedEnvironment(executable, args, paseoPassword = undefined) {
 }
 
 export function defaultCommandRunner(executable, args, options = {}) {
-  const lifecycleRead = isPaseoLifecycleRead(executable, args);
+  const lifecycle = paseoLifecycleCall(executable, args);
   const paseoPassword = options.paseoPassword;
-  if (lifecycleRead && (typeof paseoPassword !== "string" || paseoPassword.length === 0)) {
+  if (lifecycle !== null && (typeof paseoPassword !== "string" || paseoPassword.length === 0)) {
     return {
       error: undefined,
       status: 64,
@@ -302,15 +314,14 @@ export function defaultCommandRunner(executable, args, options = {}) {
       stderr: "PASEO_AUTH_REQUIRED\n",
     };
   }
-  const operation = lifecycleRead ? paseoLifecycleOperation(args) : null;
-  const childExecutable = lifecycleRead ? process.execPath : executable;
-  const childArgs = lifecycleRead
-    ? [
-        PASEO_LIFECYCLE_READER,
-        operation,
-        ...(operation === "agent.inspect" ? [args[1]] : []),
-      ]
-    : args;
+  const childExecutable = lifecycle === null ? executable : process.execPath;
+  const childArgs = lifecycle === null
+    ? args
+    : [
+        PASEO_LIFECYCLE_CHILD,
+        lifecycle.operation,
+        ...(lifecycle.identifier === null ? [] : [lifecycle.identifier]),
+      ];
   const result = spawnSync(childExecutable, childArgs, {
     cwd: options.cwd,
     encoding: "utf8",
@@ -326,7 +337,7 @@ export function defaultCommandRunner(executable, args, options = {}) {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
     protectedMaterialDetected:
-      lifecycleRead && containsProtectedString(
+      lifecycle !== null && containsProtectedString(
         {
           error: result.error?.message,
           stderr: result.stderr,
@@ -337,47 +348,62 @@ export function defaultCommandRunner(executable, args, options = {}) {
   };
 }
 
-function checkedRun(run, executable, args, options = {}) {
-  const result = run(executable, args, options);
-  const lifecycleRead = isPaseoLifecycleRead(executable, args);
-  if (lifecycleRead && result.protectedMaterialDetected === true) {
-    throw new CoordinatorError(
-      "PASEO_LIFECYCLE_RESPONSE_REDACTED",
-      "Paseo lifecycle response contained protected material",
-      { operation: paseoLifecycleOperation(args), status: result.status },
+function paseoProtectedMaterialError(lifecycle, result) {
+  return new CoordinatorError(
+    "PASEO_LIFECYCLE_RESPONSE_REDACTED",
+    "Paseo lifecycle response contained protected material",
+    { operation: lifecycle.operation, status: result.status },
+  );
+}
+
+/**
+ * Classifies the deterministic refusals a bounded lifecycle child reports: the
+ * daemon either demanded or rejected credentials, or its response echoed the
+ * selected one. Each is proven without an executed effect, so a mutation may
+ * report it exactly rather than degrading into an unproven-archive refusal.
+ * Anything else stays unclassified because it may have reached the daemon.
+ */
+function paseoLifecycleRefusal(lifecycle, result) {
+  const response = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  const details = { operation: lifecycle.operation, status: result.status };
+  if (/PASEO_AUTH_REQUIRED|Password required/iu.test(response)) {
+    return new CoordinatorError(
+      "PASEO_AUTH_REQUIRED",
+      "Paseo lifecycle authentication is required",
+      details,
     );
   }
+  if (/PASEO_AUTH_FAILED|Incorrect password/iu.test(response)) {
+    return new CoordinatorError(
+      "PASEO_AUTH_FAILED",
+      "Paseo lifecycle authentication was rejected",
+      details,
+    );
+  }
+  if (/PASEO_LIFECYCLE_RESPONSE_REDACTED/iu.test(response)) {
+    return paseoProtectedMaterialError(lifecycle, result);
+  }
+  return null;
+}
+
+function paseoLifecycleFailure(lifecycle, result) {
+  return paseoLifecycleRefusal(lifecycle, result) ?? new CoordinatorError(
+    lifecycle.mutation ? "PASEO_LIFECYCLE_MUTATION_FAILED" : "PASEO_LIFECYCLE_READ_FAILED",
+    lifecycle.mutation
+      ? "Paseo lifecycle mutation was not acknowledged"
+      : "Paseo lifecycle facts were unavailable",
+    { operation: lifecycle.operation, status: result.status },
+  );
+}
+
+function checkedRun(run, executable, args, options = {}) {
+  const result = run(executable, args, options);
+  const lifecycle = paseoLifecycleCall(executable, args);
+  if (lifecycle !== null && result.protectedMaterialDetected === true) {
+    throw paseoProtectedMaterialError(lifecycle, result);
+  }
   if (result.error || result.status !== 0) {
-    if (lifecycleRead) {
-      const response = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-      const operation = paseoLifecycleOperation(args);
-      if (/PASEO_AUTH_REQUIRED|Password required/iu.test(response)) {
-        throw new CoordinatorError(
-          "PASEO_AUTH_REQUIRED",
-          "Paseo lifecycle authentication is required",
-          { operation, status: result.status },
-        );
-      }
-      if (/PASEO_AUTH_FAILED|Incorrect password/iu.test(response)) {
-        throw new CoordinatorError(
-          "PASEO_AUTH_FAILED",
-          "Paseo lifecycle authentication was rejected",
-          { operation, status: result.status },
-        );
-      }
-      if (/PASEO_LIFECYCLE_RESPONSE_REDACTED/iu.test(response)) {
-        throw new CoordinatorError(
-          "PASEO_LIFECYCLE_RESPONSE_REDACTED",
-          "Paseo lifecycle response contained protected material",
-          { operation, status: result.status },
-        );
-      }
-      throw new CoordinatorError(
-        "PASEO_LIFECYCLE_READ_FAILED",
-        "Paseo lifecycle facts were unavailable",
-        { operation, status: result.status },
-      );
-    }
+    if (lifecycle !== null) throw paseoLifecycleFailure(lifecycle, result);
     throw new CoordinatorError(
       "EXTERNAL_COMMAND_FAILED",
       `${executable} could not provide an authoritative result`,
@@ -2888,6 +2914,29 @@ async function integrate(run, options, deps) {
   return persistIntegrationVerification(run, options, pull, state);
 }
 
+/**
+ * Dispatches one exact recorded archive through the bounded lifecycle child.
+ * The daemon's own answer never proves the effect, so an unclassified failure
+ * deliberately falls through to the authoritative readback that follows: the
+ * mutation may have landed and its response been lost. A proven credential
+ * refusal or an echoed secret is raised exactly, because continuing would
+ * report the missing capability as an unproven archive and hide its cause.
+ * Every outcome leaves the recorded intent and the resource intact for
+ * idempotent reconciliation.
+ */
+function dispatchPaseoArchive(run, options, args) {
+  const lifecycle = paseoLifecycleCall("paseo", args);
+  const result = run("paseo", args, { cwd: options.controlRepo });
+  if (result.protectedMaterialDetected === true) {
+    throw paseoProtectedMaterialError(lifecycle, result);
+  }
+  if (result.error || result.status !== 0) {
+    const refusal = paseoLifecycleRefusal(lifecycle, result);
+    if (refusal !== null) throw refusal;
+  }
+  return result;
+}
+
 async function cleanupApply(run, options, deps) {
   const plan = validateCleanupPlan(options);
   const state = loadState(options, { required: true });
@@ -2907,7 +2956,7 @@ async function cleanupApply(run, options, deps) {
     } else {
       markDispatch(options, state, "cleanup.agent", "idempotent_close");
       await dispatchHook(deps, "before", "cleanup.agent", { options, state });
-      const archived = run("paseo", ["archive", options.agentId, "--json"], { cwd: options.controlRepo });
+      const archived = dispatchPaseoArchive(run, options, ["archive", options.agentId, "--json"]);
       await dispatchHook(deps, "after", "cleanup.agent", { options, result: archived, state });
       const observed = validatedPaseoAgent(
         runJson(run, "paseo", ["inspect", options.agentId, "--json"]),
@@ -2929,7 +2978,11 @@ async function cleanupApply(run, options, deps) {
     } else {
       markDispatch(options, state, "cleanup.workspace", "idempotent_close");
       await dispatchHook(deps, "before", "cleanup.workspace", { options, state });
-      const archived = run("paseo", ["workspace", "archive", options.workspaceId, "--json"], { cwd: options.controlRepo });
+      const archived = dispatchPaseoArchive(
+        run,
+        options,
+        ["workspace", "archive", options.workspaceId, "--json"],
+      );
       await dispatchHook(deps, "after", "cleanup.workspace", { options, result: archived, state });
       const workspaces = validatedPaseoWorkspaces(
         runJson(run, "paseo", ["workspace", "ls", "--json"]),
