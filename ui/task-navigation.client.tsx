@@ -6,7 +6,7 @@ import {
   type PluginComposerPillProps,
   useAgent,
 } from "@getpaseo/plugin";
-import { Icon } from "@getpaseo/plugin";
+import { Icon } from "./host-primitives.client.tsx";
 import React from "react";
 import { Text } from "react-native";
 

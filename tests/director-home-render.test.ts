@@ -84,6 +84,7 @@ function loadHomeComponent(
   Modal.Content = ({ children }: { children?: React.ReactNode }) => React.createElement("ModalContent", {}, children);
   const require = (specifier: string): unknown => {
     switch (specifier) {
+      case "./host-primitives.client.tsx": return { Icon: "Icon" };
       case "@getpaseo/plugin":
         return { Icon: "Icon", useRpc: (contract: unknown) => contract === PlanningRpc.homeQueryRpc ? homeRpc
           : contract === PlanningRpc.organizerBootstrapRpc ? organizerRpc

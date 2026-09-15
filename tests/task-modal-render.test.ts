@@ -84,6 +84,7 @@ function loadTaskDetailViewModule() {
   const reactModule = { ...React, default: React, __esModule: true };
   const require = (specifier: string): unknown => {
     switch (specifier) {
+      case "./host-primitives.client.tsx": return { Icon: "Icon" };
       case "@getpaseo/plugin":
         return { Icon: "Icon", useRpc: () => async () => undefined };
       case "@tanstack/react-query":
@@ -160,6 +161,7 @@ function loadTaskInspectorModule(injectedRpc: (contract: unknown) => unknown) {
   const reactModule = { ...React, default: React, __esModule: true };
   const require = (specifier: string): unknown => {
     switch (specifier) {
+      case "./host-primitives.client.tsx": return { Icon: "Icon" };
       case "@getpaseo/plugin":
         return { Icon: "Icon", useRpc: injectedRpc };
       case "@tanstack/react-query":
@@ -260,6 +262,7 @@ function loadTaskNavigationModule() {
   const reactModule = { ...React, default: React, __esModule: true };
   const require = (specifier: string): unknown => {
     switch (specifier) {
+      case "./host-primitives.client.tsx": return { Icon: "Icon" };
       case "@getpaseo/plugin":
         return { Icon: "Icon", useAgent: () => null };
       case "react":
