@@ -2,7 +2,8 @@
 // Client-only React Native presentation of engine-owned planning projections.
 
 import type { PluginWorkspacePanelProps } from "@getpaseo/plugin";
-import { Icon, useRpc } from "@getpaseo/plugin";
+import { useRpc } from "@getpaseo/plugin";
+import { Icon } from "./host-primitives.client.tsx";
 import { Modal } from "./paseo-ui.client.tsx";
 import {
   useMutation,
