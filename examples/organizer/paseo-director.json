@@ -1,0 +1,135 @@
+{
+  "$schema": "https://github.com/mcuadros/paseo-director/engine/domain/configuration/paseo-director.schema.json",
+  "schemaVersion": 1,
+  "project": {
+    "id": "example-multi-repo",
+    "name": "Example multi-repository project"
+  },
+  "workspaces": [
+    {
+      "id": "web",
+      "name": "Web application",
+      "remote": "https://git.example.invalid/director/web.git",
+      "sourcePath": "/srv/director-example/web",
+      "defaultBaseBranch": "main"
+    },
+    {
+      "id": "api",
+      "name": "API service",
+      "remote": "git@git.example.invalid:director/api.git",
+      "sourcePath": "/srv/director-example/api",
+      "defaultBaseBranch": "main"
+    }
+  ],
+  "agentProfiles": {
+    "organizer": {
+      "provider": "codex",
+      "model": "gpt-5.4-mini",
+      "effort": "high",
+      "mode": "default",
+      "permissionMode": "read-only",
+      "providerOptions": [],
+      "mcpCapabilities": [
+        "project.read",
+        "planning.command.submit"
+      ],
+      "fallbackChain": []
+    },
+    "worker": {
+      "provider": "codex",
+      "model": "gpt-5.4-mini",
+      "effort": "high",
+      "mode": "default",
+      "permissionMode": "workspace-write",
+      "providerOptions": [
+        {
+          "name": "networkAccess",
+          "value": "disabled"
+        }
+      ],
+      "mcpCapabilities": [
+        "project.read",
+        "task.read",
+        "task.outcome.submit",
+        "task.helper.request"
+      ],
+      "fallbackChain": []
+    },
+    "reviewer": {
+      "provider": "claude-code",
+      "model": "claude-haiku-4-5",
+      "effort": "high",
+      "mode": "default",
+      "permissionMode": "read-only",
+      "providerOptions": [],
+      "mcpCapabilities": [
+        "candidate.read",
+        "review.verdict.submit"
+      ],
+      "fallbackChain": []
+    }
+  },
+  "defaults": {
+    "launchPolicy": "manual",
+    "deliveryMode": "pull_request",
+    "integrationMode": "manual",
+    "limits": {
+      "maxActiveTasks": 4,
+      "maxActiveTasksPerWorkspace": 2,
+      "maxConcurrentAgents": 6,
+      "maxSubagentsPerTask": 2
+    },
+    "runBudget": {
+      "elapsedSeconds": 7200,
+      "tokens": 200000,
+      "turns": 32,
+      "ciCycles": 4,
+      "costMicrousd": 5000000
+    },
+    "autoFixCiFailures": true,
+    "autoFixReviewFeedback": true,
+    "requireDifferentReviewerModel": true,
+    "publishBeforeReview": false,
+    "terminateOnCompletion": true,
+    "cancellationCleanup": "snapshot_then_delete",
+    "deleteRemoteTaskBranch": true,
+    "recoveryRetentionDays": 7,
+    "githubCi": {
+      "workflowId": 123456,
+      "workflowName": "Linux CI",
+      "cycleRuntimeSeconds": 1800,
+      "requiredChecks": [
+        {
+          "id": "linux-ci",
+          "kind": "check_run",
+          "name": "Linux CI",
+          "appId": 15368,
+          "appSlug": "github-actions"
+        }
+      ]
+    }
+  },
+  "workspaceOverrides": [
+    {
+      "workspaceId": "api",
+      "launchPolicy": "inherit",
+      "deliveryMode": "inherit",
+      "maxActiveTasksPerWorkspace": 1,
+      "autoFixCiFailures": false,
+      "autoFixReviewFeedback": false,
+      "cancellationCleanup": "retain"
+    }
+  ],
+  "skills": [
+    {
+      "id": "commits",
+      "path": "skills/commits/SKILL.md"
+    }
+  ],
+  "templates": [
+    {
+      "id": "task",
+      "path": "templates/task.md"
+    }
+  ]
+}

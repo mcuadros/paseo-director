@@ -24,7 +24,14 @@ test("operator diagnostics distinguish config output from data and preserve the 
     "Director never overwrites, removes, or silently chooses between the files",
     "ENGINE_HOME_HOST_FACT_REJECTED",
     "field`, `expected`, and `observed",
+    "DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER",
+    "DIRECTOR_BOOTSTRAP_FOREIGN_OWNER",
+    "DIRECTOR_BOOTSTRAP_INSTALL_NOT_PREPARED",
     "DIRECTOR_RUNTIME_CHILDREN_NOT_READY",
     "DIRECTOR_RUNTIME_BINDING_MISMATCH",
   ]) assert.ok(document.includes(required), `missing ${required}`);
+  for (const retired of [
+    "DIRECTOR_RUNTIME_EXTERNAL_OWNER",
+    "ENGINE_INSTALL_NOT_PREPARED",
+  ]) assert.ok(!document.includes(retired), `retired ${retired}`);
 });

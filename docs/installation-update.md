@@ -237,8 +237,9 @@ deleting or overwriting them.
 For pre-load or activation failure, use `paseo plugin ls --json` and
 `paseo plugin logs director --json`. `DIRECTOR_MAIN_GO_TOOLCHAIN_MISSING`,
 `DIRECTOR_MAIN_GO_TOOLCHAIN_VERSION`, `DIRECTOR_MAIN_BUILD_FAILED`,
-`DIRECTOR_RUNTIME_EXTERNAL_OWNER`, `DIRECTOR_RUNTIME_CHILDREN_NOT_READY`,
-`DIRECTOR_RUNTIME_BINDING_MISMATCH`, `ENGINE_INSTALL_NOT_PREPARED`, and
+`DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER`, `DIRECTOR_BOOTSTRAP_FOREIGN_OWNER`,
+`DIRECTOR_BOOTSTRAP_INSTALL_NOT_PREPARED`,
+`DIRECTOR_RUNTIME_CHILDREN_NOT_READY`, `DIRECTOR_RUNTIME_BINDING_MISMATCH`, and
 `DIRECTOR_ACTIVATION_FAILED` are bounded path-free causes. Correct the release
 or runtime condition, then invoke only the public plugin-scoped
 reload/update command. Director Home, Doctor, and Repair are unavailable until

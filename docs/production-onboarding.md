@@ -39,9 +39,10 @@ it. Update/reload/removal/reinstall preserve the identity and TaskStore.
 Reload adopts the same Go controller through an owner-only authenticated Unix
 control channel and 30-second lease; update performs a controlled binding
 handoff. Removing the plugin stops lease renewal and its
-owned processes while retaining the database and verified cache. Unknown
-listeners or process identities are never killed and produce
-`DIRECTOR_RUNTIME_EXTERNAL_OWNER`.
+owned processes while retaining the database and verified cache. An occupied
+listener with no exact owned child produces `DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER`;
+foreign controller/lock ownership produces `DIRECTOR_BOOTSTRAP_FOREIGN_OWNER`.
+Neither condition authorizes a signal or deletion.
 
 ## 2. Create from a native Paseo Project
 

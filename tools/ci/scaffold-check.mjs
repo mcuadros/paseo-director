@@ -43,6 +43,7 @@ const REQUIRED_SCRIPTS = [
   "contract:check",
   "contract:generate",
   "dependency:audit",
+  "docs:check",
   "engine:check",
   "format:check",
   "license:check",

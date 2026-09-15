@@ -22,6 +22,13 @@ context explicit; Task Agents do not invoke its mutating commands.
 
 Do not implement work from a later milestone or expand a Task silently. Record discovered work as a separate sibling Task.
 
+Public documentation changes must run `npm run docs:check`. The maintained
+check verifies local links, public command blocks, JSON examples, generated
+planning-contract examples, security/redaction disclosures, and the semantic
+example Organizer. Documentation must never prescribe restarting the Paseo
+daemon or machine; activate connector changes through the public plugin-scoped
+reload without interrupting unrelated agents or workspaces.
+
 ## Commits
 
 Follow `skills/director-commit/SKILL.md`.
