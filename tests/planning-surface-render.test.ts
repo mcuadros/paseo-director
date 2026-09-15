@@ -104,6 +104,7 @@ function loadPlanningModule(): PlanningSurfaceModule {
   const reactModule = { ...React, default: React, __esModule: true };
   const require = (specifier: string): unknown => {
     switch (specifier) {
+      case "./host-primitives.client.tsx": return { Icon: "Icon" };
       case "@getpaseo/plugin":
         return { Icon: "Icon", useRpc: () => async () => undefined };
       case "./paseo-ui.client.tsx":
