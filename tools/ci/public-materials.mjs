@@ -225,8 +225,13 @@ export function publicMaterialErrors(repositoryRoot, overrides = {}) {
     "DIRECTOR_INSTALL_LICENSE_AUDIT", "DIRECTOR_INSTALL_LIBC_UNSUPPORTED", "Default-main preparation",
     "Tagged installed plugins never", "reload never compiles",
     "canonical precompiled Dolt", "handler-scoped", "live and plugin-scoped",
+    "DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER", "DIRECTOR_BOOTSTRAP_FOREIGN_OWNER",
+    "DIRECTOR_BOOTSTRAP_INSTALL_NOT_PREPARED",
     "3168ea518f4fb400551fca8221d6477466f8a2cd",
   ])) errors.push(`docs/installation-update.md: missing release-support integration ${missing}`);
+  for (const retired of ["DIRECTOR_RUNTIME_EXTERNAL_OWNER", "ENGINE_INSTALL_NOT_PREPARED"]) {
+    if (installation.includes(retired)) errors.push(`docs/installation-update.md: contains retired diagnostic ${retired}`);
+  }
 
   for (const path of ["README.md", "SUPPORT.md", "docs/compatibility.md", "docs/installation-update.md", "docs/release-process.md"]) {
     const text = content.get(path);

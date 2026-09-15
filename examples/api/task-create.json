@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "director-planning/v1",
+  "contractHash": "def3f85a9b78b7ba41396011e4c43340b9493d3cfa9e304a9f73658fe8e08abe",
+  "requestId": "example-task-create-0001",
+  "idempotencyKey": "example-task-create-0001",
+  "expectedVersion": "3",
+  "humanApprovalRef": null,
+  "acknowledgementRevision": null,
+  "intent": {
+    "type": "task.create",
+    "projectId": "example-multi-repo",
+    "workspaceId": "web",
+    "epicId": "epic-web-release",
+    "key": "WEB-2",
+    "title": "Show release metadata in the web application",
+    "objective": "Render exact release metadata from the public API.",
+    "acceptanceCriteria": [
+      "Loading, success, unavailable, and stale states are accessible.",
+      "No credential or private path is rendered.",
+      "Focused tests pass."
+    ],
+    "priority": "high",
+    "labels": [
+      "frontend",
+      "release"
+    ]
+  }
+}

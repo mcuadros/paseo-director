@@ -1,0 +1,23 @@
+{
+  "projectId": "example-multi-repo",
+  "workspaceIds": [
+    "web"
+  ],
+  "epicIds": [],
+  "states": [
+    "queued",
+    "needs_you"
+  ],
+  "priorities": [
+    "urgent",
+    "high"
+  ],
+  "labels": [
+    "release"
+  ],
+  "attention": [],
+  "search": null,
+  "sort": "scheduler_order",
+  "cursor": null,
+  "pageSize": 50
+}

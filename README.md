@@ -24,6 +24,19 @@ Engine.
 Director for Paseo is an independent community plugin. It is not affiliated
 with, endorsed by, maintained by, or sponsored by Paseo.
 
+## Documentation
+
+The [public documentation index](docs/README.md) provides a complete journey
+for [new users](docs/getting-started.md), [operators](docs/operator-guide.md),
+and [developers](docs/developer-guide.md), together with the
+[security boundary](docs/security-boundaries.md) and a maintained
+[multi-repository example Organizer](examples/organizer/README.md).
+
+Director 1.0 supports Linux amd64 and exact stable Paseo 0.7.2 only. Another
+0.7.x release is not inferred compatible and the Paseo 0.8 preview is not a
+production target. Default `main` is the explicit source-testing channel. Use
+an immutable reviewed tag only after its descriptor and assets are published.
+
 The engine now includes the production primary Task Agent launch lifecycle:
 one exact lease/repository/base/branch/worktree binding, one registered Paseo
 Execution Workspace view over the Director-owned worktree, one frozen Worker
@@ -155,6 +168,7 @@ npm run ci
 Useful focused commands:
 
 ```text
+npm run docs:check
 npm run architecture:check
 npm run build
 npm run test:engine
@@ -196,6 +210,10 @@ contains no URL, private path, credential, raw environment, or secret. The nativ
 one current public Paseo Project/workspace pair and derives its Project ID/name,
 repository root, Workspace identity/name, and working directory for the M6.11
 selector; none of those facts belongs in this runtime JSON.
+
+See [Getting started](docs/getting-started.md) and the
+[operator guide](docs/operator-guide.md) for the supported activation and
+recovery path.
 
 The schema-2 committed release descriptor explicitly marks `0.0.0-scaffold` as
 unpublished and declares no Engine assets or digests. This is the explicit
