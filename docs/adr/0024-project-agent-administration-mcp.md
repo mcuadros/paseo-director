@@ -5,6 +5,9 @@
 - **Beads Task:** `dir-m6.21`
 - **Decision owner:** Human project owner through the binding HUMAN DECISION on
   `dir-m6.21`
+- **Amended by:** [ADR-0026](0026-project-membership-authorization.md) for
+  membership-derived admission beside the retained owner-only bearer path and
+  for the versioned server-side session binding
 - **Amends:** PLAN §§6.4 and 12.2 and the Organizer-only administration portion
   of [ADR-0005](0005-session-scoped-mcp-provider-matrix.md)
 - **Preserves:** [ADR-0017](0017-standalone-engine-connector-authority-boundary.md),

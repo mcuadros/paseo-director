@@ -5,7 +5,10 @@
   [ADR-0023](0023-plugin-owned-release-runtime.md) for handler-scoped Paseo
   authority and release-only plugin-owned runtime supervision; project-owner
   decision `dir-m6.9` comment `01a09682-1168-70ca-841a-4ef6a4aabedb` for
-  deterministic locked npm candidate preparation
+  deterministic locked npm candidate preparation;
+  [ADR-0026](0026-project-membership-authorization.md) for the closed host-port
+  capability vocabulary and the normalized observations that carry
+  membership-derivation evidence
 - **Date:** 2026-09-07
 - **Beads Task:** `dir-m1.12`
 - **Plan gate:** M1 engine/process/host boundary before scaffolding
