@@ -89,26 +89,34 @@ file separate from the required `--ownership-file`; neither raw value nor
 either file path may enter output, diagnostics, evidence, handoff/state, PR
 content, or Beads.
 
-The coordinator uses exact Paseo `0.7.2`'s public Agent MCP
-`get_agent_status` and `list_workspaces` reads. Without `PASEO_HOST`, a
-password-free `paseo daemon status --json` child discovers the documented
-same-host Unix socket, loopback, or active local-interface listener. An
-explicit host is bounded to a local Unix socket or loopback TCP target and
-must remain credential-free. Only the dedicated Agent MCP read child receives
-the password, through its exact `PASEO_PASSWORD` environment; its argv contains
-only the fixed reader, operation, and public agent ID. Git, GitHub CLI, Beads,
-npm, Go, Paseo status, other Paseo verbs, and sibling executables receive
-neither the password nor credential-file path. The reader emits only the
-lifecycle fields needed for the existing exact
-parentless-agent/workspace/worktree verification. It size-bounds and scrubs
-every response and error before returning anything to the coordinator.
+The coordinator uses exact Paseo `0.7.2`'s public Agent MCP `get_agent_status`
+and `list_workspaces` reads and its `archive_agent` and `archive_workspace`
+mutations. Without `PASEO_HOST`, a password-free `paseo daemon status --json`
+child discovers the documented same-host Unix socket, loopback, or active
+local-interface listener. An explicit host is bounded to a local Unix socket or
+loopback TCP target and must remain credential-free. Only the dedicated Agent
+MCP lifecycle child receives the password, through its exact `PASEO_PASSWORD`
+environment; its argv contains only the fixed child, one of those four
+operations, and the public agent or workspace ID. Git, GitHub CLI, Beads, npm,
+Go, Paseo status, other Paseo verbs, and sibling executables receive neither
+the password nor credential-file path. That child authenticates over HTTP
+bearer, which carries a valid delimiter-rich password the CLI's WebSocket
+subprotocol grammar cannot express. A read emits only the lifecycle fields
+needed for the existing exact parentless-agent/workspace/worktree verification.
+A mutation emits only a fixed acknowledgement that it was accepted, never
+daemon payload, because completion is proven solely by the authoritative
+readback that follows. It size-bounds and scrubs every response and error
+before returning anything to the coordinator.
 
 Missing or rejected authentication returns `PASEO_AUTH_REQUIRED` or
 `PASEO_AUTH_FAILED`; malformed output, process failure, timeout, response loss,
-or an unavailable target returns `PASEO_LIFECYCLE_READ_FAILED`; and a response
-that echoes the selected credential returns
-`PASEO_LIFECYCLE_RESPONSE_REDACTED`. Each refusal is bounded and retains no
-daemon response content.
+or an unavailable target returns `PASEO_LIFECYCLE_READ_FAILED` for a read and
+`PASEO_LIFECYCLE_MUTATION_FAILED` for a mutation; and a response that echoes
+the selected credential returns `PASEO_LIFECYCLE_RESPONSE_REDACTED`. Each
+refusal is bounded and retains no daemon response content. An archive dispatch
+raises a proven credential refusal or an echoed credential exactly, and leaves
+any other unproven outcome to the readback, so a lost response reconciles
+instead of re-executing and no refusal is reported as an unproven archive.
 
 ## Commands
 
@@ -181,7 +189,10 @@ daemon response content.
   use that newly emitted v2 document without editing private state.
 - `cleanup-apply` requires `--state-file` and `--plan-file`. The plan file may
   be the complete JSON emitted by `cleanup-plan`. Every resource is re-read
-  before its effect. Agent/workspace archival is idempotent; destructive
+  before its effect. Agent and workspace archival are dispatched through the
+  same bounded authenticated Agent MCP child as the lifecycle reads and are
+  proven only by the readback that follows, so an already-terminal resource is
+  adopted without another dispatch. Archival is idempotent; destructive
   worktree/ref deletion accepts absence only after a recorded attempt or an
   explicit reclaimed binding. If Paseo workspace archival leaves an exact
   clean owned Git worktree registered, the CLI performs the separately recorded

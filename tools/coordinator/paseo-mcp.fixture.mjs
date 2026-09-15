@@ -2,12 +2,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 
 const [socketPath, modePath, readyPath, logPath, expectedPasswordHash, fixturePath] =
   process.argv.slice(2);
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
+
+// Archival is durable for the fixture's lifetime so that an authoritative
+// readback observes the effect of an accepted mutation, exactly as the
+// coordinator's completion proof requires.
+const agentArchivedPath = `${modePath}.agent-archived`;
+const workspaceArchivedPath = `${modePath}.workspace-archived`;
+const ARCHIVED_AT = "2026-09-15T00:00:00Z";
+
+function archived(path) {
+  return existsSync(path);
+}
 
 function send(response, status, value) {
   const body = Buffer.from(typeof value === "string" ? value : JSON.stringify(value));
@@ -23,6 +34,14 @@ function result(id, structuredContent) {
     jsonrpc: "2.0",
     id,
     result: { content: [], structuredContent },
+  };
+}
+
+function toolError(id, message) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: { content: [{ type: "text", text: message }], isError: true },
   };
 }
 
@@ -44,6 +63,7 @@ const server = http.createServer((request, response) => {
     appendFileSync(logPath, `${JSON.stringify({
       authorizationHash: passwordHash,
       authorizationPresent: password.length > 0,
+      arguments: body?.params?.arguments ?? null,
       id: body?.id ?? null,
       method: body?.method ?? null,
       path: request.url,
@@ -89,7 +109,7 @@ const server = http.createServer((request, response) => {
           title: fixture.title,
           cwd: fixture.checkout,
           status: "idle",
-          archivedAt: null,
+          archivedAt: archived(agentArchivedPath) ? ARCHIVED_AT : null,
           labels: parent === undefined
             ? {}
             : { "paseo.parent-agent-id": parent },
@@ -99,7 +119,7 @@ const server = http.createServer((request, response) => {
     }
     if (body.params?.name === "list_workspaces") {
       send(response, 200, result(body.id, {
-        workspaces: [{
+        workspaces: archived(workspaceArchivedPath) ? [] : [{
           workspaceId: mode === "wrong-workspace"
             ? "workspace-auth-wrong"
             : fixture.workspaceId,
@@ -110,6 +130,32 @@ const server = http.createServer((request, response) => {
           title: fixture.title,
         }],
       }));
+      return;
+    }
+    if (body.params?.name === "archive_agent") {
+      if (body.params?.arguments?.agentId !== fixture.agentId) {
+        send(response, 200, toolError(body.id, "unknown agent"));
+        return;
+      }
+      if (mode === "mutation-refused") {
+        send(response, 200, toolError(body.id, "archive refused"));
+        return;
+      }
+      writeFileSync(agentArchivedPath, ARCHIVED_AT);
+      send(response, 200, result(body.id, { agentId: fixture.agentId, archivedAt: ARCHIVED_AT }));
+      return;
+    }
+    if (body.params?.name === "archive_workspace") {
+      if (body.params?.arguments?.workspaceId !== fixture.workspaceId) {
+        send(response, 200, toolError(body.id, "unknown workspace"));
+        return;
+      }
+      if (mode === "mutation-refused") {
+        send(response, 200, toolError(body.id, "archive refused"));
+        return;
+      }
+      writeFileSync(workspaceArchivedPath, ARCHIVED_AT);
+      send(response, 200, result(body.id, { workspaceId: fixture.workspaceId }));
       return;
     }
     send(response, 400, { error: "unknown tool" });

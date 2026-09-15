@@ -16,9 +16,28 @@ const EXIT = Object.freeze({
   authFailed: 65,
   responseRedacted: 66,
   readFailed: 67,
+  mutationFailed: 68,
 });
 
-function fail(code, status = EXIT.readFailed) {
+/**
+ * The four bounded lifecycle operations this child may perform, each mapped to
+ * exactly one documented public Paseo 0.7.2 Agent MCP tool. Mutations are
+ * dispatched here for the same reason reads are: the HTTP bearer boundary
+ * accepts a valid delimiter-rich password that the CLI's WebSocket subprotocol
+ * grammar rejects.
+ */
+const OPERATIONS = new Map([
+  ["agent.inspect", { tool: "get_agent_status", argument: "agentId", mutation: false }],
+  ["workspace.list", { tool: "list_workspaces", argument: null, mutation: false }],
+  ["agent.archive", { tool: "archive_agent", argument: "agentId", mutation: true }],
+  ["workspace.archive", { tool: "archive_workspace", argument: "workspaceId", mutation: true }],
+]);
+
+// A failure before the operation is known is reported as a read failure; main()
+// narrows this once it has selected one bounded operation.
+let unavailable = { code: "PASEO_LIFECYCLE_READ_FAILED", status: EXIT.readFailed };
+
+function fail(code, status = unavailable.status) {
   process.stderr.write(`${code}\n`);
   process.exit(status);
 }
@@ -229,15 +248,25 @@ function postMcp(target, password, request) {
   });
 }
 
-function normalizedMcpResult(document, requestId) {
+/**
+ * A mutation is accepted only on a well-formed non-error envelope for the exact
+ * request identity. Its payload is never authoritative, so no shape beyond the
+ * envelope is required of it.
+ */
+function mcpResult(document, requestId) {
   if (
     !isObject(document) || document.jsonrpc !== "2.0" || document.id !== requestId ||
-    !isObject(document.result) || document.result.isError === true ||
-    !isObject(document.result.structuredContent)
+    !isObject(document.result) || document.result.isError === true
   ) {
     throw new Error("invalid MCP response");
   }
-  return document.result.structuredContent;
+  return document.result;
+}
+
+function normalizedMcpResult(document, requestId) {
+  const result = mcpResult(document, requestId);
+  if (!isObject(result.structuredContent)) throw new Error("invalid MCP response");
+  return result.structuredContent;
 }
 
 function normalizedAgent(value) {
@@ -296,13 +325,21 @@ function normalizedWorkspaces(value) {
 
 async function main() {
   const [operation, identifier, ...rest] = process.argv.slice(2);
-  if (rest.length > 0) fail("PASEO_READ_ARGUMENT_INVALID");
+  if (rest.length > 0) fail("PASEO_LIFECYCLE_ARGUMENT_INVALID");
+  const selected = OPERATIONS.get(operation);
   if (
-    (operation === "agent.inspect" && (typeof identifier !== "string" || identifier.length === 0)) ||
-    (operation === "workspace.list" && identifier !== undefined) ||
-    !["agent.inspect", "workspace.list"].includes(operation)
+    selected === undefined ||
+    (selected.argument === null
+      ? identifier !== undefined
+      : typeof identifier !== "string" || identifier.length === 0)
   ) {
-    fail("PASEO_READ_ARGUMENT_INVALID");
+    fail("PASEO_LIFECYCLE_ARGUMENT_INVALID");
+  }
+  if (selected.mutation) {
+    unavailable = {
+      code: "PASEO_LIFECYCLE_MUTATION_FAILED",
+      status: EXIT.mutationFailed,
+    };
   }
   const password = process.env.PASEO_PASSWORD;
   if (typeof password !== "string" || password.length === 0) {
@@ -316,14 +353,13 @@ async function main() {
     explicitTarget === undefined ? localDaemonTarget() : explicitTarget,
     { discovered: explicitTarget === undefined },
   );
-  const requestId = operation === "agent.inspect" ? "agent.inspect" : "workspace.list";
   const response = await postMcp(target, password, {
     jsonrpc: "2.0",
-    id: requestId,
+    id: operation,
     method: "tools/call",
     params: {
-      name: operation === "agent.inspect" ? "get_agent_status" : "list_workspaces",
-      arguments: operation === "agent.inspect" ? { agentId: identifier } : {},
+      name: selected.tool,
+      arguments: selected.argument === null ? {} : { [selected.argument]: identifier },
     },
   });
   if (response.body.includes(Buffer.from(password))) {
@@ -333,7 +369,7 @@ async function main() {
     fail("PASEO_AUTH_FAILED", EXIT.authFailed);
   }
   if (response.status < 200 || response.status >= 300) {
-    fail("PASEO_LIFECYCLE_READ_FAILED");
+    fail(unavailable.code);
   }
   let document;
   try {
@@ -344,9 +380,21 @@ async function main() {
   if (containsSecret(document, password)) {
     fail("PASEO_LIFECYCLE_RESPONSE_REDACTED", EXIT.responseRedacted);
   }
+  if (selected.mutation) {
+    try {
+      mcpResult(document, operation);
+    } catch {
+      fail("PASEO_LIFECYCLE_OUTPUT_INVALID");
+    }
+    // The daemon's mutation payload proves nothing and is not forwarded. The
+    // coordinator's authoritative readback is the sole completion evidence, so
+    // only a fixed acknowledgement of the accepted dispatch leaves this child.
+    process.stdout.write(`${JSON.stringify({ operation, dispatched: true })}\n`);
+    return;
+  }
   let structured;
   try {
-    structured = normalizedMcpResult(document, requestId);
+    structured = normalizedMcpResult(document, operation);
   } catch {
     fail("PASEO_LIFECYCLE_OUTPUT_INVALID");
   }
@@ -370,5 +418,5 @@ async function main() {
 try {
   await main();
 } catch {
-  fail("PASEO_LIFECYCLE_READ_FAILED");
+  fail(unavailable.code);
 }

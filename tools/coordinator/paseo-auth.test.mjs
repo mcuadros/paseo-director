@@ -117,7 +117,8 @@ const forbiddenAmbient = [
   "PASEO_PASSWORD_FILE",
   "DIRECTOR_PASEO_CREDENTIAL_FILE",
 ].filter((key) => process.env[key] !== undefined);
-appendFileSync(logPath, JSON.stringify({ name, args, forbiddenAmbient }) + "\\n");
+const beadsDir = process.env.BEADS_DIR ?? null;
+appendFileSync(logPath, JSON.stringify({ name, args, beadsDir, forbiddenAmbient }) + "\\n");
 if (forbiddenAmbient.length > 0) process.exit(86);
 
 function output(value) {
@@ -172,8 +173,11 @@ if (name === "paseo") {
   ) {
     output(JSON.stringify({ localDaemon: "running", listen: "unix://" + socketPath }));
   }
-  // The corrected path must never return to these subprotocol-based reads.
-  if (args[0] === "inspect" || args[0] === "workspace") process.exit(92);
+  // The corrected path must never return to these subprotocol-based reads or
+  // mutations; only password-free target discovery may reach the CLI.
+  if (args[0] === "inspect" || args[0] === "workspace" || args[0] === "archive") {
+    process.exit(92);
+  }
   output("{}");
 }
 
@@ -417,11 +421,6 @@ test("public local Paseo MCP lifecycle reads isolate credentials and fail closed
       });
       assert.equal(result.status, 0, `${executable}: ${result.stderr}`);
     }
-    const archive = defaultCommandRunner("paseo", ["archive", AGENT_ID, "--json"], {
-      paseoPassword: parsed.options.paseoPassword,
-    });
-    assert.equal(archive.status, 0, archive.stderr);
-
     let childEntries = processLog(fixture);
     assert.deepEqual(
       childEntries
@@ -430,7 +429,6 @@ test("public local Paseo MCP lifecycle reads isolate credentials and fail closed
       [
         ["daemon", "status", "--json"],
         ["daemon", "status", "--json"],
-        ["archive", AGENT_ID, "--json"],
       ],
     );
     assert.equal(childEntries.every((entry) => entry.forbiddenAmbient.length === 0), true);
@@ -601,6 +599,211 @@ test("public local Paseo MCP lifecycle reads isolate credentials and fail closed
     }
   } finally {
     if (server !== undefined) await stopMcpServer(server);
+    restore();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("public local Paseo MCP lifecycle mutations authenticate and fail closed", async () => {
+  const fixture = createFixture();
+  let server;
+  const previousPath = process.env.PATH;
+  const restore = replaceEnvironment({
+    PATH: `${fixture.bin}:${previousPath}`,
+    PASEO_HOST: undefined,
+    PASEO_PASSWORD: fixture.ambientPassword,
+    DIRECTOR_PASEO_CREDENTIAL_FILE: fixture.credentialFile,
+    AWS_SECRET_ACCESS_KEY: "ambient-aws-secret",
+    DIRECTOR_PRIVATE_TOKEN: "ambient-director-secret",
+    GH_TOKEN: "ambient-gh-secret",
+    GITHUB_TOKEN: "ambient-github-secret",
+    GOAUTH: "ambient-go-secret",
+    NPM_TOKEN: "ambient-npm-secret",
+  });
+  const archiveAgent = ["archive", AGENT_ID, "--json"];
+  const archiveWorkspace = ["workspace", "archive", WORKSPACE_ID, "--json"];
+  const mutate = (args, password, options = {}) =>
+    defaultCommandRunner("paseo", args, { ...options, paseoPassword: password });
+  const requestsFor = (tool) => requestLog(fixture).filter((entry) => entry.tool === tool);
+  try {
+    server = await startMcpServer(fixture);
+
+    // This is the exact failing case: a valid configured password whose
+    // delimiters the CLI's WebSocket subprotocol grammar cannot carry.
+    assert.throws(
+      () => new WebSocket("ws://127.0.0.1:1", [`paseo.bearer.${fixture.password}`]),
+      { name: "SyntaxError" },
+    );
+
+    // Without the owner-only credential authority a mutation refuses before any
+    // child starts, so no effect can land unauthenticated.
+    delete process.env.DIRECTOR_PASEO_CREDENTIAL_FILE;
+    const unauthenticated = parseCli(cliArguments(fixture));
+    assert.equal(unauthenticated.options.paseoPassword, undefined);
+    for (const args of [archiveAgent, archiveWorkspace]) {
+      const refused = mutate(args, unauthenticated.options.paseoPassword);
+      assert.equal(refused.status, 64);
+      assert.match(refused.stderr, /PASEO_AUTH_REQUIRED/u);
+    }
+    assert.equal(requestsFor("archive_agent").length, 0);
+    assert.equal(requestsFor("archive_workspace").length, 0);
+
+    // A rejected credential is proven without an executed effect.
+    process.env.DIRECTOR_PASEO_CREDENTIAL_FILE = fixture.credentialFile;
+    writeFileSync(fixture.credentialFile, fixture.wrongPassword, { mode: 0o600 });
+    const rejected = parseCli(cliArguments(fixture));
+    for (const args of [archiveAgent, archiveWorkspace]) {
+      const refused = mutate(args, rejected.options.paseoPassword);
+      assert.equal(refused.status, 65);
+      assert.match(refused.stderr, /PASEO_AUTH_FAILED/u);
+    }
+
+    writeFileSync(fixture.credentialFile, fixture.password, { mode: 0o600 });
+    const parsed = parseCli(cliArguments(fixture));
+    const password = parsed.options.paseoPassword;
+    assert.equal(password, fixture.password);
+
+    // An echoed credential is refused even though the mutation may have landed;
+    // the recorded intent and the resource are preserved for reconciliation.
+    writeFileSync(fixture.modePath, "echo-secret\n");
+    for (const args of [archiveAgent, archiveWorkspace]) {
+      const redacted = mutate(args, password);
+      assert.equal(redacted.status, 66);
+      assert.match(redacted.stderr, /PASEO_LIFECYCLE_RESPONSE_REDACTED/u);
+      assert.equal(redacted.stdout.includes(fixture.password), false);
+    }
+
+    // Response loss, malformed output, and a refused tool call are all
+    // unproven outcomes that report the same bounded mutation failure.
+    for (const mode of ["response-loss", "malformed-json", "mutation-refused"]) {
+      writeFileSync(fixture.modePath, `${mode}\n`);
+      for (const args of [archiveAgent, archiveWorkspace]) {
+        const failed = mutate(args, password);
+        assert.equal(failed.status, 68, `${mode}: ${failed.stderr}`);
+        assert.match(failed.stderr, /PASEO_LIFECYCLE_MUTATION_FAILED|PASEO_LIFECYCLE_OUTPUT_INVALID/u);
+      }
+    }
+
+    writeFileSync(fixture.modePath, "timeout\n");
+    for (const args of [archiveAgent, archiveWorkspace]) {
+      const timedOut = mutate(args, password, { timeout: 100 });
+      assert.notEqual(timedOut.status, 0);
+    }
+
+    // A mutation aimed at an identity the daemon does not own fails closed and
+    // leaves the bound resources untouched.
+    writeFileSync(fixture.modePath, "success\n");
+    const wrongAgent = mutate(["archive", "agent-auth-wrong", "--json"], password);
+    assert.equal(wrongAgent.status, 68);
+    const wrongWorkspace = mutate(
+      ["workspace", "archive", "workspace-auth-wrong", "--json"],
+      password,
+    );
+    assert.equal(wrongWorkspace.status, 68);
+    const beforeSuccess = JSON.parse(
+      mutate(["inspect", AGENT_ID, "--json"], password).stdout,
+    );
+    assert.equal(beforeSuccess.Archived, false);
+    assert.equal(
+      JSON.parse(mutate(["workspace", "ls", "--json"], password).stdout).length,
+      1,
+    );
+
+    // The exact recorded effects now authenticate and execute.
+    const agentArchive = mutate(archiveAgent, password);
+    assert.equal(agentArchive.status, 0, agentArchive.stderr);
+    assert.deepEqual(JSON.parse(agentArchive.stdout), {
+      operation: "agent.archive",
+      dispatched: true,
+    });
+    const workspaceArchive = mutate(archiveWorkspace, password);
+    assert.equal(workspaceArchive.status, 0, workspaceArchive.stderr);
+    assert.deepEqual(JSON.parse(workspaceArchive.stdout), {
+      operation: "workspace.archive",
+      dispatched: true,
+    });
+
+    // Completion is proven only by the authoritative readback, which is what
+    // lets cleanup continue to worktree and ref removal without intervention.
+    const inspected = JSON.parse(mutate(["inspect", AGENT_ID, "--json"], password).stdout);
+    assert.equal(inspected.Archived, true);
+    assert.equal(inspected.ArchivedAt, "2026-09-15T00:00:00Z");
+    assert.deepEqual(
+      JSON.parse(mutate(["workspace", "ls", "--json"], password).stdout),
+      [],
+    );
+
+    // Only the bounded child is authenticated: the Paseo CLI is used solely for
+    // password-free target discovery and never receives a lifecycle verb.
+    const childEntries = processLog(fixture);
+    assert.equal(
+      childEntries
+        .filter((entry) => entry.name === "paseo")
+        .every((entry) => entry.args[0] === "daemon"),
+      true,
+    );
+    assert.equal(childEntries.every((entry) => entry.forbiddenAmbient.length === 0), true);
+
+    const expectedHash = createHash("sha256").update(fixture.password).digest("hex");
+    for (const [tool, args] of [
+      ["archive_agent", { agentId: AGENT_ID }],
+      ["archive_workspace", { workspaceId: WORKSPACE_ID }],
+    ]) {
+      const last = requestsFor(tool).at(-1);
+      assert.deepEqual(last.arguments, args);
+      assert.equal(last.authorizationHash, expectedHash);
+      assert.equal(last.authorizationPresent, true);
+      assert.equal(last.method, "tools/call");
+      assert.equal(last.path, "/mcp/agents");
+    }
+    assert.equal(JSON.stringify(requestLog(fixture)).includes(fixture.password), false);
+
+    assert.equal(lstatSync(fixture.credentialFile).mode & 0o077, 0);
+    assert.equal(readFileSync(fixture.credentialFile, "utf8"), fixture.password);
+    for (const path of filesBelow(fixture.root)) {
+      if (path === fixture.credentialFile || !lstatSync(path).isFile()) continue;
+      const contents = readFileSync(path);
+      for (const secret of [fixture.password, fixture.wrongPassword, fixture.ambientPassword]) {
+        assert.equal(contents.includes(Buffer.from(secret)), false, basename(path));
+      }
+    }
+  } finally {
+    if (server !== undefined) await stopMcpServer(server);
+    restore();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Beads discovery reaches the bd child without widening credential exposure", () => {
+  const fixture = createFixture();
+  const previousPath = process.env.PATH;
+  const beadsDir = join(fixture.root, "beads-workspace");
+  const restore = replaceEnvironment({
+    PATH: `${fixture.bin}:${previousPath}`,
+    BEADS_DIR: beadsDir,
+    DIRECTOR_PASEO_CREDENTIAL_FILE: fixture.credentialFile,
+    PASEO_PASSWORD: fixture.ambientPassword,
+  });
+  const lastBeadsEntry = () => processLog(fixture).filter((entry) => entry.name === "bd").at(-1);
+  try {
+    const parsed = parseCli(cliArguments(fixture));
+    const result = defaultCommandRunner("bd", ["show", TASK, "--json"], {
+      paseoPassword: parsed.options.paseoPassword,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(lastBeadsEntry().beadsDir, beadsDir);
+    assert.equal(lastBeadsEntry().forbiddenAmbient.length, 0);
+
+    // The allowlist is not a credential channel: a Beads location carrying the
+    // selected password is dropped rather than forwarded.
+    process.env.BEADS_DIR = join(fixture.root, fixture.password);
+    const poisoned = defaultCommandRunner("bd", ["show", TASK, "--json"], {
+      paseoPassword: parsed.options.paseoPassword,
+    });
+    assert.equal(poisoned.status, 0, poisoned.stderr);
+    assert.equal(lastBeadsEntry().beadsDir, null);
+    assert.equal(lastBeadsEntry().forbiddenAmbient.length, 0);
+  } finally {
     restore();
     rmSync(fixture.root, { recursive: true, force: true });
   }
