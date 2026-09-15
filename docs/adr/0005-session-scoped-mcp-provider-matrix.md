@@ -5,7 +5,7 @@
 - **Beads Task:** `dir-m0.3`
 - **Plan gate:** M0 per-session MCP provider matrix
 - **Decision owner:** `dir-m0.3` Task owner
-- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform; [ADR-0014](0014-practical-linux-agent-boundary.md), which admits the exact proven native-provider tuples only under the practical trusted-provider boundary and mandatory rootless-OCI defense in depth; [ADR-0024](0024-project-agent-administration-mcp.md), which adds a distinct own-Project administration MCP without widening the Run-scoped role contract
+- **Amended by:** [ADR-0011](0011-linux-only-platform-scope.md), which establishes Linux as the sole `1.0` platform; [ADR-0014](0014-practical-linux-agent-boundary.md), which admits the exact proven native-provider tuples only under the practical trusted-provider boundary and mandatory rootless-OCI defense in depth; [ADR-0024](0024-project-agent-administration-mcp.md), which adds a distinct own-Project administration MCP without widening the Run-scoped role contract; [ADR-0026](0026-project-membership-authorization.md), which makes a session's fixed scope either a dispatch Run scope or a derived membership scope while preserving the catalog authority and the rule that no caller selects its own scope
 
 ## Context
 
