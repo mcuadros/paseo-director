@@ -23,6 +23,7 @@
 // in capture.test.mjs. The imperative shell below composes them and performs
 // only effects.
 
+import os from "node:os";
 import { spawn } from "node:child_process";
 import {
   existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
@@ -283,7 +284,13 @@ export function confirmedTeardownTargets({ root, tracked = new Map(), processTab
  *  number can be taken by an unrelated process. */
 export function survivingTargets(targets, processTable) {
   const startTimeByPid = processTable?.startTimeByPid ?? new Map();
-  return targets.filter((target) => startTimeByPid.get(target.pid) === target.startTime);
+  return targets.filter((target) => {
+    const live = startTimeByPid.get(target.pid);
+    // Both sides must be a real identity. Comparing them directly would pass a
+    // target through on undefined === undefined, which is how a target with no
+    // readable start time would have been signalled.
+    return Number.isInteger(live) && Number.isInteger(target.startTime) && live === target.startTime;
+  });
 }
 
 /** Escalate SIGTERM to SIGKILL, re-confirming identity before every signal.
@@ -443,8 +450,10 @@ function readProcessTable() {
  *  server the daemon password, the operator's PASEO_HOME and this host's
  *  non-loopback daemon address through /proc/<pid>/environ. An allowlist rather
  *  than a filter, because this child's needs are known and small. */
+export const DISPLAY_SERVER_ENVIRONMENT_NAMES = Object.freeze(["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"]);
+
 export function displayServerEnvironment(base) {
-  const allowed = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"];
+  const allowed = DISPLAY_SERVER_ENVIRONMENT_NAMES;
   const environment = {};
   for (const name of allowed) {
     if (base[name] !== undefined) environment[name] = base[name];
@@ -761,32 +770,60 @@ export function intendedApplicationEnvironmentNames() {
   return Object.keys(probe).filter((name) => /^(?:PASEO|DIRECTOR)_/u.test(name)).sort();
 }
 
-/** PASEO_* and DIRECTOR_* names in a child's environment that this tool did not
- *  put there. The isolation check was previously blind to this entirely: it
- *  looked only at directories, so it passed on a child that had inherited the
- *  credential. */
-export function unexpectedEnvironmentNames(environText, allowed = []) {
+/** Names in a child's environment that this tool did not put there.
+ *
+ *  Two policies, because only one of them can be exhaustive:
+ *   - "namespaces" is all that is possible for the application, which must
+ *     inherit PATH, HOME and the rest, so only PASEO_* and DIRECTOR_* can be
+ *     judged. An unknown namespace carrying a secret would pass.
+ *   - "exclusive" is possible for the display server, because its environment
+ *     is an allowlist this tool builds, so anything outside it is unexpected.
+ *     The domain is DISPLAY_SERVER_ENVIRONMENT_NAMES itself rather than a
+ *     second copy of it. */
+export function unexpectedEnvironmentNames(environText, allowed = [], policy = "namespaces") {
   if (typeof environText !== "string") return [];
   const permitted = new Set(allowed);
-  return [...new Set(
-    environText
-      .split("\0")
-      .filter(Boolean)
-      .map((entry) => entry.split("=", 1)[0])
-      .filter((name) => /^(?:PASEO|DIRECTOR)_/u.test(name) && !permitted.has(name)),
-  )].sort();
+  const names = [...new Set(
+    environText.split("\0").filter(Boolean).map((entry) => entry.split("=", 1)[0]),
+  )];
+  const judged = policy === "exclusive"
+    ? names
+    : names.filter((name) => /^(?:PASEO|DIRECTOR)_/u.test(name));
+  return judged.filter((name) => !permitted.has(name)).sort();
+}
+
+/** The children every run must check, and the policy each is judged under.
+ *  A tested unit rather than an inline literal at the call site, because the
+ *  previous version's RANGE was invisible to every test: replacing it with an
+ *  empty array deleted the check and left the suite green. */
+export function childEnvironmentTargets({ applicationPid, displayServerPid }) {
+  return [
+    {
+      pid: applicationPid,
+      label: "the application",
+      allowed: intendedApplicationEnvironmentNames(),
+      policy: "namespaces",
+    },
+    {
+      pid: displayServerPid,
+      label: "the display server",
+      allowed: [...DISPLAY_SERVER_ENVIRONMENT_NAMES],
+      policy: "exclusive",
+    },
+  ];
 }
 
 /** Every process this run spawned must carry only what this tool gave it. A
  *  check that passes on a leaking child is worth less than no check. */
 export function verifyChildEnvironments(children, readEnviron) {
+  if (children.length === 0) throw new Error("verifyChildEnvironments was given no children to check");
   const leaks = [];
-  for (const { pid, label, allowed = [] } of children) {
-    const names = unexpectedEnvironmentNames(readEnviron(pid), allowed);
-    if (names.length > 0) leaks.push(`${label} (pid ${pid}) inherited ${names.join(", ")}`);
+  for (const { pid, label, allowed = [], policy = "namespaces" } of children) {
+    const names = unexpectedEnvironmentNames(readEnviron(pid), allowed, policy);
+    if (names.length > 0) leaks.push(`${label} (pid ${pid}) carried ${names.join(", ")}`);
   }
   if (leaks.length > 0) {
-    throw new Error(`a process this run spawned inherited the Paseo environment: ${leaks.join("; ")}`);
+    throw new Error(`a process this run spawned carried an environment this tool did not set: ${leaks.join("; ")}`);
   }
   return children.length;
 }
@@ -808,37 +845,80 @@ export async function verifyIsolation(targets, { listDirectory, wait, attempts =
   return targets.length;
 }
 
-// Which signals terminate this process by default, and what is done about each.
-// Enumerated rather than accumulated: the previous version listed SIGINT and
-// SIGTERM, and SIGHUP — the one a closing terminal or a dropped ssh session
-// sends — went to its default disposition and killed the run with its display,
-// its application, that application's setsid'd daemon and its profile still
-// live.
+// What this process does about every signal the platform has.
 //
-// HANDLED: a plausible way for an operator to end this run deliberately or by
-// disconnecting, where teardown can still complete.
-export const TERMINATING_SIGNALS = Object.freeze([
-  "SIGHUP",   // terminal closed, ssh session dropped, parent shell exited
-  "SIGINT",   // Ctrl-C
-  "SIGQUIT",  // Ctrl-\\
-  "SIGTERM",  // kill, a supervisor, a shutdown sequence
-  "SIGUSR2",  // conventional restart signal from process managers
-  "SIGXCPU",  // CPU rlimit reached; this run compiles and downloads
-  "SIGXFSZ",  // file-size rlimit reached; this run writes large artifacts
-]);
+// The previous version stated a partition and then policed it against a
+// hand-written list of fifteen names, which omitted eight signals that
+// terminate by default — so the list moved from the handler set to the domain
+// set and did not stop being a list. The domain now comes from the platform:
+// `os.constants.signals` is enumerated, every member must appear in the table
+// below, and a test iterates the derived set so a signal this platform has and
+// this table has not classified fails.
+//
+// `disposition` is what the kernel does with no handler installed; `decision`
+// is what this tool does about it, and is required only where the disposition
+// is "terminate".
+export const SIGNAL_POLICY = Object.freeze({
+  SIGHUP: { disposition: "terminate", decision: "handle", reason: "terminal closed, ssh session dropped, parent shell exited" },
+  SIGINT: { disposition: "terminate", decision: "handle", reason: "Ctrl-C" },
+  SIGQUIT: { disposition: "terminate", decision: "handle", reason: "Ctrl-\\" },
+  SIGTERM: { disposition: "terminate", decision: "handle", reason: "kill, a supervisor, a shutdown sequence" },
+  SIGUSR2: { disposition: "terminate", decision: "handle", reason: "conventional restart signal from process managers" },
+  SIGXCPU: { disposition: "terminate", decision: "handle", reason: "CPU rlimit reached; this run compiles and downloads" },
+  SIGXFSZ: { disposition: "terminate", decision: "handle", reason: "file-size rlimit reached; this run writes large artifacts" },
+  SIGALRM: { disposition: "terminate", decision: "handle", reason: "an interval timer fired; cheap to handle and fatal if not" },
+  SIGVTALRM: { disposition: "terminate", decision: "handle", reason: "virtual timer fired; fatal if not handled" },
+  SIGPROF: { disposition: "terminate", decision: "handle", reason: "profiling timer fired; fatal if not handled" },
+  SIGIO: { disposition: "terminate", decision: "handle", reason: "asynchronous I/O notification; fatal if not handled" },
+  SIGPOLL: { disposition: "terminate", decision: "handle", reason: "alias of SIGIO on Linux; fatal if not handled" },
+  SIGPWR: { disposition: "terminate", decision: "handle", reason: "power failure imminent; a clean teardown is exactly what is wanted" },
+  SIGSTKFLT: { disposition: "terminate", decision: "handle", reason: "unused on Linux in practice, but terminates if sent" },
+  SIGSYS: { disposition: "terminate", decision: "handle", reason: "a blocked syscall, commonly seccomp; memory is not corrupted, so teardown is safe" },
 
-// NOT HANDLED, deliberately, with the reason in each case.
-export const UNHANDLED_TERMINATING_SIGNALS = Object.freeze({
-  SIGKILL: "cannot be caught or ignored; no handler is possible",
-  SIGSTOP: "cannot be caught or ignored; no handler is possible",
-  SIGILL: "the process state is already unsafe; running teardown could make it worse",
-  SIGABRT: "the process state is already unsafe; running teardown could make it worse",
-  SIGFPE: "the process state is already unsafe; running teardown could make it worse",
-  SIGSEGV: "the process state is already unsafe; running teardown could make it worse",
-  SIGBUS: "the process state is already unsafe; running teardown could make it worse",
-  SIGUSR1: "Node reserves it to start the inspector; taking it would break debugging",
-  SIGPIPE: "Node ignores it by default, so it does not terminate this process",
+  SIGKILL: { disposition: "terminate", decision: "excuse", reason: "cannot be caught or ignored; no handler is possible" },
+  SIGSTOP: { disposition: "stop", decision: "excuse", reason: "cannot be caught or ignored; no handler is possible" },
+  SIGILL: { disposition: "terminate", decision: "excuse", reason: "the process state is already unsafe; running teardown could make it worse" },
+  SIGABRT: { disposition: "terminate", decision: "excuse", reason: "the process state is already unsafe; running teardown could make it worse" },
+  SIGIOT: { disposition: "terminate", decision: "excuse", reason: "alias of SIGABRT; the process state is already unsafe" },
+  SIGFPE: { disposition: "terminate", decision: "excuse", reason: "the process state is already unsafe; running teardown could make it worse" },
+  SIGSEGV: { disposition: "terminate", decision: "excuse", reason: "the process state is already unsafe; running teardown could make it worse" },
+  SIGBUS: { disposition: "terminate", decision: "excuse", reason: "the process state is already unsafe; running teardown could make it worse" },
+  SIGTRAP: { disposition: "terminate", decision: "excuse", reason: "debuggers use it; taking it would break breakpoint handling" },
+  SIGUSR1: { disposition: "terminate", decision: "excuse", reason: "Node reserves it to start the inspector; taking it would break debugging" },
+  SIGPIPE: { disposition: "terminate", decision: "excuse", reason: "Node ignores it by default, so it does not terminate this process" },
+
+  SIGCHLD: { disposition: "ignore" },
+  SIGURG: { disposition: "ignore" },
+  SIGWINCH: { disposition: "ignore" },
+  SIGCONT: { disposition: "continue" },
+  SIGTSTP: { disposition: "stop" },
+  SIGTTIN: { disposition: "stop" },
+  SIGTTOU: { disposition: "stop" },
 });
+
+/** Every signal this platform actually has. The domain is read from the system
+ *  rather than written down, so it cannot fall behind the platform. */
+export function platformSignals(constants = os.constants.signals) {
+  return Object.keys(constants).sort();
+}
+
+/** Signals the platform has that the policy table does not classify. Must be
+ *  empty; a test asserts it over the derived domain. */
+export function unclassifiedSignals(signals = platformSignals()) {
+  return signals.filter((signal) => SIGNAL_POLICY[signal] === undefined);
+}
+
+function signalsWithDecision(decision, signals = platformSignals()) {
+  return signals.filter((signal) => SIGNAL_POLICY[signal]?.decision === decision);
+}
+
+/** Derived, not written down: every platform signal this tool chooses to handle. */
+export const TERMINATING_SIGNALS = Object.freeze(signalsWithDecision("handle"));
+
+/** Derived: signal name to the reason this tool deliberately does not take it. */
+export const UNHANDLED_TERMINATING_SIGNALS = Object.freeze(Object.fromEntries(
+  signalsWithDecision("excuse").map((signal) => [signal, SIGNAL_POLICY[signal].reason]),
+));
 
 /** Registers teardown for every signal this tool chooses to handle. */
 export function installSignalHandlers({ on, handler, signals = TERMINATING_SIGNALS }) {
@@ -847,12 +927,17 @@ export function installSignalHandlers({ on, handler, signals = TERMINATING_SIGNA
   return installed;
 }
 
-/** The last-resort teardown, for every termination path that reaches process
- *  exit — a thrown error, an explicit exit, a normal return, or a handled
- *  signal whose asynchronous teardown did not finish. It must be synchronous,
- *  because Node runs no further asynchronous work once "exit" is emitted, so it
- *  is a single best-effort pass rather than an escalation. Its purpose is that
- *  the answer does not depend on the completeness of a signal list. */
+/** The last-resort teardown, for termination paths that reach process exit: a
+ *  thrown error, an explicit exit, a normal return, or a handled signal whose
+ *  asynchronous teardown did not finish. It must be synchronous, because Node
+ *  runs no further asynchronous work once "exit" is emitted, so it is a single
+ *  best-effort pass rather than an escalation.
+ *
+ *  What it does NOT cover, measured rather than assumed: a signal that
+ *  terminates the process by its default disposition never reaches "exit", so
+ *  this is not a substitute for classifying signals. The handled set carries
+ *  that weight; this carries the non-signal paths and the case where a process
+ *  outlived the escalation budget and recreated the private run directory. */
 export function installExitFallback({ on, handler }) {
   const bound = () => handler();
   on("exit", bound);
@@ -1003,10 +1088,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
       wait: (ms) => sleep(ms),
     });
     verifyChildEnvironments(
-      [
-        { pid: launched.root.pid, label: "the application", allowed: intendedApplicationEnvironmentNames() },
-        { pid: display.serverPid, label: "the display server", allowed: [] },
-      ],
+      childEnvironmentTargets({ applicationPid: launched.root.pid, displayServerPid: display.serverPid }),
       (pid) => { try { return readFileSync(`/proc/${pid}/environ`, "utf8"); } catch { return ""; } },
     );
 

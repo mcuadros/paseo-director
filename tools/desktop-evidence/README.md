@@ -77,20 +77,33 @@ task rather than a build status.
   boundary instead, because Playwright owns the connect, so that one window is
   narrowed rather than closed — microseconds, and a socket rather than a
   process.
-- **Interruption reaches teardown, and termination does not depend on a list.**
-  Every signal whose default disposition ends this process is either handled or
-  carries a recorded reason for not being — `SIGHUP` matters most, because a
-  closing terminal or a dropped ssh session sends it during a capture that runs
-  for minutes. `SIGKILL` and `SIGSTOP` cannot be caught by anything, and that is
-  stated rather than papered over. Because no list is ever complete, a
-  synchronous `exit` fallback runs one best-effort pass for every termination
-  path that reaches process exit.
+- **Interruption reaches teardown, over a domain the platform defines.** Every
+  signal `os.constants.signals` reports is classified: its default disposition,
+  and where that disposition terminates, a decision to handle it or a stated
+  reason not to. The domain is read from the platform rather than written down,
+  and a test iterates it, so a signal this platform has and the policy has not
+  classified fails the build. That matters because the previous version stated
+  the same partition and policed it against a hand-written list that omitted
+  eight default-terminating signals. `SIGKILL` and `SIGSTOP` cannot be caught by
+  anything, and that is stated rather than papered over.
+
+  A synchronous `exit` fallback runs one best-effort pass in addition — but be
+  precise about what it buys, because it is easy to overstate: measured, it does
+  **not** run when a signal terminates the process by its default disposition,
+  so it is not a substitute for classifying signals. It covers the paths that do
+  reach process exit: a thrown error, an explicit exit, and a run where a
+  process outlived the escalation budget and recreated the private directory.
 - **It does not leak the credential into its own children.** The application's
   environment is filtered, and the X server is given an explicit minimal
   allowlist rather than the ambient environment. The isolation check reads each
-  spawned child's `/proc/<pid>/environ` and fails the run if either namespace
-  reached it, because a check that passes on a leaking child is worth less than
-  no check.
+  spawned child's `/proc/<pid>/environ` and fails the run on anything this tool
+  did not set, because a check that passes on a leaking child is worth less than
+  no check. The two children are judged differently on purpose: the display
+  server exhaustively, against the allowlist its environment is built from, and
+  the application only over `PASEO_*` and `DIRECTOR_*`, because it must inherit
+  `PATH`, `HOME` and the rest. A secret in some third namespace would pass the
+  application's check — that is the limit of a filter over an open domain, and
+  it is the one hand-written list in this tool whose domain cannot be derived.
 - **It only stops the processes it started.** The spawned process's identity is
   pinned immediately after spawn by reading its start time from `/proc`, and
   teardown signals nothing at all unless that pin still matches a live process.
@@ -162,10 +175,12 @@ task rather than a build status.
   asserted masked before the connection form is captured, that every emitted
   artifact is scrubbed where it is built including a secret split across stream
   chunks, that `--daemon-host` is floored to loopback during argument parsing,
-  and that neither child process inherits anything this tool did not set. What
-  is not covered is those parts working together against a real daemon that
-  actually demands a password. Read the guarantees as well-tested intent, not as
-  observed behaviour.
+  and that neither child carries a `PASEO_*` or `DIRECTOR_*` variable this tool
+  did not set — exhaustively for the display server, whose whole environment is
+  an allowlist, and over those two namespaces only for the application, which
+  must inherit `PATH` and the rest. What is not covered is those parts working
+  together against a real daemon that actually demands a password. Read the
+  guarantees as well-tested intent, not as observed behaviour.
 
 - **It does not weaken the application.** Remote debugging is enabled through the
   application's own shipped `PASEO_ELECTRON_FLAGS` channel rather than by

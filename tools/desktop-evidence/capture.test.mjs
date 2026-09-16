@@ -29,8 +29,13 @@ import {
   descendantPids,
   displayCandidates,
   driveDirectorSurface,
+  DISPLAY_SERVER_ENVIRONMENT_NAMES,
+  SIGNAL_POLICY,
   TERMINATING_SIGNALS,
   UNHANDLED_TERMINATING_SIGNALS,
+  childEnvironmentTargets,
+  platformSignals,
+  unclassifiedSignals,
   displayServerEnvironment,
   displayServerSpawnOptions,
   installExitFallback,
@@ -892,7 +897,8 @@ test("WIRING: the composition root still calls every unit that enforces a safety
     ["register interruption handlers", "installSignalHandlers({"],
     ["register the exit fallback", "installExitFallback({"],
     ["give the exit fallback a synchronous teardown", "teardown.runSync({ removeRunRoot })"],
-    ["verify no child inherited the Paseo environment", "verifyChildEnvironments("],
+    ["verify no child carries an environment it was not given", "verifyChildEnvironments("],
+    ["range that check over both children", "childEnvironmentTargets({ applicationPid:"],
     ["derive its private layout through the tested helper", "runDirectoryLayout(outputDirectory, options.label)"],
     ["create private directories owner-only", "mode: PRIVATE_DIRECTORY_MODE"],
     ["claim a display through the ownership-proving path", "await claimDisplay("],
@@ -1078,21 +1084,45 @@ test("ENFORCEMENT: every listener and endpoint this tool creates is loopback", (
 
 // --- the class of terminating signals, decided rather than accumulated ------
 
-test("ENFORCEMENT: every signal that can end this run either has a handler or a recorded reason", () => {
-  // The decision, not the contents. A signal whose default disposition
-  // terminates must appear in exactly one of the two sets, so adding a signal
-  // to the platform means making a choice rather than silently defaulting.
-  const terminatesByDefault = [
-    "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGABRT", "SIGFPE", "SIGKILL",
-    "SIGSEGV", "SIGPIPE", "SIGTERM", "SIGUSR1", "SIGUSR2", "SIGBUS", "SIGXCPU", "SIGXFSZ",
-  ];
-  for (const signal of terminatesByDefault) {
-    const handled = TERMINATING_SIGNALS.includes(signal);
-    const excused = Object.hasOwn(UNHANDLED_TERMINATING_SIGNALS, signal);
-    assert.equal(handled !== excused, true, `${signal} must be either handled or excused, not both or neither`);
-    if (excused) {
-      assert.equal(UNHANDLED_TERMINATING_SIGNALS[signal].length > 10, true, `${signal} needs a stated reason`);
-    }
+test("ENFORCEMENT: every signal the PLATFORM has is classified", () => {
+  // The domain comes from os.constants.signals, not from a list in this file.
+  // The previous version iterated fifteen hand-written names and so could not
+  // see the eight default-terminating signals the policy omitted.
+  const signals = platformSignals();
+  assert.equal(signals.length > 20, true, "the platform must actually report its signals");
+  assert.deepEqual(unclassifiedSignals(signals), [], "every platform signal must be classified");
+  for (const signal of signals) {
+    const policy = SIGNAL_POLICY[signal];
+    assert.equal(
+      ["terminate", "ignore", "stop", "continue"].includes(policy.disposition), true,
+      `${signal} needs a known default disposition`,
+    );
+    if (policy.disposition !== "terminate" && signal !== "SIGSTOP") continue;
+    assert.equal(["handle", "excuse"].includes(policy.decision), true, `${signal} terminates, so it needs a decision`);
+    assert.equal(typeof policy.reason === "string" && policy.reason.length > 0, true, `${signal} needs a stated reason`);
+  }
+});
+
+test("ENFORCEMENT: a signal the platform gains but the table has not classified fails", () => {
+  // The guard that makes the domain derived rather than declared.
+  assert.deepEqual(unclassifiedSignals(["SIGHUP", "SIGTERM"]), []);
+  assert.deepEqual(unclassifiedSignals(["SIGHUP", "SIGNEWFANGLED"]), ["SIGNEWFANGLED"]);
+});
+
+test("the handled and excused sets are derived from the policy, not restated", () => {
+  const handled = platformSignals().filter((s) => SIGNAL_POLICY[s].decision === "handle");
+  const excused = platformSignals().filter((s) => SIGNAL_POLICY[s].decision === "excuse");
+  assert.deepEqual([...TERMINATING_SIGNALS], handled);
+  assert.deepEqual(Object.keys(UNHANDLED_TERMINATING_SIGNALS).sort(), excused.sort());
+  for (const signal of handled) assert.equal(excused.includes(signal), false);
+});
+
+test("REGRESSION: the eight signals that previously reached neither set are handled", () => {
+  // Measured: with the previous policy each of these terminated the process
+  // without the exit handler running, taking a display, an application, its
+  // setsid'd daemon and the profile with it.
+  for (const signal of ["SIGALRM", "SIGIO", "SIGPOLL", "SIGPROF", "SIGPWR", "SIGSTKFLT", "SIGSYS", "SIGVTALRM"]) {
+    assert.equal(TERMINATING_SIGNALS.includes(signal), true, `${signal} must reach teardown`);
   }
 });
 
@@ -1177,7 +1207,7 @@ test("ENFORCEMENT: the isolation check can see a child that inherited the creden
   assert.equal(verifyChildEnvironments([{ pid: 1, label: "the display server" }], () => clean), 1);
   assert.throws(
     () => verifyChildEnvironments([{ pid: 7, label: "the display server" }], () => leaking),
-    /the display server \(pid 7\) inherited DIRECTOR_PASEO_URL, PASEO_PASSWORD/u,
+    /the display server \(pid 7\) carried DIRECTOR_PASEO_URL, PASEO_PASSWORD/u,
   );
 });
 
@@ -1198,12 +1228,12 @@ test("ENFORCEMENT: what the tool deliberately sets is allowed; what is inherited
       [{ pid: 3, label: "the application", allowed: intended }],
       () => `${applicationEnviron}PASEO_PASSWORD=super-secret\0`,
     ),
-    /inherited PASEO_PASSWORD/u,
+    /carried PASEO_PASSWORD/u,
   );
   // The display server is allowed nothing at all.
   assert.throws(
     () => verifyChildEnvironments([{ pid: 4, label: "the display server", allowed: [] }], () => "PASEO_HOME=/x\0"),
-    /the display server \(pid 4\) inherited PASEO_HOME/u,
+    /the display server \(pid 4\) carried PASEO_HOME/u,
   );
 });
 
@@ -1249,4 +1279,64 @@ test("an init process is never a teardown target, by either route", () => {
     pidsOf(confirmedTeardownTargets({ root, tracked: new Map([[0, 0], [1, 1]]), processTable: table, selfPid: 999 })),
     [100],
   );
+});
+
+// --- the RANGE of the child-environment check, not only its unit ------------
+
+test("ENFORCEMENT: the child-environment check ranges over both children", () => {
+  // Replacing the call's argument with an empty array previously deleted the
+  // check and left every test green. The range is a tested unit now.
+  const targets = childEnvironmentTargets({ applicationPid: 11, displayServerPid: 22 });
+  assert.deepEqual(targets.map((target) => target.pid), [11, 22]);
+  assert.deepEqual(targets.map((target) => target.label), ["the application", "the display server"]);
+});
+
+test("ENFORCEMENT: each child is judged under its own policy and allowlist", () => {
+  const [application, displayServer] = childEnvironmentTargets({ applicationPid: 11, displayServerPid: 22 });
+  assert.equal(application.policy, "namespaces");
+  assert.equal(application.allowed.includes("PASEO_HOME"), true);
+  assert.equal(displayServer.policy, "exclusive");
+  assert.deepEqual(displayServer.allowed, [...DISPLAY_SERVER_ENVIRONMENT_NAMES]);
+  // Giving the display server the application's allowlist must not pass as
+  // equivalent: it would admit PASEO_HOME and the rest.
+  assert.equal(displayServer.allowed.includes("PASEO_HOME"), false);
+});
+
+test("ENFORCEMENT: an empty range is refused rather than silently passing", () => {
+  assert.throws(() => verifyChildEnvironments([], () => ""), /no children to check/u);
+});
+
+test("the exclusive policy sees anything the tool did not set, not only two namespaces", () => {
+  // The application can only be judged over PASEO_* and DIRECTOR_*, because it
+  // must inherit PATH and the rest. The display server can be judged entirely.
+  const environ = "PATH=/usr/bin\0SOMETHING_ELSE=x\0PASEO_HOME=/x\0";
+  assert.deepEqual(unexpectedEnvironmentNames(environ, ["PASEO_HOME"], "namespaces"), []);
+  assert.deepEqual(
+    unexpectedEnvironmentNames(environ, [...DISPLAY_SERVER_ENVIRONMENT_NAMES], "exclusive"),
+    ["PASEO_HOME", "SOMETHING_ELSE"],
+  );
+});
+
+// --- the two guards that survived mutation ----------------------------------
+
+test("ENFORCEMENT: a root pinned at an init pid authorises nothing", () => {
+  // Relaxing the guard to pid <= 0 previously stayed green, and a root at pid 1
+  // then authorised every transitive descendant of init.
+  const table = processTable([[1, 0, 1], [2, 1, 2], [3, 2, 3]]);
+  assert.equal(rootIsConfirmed({ pid: 1, startTime: 1, exited: false }, table), false);
+  assert.equal(rootIsConfirmed({ pid: 0, startTime: 1, exited: false }, table), false);
+  assert.deepEqual(confirmedTeardownTargets({ root: { pid: 1, startTime: 1, exited: false }, processTable: table }), []);
+});
+
+test("ENFORCEMENT: a target with no readable start time is refused, not admitted", () => {
+  // Relaxing the refusal previously stayed green, and survivingTargets then
+  // passed the target through on undefined === undefined.
+  const table = processTable([[100, 1, 5000], [200, 100, 5001]]);
+  table.startTimeByPid.delete(200);
+  const targets = confirmedTeardownTargets({
+    root: { pid: 100, startTime: 5000, exited: false }, processTable: table, selfPid: 999,
+  });
+  assert.deepEqual(pidsOf(targets), [100], "a descendant with no readable identity must not be signalled");
+  for (const target of targets) assert.equal(Number.isInteger(target.startTime), true);
+  assert.deepEqual(survivingTargets([{ pid: 200, startTime: undefined }], table), []);
 });
