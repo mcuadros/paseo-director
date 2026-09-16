@@ -974,7 +974,7 @@ The current plugin API does not expose a general persistent native-notification 
 
 ### 16.6 Director Console
 
-Installing and activating Director contributes UI and starts the connector; it creates no Paseo Project, Workspace, or agent. The Director layout is therefore something Director renders, not something a user assembles and then has to keep. The Director Console is that layout, and it is the layout Director guarantees: one sidebar item whose surface presents the tabs `Overview`, `Board`, `Workers`, `Administration`, and `Layout`.
+Installing and activating Director contributes UI and registers the connector's RPC handlers; the connector runtime starts on the first RPC, and neither step creates a Paseo Project, Workspace, or agent. The Director layout is therefore something Director renders, not something a user assembles and then has to keep. The Director Console is that layout, and it is the layout Director guarantees: one sidebar item whose surface presents the tabs `Overview`, `Board`, `Workers`, `Administration`, and `Layout`.
 
 - `Overview` carries the Director Home content of section 16.2.
 - `Board` carries the Board/List surface of section 16.3.
@@ -988,7 +988,7 @@ Installing and activating Director contributes UI and starts the connector; it c
 - The `Director Workers`, `Director Board`, and `Task Inspector` workspace panels are convenience. They are user-closable host tabs, no plugin operation reports that one was closed, and Director cannot notice the loss. It does not have to: the Console carries the same Board and Workers views, and Task detail stays reachable from the Board (section 16.4).
 - Restoring a panel needs no host layout state. It does need a target: a panel is reopened by its registration id plus an explicit `workspaceId`, which the Console takes from its own Project projection because a global surface has no implicit Workspace. The Console's `Layout` tab is the documented path for the Workspace-context `Director Workers` and `Director Board`, and the agent-context `Task Inspector` keeps its Command Center action. Where the host does not supply the client context that reopening requires, the tab states that reason instead of failing silently.
 
-The three panel registrations stay. They give Workspace-local and agent-local context that a global surface does not, and section 16.4 and the ADR-0024 reconnect instruction name them. What changes is that no documented Director workflow requires an open panel once the Console ships.
+The three panel registrations stay. They give Workspace-local and agent-local context that a global surface does not, and section 16.4 already documents one of them: the Task Inspector in Explorer for the selected agent or Workspace. The agent-context Command Center item that the ADR-0024 reconnect instruction names by title stays registered as well. What changes is that no documented Director workflow requires an open panel once the Console ships.
 
 Hosting the Board in the Console changes no behaviour and creates no domain state. The Board issues its planning query with `projectId` null and an empty `workspaceIds` list, so it never derived scope from the Workspace hosting it and registering it as a workspace panel scoped nothing. Relocating it is rendering and host navigation only; every planning mutation keeps the authority and confirmation rules of sections 7.4, 12.2, and 17.1 unchanged.
 
