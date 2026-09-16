@@ -137,8 +137,52 @@ const HANDOFF_OWNERSHIP_KEYS = [
 // live facts: active may become restored, and either may become historical.
 const LIVE_LIFECYCLE_STATES = new Set(["active", "restored"]);
 
+// Cleanup's own effects advance these two binding fields and only these two:
+// archiving the agent and workspace makes the lifecycle historical, and
+// removing the worktree reclaims the checkout. They are the exact fields a
+// resumed run may describe differently, while every identity, ownership and
+// actor field stays byte-identical. A later cleanup leg that binds its own
+// lifecycle progress extends these tables; it does not change how a resumed
+// state is admitted.
+const LIFECYCLE_PROGRESS_RANKS = Object.freeze({
+  checkoutState: Object.freeze({ present: 0, reclaimed: 1 }),
+  lifecycleState: Object.freeze({ active: 0, restored: 1, reclaimed: 2 }),
+});
+// Each field advances only to the single terminal value cleanup itself
+// produces. `restored` is a recovery fact produced by something other than
+// cleanup, so it is an admissible source and never an admissible target:
+// cleanupApply has no restored effect path, and a resumed run targeting it
+// would carry an archive intent it can neither dispatch nor terminalize while
+// still reporting the cleanup complete. A resumed state whose resource came
+// back is drift for the coordinator to reconcile, not progress to resume
+// across.
+const LIFECYCLE_PROGRESS_TARGETS = Object.freeze({
+  checkoutState: "reclaimed",
+  lifecycleState: "reclaimed",
+});
+const LIFECYCLE_PROGRESS_KEYS = Object.freeze(
+  Object.keys(LIFECYCLE_PROGRESS_RANKS),
+);
+const EFFECT_CLASSES = new Set([
+  "conditional_update",
+  "destructive_terminal",
+  "idempotent_close",
+  "store_only",
+  "unique_create",
+]);
+const EFFECT_PHASES = new Set([
+  "complete",
+  "dispatching",
+  "intent_recorded",
+  "needs_manual_reconciliation",
+  "unknown",
+]);
+const EFFECT_NAME_PATTERN = /^[a-z][a-z_]{0,31}\.[a-z][a-z-]{0,31}$/u;
+const MAXIMUM_RESUMED_EFFECTS = 64;
+
 const MUTATING_COMMANDS = new Set(["publish-draft", "remote-ci", "publish", "integrate", "cleanup-apply"]);
 const STATE_LOCK_COMMANDS = new Set([...MUTATING_COMMANDS, "cleanup-plan"]);
+const RESUMABLE_COMMANDS = new Set(["cleanup-plan", "cleanup-apply"]);
 const COMMANDS = new Set([
   "snapshot",
   "review-handoff",
@@ -613,6 +657,7 @@ function validateOptions(command, rawOptions) {
     "ci-workflow",
     "remote-ci-file",
     "handoff-file",
+    "resume-state-file",
   ]);
   const unknown = Object.keys(rawOptions).filter((key) => !allowed.has(key));
   refuse(
@@ -742,6 +787,30 @@ function validateOptions(command, rawOptions) {
         pathIsWithin(controlRepo, options.stateFile),
       "STATE_INSIDE_REPOSITORY",
       "state file must be outside the Task and control Git checkouts",
+    );
+  }
+
+  if (rawOptions["resume-state-file"] !== undefined) {
+    refuse(
+      !RESUMABLE_COMMANDS.has(command),
+      "OPTION_INVALID",
+      "--resume-state-file is valid only for cleanup-plan and cleanup-apply",
+    );
+    options.resumeStateFile = canonicalPath(
+      rawOptions["resume-state-file"],
+      "resumed state file",
+      { mustExist: false },
+    );
+    refuse(
+      pathIsWithin(checkout, options.resumeStateFile) ||
+        pathIsWithin(controlRepo, options.resumeStateFile),
+      "RESUME_STATE_INSIDE_REPOSITORY",
+      "resumed state file must be outside the Task and control Git checkouts",
+    );
+    refuse(
+      options.resumeStateFile === options.stateFile,
+      "RESUME_STATE_NOT_DISTINCT",
+      "resumed state file must differ from the current state file",
     );
   }
 
@@ -911,10 +980,39 @@ function loadState(options, { required = false } = {}) {
   const state = readJsonFile(options.stateFile, "coordinator state");
   assertExactKeys(
     state,
-    ["schemaVersion", "binding", "effects", "cleanupPlanHash", "pullRequestNumber"],
+    [
+      "schemaVersion",
+      "binding",
+      "effects",
+      "cleanupPlanHash",
+      "pullRequestNumber",
+      "continuation",
+    ],
     "state",
   );
   refuse(!isObject(state.effects), "STATE_INVALID", "state effects are invalid");
+  if (state.continuation !== undefined) {
+    assertExactKeys(
+      state.continuation,
+      [
+        "adoptedEffects",
+        "priorBindingHash",
+        "priorCheckoutState",
+        "priorLifecycleState",
+      ],
+      "state continuation",
+      "STATE_INVALID",
+    );
+    refuse(
+      !Array.isArray(state.continuation.adoptedEffects) ||
+        !state.continuation.adoptedEffects.every(
+          (name) => typeof name === "string" && EFFECT_NAME_PATTERN.test(name),
+        ) ||
+        !/^[0-9a-f]{64}$/u.test(state.continuation.priorBindingHash ?? ""),
+      "STATE_INVALID",
+      "state continuation is invalid",
+    );
+  }
   if (state.schemaVersion === LEGACY_STATE_SCHEMA_VERSION) {
     assertExactKeys(
       state.binding,
@@ -993,6 +1091,215 @@ function persistState(options, state) {
     identityCode: "STATE_IDENTITY_INVALID",
     temporaryCode: "STATE_TEMP_EXISTS",
   });
+}
+
+function lifecycleProgressRank(key, value) {
+  if (value === "none") return "none";
+  const ranks = LIFECYCLE_PROGRESS_RANKS[key];
+  return Object.hasOwn(ranks, value) ? ranks[value] : undefined;
+}
+
+function stableBinding(binding) {
+  return Object.fromEntries(
+    Object.entries(binding).filter(
+      ([key]) => !LIFECYCLE_PROGRESS_KEYS.includes(key),
+    ),
+  );
+}
+
+/**
+ * Reads the exact private state an interrupted run left behind, from a
+ * lifecycle binding its own effects made unassertable. The file is only ever
+ * read: it is admitted when every identity, ownership and actor field matches
+ * the current binding byte for byte and the sole difference is ranked
+ * lifecycle progress that moved strictly forward. An equal binding is refused
+ * because that state is usable directly, and a backward binding is refused
+ * because cleanup never restores a reclaimed resource.
+ */
+function loadResumedState(options) {
+  const path = options.resumeStateFile;
+  refuse(
+    !existsSync(path),
+    "RESUME_STATE_MISSING",
+    "resumed state file does not exist",
+  );
+  const status = lstatSync(path);
+  refuse(
+    !status.isFile() ||
+      status.isSymbolicLink() ||
+      (status.mode & 0o077) !== 0 ||
+      (typeof process.getuid === "function" && status.uid !== process.getuid()),
+    "RESUME_STATE_PERMISSIONS_INVALID",
+    "resumed state file must be an owner-only regular file with mode 0600",
+  );
+  const resumed = readJsonFile(path, "resumed coordinator state");
+  assertExactKeys(
+    resumed,
+    [
+      "schemaVersion",
+      "binding",
+      "effects",
+      "cleanupPlanHash",
+      "pullRequestNumber",
+      "continuation",
+    ],
+    "resumed state",
+    "RESUME_STATE_INVALID",
+  );
+  refuse(
+    resumed.schemaVersion !== STATE_SCHEMA_VERSION,
+    "RESUME_STATE_SCHEMA_UNSUPPORTED",
+    "resumed state schema is unsupported; migrate it under its own binding first",
+  );
+  refuse(
+    containsProtectedMaterial(
+      resumed,
+      options.ownership,
+      options.ownershipFile,
+      options.paseoPassword,
+      options.paseoCredentialFile,
+    ),
+    "RESUME_STATE_OWNERSHIP_MATERIAL_FORBIDDEN",
+    "resumed coordinator state contains raw ownership material",
+  );
+  assertExactKeys(
+    resumed.binding,
+    STATE_BINDING_KEYS,
+    "resumed state binding",
+    "RESUME_STATE_INVALID",
+  );
+  const current = stateBinding(options);
+  refuse(
+    canonicalJson(stableBinding(resumed.binding)) !==
+      canonicalJson(stableBinding(current)),
+    "RESUME_STATE_BINDING_MISMATCH",
+    "resumed state is bound to different immutable inputs",
+  );
+  let advanced = 0;
+  for (const key of LIFECYCLE_PROGRESS_KEYS) {
+    const before = lifecycleProgressRank(key, resumed.binding[key]);
+    const after = lifecycleProgressRank(key, current[key]);
+    refuse(
+      before === undefined ||
+        after === undefined ||
+        (before === "none") !== (after === "none"),
+      "RESUME_STATE_LIFECYCLE_INVALID",
+      "resumed lifecycle progress cannot be compared with the current binding",
+    );
+    if (before === "none") continue;
+    refuse(
+      after < before,
+      "RESUME_STATE_LIFECYCLE_REGRESSION",
+      "resumed state records later lifecycle progress than the current binding",
+    );
+    if (after === before) continue;
+    refuse(
+      current[key] !== LIFECYCLE_PROGRESS_TARGETS[key],
+      "RESUME_STATE_LIFECYCLE_NOT_RECLAIMED",
+      "resumption advances a lifecycle field only to the reclaimed value cleanup produces",
+    );
+    advanced += 1;
+  }
+  refuse(
+    advanced === 0,
+    "RESUME_STATE_NOT_A_TRANSITION",
+    "resumed state has the same lifecycle binding and must be consumed directly",
+  );
+  refuse(
+    !isObject(resumed.effects),
+    "RESUME_STATE_INVALID",
+    "resumed state effects are invalid",
+  );
+  const names = Object.keys(resumed.effects);
+  refuse(
+    names.length > MAXIMUM_RESUMED_EFFECTS,
+    "RESUME_STATE_INVALID",
+    "resumed state records too many effects",
+  );
+  for (const name of names) {
+    refuse(
+      !EFFECT_NAME_PATTERN.test(name),
+      "RESUME_STATE_INVALID",
+      "resumed state records an invalid effect name",
+    );
+    const record = resumed.effects[name];
+    assertExactKeys(
+      record,
+      ["class", "phase", "attempts", "evidence"],
+      "resumed effect",
+      "RESUME_STATE_INVALID",
+    );
+    refuse(
+      !EFFECT_CLASSES.has(record.class) ||
+        !EFFECT_PHASES.has(record.phase) ||
+        !Number.isSafeInteger(record.attempts) ||
+        record.attempts < 0,
+      "RESUME_STATE_INVALID",
+      "resumed state records an invalid effect",
+    );
+  }
+  refuse(
+    resumed.pullRequestNumber !== undefined &&
+      options.pr !== "absent" &&
+      resumed.pullRequestNumber !== options.pr,
+    "RESUME_STATE_PULL_REQUEST_MISMATCH",
+    "resumed state is bound to another pull request",
+  );
+  return resumed;
+}
+
+/**
+ * Carries an interrupted run's recorded effects into the state bound to the
+ * transitioned lifecycle, so an intent this coordinator did record stays
+ * discoverable after its own progress invalidated the binding that holds it.
+ * Adoption executes nothing and never overwrites a record this state already
+ * owns: it only supplies history. Every admission, observation and refusal
+ * downstream is unchanged, so an absent ref explained by no recorded intent
+ * anywhere still fails closed. The derived `cleanupPlanHash` is deliberately
+ * not carried, because a plan is bound to the lifecycle binding that produced
+ * it and the transitioned binding must admit its own freshly emitted plan.
+ */
+function adoptResumedState(options, state) {
+  if (options.resumeStateFile === undefined) return null;
+  const resumed = loadResumedState(options);
+  const priorBindingHash = digest(resumed.binding);
+  refuse(
+    state.continuation !== undefined &&
+      state.continuation.priorBindingHash !== priorBindingHash,
+    "RESUME_STATE_REPLACED",
+    "state already continued another interrupted lifecycle binding",
+  );
+  const adopted = [];
+  for (const name of Object.keys(resumed.effects).sort(compareText)) {
+    if (state.effects[name] !== undefined) continue;
+    state.effects[name] = canonicalize(resumed.effects[name]);
+    adopted.push(name);
+  }
+  let mutated = adopted.length > 0;
+  if (
+    state.pullRequestNumber === undefined &&
+    resumed.pullRequestNumber !== undefined
+  ) {
+    state.pullRequestNumber = resumed.pullRequestNumber;
+    mutated = true;
+  }
+  const continuation = {
+    adoptedEffects: [
+      ...new Set([...(state.continuation?.adoptedEffects ?? []), ...adopted]),
+    ].sort(compareText),
+    priorBindingHash,
+    priorCheckoutState: resumed.binding.checkoutState,
+    priorLifecycleState: resumed.binding.lifecycleState,
+  };
+  if (
+    mutated ||
+    state.continuation === undefined ||
+    canonicalJson(state.continuation) !== canonicalJson(continuation)
+  ) {
+    state.continuation = continuation;
+    persistState(options, state);
+  }
+  return continuation;
 }
 
 async function withStateLock(options, operation) {
@@ -2939,7 +3246,10 @@ function dispatchPaseoArchive(run, options, args) {
 
 async function cleanupApply(run, options, deps) {
   const plan = validateCleanupPlan(options);
-  const state = loadState(options, { required: true });
+  const state = loadState(options, {
+    required: options.resumeStateFile === undefined,
+  });
+  adoptResumedState(options, state);
   ensureIntegratedState(options, state);
   if (state.cleanupPlanHash !== undefined) {
     refuse(state.cleanupPlanHash !== plan.planHash, "CLEANUP_PLAN_REPLACED", "another cleanup plan was already admitted");
@@ -2993,6 +3303,23 @@ async function cleanupApply(run, options, deps) {
         "Paseo workspace archive was not proven",
       );
       markEffect(options, state, "cleanup.workspace", "idempotent_close", "complete", { absent: true });
+    }
+  } else if (options.lifecycleState === "reclaimed") {
+    // A reclaimed lifecycle binding is the recorded statement that both
+    // resources are already historical, so neither is dispatched again. Record
+    // that adoption instead of skipping silently, exactly as a reclaimed
+    // checkout already completes the worktree effect: an archive interrupted
+    // before its own progress transitioned this binding would otherwise keep a
+    // nonterminal intent no admitted run can ever finish, and the closure
+    // record would understate what cleanup actually covered.
+    for (const effect of ["cleanup.agent", "cleanup.workspace"]) {
+      if (state.effects[effect]?.phase === "complete") continue;
+      // The recorded binding is the only authority here, exactly as
+      // cleanupFacts reports it, so the evidence claims nothing observed.
+      markEffect(options, state, effect, "idempotent_close", "complete", {
+        source: "recorded_reclaimed",
+        verified: false,
+      });
     }
   }
 
@@ -3171,7 +3498,10 @@ export async function execute(command, rawOptions, dependencies = {}) {
     } else if (command === "integrate") {
       result = await integrate(run, options, deps);
     } else if (command === "cleanup-plan") {
-      const state = loadState(options, { required: true });
+      const state = loadState(options, {
+        required: options.resumeStateFile === undefined,
+      });
+      adoptResumedState(options, state);
       const integration = ensureIntegratedState(options, state);
       const task = taskFacts(run, options);
       const resources = cleanupFacts(run, options, task);

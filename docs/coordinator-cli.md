@@ -186,7 +186,9 @@ instead of re-executing and no refusal is reported as an unproven archive.
   `ownershipTokenHash`. Schema-v1 plans are not migrated because they are
   derived artifacts. State migration also invalidates any legacy
   `cleanupPlanHash`; after migration or response loss, rerun `cleanup-plan` and
-  use that newly emitted v2 document without editing private state.
+  use that newly emitted v2 document without editing private state. Optional
+  `--resume-state-file` carries an interrupted run's recorded effects across its
+  own lifecycle transition; see Resuming an interrupted cleanup.
 - `cleanup-apply` requires `--state-file` and `--plan-file`. The plan file may
   be the complete JSON emitted by `cleanup-plan`. Every resource is re-read
   before its effect. Agent and workspace archival are dispatched through the
@@ -203,7 +205,7 @@ instead of re-executing and no refusal is reported as an unproven archive.
   equals the exact Candidate, and only through the same explicit expected-OID
   `force-with-lease`/`update-ref` guard. Absence adopts completion; a changed,
   unavailable, or ambiguous ref fails closed. Completion remains terminal on
-  later reappearance.
+  later reappearance. It accepts the same optional `--resume-state-file`.
 
 `publish` and `integrate` additionally consume these closed evidence files:
 
@@ -218,6 +220,57 @@ instead of re-executing and no refusal is reported as an unproven archive.
 If review lists a P2 risk, `humanP2Acceptance` must instead contain
 `actorKind: "human"`, a durable `recordId`, and the exact set of accepted risk
 codes. Unknown fields or looser verdict/status values are rejected.
+
+## Resuming an interrupted cleanup
+
+A cleanup's own effects advance the binding it runs from. Archiving the Task
+Agent and the Paseo workspace makes `--lifecycle-state` historical, and removing
+the worktree reclaims `--checkout-state`. Both fields are immutable in a state
+file and the state lock binds their hash, so an interrupted cleanup leaves its
+recorded intents in a state whose binding can no longer be asserted truthfully,
+while a fresh state bound to the transitioned truth knows nothing about them and
+correctly refuses `DESTRUCTIVE_ABSENCE_AMBIGUOUS` for a ref this coordinator had
+already recorded deleting.
+
+`cleanup-plan` and `cleanup-apply` accept `--resume-state-file` to close that
+gap. It names the interrupted run's absolute owner-only mode-`0600` state file
+outside every Git checkout, and that file is only ever read: the resumed run
+writes exclusively to its own `--state-file`, which it may create. The resumed
+state is admitted only when every identity, ownership, actor, repository,
+branch, Candidate, and base field equals the current binding exactly and the
+sole difference is lifecycle progress that advanced to the terminal value
+cleanup itself produces: `present` to `reclaimed` for the checkout, and `active`
+or `restored` to `reclaimed` for the lifecycle. `restored` is a recovery fact
+produced by something other than cleanup, so it is an admissible source and
+never an admissible target; `cleanup-apply` has no `restored` effect path, and a
+resumed run that targeted it would carry an archive intent it can neither
+dispatch nor terminalize. A non-terminal target refuses
+`RESUME_STATE_LIFECYCLE_NOT_RECLAIMED`, an identical binding refuses
+`RESUME_STATE_NOT_A_TRANSITION` because that state is usable directly, a
+backward binding refuses `RESUME_STATE_LIFECYCLE_REGRESSION`, and any other
+difference refuses `RESUME_STATE_BINDING_MISMATCH`. A state continues exactly
+one interrupted binding; a second refuses `RESUME_STATE_REPLACED`. A missing,
+world-readable, foreign-owned, oversized, legacy-schema, or structurally invalid
+file is refused without being written to or repaired.
+
+Admission copies only the recorded effects the current state does not already
+own. It executes nothing, adopts no resource, and relaxes no observation: every
+downstream admission, re-read, and refusal is unchanged, so an absent ref
+explained by a carried deletion intent completes through the existing
+[ADR-0021](adr/0021-recover-exact-leased-ref-cleanup.md) rule while an absence
+no recorded intent explains anywhere still fails closed. The derived
+`cleanupPlanHash` is deliberately not carried, because a plan is bound to the
+lifecycle binding that produced it: run `cleanup-plan` under the transitioned
+binding and admit that document. A `--lifecycle-state reclaimed` cleanup now
+also records the agent and workspace effects it adopts as recorded-reclaimed
+rather than skipping them silently, so an archive interrupted before the
+transition still reaches a terminal phase and the closure record states the
+scope cleanup actually covered.
+
+```text
+node tools/coordinator/cli.mjs cleanup-plan <transitioned context> --state-file /private/control/resumed-state.json --resume-state-file /private/control/interrupted-state.json > /private/control/cleanup-plan.json
+node tools/coordinator/cli.mjs cleanup-apply <same context> --state-file /private/control/resumed-state.json --resume-state-file /private/control/interrupted-state.json --plan-file /private/control/cleanup-plan.json
+```
 
 ## Typical handoff
 

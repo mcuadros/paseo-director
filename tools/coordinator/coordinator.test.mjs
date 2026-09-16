@@ -682,6 +682,86 @@ async function prepareIntegratedCleanup(fixture, fake) {
   };
 }
 
+// Reproduces the exact shape a coordinator cleanup leaves behind when it is
+// interrupted after its own effects advanced the lifecycle: the Task Agent and
+// workspace are bound live, cleanup dispatches for real, and the invocation
+// stops immediately after the named effect reaches the external world but
+// before its result is recorded.
+async function interruptLifecycleCleanup(
+  fixture,
+  fake,
+  effect,
+  lifecycleState = "active",
+) {
+  // A handoff manifest recorded active stays usable once the card is restored,
+  // so the routing binding is the same for both live lifecycle states.
+  rebindReviewRouting(fixture, {
+    agentId: "agent-0001",
+    lifecycleState: "active",
+    workspaceId: "workspace-0001",
+  });
+  Object.assign(fixture.options, {
+    "agent-id": "agent-0001",
+    "lifecycle-state": lifecycleState,
+    "workspace-id": "workspace-0001",
+  });
+  const { applyOptions } = await prepareIntegratedCleanup(fixture, fake);
+  await assert.rejects(
+    execute("cleanup-apply", applyOptions, {
+      run: fake.runner,
+      hook(phase, currentEffect) {
+        if (phase === "after" && currentEffect === effect) {
+          throw new CoordinatorInterruption(effect);
+        }
+      },
+    }),
+    (error) => error instanceof CoordinatorInterruption,
+  );
+  return applyOptions;
+}
+
+function transitionedOptions(fixture, applyOptions, suffix) {
+  return {
+    ...applyOptions,
+    "checkout-state": "reclaimed",
+    "lifecycle-state": "reclaimed",
+    "state-file": join(fixture.root, `reclaimed-state-${suffix}.json`),
+    "resume-state-file": fixture.stateFile,
+  };
+}
+
+// The operator procedure: describe the world as it now is. While the owned
+// worktree survives, the original binding remains true and its own state
+// resumes. Once cleanup removed it, only the transitioned binding is truthful,
+// and the interrupted state is supplied as read-only history.
+async function resumeUnderTruthfulBinding(fixture, fake, applyOptions, suffix) {
+  if (existsSync(fixture.checkout)) {
+    return execute("cleanup-apply", applyOptions, { run: fake.runner });
+  }
+  const options = transitionedOptions(fixture, applyOptions, suffix);
+  const planFile = join(fixture.root, `reclaimed-plan-${suffix}.json`);
+  const plan = await execute("cleanup-plan", options, { run: fake.runner });
+  writeFileSync(planFile, `${canonicalJson(plan)}\n`, { mode: 0o600 });
+  return execute(
+    "cleanup-apply",
+    { ...options, "plan-file": planFile },
+    { run: fake.runner },
+  );
+}
+
+function guardedDeletions(fake, fixture, kind) {
+  const ref = `refs/heads/${BRANCH}`;
+  return fake.state.calls.filter((call) => {
+    if (call.executable !== "git") return false;
+    return kind === "remote"
+      ? call.args.includes(`--force-with-lease=${ref}:${fixture.candidate}`) &&
+          call.args.includes(`:${ref}`)
+      : call.args.includes("update-ref") &&
+          call.args.includes("-d") &&
+          call.args.includes(ref);
+  }).length;
+}
+
 function rebindReviewRouting(fixture, ownershipChanges) {
   const manifest = JSON.parse(readFileSync(fixture.manifestFile, "utf8"));
   delete manifest.manifestHash;
@@ -2489,6 +2569,509 @@ test("post-handoff commands operate from exact refs after the Task checkout and 
       fake.state.calls.filter((call) => call.executable === "paseo").length,
       paseoCallsBeforeReclaim,
     );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("an interrupted cleanup resumes truthfully across its own lifecycle transition", async () => {
+  const fixture = createRepositoryFixture();
+  const fake = fakeExternalCommands(fixture, { archiveRemovesWorktree: true });
+  try {
+    const applyOptions = await interruptLifecycleCleanup(
+      fixture,
+      fake,
+      "cleanup.remote-branch",
+    );
+    const interruptedBytes = readFileSync(fixture.stateFile, "utf8");
+    const interrupted = JSON.parse(interruptedBytes);
+    assert.equal(interrupted.effects["cleanup.agent"].phase, "complete");
+    assert.equal(interrupted.effects["cleanup.workspace"].phase, "complete");
+    assert.equal(interrupted.effects["cleanup.worktree"].phase, "complete");
+    assert.equal(
+      interrupted.effects["cleanup.remote-branch"].phase,
+      "dispatching",
+    );
+    assert.equal(interrupted.effects["cleanup.local-branch"], undefined);
+    assert.equal(existsSync(fixture.checkout), false);
+    assert.equal(
+      git(fixture.control, ["ls-remote", "--heads", "origin", `refs/heads/${BRANCH}`]),
+      "",
+    );
+
+    // The half-truthful binding the transitioned world first suggests.
+    await assert.rejects(
+      execute(
+        "cleanup-apply",
+        { ...applyOptions, "checkout-state": "reclaimed" },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "LIFECYCLE_CHECKOUT_STATE_MISMATCH",
+    );
+
+    // The truthful binding cannot reuse the interrupted state. Its lock holds
+    // the binding hash the cleanup invalidated, and the state itself is
+    // permanently bound to the description that is no longer assertable.
+    const lockPath = `${fixture.stateFile}.lock`;
+    writeFileSync(
+      lockPath,
+      `${canonicalJson({
+        schemaVersion: 1,
+        pid: process.pid,
+        processStartTime: "1",
+        nonce: "0".repeat(32),
+        bindingHash: digest(interrupted.binding),
+      })}\n`,
+      { mode: 0o600 },
+    );
+    const truthful = {
+      ...applyOptions,
+      "checkout-state": "reclaimed",
+      "lifecycle-state": "reclaimed",
+    };
+    await assert.rejects(
+      execute("cleanup-plan", truthful, { run: fake.runner }),
+      (error) => error.code === "STATE_LOCK_INVALID",
+    );
+    rmSync(lockPath);
+    await assert.rejects(
+      execute("cleanup-plan", truthful, { run: fake.runner }),
+      (error) => error.code === "STATE_BINDING_MISMATCH",
+    );
+
+    // A fresh state bound truthfully integrates and plans, then correctly
+    // refuses an absence that state cannot explain.
+    const reclaimedState = join(fixture.root, "reclaimed-state.json");
+    const reclaimedPlan = join(fixture.root, "reclaimed-plan.json");
+    const fresh = { ...truthful, "state-file": reclaimedState };
+    await execute("integrate", fresh, { run: fake.runner });
+    const blind = await execute("cleanup-plan", fresh, { run: fake.runner });
+    assert.equal(blind.result.resources.remoteBranch, null);
+    assert.equal(blind.result.resources.localBranch, fixture.candidate);
+    writeFileSync(reclaimedPlan, `${canonicalJson(blind)}\n`, { mode: 0o600 });
+    await assert.rejects(
+      execute(
+        "cleanup-apply",
+        { ...fresh, "plan-file": reclaimedPlan },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "DESTRUCTIVE_ABSENCE_AMBIGUOUS",
+    );
+
+    // Carrying the recorded intent across the transition releases it.
+    const resume = { ...fresh, "resume-state-file": fixture.stateFile };
+    const replanned = await execute("cleanup-plan", resume, { run: fake.runner });
+    assert.equal(replanned.result.planHash, blind.result.planHash);
+    const applied = await execute(
+      "cleanup-apply",
+      { ...resume, "plan-file": reclaimedPlan },
+      { run: fake.runner },
+    );
+    assert.equal(applied.result.resources, "complete");
+
+    const resumed = JSON.parse(readFileSync(reclaimedState, "utf8"));
+    assert.equal(resumed.effects["cleanup.remote-branch"].phase, "complete");
+    assert.equal(resumed.effects["cleanup.remote-branch"].evidence.absent, true);
+    assert.equal(resumed.effects["cleanup.local-branch"].phase, "complete");
+    assert.equal(resumed.continuation.priorCheckoutState, "present");
+    assert.equal(resumed.continuation.priorLifecycleState, "active");
+    assert.equal(
+      resumed.continuation.priorBindingHash,
+      digest(interrupted.binding),
+    );
+    // The refused run had already recorded its own reclaimed adoptions, so the
+    // single fact the continuation had to supply is the recorded deletion
+    // intent the transitioned binding could no longer reach.
+    assert.deepEqual(
+      resumed.continuation.adoptedEffects.filter((name) =>
+        name.startsWith("cleanup."),
+      ),
+      ["cleanup.remote-branch"],
+    );
+    assert.equal(
+      resumed.continuation.adoptedEffects.includes("integrate.merge"),
+      false,
+    );
+    for (const name of ["cleanup.agent", "cleanup.workspace", "cleanup.worktree"]) {
+      assert.equal(resumed.effects[name].phase, "complete", name);
+      assert.equal(resumed.effects[name].evidence.source, "recorded_reclaimed");
+    }
+
+    // Nothing was executed twice and the interrupted state was only read.
+    assert.equal(guardedDeletions(fake, fixture, "remote"), 1);
+    assert.equal(guardedDeletions(fake, fixture, "local"), 1);
+    assert.equal(fake.state.agentArchiveDispatches, 1);
+    assert.equal(
+      git(fixture.control, [
+        "for-each-ref",
+        "--format=%(refname)",
+        `refs/heads/${BRANCH}`,
+      ]),
+      "",
+    );
+    assert.equal(readFileSync(fixture.stateFile, "utf8"), interruptedBytes);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("cleanup resumes after an interruption at every step without duplicate effects", async (context) => {
+  for (const [effect, archiveRemovesWorktree] of [
+    ["cleanup.agent", true],
+    ["cleanup.workspace", true],
+    ["cleanup.worktree", false],
+    ["cleanup.remote-branch", true],
+    ["cleanup.local-branch", true],
+  ]) {
+    await context.test(effect, async () => {
+      const fixture = createRepositoryFixture();
+      const fake = fakeExternalCommands(fixture, { archiveRemovesWorktree });
+      try {
+        const applyOptions = await interruptLifecycleCleanup(
+          fixture,
+          fake,
+          effect,
+        );
+        const interruptedBytes = readFileSync(fixture.stateFile, "utf8");
+        assert.equal(
+          JSON.parse(interruptedBytes).effects[effect].phase,
+          "dispatching",
+        );
+        const resumed = await resumeUnderTruthfulBinding(
+          fixture,
+          fake,
+          applyOptions,
+          "step",
+        );
+        assert.equal(resumed.result.resources, "complete");
+        assert.equal(fake.state.agentArchiveDispatches, 1);
+        assert.equal(
+          fake.state.calls.filter(
+            (call) =>
+              call.executable === "paseo" &&
+              call.args[0] === "workspace" &&
+              call.args[1] === "archive",
+          ).length,
+          1,
+        );
+        assert.equal(guardedDeletions(fake, fixture, "remote"), 1);
+        assert.equal(guardedDeletions(fake, fixture, "local"), 1);
+        assert.equal(
+          git(fixture.control, ["ls-remote", "--heads", "origin", `refs/heads/${BRANCH}`]),
+          "",
+        );
+        assert.equal(existsSync(fixture.checkout), false);
+
+        const finalState = JSON.parse(
+          readFileSync(
+            existsSync(join(fixture.root, "reclaimed-state-step.json"))
+              ? join(fixture.root, "reclaimed-state-step.json")
+              : fixture.stateFile,
+            "utf8",
+          ),
+        );
+        for (const name of [
+          "cleanup.agent",
+          "cleanup.workspace",
+          "cleanup.worktree",
+          "cleanup.remote-branch",
+          "cleanup.local-branch",
+        ]) {
+          assert.equal(finalState.effects[name].phase, "complete", name);
+        }
+        if (finalState.continuation !== undefined) {
+          assert.equal(readFileSync(fixture.stateFile, "utf8"), interruptedBytes);
+        }
+      } finally {
+        fixture.cleanup();
+      }
+    });
+  }
+});
+
+test("resumption advances the lifecycle only to the value cleanup produces", async () => {
+  const fixture = createRepositoryFixture();
+  const fake = fakeExternalCommands(fixture);
+  try {
+    // The workspace archive landed; the worktree it did not remove survives,
+    // so the interrupted binding is still present/active.
+    const applyOptions = await interruptLifecycleCleanup(
+      fixture,
+      fake,
+      "cleanup.workspace",
+    );
+    const interruptedBytes = readFileSync(fixture.stateFile, "utf8");
+    assert.equal(
+      JSON.parse(interruptedBytes).effects["cleanup.workspace"].phase,
+      "dispatching",
+    );
+    assert.equal(existsSync(fixture.checkout), true);
+
+    // restored is a recovery fact, not cleanup progress. cleanup-apply has no
+    // restored effect path, so admitting it as a target would carry an archive
+    // intent nothing can finish while still reporting the cleanup complete.
+    const restored = {
+      ...applyOptions,
+      "checkout-state": "present",
+      "lifecycle-state": "restored",
+      "state-file": join(fixture.root, "restored-state.json"),
+      "resume-state-file": fixture.stateFile,
+    };
+    await assert.rejects(
+      execute("cleanup-plan", restored, { run: fake.runner }),
+      (error) => error.code === "RESUME_STATE_LIFECYCLE_NOT_RECLAIMED",
+    );
+    // No plan can be admitted for that target either, because a plan is bound
+    // to the lifecycle binding that produced it, so cleanup-apply cannot reach
+    // the stranded state by reusing the interrupted run's plan.
+    await assert.rejects(
+      execute("cleanup-apply", restored, { run: fake.runner }),
+      (error) => error.code === "CLEANUP_PLAN_BINDING_MISMATCH",
+    );
+    assert.equal(existsSync(restored["state-file"]), false);
+    assert.equal(readFileSync(fixture.stateFile, "utf8"), interruptedBytes);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a cleanup interrupted under a restored lifecycle resumes and terminalizes", async () => {
+  const fixture = createRepositoryFixture();
+  // A restored card is absent from the workspace listing and cannot be
+  // archived by identity, so cleanup removes the worktree and the refs only.
+  const fake = fakeExternalCommands(fixture, { workspaces: [] });
+  try {
+    const applyOptions = await interruptLifecycleCleanup(
+      fixture,
+      fake,
+      "cleanup.worktree",
+      "restored",
+    );
+    const interruptedBytes = readFileSync(fixture.stateFile, "utf8");
+    const interrupted = JSON.parse(interruptedBytes);
+    assert.equal(interrupted.binding.lifecycleState, "restored");
+    assert.equal(interrupted.effects["cleanup.worktree"].phase, "dispatching");
+    assert.equal(existsSync(fixture.checkout), false);
+
+    const resumed = await resumeUnderTruthfulBinding(
+      fixture,
+      fake,
+      applyOptions,
+      "restored",
+    );
+    assert.equal(resumed.result.resources, "complete");
+    const final = JSON.parse(
+      readFileSync(join(fixture.root, "reclaimed-state-restored.json"), "utf8"),
+    );
+    assert.equal(final.continuation.priorLifecycleState, "restored");
+    for (const name of [
+      "cleanup.agent",
+      "cleanup.workspace",
+      "cleanup.worktree",
+      "cleanup.remote-branch",
+      "cleanup.local-branch",
+    ]) {
+      assert.equal(final.effects[name].phase, "complete", name);
+    }
+    assert.equal(guardedDeletions(fake, fixture, "remote"), 1);
+    assert.equal(guardedDeletions(fake, fixture, "local"), 1);
+    assert.equal(
+      fake.state.calls.filter(
+        (call) =>
+          call.executable === "paseo" &&
+          call.args[0] === "workspace" &&
+          call.args[1] === "archive",
+      ).length,
+      0,
+    );
+    assert.equal(readFileSync(fixture.stateFile, "utf8"), interruptedBytes);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a resumed cleanup still refuses a destructive absence nothing recorded", async () => {
+  const fixture = createRepositoryFixture();
+  const fake = fakeExternalCommands(fixture, { archiveRemovesWorktree: true });
+  try {
+    const applyOptions = await interruptLifecycleCleanup(
+      fixture,
+      fake,
+      "cleanup.workspace",
+    );
+    const interrupted = JSON.parse(readFileSync(fixture.stateFile, "utf8"));
+    assert.equal(interrupted.effects["cleanup.remote-branch"], undefined);
+    // An unrelated deletion this coordinator never recorded anywhere.
+    git(fixture.control, ["push", "--quiet", "origin", `:refs/heads/${BRANCH}`]);
+
+    const options = transitionedOptions(fixture, applyOptions, "absence");
+    const planFile = join(fixture.root, "reclaimed-plan-absence.json");
+    const plan = await execute("cleanup-plan", options, { run: fake.runner });
+    writeFileSync(planFile, `${canonicalJson(plan)}\n`, { mode: 0o600 });
+    await assert.rejects(
+      execute(
+        "cleanup-apply",
+        { ...options, "plan-file": planFile },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "DESTRUCTIVE_ABSENCE_AMBIGUOUS",
+    );
+    assert.equal(
+      git(fixture.control, ["rev-parse", "--verify", `refs/heads/${BRANCH}`]),
+      fixture.candidate,
+    );
+    assert.equal(guardedDeletions(fake, fixture, "local"), 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("resumption keeps state identity, ownership, and actor binding immutable", async () => {
+  const fixture = createRepositoryFixture();
+  const fake = fakeExternalCommands(fixture, { archiveRemovesWorktree: true });
+  try {
+    const applyOptions = await interruptLifecycleCleanup(
+      fixture,
+      fake,
+      "cleanup.remote-branch",
+    );
+    const interruptedBytes = readFileSync(fixture.stateFile, "utf8");
+    const interrupted = JSON.parse(interruptedBytes);
+    const truthful = transitionedOptions(fixture, applyOptions, "binding");
+
+    for (const [changes, code] of [
+      [{ actor: "paseo:99999999-8888-4777-8666-555555555555" }, "RESUME_STATE_BINDING_MISMATCH"],
+      [{ ownership: "dir-m1.20-run-9999" }, "RESUME_STATE_BINDING_MISMATCH"],
+      [{ "agent-id": "agent-0002" }, "RESUME_STATE_BINDING_MISMATCH"],
+      [{ "workspace-id": "workspace-0002" }, "RESUME_STATE_BINDING_MISMATCH"],
+      [{ "head-owner": "intruder" }, "RESUME_STATE_BINDING_MISMATCH"],
+      [{ "resume-state-file": truthful["state-file"] }, "RESUME_STATE_NOT_DISTINCT"],
+      [
+        { "resume-state-file": join(fixture.control, "state.json") },
+        "RESUME_STATE_INSIDE_REPOSITORY",
+      ],
+      [
+        { "resume-state-file": join(fixture.root, "missing-state.json") },
+        "RESUME_STATE_MISSING",
+      ],
+    ]) {
+      await assert.rejects(
+        execute("cleanup-plan", { ...truthful, ...changes }, { run: fake.runner }),
+        (error) => error.code === code,
+        JSON.stringify(changes),
+      );
+    }
+
+    // A resumed state describing the same lifecycle is usable directly, and one
+    // describing later progress would move the binding backwards.
+    const sameBinding = join(fixture.root, "same-binding.json");
+    writeFileSync(sameBinding, `${canonicalJson({
+      ...interrupted,
+      binding: { ...interrupted.binding, checkoutState: "reclaimed", lifecycleState: "reclaimed" },
+    })}\n`, { mode: 0o600 });
+    await assert.rejects(
+      execute(
+        "cleanup-plan",
+        { ...truthful, "resume-state-file": sameBinding },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "RESUME_STATE_NOT_A_TRANSITION",
+    );
+    await assert.rejects(
+      execute(
+        "cleanup-apply",
+        {
+          ...applyOptions,
+          "state-file": join(fixture.root, "backwards-state.json"),
+          "resume-state-file": sameBinding,
+        },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "RESUME_STATE_LIFECYCLE_REGRESSION",
+    );
+
+    // A structurally unsound private control file is refused, never repaired.
+    for (const [index, [document, code]] of [
+      [
+        { ...interrupted, schemaVersion: 1 },
+        "RESUME_STATE_SCHEMA_UNSUPPORTED",
+      ],
+      [{ ...interrupted, unexpected: true }, "RESUME_STATE_INVALID"],
+      [
+        {
+          ...interrupted,
+          effects: {
+            ...interrupted.effects,
+            "cleanup.remote-branch": {
+              ...interrupted.effects["cleanup.remote-branch"],
+              phase: "assumed",
+            },
+          },
+        },
+        "RESUME_STATE_INVALID",
+      ],
+      [
+        {
+          ...interrupted,
+          effects: { ...interrupted.effects, "../escape": { class: "store_only", phase: "complete", attempts: 0 } },
+        },
+        "RESUME_STATE_INVALID",
+      ],
+      [{ ...interrupted, pullRequestNumber: 8 }, "RESUME_STATE_PULL_REQUEST_MISMATCH"],
+    ].entries()) {
+      const tampered = join(fixture.root, `tampered-${index}.json`);
+      writeFileSync(tampered, `${canonicalJson(document)}\n`, { mode: 0o600 });
+      await assert.rejects(
+        execute(
+          "cleanup-plan",
+          { ...truthful, "resume-state-file": tampered },
+          { run: fake.runner },
+        ),
+        (error) => error.code === code,
+        code,
+      );
+    }
+
+    // A readable-by-others private control file is never consumed.
+    const exposed = join(fixture.root, "exposed-state.json");
+    writeFileSync(exposed, interruptedBytes, { mode: 0o600 });
+    chmodSync(exposed, 0o644);
+    await assert.rejects(
+      execute(
+        "cleanup-plan",
+        { ...truthful, "resume-state-file": exposed },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "RESUME_STATE_PERMISSIONS_INVALID",
+    );
+
+    // One state continues exactly one interrupted lifecycle binding.
+    await execute("cleanup-plan", truthful, { run: fake.runner });
+    const otherPrior = join(fixture.root, "other-prior.json");
+    writeFileSync(otherPrior, `${canonicalJson({
+      ...interrupted,
+      binding: { ...interrupted.binding, lifecycleState: "restored" },
+    })}\n`, { mode: 0o600 });
+    await assert.rejects(
+      execute(
+        "cleanup-plan",
+        { ...truthful, "resume-state-file": otherPrior },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "RESUME_STATE_REPLACED",
+    );
+
+    // The option exists only where a lifecycle transition can strand cleanup.
+    await assert.rejects(
+      execute(
+        "integrate",
+        { ...truthful, "resume-state-file": fixture.stateFile },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "OPTION_INVALID",
+    );
+
+    assert.equal(readFileSync(fixture.stateFile, "utf8"), interruptedBytes);
   } finally {
     fixture.cleanup();
   }
