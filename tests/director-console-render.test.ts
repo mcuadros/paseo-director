@@ -116,6 +116,7 @@ function worker(agentId: string, taskId: string) {
 
 type ConsoleHarness = {
   Console: React.ComponentType<Record<string, unknown>>;
+  announcements: string[];
   homeRequests: unknown[];
   workerRequests: string[];
 };
@@ -126,8 +127,17 @@ type ConsoleHarness = {
  * covers the adapter itself against both shipped client builds.
  */
 function loadConsole(home: () => Promise<unknown>): ConsoleHarness {
+  const announcements: string[] = [];
   const homeRequests: unknown[] = [];
   const workerRequests: string[] = [];
+  // Recording rather than inert: the shared source-level check in
+  // tests/mobile-accessibility.test.ts is satisfied by the import alone, so the
+  // Console's announcement is pinned here by what it does.
+  const accessibilityInfo = {
+    ...testAccessibilityInfo,
+    announceForAccessibility(message: string) { announcements.push(message); },
+    announceForAccessibilityWithOptions(message: string) { announcements.push(message); },
+  };
   const planning = new DeterministicPlanningFixture();
   const modules = new Map<string, unknown>();
   const reactModule = { ...React, default: React, __esModule: true };
@@ -166,7 +176,7 @@ function loadConsole(home: () => Promise<unknown>): ConsoleHarness {
       case "react/jsx-runtime": return JsxRuntime;
       case "react-native":
         return {
-          AccessibilityInfo: testAccessibilityInfo,
+          AccessibilityInfo: accessibilityInfo,
           ActivityIndicator: "ActivityIndicator",
           FlatList: MockFlatList,
           Modal: MockNativeModal,
@@ -199,7 +209,7 @@ function loadConsole(home: () => Promise<unknown>): ConsoleHarness {
     "ui/director-console.client.tsx",
     requireModule,
   );
-  return { Console: module.DirectorConsole, homeRequests, workerRequests };
+  return { Console: module.DirectorConsole, announcements, homeRequests, workerRequests };
 }
 
 function renderedText(renderer: TestRenderer.ReactTestRenderer): string {
@@ -273,6 +283,9 @@ test("the Console mounts every tab from one Home snapshot query under one cache 
   assert.deepEqual(homeCacheKeys(queryClient), [["director", "home", "host-a"]]);
   assert.match(renderedText(renderer), /Overview Board Workers/);
   assert.match(renderedText(renderer), /Project health/);
+  // Which tab is shown is the Console's only state, so a screen reader is told
+  // when it changes. Asserted on the announcement, not on an import.
+  assert.equal(harness.announcements.includes("Director Overview tab"), true);
 
   // The Console is a new forwarding seam: a host that supplies navigation must
   // reach it through every tab, not only be absent from it. The Overview body's
@@ -290,6 +303,7 @@ test("the Console mounts every tab from one Home snapshot query under one cache 
   await act(async () => { await waitForText(renderer, /Needs you/); });
   assert.doesNotMatch(renderedText(renderer), /Project health/);
   assert.deepEqual(homeCacheKeys(queryClient), [["director", "home", "host-a"]]);
+  assert.equal(harness.announcements.includes("Director Board tab"), true);
 
   await act(async () => { tabControl(renderer, "Workers").props.onPress(); });
   await act(async () => { await waitForText(renderer, /Rendered Project · Checkout/); });
