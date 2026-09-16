@@ -497,7 +497,10 @@ export async function claimDisplay({ minimum, maximum }, io = defaultDisplayIo, 
     const socket = `/tmp/.X11-unix/X${number}`;
     const lock = `/tmp/.X${number}-lock`;
     const child = io.spawnServer(number);
-    const record = { number, display: `:${number}`, process: child, socket, lock, serverPid: child.pid };
+    const record = {
+      number, display: `:${number}`, process: child, socket, lock,
+      serverPid: child.pid, serverStartTime: processStartTime(child.pid),
+    };
     teardown.adoptDisplay(record);
     let failed = false;
     child.on("exit", () => { failed = true; });
@@ -690,11 +693,15 @@ export async function driveDirectorSurface({ page, daemonHost, daemonPort, passw
   await page.waitForTimeout(5000);
   await screenshot("13-connected");
 
-  let directorTestId = null;
-  for (let attempt = 0; attempt < 40 && directorTestId === null; attempt += 1) {
-    directorTestId = (await testIds()).find((value) => /director/iu.test(value ?? "")) ?? null;
-    if (directorTestId === null) await page.waitForTimeout(2000);
-  }
+  const findDirectorEntry = async (attempts = 40) => {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const found = (await testIds()).find((value) => /director/iu.test(value ?? "")) ?? null;
+      if (found !== null) return found;
+      await page.waitForTimeout(2000);
+    }
+    return null;
+  };
+  const directorTestId = await findDirectorEntry();
   if (directorTestId === null) throw new Error("the Director sidebar entry never registered");
   note(`director sidebar entry: ${directorTestId}`);
 
@@ -718,12 +725,17 @@ export async function driveDirectorSurface({ page, daemonHost, daemonPort, passw
   await page.reload({ waitUntil: "load" });
   await page.waitForSelector('[data-testid="sidebar-hosts-trigger"]', { timeout: 120_000 });
   await page.waitForTimeout(4000);
-  const reopened = (await testIds()).find((value) => /director/iu.test(value ?? "")) ?? null;
-  if (reopened !== null) {
-    await page.click(`[data-testid="${reopened}"]`);
-    await page.waitForTimeout(12_000);
-    await screenshot("17-reduced-motion-icon");
+  // The same retry-and-refuse as the first open. Looking once and skipping
+  // silently produced an outcome byte-identical to a successful probe, with
+  // reducedMotionActive true and screenshot 17 simply never taken — a false OK
+  // about the exact thing under test.
+  const reopened = await findDirectorEntry();
+  if (reopened === null) {
+    throw new Error("the Director surface never reappeared after the reduced-motion reload, so the Icon probe did not run");
   }
+  await page.click(`[data-testid="${reopened}"]`);
+  await page.waitForTimeout(12_000);
+  await screenshot("17-reduced-motion-icon");
   // Asserted, not assumed: without this the probe silently degrades into a
   // second ordinary capture and the result would overstate what ran.
   const reducedMotionActive = await page.evaluate(() =>
@@ -859,6 +871,50 @@ export function readChildEnvironment(pid, read = (path) => readFileSync(path, "u
   } catch {
     return ENVIRONMENT_UNREADABLE;
   }
+}
+
+/** The run's whole isolation check, as one unit a test can execute.
+ *
+ *  The arguments of this step were where two of the last three defects lived:
+ *  emptying the target set, or swapping the reader, deleted the check while
+ *  every unit test stayed green. A source-text ban on the swallowing form did
+ *  not help, because a form can be rewritten — so the reader is a default HERE
+ *  rather than an argument at the call site, the target set is built here, and
+ *  the invariant that the two children are different processes is asserted here.
+ *  A caller has nothing left to get wrong that this unit cannot see.
+ *
+ *  It also uses the identity layer the rest of the tool already owns: an
+ *  environment read means nothing unless its subject is still the process this
+ *  run spawned, so both pins are re-proved before the environments are read. */
+export async function verifyRunIsolation({
+  userDataDir,
+  paseoHome,
+  root,
+  display,
+  listDirectory,
+  wait,
+  readEnviron = readChildEnvironment,
+  readTable = readProcessTable,
+  attempts,
+}) {
+  await verifyIsolation(
+    isolationTargets({ userDataDir, paseoHome }),
+    { listDirectory, wait, ...(attempts === undefined ? {} : { attempts }) },
+  );
+  const processTable = readTable();
+  if (!rootIsConfirmed(root, processTable)) {
+    throw new Error("the application is no longer the process this run spawned, so its environment cannot be attributed to it");
+  }
+  if (processTable.startTimeByPid.get(display?.serverPid) !== display?.serverStartTime) {
+    throw new Error("the display server is no longer the process this run spawned, so its environment cannot be attributed to it");
+  }
+  if (root.pid === display.serverPid) {
+    throw new Error("the application and the display server cannot be the same process");
+  }
+  return verifyChildEnvironments(
+    childEnvironmentTargets({ applicationPid: root.pid, displayServerPid: display.serverPid }),
+    readEnviron,
+  );
 }
 
 export async function verifyIsolation(targets, { listDirectory, wait, attempts = 60 }) {
@@ -1116,14 +1172,14 @@ export async function main(argv = process.argv.slice(2), environment = process.e
 
     // Verified, not assumed: both overrides fail silently on a build that
     // ignores them, and an unisolated run must not pass as an isolated one.
-    await verifyIsolation(isolationTargets({ userDataDir, paseoHome }), {
+    await verifyRunIsolation({
+      userDataDir,
+      paseoHome,
+      root: launched.root,
+      display,
       listDirectory: (directory) => readdirSync(directory),
       wait: (ms) => sleep(ms),
     });
-    verifyChildEnvironments(
-      childEnvironmentTargets({ applicationPid: launched.root.pid, displayServerPid: display.serverPid }),
-      (pid) => readChildEnvironment(pid),
-    );
 
     const { chromium } = await loadPlaywright(environment);
     browser = await chromium.connectOverCDP(loopbackDebuggingEndpoint(cdpPort));

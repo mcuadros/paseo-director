@@ -66,6 +66,7 @@ import {
   survivingTargets,
   terminateTargets,
   verifyIsolation,
+  verifyRunIsolation,
   validateLabel,
 } from "./capture.mjs";
 
@@ -899,9 +900,7 @@ test("WIRING: the composition root still calls every unit that enforces a safety
     ["register interruption handlers", "installSignalHandlers({"],
     ["register the exit fallback", "installExitFallback({"],
     ["give the exit fallback a synchronous teardown", "teardown.runSync({ removeRunRoot })"],
-    ["verify no child carries an environment it was not given", "verifyChildEnvironments("],
-    ["range that check over both children", "childEnvironmentTargets({ applicationPid:"],
-    ["read child environments through the refusing reader", "(pid) => readChildEnvironment(pid)"],
+    ["hand it the spawned root and the adopted display", "      root: launched.root,"],
     ["derive its private layout through the tested helper", "runDirectoryLayout(outputDirectory, options.label)"],
     ["create private directories owner-only", "mode: PRIVATE_DIRECTORY_MODE"],
     ["claim a display through the ownership-proving path", "await claimDisplay("],
@@ -911,7 +910,7 @@ test("WIRING: the composition root still calls every unit that enforces a safety
     ["bind the bundled daemon to loopback", "loopbackListen(await freePort())"],
     ["use a loopback debugging endpoint", "loopbackDebuggingEndpoint(cdpPort)"],
     ["record descendants while the root is alive", "teardown.trackDescendants()"],
-    ["verify both private directories", "await verifyIsolation(isolationTargets({"],
+    ["verify isolation through the one executable step", "await verifyRunIsolation({"],
     ["build artifacts through the tested builder", "buildRunArtifacts({"],
     ["write exactly those artifacts", "for (const file of artifacts.files) writeFileSync("],
     ["run teardown on every exit path", "await cleanup();"],
@@ -958,13 +957,16 @@ test("ENFORCEMENT: the launch options actually carry the minimal environment", (
   assert.deepEqual(options.stdio, ["ignore", "ignore", "ignore"]);
 });
 
-test("WIRING: no read is swallowed into a value that means \"fine\"", () => {
+test("TRIPWIRE: no read is swallowed into a value that means \"fine\"", () => {
+  // A guard that reads source text is a tripwire, not a guarantee: a form can
+  // always be rewritten, and one was. The guarantee is
+  // "ENFORCEMENT: the isolation step owns its own arguments" below, which
+  // executes the step. This stays as a cheap early warning, nothing more.
   // The defect this bans: `catch { return ""; }` around a /proc read made an
   // unreadable environment indistinguishable from a clean one, and the check
   // reported success having read nothing. The pattern is banned at source, not
   // only the one instance, because the instance moved once already.
   assert.equal(/catch\s*\{\s*return\s*""/u.test(captureSource), false, "a caught read must not become an empty string");
-  assert.equal(captureSource.includes("readChildEnvironment(pid)"), true);
 });
 
 test("WIRING: no child is ever spawned with the ambient environment", () => {
@@ -1407,4 +1409,215 @@ test("ENFORCEMENT: the X lock pid accepts decimal only, not every numeric litera
     assert.equal(parseDisplayLockPid(literal), null, `${literal} must not parse as a pid`);
   }
   assert.equal(parseDisplayLockPid("   2470092\n"), 2_470_092);
+});
+
+// --- the isolation step, executed rather than read --------------------------
+
+const isolationIo = ({ environs, table }) => ({
+  listDirectory: () => ["x"],
+  wait: async () => {},
+  attempts: 1,
+  readEnviron: (pid) => environs[pid] ?? ENVIRONMENT_UNREADABLE,
+  readTable: () => table,
+});
+
+const pinnedPair = () => ({
+  root: { pid: 100, startTime: 5000, exited: false },
+  display: { serverPid: 200, serverStartTime: 6000 },
+  table: processTable([[100, 1, 5000], [200, 1, 6000]]),
+});
+
+test("ENFORCEMENT: the isolation step owns its own arguments", async () => {
+  // M1 and the range mutant both lived in this call's arguments. The reader is
+  // a default inside the step and the target set is built inside it, so there
+  // is nothing at the call site left to swap or empty.
+  const { root, display, table } = pinnedPair();
+  const environs = { 100: "PATH=/usr/bin\0PASEO_HOME=/x\0", 200: "PATH=/usr/bin\0" };
+  assert.equal(
+    await verifyRunIsolation({ userDataDir: "/p", paseoHome: "/h", root, display, ...isolationIo({ environs, table }) }),
+    2,
+  );
+});
+
+test("ENFORCEMENT: the step refuses when a child's environment cannot be read", async () => {
+  const { root, display, table } = pinnedPair();
+  await assert.rejects(
+    () => verifyRunIsolation({
+      userDataDir: "/p", paseoHome: "/h", root, display,
+      ...isolationIo({ environs: { 100: "PATH=/usr/bin\0" }, table }),
+    }),
+    /could not be read, so isolation is unverified/u,
+    "the display server was never read, so the step must not report success",
+  );
+});
+
+test("ENFORCEMENT: the step refuses a leaking child it really read", async () => {
+  const { root, display, table } = pinnedPair();
+  const environs = { 100: "PATH=/usr/bin\0", 200: "PATH=/usr/bin\0PASEO_PASSWORD=super-secret\0" };
+  await assert.rejects(
+    () => verifyRunIsolation({ userDataDir: "/p", paseoHome: "/h", root, display, ...isolationIo({ environs, table }) }),
+    /PASEO_PASSWORD/u,
+  );
+});
+
+test("ENFORCEMENT: the step refuses when both children are the same process", async () => {
+  // Passing display.serverPid for both previously deleted the application's
+  // credential check entirely.
+  const table = processTable([[200, 1, 6000]]);
+  await assert.rejects(
+    () => verifyRunIsolation({
+      userDataDir: "/p", paseoHome: "/h",
+      root: { pid: 200, startTime: 6000, exited: false },
+      display: { serverPid: 200, serverStartTime: 6000 },
+      ...isolationIo({ environs: { 200: "PATH=/usr/bin\0" }, table }),
+    }),
+    /cannot be the same process/u,
+  );
+});
+
+test("ENFORCEMENT: an environment is only attributed to a confirmed process", async () => {
+  // The identity layer this tool already owns, applied to the read: a pid whose
+  // start time no longer matches is not the process this run spawned, so its
+  // environment says nothing about this run.
+  const { root, display } = pinnedPair();
+  const environs = { 100: "PATH=/usr/bin\0", 200: "PATH=/usr/bin\0" };
+  await assert.rejects(
+    () => verifyRunIsolation({
+      userDataDir: "/p", paseoHome: "/h", root, display,
+      ...isolationIo({ environs, table: processTable([[100, 1, 9999], [200, 1, 6000]]) }),
+    }),
+    /application is no longer the process this run spawned/u,
+  );
+  await assert.rejects(
+    () => verifyRunIsolation({
+      userDataDir: "/p", paseoHome: "/h", root, display,
+      ...isolationIo({ environs, table: processTable([[100, 1, 5000], [200, 1, 9999]]) }),
+    }),
+    /display server is no longer the process this run spawned/u,
+  );
+});
+
+test("ENFORCEMENT: the step still refuses on an unpopulated private directory", async () => {
+  const { root, display, table } = pinnedPair();
+  await assert.rejects(
+    () => verifyRunIsolation({
+      userDataDir: "/p", paseoHome: "/h", root, display,
+      ...isolationIo({ environs: {}, table }), listDirectory: () => [],
+    }),
+    /wrote nothing to its private/u,
+  );
+});
+
+// --- the reduced-motion re-open must not skip silently ----------------------
+
+test("ENFORCEMENT: a Director surface that never reappears refuses the probe", async () => {
+  // Looking once and skipping produced an outcome byte-identical to a real
+  // probe: reducedMotionActive true, screenshot 17 simply never taken.
+  let opens = 0;
+  const page = stubPage();
+  const original = page.evaluate.bind(page);
+  page.evaluate = async (fn) => {
+    const source = String(fn);
+    if (source.includes("data-testid")) {
+      opens += 1;
+      // Present for the first open's single look, gone for every look after the
+      // reload — so the re-open must retry and then refuse, not skip.
+      return opens === 1 ? ["plugin-sidebar-director-home"] : [];
+    }
+    return original(fn);
+  };
+  await assert.rejects(() => driveWith(page), /never reappeared after the reduced-motion reload/u);
+});
+
+test("ENFORCEMENT: the step's DEFAULT reader refuses a subject it cannot read", async () => {
+  // Injecting a reader in every test left the default unexercised, so a
+  // swallowing default survived. This calls the step without one, against a
+  // real process, and lets it use its own reader and its own process table.
+  const start = async (env) => {
+    const spawned = spawn(process.execPath, ["-e", "setTimeout(()=>{},2000)"], { env, stdio: "ignore" });
+    await new Promise((resolve, reject) => { spawned.once("spawn", resolve); spawned.once("error", reject); });
+    return spawned;
+  };
+  // Two real children with the environments this tool would have given them.
+  const child = await start({ PATH: process.env.PATH ?? "/usr/bin", PASEO_HOME: "/tmp/run/home" });
+  const server = await start(displayServerEnvironment(process.env));
+  const pin = { pid: child.pid, startTime: processStartTime(child.pid), exited: false };
+  const self = { serverPid: server.pid, serverStartTime: processStartTime(server.pid) };
+  try {
+    // Both alive and really readable: the step completes.
+    assert.equal(
+      await verifyRunIsolation({
+        userDataDir: "/p", paseoHome: "/h", root: pin, display: self,
+        listDirectory: () => ["x"], wait: async () => {}, attempts: 1,
+      }),
+      2,
+    );
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    child.kill("SIGKILL");
+    await exited;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // The subject is gone, but the identity guard is told it is still there —
+    // the zombie shape, where /proc/<pid>/stat still reads and
+    // /proc/<pid>/environ raises. Only this reaches the DEFAULT reader, and it
+    // must refuse rather than report clean. A reader that swallowed the failed
+    // read into "" would make this pass.
+    const stillListed = {
+      parentByPid: new Map([[pin.pid, 1], [self.serverPid, 1]]),
+      startTimeByPid: new Map([[pin.pid, pin.startTime], [self.serverPid, self.serverStartTime]]),
+    };
+    await assert.rejects(
+      () => verifyRunIsolation({
+        userDataDir: "/p", paseoHome: "/h", root: pin, display: self,
+        listDirectory: () => ["x"], wait: async () => {}, attempts: 1,
+        readTable: () => stillListed,
+      }),
+      /could not be read, so isolation is unverified/u,
+    );
+  } finally {
+    for (const spawned of [child, server]) {
+      if (spawned.exitCode === null && spawned.signalCode === null) spawned.kill("SIGKILL");
+    }
+  }
+});
+
+test("ENFORCEMENT: the application is judged on its own environment, not the display server's", async () => {
+  // The range mutant passed the display server's pid for both children, which
+  // deleted the application's credential check. Only a case where the
+  // APPLICATION leaks and the display server is clean can see that.
+  const { root, display, table } = pinnedPair();
+  const environs = { 100: "PATH=/usr/bin\0PASEO_PASSWORD=super-secret\0", 200: "PATH=/usr/bin\0" };
+  await assert.rejects(
+    () => verifyRunIsolation({ userDataDir: "/p", paseoHome: "/h", root, display, ...isolationIo({ environs, table }) }),
+    /the application \(pid 100\) carried PASEO_PASSWORD/u,
+  );
+});
+
+test("ENFORCEMENT: claimDisplay pins the server's start time at spawn", async () => {
+  // Without a pin there is nothing to re-prove the display server's identity
+  // against, and the isolation check's second guard becomes vacuous.
+  const owner = recordingTeardown();
+  const io = { ...displayIo({ serverPid: process.pid, lockPid: process.pid }) };
+  const claimed = await claimDisplay({ minimum: 120, maximum: 121 }, io, 50, owner);
+  assert.equal(claimed.serverPid, process.pid);
+  assert.equal(Number.isInteger(claimed.serverStartTime), true, "the pin must be read at spawn");
+  assert.equal(claimed.serverStartTime, processStartTime(process.pid));
+});
+
+test("ENFORCEMENT: the first open retries rather than looking once", async () => {
+  // Reducing the first open to a single look must fail: the Director entry
+  // routinely appears several seconds after the surface is reachable.
+  let looks = 0;
+  const page = stubPage();
+  const original = page.evaluate.bind(page);
+  page.evaluate = async (fn) => {
+    if (String(fn).includes("data-testid")) {
+      looks += 1;
+      return looks >= 3 ? ["plugin-sidebar-director-home"] : [];
+    }
+    return original(fn);
+  };
+  const outcome = await driveWith(page);
+  assert.equal(outcome.directorTestId, "plugin-sidebar-director-home");
+  assert.equal(looks >= 3, true, "the entry must be found by retrying, not on the first look");
 });

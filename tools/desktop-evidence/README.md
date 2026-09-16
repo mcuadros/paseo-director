@@ -106,7 +106,11 @@ task rather than a build status.
   did not set, because a check that passes on a leaking child is worth less than
   no check, and a check that cannot read its subject is worth less still: if a
   child's environment cannot be read — a process that has exited has none — the
-  run is refused rather than reported clean. The two children are judged
+  run is refused rather than reported clean. The subject's identity is re-proved
+  first, with the same pin-at-spawn the rest of the tool uses, because an
+  environment read says nothing unless it belongs to the process this run
+  spawned. The whole step is one unit that owns its own target set and its own
+  reader, so a caller has nothing left to empty or swap. The two children are judged
   differently on purpose: the display server exhaustively, against the allowlist
   its environment is built from, and the application only over `PASEO_*` and
   `DIRECTOR_*`, because it must inherit `PATH`, `HOME` and the rest. A secret in
@@ -286,8 +290,11 @@ directly, without a snapshot, so it is the one path that exercises the primitive
 on a host where the engine projection cannot resolve — for example when another
 Director engine already holds the fixed runtime ports and must not be disturbed.
 
-The run fails if reduced motion did not actually take effect, so the probe cannot
-silently degrade into a second ordinary capture. `reducedMotionActive` and
+The run fails if reduced motion did not actually take effect, and it fails if the
+Director surface does not reappear after the reload — the re-open retries and
+refuses exactly as the first open does. Looking once and skipping produced a
+result byte-identical to a successful probe, with the screenshot simply never
+taken, so the probe cannot silently degrade into a second ordinary capture. `reducedMotionActive` and
 `fallbackWarnings` in the result record whether the primitive was reached and how
 often a build reported rendering a defined fallback instead.
 
