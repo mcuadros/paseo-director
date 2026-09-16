@@ -258,8 +258,12 @@ test("the Console mounts every tab from one Home snapshot query under one cache 
     { id: "workspace-checkout", name: "Checkout", paseoWorkspaceId: "native-b" },
   ]));
   const opened: string[] = [];
+  const openedAgents: string[] = [];
   const { renderer, queryClient } = await mountConsole(harness, {
-    navigation: { openWorkspace: ({ workspaceId }: { workspaceId: string }) => opened.push(workspaceId), openAgent() {} },
+    navigation: {
+      openAgent: ({ agentId }: { agentId: string }) => openedAgents.push(agentId),
+      openWorkspace: ({ workspaceId }: { workspaceId: string }) => opened.push(workspaceId),
+    },
   });
 
   await act(async () => { await waitForText(renderer, /Rendered Project/); });
@@ -269,6 +273,18 @@ test("the Console mounts every tab from one Home snapshot query under one cache 
   assert.deepEqual(homeCacheKeys(queryClient), [["director", "home", "host-a"]]);
   assert.match(renderedText(renderer), /Overview Board Workers/);
   assert.match(renderedText(renderer), /Project health/);
+
+  // The Console is a new forwarding seam: a host that supplies navigation must
+  // reach it through every tab, not only be absent from it. The Overview body's
+  // own Board action is the reachable half here; the Workers half is asserted
+  // on its own tab below. Disambiguated by role, because the tab strip carries
+  // a control with the same accessible name.
+  const overviewBoardAction = renderer.root.findAll(
+    (node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "Board",
+  )[0]!;
+  assert.equal(overviewBoardAction.props.accessibilityState.disabled, false);
+  await act(async () => { overviewBoardAction.props.onPress(); });
+  assert.deepEqual(opened, ["native-a"]);
 
   await act(async () => { tabControl(renderer, "Board").props.onPress(); });
   await act(async () => { await waitForText(renderer, /Needs you/); });
@@ -287,7 +303,12 @@ test("the Console mounts every tab from one Home snapshot query under one cache 
   const openAgent = renderer.root.findAll(
     (node) => node.props.accessibilityLabel === "Open agent for dir-m6.35",
   )[0]!;
+  assert.equal(openAgent.props.accessibilityState.disabled, false);
   await act(async () => { openAgent.props.onPress(); });
+  // The first Workers view is the first fan-out target, so the agent this
+  // reaches also pins which Workspace that view was bound to.
+  assert.deepEqual(openedAgents, ["agent-native-a"]);
+  assert.deepEqual(opened, ["native-a"]);
 
   await act(async () => { tabControl(renderer, "Overview").props.onPress(); });
   await act(async () => { await waitForText(renderer, /Project health/); });

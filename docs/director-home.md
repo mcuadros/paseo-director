@@ -1,9 +1,10 @@
 # Director Home and Project health
 
-Director Home is a global React Native surface over the engine-owned
-`director-planning/v1` contract. Paseo owns the route, header, close action,
-host picker, error boundary, and query client. Director owns only the surface
-body and uses Paseo's v0.7 `Modal`, `Icon`, and toast components for matching
+Director Home is the body of the Director Console's `Overview` tab. The Console
+is the global React Native surface over the engine-owned `director-planning/v1`
+contract (PLAN section 16.6). Paseo owns the route, header, close action, host
+picker, error boundary, and query client. Director owns only the surface body
+and uses Paseo's v0.7 `Modal`, `Icon`, and toast components for matching
 desktop/mobile chrome. Trusted Director server code generates and persists one
 opaque host identity. The client obtains it only from the authenticated
 Director status RPC; a Paseo surface prop or supplied `hostId` has no authority.
