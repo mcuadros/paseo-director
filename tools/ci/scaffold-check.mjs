@@ -62,7 +62,7 @@ const REQUIRED_SCRIPTS = [
 ];
 const RETIRED_SCRIPTS = ["test:activation:real"];
 const REQUIRED_UI_REGISTRATIONS = [
-  'addSurface("home", DirectorHome)',
+  'addSurface("home", DirectorConsole)',
   'id: "project-board"',
   'id: "task-inspector"',
   'id: "open-project-board"',

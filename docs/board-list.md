@@ -32,7 +32,8 @@ returns an unavailable result instead of binding stale rows to a newer cursor.
 The legacy M1 snapshot has schema version `1`, a decimal-string monotonic Event
 cursor, at most 1,000 Task rows, and a 2 MiB serialized-response ceiling. It
 remains available to the Home shell. The integrated planning query described
-below is the Board/List path used by the Project panel.
+below is the Board/List path used by the Director Console's `Board` tab and by
+the Project Board workspace panel.
 
 ## Walking-skeleton state
 
@@ -93,7 +94,10 @@ checks, and retained candidate-bound evidence contract are documented in
 
 ## UI behavior
 
-The panel defaults to a flat Board in a wide layout and an Epic-grouped List in
+The Board/List surface is hosted in two places with identical behavior: the
+Director Console's `Board` tab, which is the layout Director guarantees, and
+the Project Board workspace panel, which adds Workspace-local context. It
+defaults to a flat Board in a wide layout and an Epic-grouped List in
 a compact layout. Users can switch between flat and Epic grouping without
 changing engine state or order. Wide Board shows all ordinary lanes and adds
 `Needs you` only when the current engine page contains such work. Compact

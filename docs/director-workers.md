@@ -4,7 +4,9 @@ Director launches every Task Agent and Reviewer as a top-level Paseo agent in
 its own isolated Execution Workspace. That isolation is deliberate — one
 Task's checkout must never be reachable from another's — but on its own it
 leaves the owner without a single place to see what is running. The Director
-Workers surface closes that gap without weakening the isolation it observes.
+Workers surface closes that gap without weakening the isolation it observes. It
+is hosted in the Director Console's `Workers` tab, once per root Workspace the
+engine projects, and in the Director Workers workspace panel for one Workspace.
 
 ## Launch registration is a precondition, not a side effect
 

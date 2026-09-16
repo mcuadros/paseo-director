@@ -310,7 +310,8 @@ repository paths/remotes, objectives, acceptance-criteria text, or raw adapter
 output. The authenticated Organizer Preview returns only the exact path and
 file/operation metadata selected by that human for Preview/Apply.
 
-The Project Board panel loads the snapshot with TanStack Query, performs no
+The Board/List surface — the Director Console's `Board` tab and the Project
+Board workspace panel — loads the snapshot with TanStack Query, performs no
 automatic request retry, and refreshes the read-only query every two seconds.
 It renders loading, error, empty, cached-update, and data states. Wide mode
 defaults to Board and shows every applicable lane; compact mode defaults to

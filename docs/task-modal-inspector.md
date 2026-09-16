@@ -59,14 +59,17 @@ host-bound read.
 ## Inspector, Command Center, and composer
 
 `Task Inspector` is an agent-context workspace panel available in both the
-workspace tab strip and Explorer. It resolves from its native `workspaceId` and
+workspace tab strip and Explorer, and it is the one Director view with no
+Director Console tab: it is bound to one agent, and a global surface has no
+agent context. It resolves from its native `workspaceId` and
 `agentId`; it never feeds either value into Director Workspace filters. An
 unbound agent receives an explicit empty Inspector rather than the first Task
 from a query page.
 
 The agent-context Command Center contributes `Return to Director Board`, which
 opens the plugin's existing Project Board panel through Paseo's contextual
-`openPanel`. Director Task Agents also receive a native composer pill through
+`openPanel`; the global `Open Director` item opens the Console, whose `Board`
+tab renders the same surface without a Workspace context. Director Task Agents also receive a native composer pill through
 `addClientSide`/`addComposerPill`. The pill is admitted only when the current
 Paseo agent and fixed Director Worker labels agree on the execution workspace,
 Task, Run, top-level role, and native identity. Paseo owns its pressable chrome,

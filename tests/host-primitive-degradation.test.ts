@@ -172,6 +172,7 @@ test("every Director surface registers and renders on a client build that omits 
     assert.deepEqual(
       result.commands,
       [
+        "open-director",
         "open-director-workers",
         "create-director-administration-session",
         "return-to-director-board",
