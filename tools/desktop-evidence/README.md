@@ -92,18 +92,50 @@ task rather than a build status.
   **not** run when a signal terminates the process by its default disposition,
   so it is not a substitute for classifying signals. It covers the paths that do
   reach process exit: a thrown error, an explicit exit, and a run where a
-  process outlived the escalation budget and recreated the private directory.
+  process outlived the escalation budget and recreated the private directory
+  **while this process was still alive**. Removal is bounded by that lifetime:
+  an application still exiting after teardown has finished can recreate an empty
+  `paseo-home/schedules` skeleton, which teardown cannot then remove because it
+  no longer exists. Measured, that skeleton contains no files and no process,
+  display, socket or lock survives with it. It is the one stated exception to
+  the removal guarantee.
 - **It does not leak the credential into its own children.** The application's
   environment is filtered, and the X server is given an explicit minimal
   allowlist rather than the ambient environment. The isolation check reads each
   spawned child's `/proc/<pid>/environ` and fails the run on anything this tool
   did not set, because a check that passes on a leaking child is worth less than
-  no check. The two children are judged differently on purpose: the display
-  server exhaustively, against the allowlist its environment is built from, and
-  the application only over `PASEO_*` and `DIRECTOR_*`, because it must inherit
-  `PATH`, `HOME` and the rest. A secret in some third namespace would pass the
-  application's check — that is the limit of a filter over an open domain, and
-  it is the one hand-written list in this tool whose domain cannot be derived.
+  no check, and a check that cannot read its subject is worth less still: if a
+  child's environment cannot be read — a process that has exited has none — the
+  run is refused rather than reported clean. The two children are judged
+  differently on purpose: the display server exhaustively, against the allowlist
+  its environment is built from, and the application only over `PASEO_*` and
+  `DIRECTOR_*`, because it must inherit `PATH`, `HOME` and the rest. A secret in
+  some third namespace would pass the application's check — that is the limit of
+  a filter over an open domain, and it is the one hand-written list in this tool
+  whose domain cannot be derived.
+
+### Where a failed read could mean "fine", and what happens instead
+
+An unreadable input that becomes a value indistinguishable from a good result is
+how this tool's last defect worked, so every such site is classified rather than
+left to chance:
+
+- **Refuses.** An unreadable child environment, an unreadable process start time,
+  a lock file that is absent or not plain decimal digits, a display whose lock
+  names another server, a Playwright module that will not load, an application
+  that never opens its debugging endpoint, and a private directory the
+  application never wrote to. Each of these aborts the run.
+- **Degrades, with the reason stated at the site.** A signal sent to a process
+  that died between confirming and signalling; a debugging endpoint not yet
+  listening, which is retried and then refuses; an unreadable `/tmp/.X11-unix`,
+  which makes a display look free and is then caught by the X server's own
+  `O_EXCL` lock and the ownership proof that follows it.
+- **Silently omits, and is stated here because nothing else states it.** A
+  process whose `/proc/<pid>/stat` cannot be read is left out of the process
+  table, so it is not confirmed and therefore not signalled. For this tool's own
+  children, running as the same user, that read does not fail in practice —
+  including for a zombie — but the direction of the failure is to leave a
+  process alone rather than to kill the wrong one.
 - **It only stops the processes it started.** The spawned process's identity is
   pinned immediately after spawn by reading its start time from `/proc`, and
   teardown signals nothing at all unless that pin still matches a live process.
@@ -135,8 +167,8 @@ task rather than a build status.
   allocator itself — not via an overridable parameter — because `:8` is a
   physical console on the machine this was written for, never a test fixture.
   The default search range starts at `:120`.
-- **It owns its Electron profile and its daemon home, removes them, and checks
-  both were honoured.** The application gets a private user-data directory and a
+- **It owns its Electron profile and its daemon home, and removes them before it
+  exits.** The application gets a private user-data directory and a
   private `PASEO_HOME`. Because those overrides fail *silently* if a build
   ignores them — and an ignored `PASEO_HOME` would point the bundled daemon at
   the operator's own — the run aborts unless the application actually wrote into

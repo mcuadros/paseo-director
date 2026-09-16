@@ -33,7 +33,9 @@ import {
   SIGNAL_POLICY,
   TERMINATING_SIGNALS,
   UNHANDLED_TERMINATING_SIGNALS,
+  ENVIRONMENT_UNREADABLE,
   childEnvironmentTargets,
+  readChildEnvironment,
   platformSignals,
   unclassifiedSignals,
   displayServerEnvironment,
@@ -899,6 +901,7 @@ test("WIRING: the composition root still calls every unit that enforces a safety
     ["give the exit fallback a synchronous teardown", "teardown.runSync({ removeRunRoot })"],
     ["verify no child carries an environment it was not given", "verifyChildEnvironments("],
     ["range that check over both children", "childEnvironmentTargets({ applicationPid:"],
+    ["read child environments through the refusing reader", "(pid) => readChildEnvironment(pid)"],
     ["derive its private layout through the tested helper", "runDirectoryLayout(outputDirectory, options.label)"],
     ["create private directories owner-only", "mode: PRIVATE_DIRECTORY_MODE"],
     ["claim a display through the ownership-proving path", "await claimDisplay("],
@@ -953,6 +956,15 @@ test("ENFORCEMENT: the launch options actually carry the minimal environment", (
   assert.deepEqual(Object.keys(options.env), ["PATH"]);
   assert.equal(JSON.stringify(options).includes("super-secret"), false);
   assert.deepEqual(options.stdio, ["ignore", "ignore", "ignore"]);
+});
+
+test("WIRING: no read is swallowed into a value that means \"fine\"", () => {
+  // The defect this bans: `catch { return ""; }` around a /proc read made an
+  // unreadable environment indistinguishable from a clean one, and the check
+  // reported success having read nothing. The pattern is banned at source, not
+  // only the one instance, because the instance moved once already.
+  assert.equal(/catch\s*\{\s*return\s*""/u.test(captureSource), false, "a caught read must not become an empty string");
+  assert.equal(captureSource.includes("readChildEnvironment(pid)"), true);
 });
 
 test("WIRING: no child is ever spawned with the ambient environment", () => {
@@ -1203,6 +1215,7 @@ test("ENFORCEMENT: the isolation check can see a child that inherited the creden
   const leaking = "PATH=/usr/bin\0PASEO_PASSWORD=super-secret\0DIRECTOR_PASEO_URL=ws://h/ws\0";
   const clean = "PATH=/usr/bin\0HOME=/home/x\0";
   assert.deepEqual(unexpectedEnvironmentNames(leaking), ["DIRECTOR_PASEO_URL", "PASEO_PASSWORD"]);
+  assert.throws(() => unexpectedEnvironmentNames(ENVIRONMENT_UNREADABLE), /could not be read/u);
   assert.deepEqual(unexpectedEnvironmentNames(clean), []);
   assert.equal(verifyChildEnvironments([{ pid: 1, label: "the display server" }], () => clean), 1);
   assert.throws(
@@ -1339,4 +1352,59 @@ test("ENFORCEMENT: a target with no readable start time is refused, not admitted
   assert.deepEqual(pidsOf(targets), [100], "a descendant with no readable identity must not be signalled");
   for (const target of targets) assert.equal(Number.isInteger(target.startTime), true);
   assert.deepEqual(survivingTargets([{ pid: 200, startTime: undefined }], table), []);
+});
+
+// --- an unreadable input must not become a value meaning "fine" -------------
+
+test("ENFORCEMENT: a child whose environment cannot be read refuses the run", async () => {
+  // Measured before the fix: a real process really carrying PASEO_PASSWORD, put
+  // through the tool's own reader after it exited, produced "2 children
+  // checked, clean". A zombie raises EACCES and a reaped process ENOENT; both
+  // were swallowed into "", which the check could not tell from a clean child.
+  // A controlled environment, so the assertion does not depend on whatever the
+  // test runner happened to inherit.
+  const child = spawn(process.execPath, ["-e", "setTimeout(()=>{},300)"], {
+    env: { PATH: process.env.PATH ?? "/usr/bin", PASEO_PASSWORD: "super-secret" }, stdio: "ignore",
+  });
+  await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+  const alive = readChildEnvironment(child.pid);
+  assert.equal(typeof alive, "string");
+  assert.equal(alive.includes("PASEO_PASSWORD"), true, "the reader must actually see the environment");
+  assert.throws(
+    () => verifyChildEnvironments(childEnvironmentTargets({ applicationPid: child.pid, displayServerPid: child.pid }), readChildEnvironment),
+    /PASEO_PASSWORD/u,
+  );
+
+  await new Promise((resolve) => child.once("exit", resolve));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(readChildEnvironment(child.pid), ENVIRONMENT_UNREADABLE, "a gone process has no readable environment");
+  assert.throws(
+    () => verifyChildEnvironments(childEnvironmentTargets({ applicationPid: child.pid, displayServerPid: child.pid }), readChildEnvironment),
+    /could not be read, so isolation is unverified/u,
+    "a check that read nothing must not report success",
+  );
+});
+
+test("ENFORCEMENT: a reader that returns nothing at all is refused, not believed", () => {
+  // Replacing the reader with () => "" previously left the whole suite green.
+  const targets = childEnvironmentTargets({ applicationPid: 11, displayServerPid: 22 });
+  assert.throws(() => verifyChildEnvironments(targets, () => ENVIRONMENT_UNREADABLE), /could not be read/u);
+  assert.throws(() => verifyChildEnvironments(targets, () => undefined), /could not be read/u);
+  assert.throws(() => verifyChildEnvironments(targets, () => null), /could not be read/u);
+  // An empty string is a real read of a real empty environment, and is clean.
+  assert.equal(verifyChildEnvironments(targets, () => ""), 2);
+});
+
+test("readChildEnvironment separates a failed read from an empty one", () => {
+  assert.equal(readChildEnvironment(1, () => { throw new Error("EACCES"); }), ENVIRONMENT_UNREADABLE);
+  assert.equal(readChildEnvironment(1, () => ""), "");
+  assert.equal(readChildEnvironment(1, () => "PATH=/usr/bin\0"), "PATH=/usr/bin\0");
+});
+
+test("ENFORCEMENT: the X lock pid accepts decimal only, not every numeric literal", () => {
+  // Number() would accept all of these; the X server writes none of them.
+  for (const literal of ["0x10", "1e3", "0b11", "0o17", " +7 ", "7.0", "Infinity"]) {
+    assert.equal(parseDisplayLockPid(literal), null, `${literal} must not parse as a pid`);
+  }
+  assert.equal(parseDisplayLockPid("   2470092\n"), 2_470_092);
 });

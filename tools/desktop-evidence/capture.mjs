@@ -128,6 +128,8 @@ export function assertLoopbackHost(host) {
 export function parseDisplayLockPid(content) {
   if (typeof content !== "string") return null;
   const trimmed = content.trim();
+  // Decimal digits only. Number() would otherwise accept "0x10" as 16, "1e3"
+  // as 1000 and "0b11" as 3, none of which the X server ever writes.
   if (!/^\d+$/u.test(trimmed)) return null;
   const pid = Number(trimmed);
   return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
@@ -780,8 +782,14 @@ export function intendedApplicationEnvironmentNames() {
  *     is an allowlist this tool builds, so anything outside it is unexpected.
  *     The domain is DISPLAY_SERVER_ENVIRONMENT_NAMES itself rather than a
  *     second copy of it. */
+export const ENVIRONMENT_UNREADABLE = Symbol("environment unreadable");
+
 export function unexpectedEnvironmentNames(environText, allowed = [], policy = "namespaces") {
-  if (typeof environText !== "string") return [];
+  // An unreadable environment is NOT an empty one. Returning [] here meant a
+  // child whose /proc entry had gone — a zombie raises EACCES, a reaped process
+  // ENOENT — was reported as clean, so the check could pass having read nothing.
+  if (environText === ENVIRONMENT_UNREADABLE) throw new Error("the environment could not be read");
+  if (typeof environText !== "string") throw new Error("the environment could not be read");
   const permitted = new Set(allowed);
   const names = [...new Set(
     environText.split("\0").filter(Boolean).map((entry) => entry.split("=", 1)[0]),
@@ -818,14 +826,39 @@ export function childEnvironmentTargets({ applicationPid, displayServerPid }) {
 export function verifyChildEnvironments(children, readEnviron) {
   if (children.length === 0) throw new Error("verifyChildEnvironments was given no children to check");
   const leaks = [];
+  const unreadable = [];
   for (const { pid, label, allowed = [], policy = "namespaces" } of children) {
-    const names = unexpectedEnvironmentNames(readEnviron(pid), allowed, policy);
+    let names;
+    try {
+      names = unexpectedEnvironmentNames(readEnviron(pid), allowed, policy);
+    } catch {
+      // Refuses rather than passing: a check that cannot read its subject has
+      // established nothing, and must not report success.
+      unreadable.push(`${label} (pid ${pid})`);
+      continue;
+    }
     if (names.length > 0) leaks.push(`${label} (pid ${pid}) carried ${names.join(", ")}`);
+  }
+  if (unreadable.length > 0) {
+    throw new Error(
+      `the environment of a process this run spawned could not be read, so isolation is unverified: ${unreadable.join("; ")}`,
+    );
   }
   if (leaks.length > 0) {
     throw new Error(`a process this run spawned carried an environment this tool did not set: ${leaks.join("; ")}`);
   }
   return children.length;
+}
+
+/** Reads a child's environment, distinguishing "could not read" from "empty".
+ *  A process that has exited has no readable environment, so its isolation
+ *  cannot be confirmed and must not be assumed. */
+export function readChildEnvironment(pid, read = (path) => readFileSync(path, "utf8")) {
+  try {
+    return read(`/proc/${pid}/environ`);
+  } catch {
+    return ENVIRONMENT_UNREADABLE;
+  }
 }
 
 export async function verifyIsolation(targets, { listDirectory, wait, attempts = 60 }) {
@@ -1089,7 +1122,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     });
     verifyChildEnvironments(
       childEnvironmentTargets({ applicationPid: launched.root.pid, displayServerPid: display.serverPid }),
-      (pid) => { try { return readFileSync(`/proc/${pid}/environ`, "utf8"); } catch { return ""; } },
+      (pid) => readChildEnvironment(pid),
     );
 
     const { chromium } = await loadPlaywright(environment);
