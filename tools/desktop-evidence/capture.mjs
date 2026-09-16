@@ -438,11 +438,32 @@ function readProcessTable() {
 // The effects are injected so the adopt decision is exercised by tests at the
 // point it is ENFORCED. Mutating the condition below must fail the suite; a
 // test of the predicate alone would not notice.
+/** The X server needs almost nothing, so it is given almost nothing. It was
+ *  previously spawned with no env argument at all, which handed a display
+ *  server the daemon password, the operator's PASEO_HOME and this host's
+ *  non-loopback daemon address through /proc/<pid>/environ. An allowlist rather
+ *  than a filter, because this child's needs are known and small. */
+export function displayServerEnvironment(base) {
+  const allowed = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"];
+  const environment = {};
+  for (const name of allowed) {
+    if (base[name] !== undefined) environment[name] = base[name];
+  }
+  return environment;
+}
+
+/** How the X server is launched. The options are a tested unit rather than an
+ *  inline argument, because the environment it is given is the property that
+ *  matters and an inline literal is only covered where it is enforced. */
+export function displayServerSpawnOptions(base = process.env) {
+  return { stdio: ["ignore", "ignore", "ignore"], env: displayServerEnvironment(base) };
+}
+
 export const defaultDisplayIo = {
   spawnServer: (number) => spawn(
     "Xvfb",
     [`:${number}`, "-screen", "0", "1600x1000x24", "-nolisten", "tcp", "-noreset"],
-    { stdio: ["ignore", "ignore", "ignore"] },
+    displayServerSpawnOptions(),
   ),
   socketExists: (path) => existsSync(path),
   readLock: (path) => defaultReadLock(path),
@@ -455,7 +476,12 @@ export async function claimDisplay({ minimum, maximum }, io = defaultDisplayIo, 
   // function returns. It is live for up to several seconds while the socket and
   // lock appear, and an interruption in that window would otherwise orphan a
   // running X server together with its socket and lock.
-  if (teardown === undefined) throw new Error("claimDisplay requires the teardown that will own the server");
+  // Checked for what it must be able to do, not merely for being present: the
+  // guard exists to make an orphaned server impossible, so it must refuse
+  // before anything is spawned.
+  if (typeof teardown?.adoptDisplay !== "function" || typeof teardown?.releaseDisplay !== "function") {
+    throw new Error("claimDisplay requires the teardown that will own the server");
+  }
   for (const number of displayCandidates({ minimum, maximum, occupied: io.occupied() })) {
     const socket = `/tmp/.X11-unix/X${number}`;
     const lock = `/tmp/.X${number}-lock`;
@@ -535,6 +561,33 @@ export function createTeardown({ readTable, kill, wait, readLock, removePath }) 
     },
     trackDescendants,
     trackedSnapshot: () => new Map(tracked),
+    /** One synchronous best-effort pass, for the "exit" fallback. No waiting
+     *  and no escalation are possible there, so confirmed targets go straight
+     *  to SIGKILL and the display files are removed only if still ours. */
+    runSync({ removeRunRoot = () => {} } = {}) {
+      const processTable = readTable();
+      const targets = confirmedTeardownTargets({ root, tracked, processTable });
+      for (const target of survivingTargets(targets, processTable)) {
+        try {
+          kill(target.pid, "SIGKILL");
+        } catch {
+          // Already gone between confirming and signalling.
+        }
+      }
+      if (display !== null) {
+        try {
+          display.process.kill("SIGKILL");
+        } catch {
+          // Already gone.
+        }
+        if (parseDisplayLockPid(readLock(display.lock)) === display.serverPid) {
+          removePath(display.socket);
+          removePath(display.lock);
+        }
+      }
+      removeRunRoot();
+      return targets.length;
+    },
     async run({ removeRunRoot = () => {} } = {}) {
       trackDescendants();
       const targets = confirmedTeardownTargets({ root, tracked, processTable: readTable() });
@@ -544,6 +597,17 @@ export function createTeardown({ readTable, kill, wait, readLock, removePath }) 
       return { targets, survivors, displayRemoved };
     },
   };
+}
+
+/** The identity a spawned process is pinned to. Refusing an unreadable start
+ *  time is the whole point: without it teardown can confirm nothing and would
+ *  signal nothing at all, which looks like a clean run. */
+export function pinnedRoot(pid, readStartTime) {
+  const startTime = readStartTime(pid);
+  if (!Number.isInteger(startTime)) {
+    throw new Error(`could not read the start time of the spawned process ${pid}; refusing to continue`);
+  }
+  return { pid, startTime, exited: false };
 }
 
 export function spawnApplication(executable, baseEnvironment, isolation, registerRoot) {
@@ -563,14 +627,16 @@ export function spawnApplication(executable, baseEnvironment, isolation, registe
     child.once("error", onError);
     child.once("spawn", () => {
       child.off("error", onError);
-      const root = { pid: child.pid, startTime: processStartTime(child.pid), exited: false };
-      child.once("exit", () => { root.exited = true; });
-      child.on("error", () => { root.exited = true; });
-      if (!Number.isInteger(root.startTime)) {
+      let root;
+      try {
+        root = pinnedRoot(child.pid, processStartTime);
+      } catch (error) {
         child.kill("SIGKILL");
-        fail(new Error(`could not read the start time of the spawned process ${child.pid}; refusing to continue`));
+        fail(error);
         return;
       }
+      child.once("exit", () => { root.exited = true; });
+      child.on("error", () => { root.exited = true; });
       registerRoot(root);
       done({ child, root, environment });
     });
@@ -684,6 +750,47 @@ export function isolationTargets({ userDataDir, paseoHome }) {
   ];
 }
 
+/** The PASEO_* and DIRECTOR_* names this tool intends the application to have.
+ *  Derived from applicationEnvironment itself rather than restated, so a
+ *  variable added there is allowed automatically while an INHERITED one is
+ *  still caught. */
+export function intendedApplicationEnvironmentNames() {
+  const probe = applicationEnvironment({}, {
+    display: ":0", paseoHome: "/", userDataDir: "/", listen: "127.0.0.1:1", cdpPort: 1,
+  });
+  return Object.keys(probe).filter((name) => /^(?:PASEO|DIRECTOR)_/u.test(name)).sort();
+}
+
+/** PASEO_* and DIRECTOR_* names in a child's environment that this tool did not
+ *  put there. The isolation check was previously blind to this entirely: it
+ *  looked only at directories, so it passed on a child that had inherited the
+ *  credential. */
+export function unexpectedEnvironmentNames(environText, allowed = []) {
+  if (typeof environText !== "string") return [];
+  const permitted = new Set(allowed);
+  return [...new Set(
+    environText
+      .split("\0")
+      .filter(Boolean)
+      .map((entry) => entry.split("=", 1)[0])
+      .filter((name) => /^(?:PASEO|DIRECTOR)_/u.test(name) && !permitted.has(name)),
+  )].sort();
+}
+
+/** Every process this run spawned must carry only what this tool gave it. A
+ *  check that passes on a leaking child is worth less than no check. */
+export function verifyChildEnvironments(children, readEnviron) {
+  const leaks = [];
+  for (const { pid, label, allowed = [] } of children) {
+    const names = unexpectedEnvironmentNames(readEnviron(pid), allowed);
+    if (names.length > 0) leaks.push(`${label} (pid ${pid}) inherited ${names.join(", ")}`);
+  }
+  if (leaks.length > 0) {
+    throw new Error(`a process this run spawned inherited the Paseo environment: ${leaks.join("; ")}`);
+  }
+  return children.length;
+}
+
 export async function verifyIsolation(targets, { listDirectory, wait, attempts = 60 }) {
   for (const { directory, label } of targets) {
     let populated = false;
@@ -701,11 +808,55 @@ export async function verifyIsolation(targets, { listDirectory, wait, attempts =
   return targets.length;
 }
 
-/** Registers the same teardown for interruption as for a normal exit. */
-export function installSignalHandlers({ on, handler, signals = ["SIGINT", "SIGTERM"] }) {
+// Which signals terminate this process by default, and what is done about each.
+// Enumerated rather than accumulated: the previous version listed SIGINT and
+// SIGTERM, and SIGHUP — the one a closing terminal or a dropped ssh session
+// sends — went to its default disposition and killed the run with its display,
+// its application, that application's setsid'd daemon and its profile still
+// live.
+//
+// HANDLED: a plausible way for an operator to end this run deliberately or by
+// disconnecting, where teardown can still complete.
+export const TERMINATING_SIGNALS = Object.freeze([
+  "SIGHUP",   // terminal closed, ssh session dropped, parent shell exited
+  "SIGINT",   // Ctrl-C
+  "SIGQUIT",  // Ctrl-\\
+  "SIGTERM",  // kill, a supervisor, a shutdown sequence
+  "SIGUSR2",  // conventional restart signal from process managers
+  "SIGXCPU",  // CPU rlimit reached; this run compiles and downloads
+  "SIGXFSZ",  // file-size rlimit reached; this run writes large artifacts
+]);
+
+// NOT HANDLED, deliberately, with the reason in each case.
+export const UNHANDLED_TERMINATING_SIGNALS = Object.freeze({
+  SIGKILL: "cannot be caught or ignored; no handler is possible",
+  SIGSTOP: "cannot be caught or ignored; no handler is possible",
+  SIGILL: "the process state is already unsafe; running teardown could make it worse",
+  SIGABRT: "the process state is already unsafe; running teardown could make it worse",
+  SIGFPE: "the process state is already unsafe; running teardown could make it worse",
+  SIGSEGV: "the process state is already unsafe; running teardown could make it worse",
+  SIGBUS: "the process state is already unsafe; running teardown could make it worse",
+  SIGUSR1: "Node reserves it to start the inspector; taking it would break debugging",
+  SIGPIPE: "Node ignores it by default, so it does not terminate this process",
+});
+
+/** Registers teardown for every signal this tool chooses to handle. */
+export function installSignalHandlers({ on, handler, signals = TERMINATING_SIGNALS }) {
   const installed = signals.map((signal) => [signal, () => handler(signal)]);
   for (const [signal, bound] of installed) on(signal, bound);
   return installed;
+}
+
+/** The last-resort teardown, for every termination path that reaches process
+ *  exit — a thrown error, an explicit exit, a normal return, or a handled
+ *  signal whose asynchronous teardown did not finish. It must be synchronous,
+ *  because Node runs no further asynchronous work once "exit" is emitted, so it
+ *  is a single best-effort pass rather than an escalation. Its purpose is that
+ *  the answer does not depend on the completeness of a signal list. */
+export function installExitFallback({ on, handler }) {
+  const bound = () => handler();
+  on("exit", bound);
+  return bound;
 }
 
 /** The run's durable artifacts. Built here rather than at the write site so the
@@ -768,11 +919,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
 
   const performCleanup = async () => {
     if (browser !== null) await browser.close().catch(() => {});
-    const outcome = await teardown.run({
-      removeRunRoot: () => {
-        if (!options.keepUserData) rmSync(runRoot, { recursive: true, force: true });
-      },
-    });
+    const outcome = await teardown.run({ removeRunRoot });
     if (child !== null && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     if (outcome.survivors.length > 0) {
       console.error(`warning: processes from this run did not stop: ${outcome.survivors.map((t) => t.pid).join(", ")}`);
@@ -789,9 +936,18 @@ export async function main(argv = process.argv.slice(2), environment = process.e
   };
   // Installed before anything exists, so no resource is ever created while an
   // interruption would bypass teardown entirely.
+  const removeRunRoot = () => {
+    if (!options.keepUserData) rmSync(runRoot, { recursive: true, force: true });
+  };
   const handlers = installSignalHandlers({
     on: (signal, bound) => process.on(signal, bound),
     handler: onSignal,
+  });
+  // Runs after everything else, so a process that outlived the escalation
+  // budget cannot leave its display or recreate the private run directory.
+  installExitFallback({
+    on: (event, bound) => process.on(event, bound),
+    handler: () => teardown.runSync({ removeRunRoot }),
   });
 
   mkdirSync(outputDirectory, { recursive: true });
@@ -846,6 +1002,13 @@ export async function main(argv = process.argv.slice(2), environment = process.e
       listDirectory: (directory) => readdirSync(directory),
       wait: (ms) => sleep(ms),
     });
+    verifyChildEnvironments(
+      [
+        { pid: launched.root.pid, label: "the application", allowed: intendedApplicationEnvironmentNames() },
+        { pid: display.serverPid, label: "the display server", allowed: [] },
+      ],
+      (pid) => { try { return readFileSync(`/proc/${pid}/environ`, "utf8"); } catch { return ""; } },
+    );
 
     const { chromium } = await loadPlaywright(environment);
     browser = await chromium.connectOverCDP(loopbackDebuggingEndpoint(cdpPort));

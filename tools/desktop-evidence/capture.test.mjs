@@ -29,8 +29,17 @@ import {
   descendantPids,
   displayCandidates,
   driveDirectorSurface,
+  TERMINATING_SIGNALS,
+  UNHANDLED_TERMINATING_SIGNALS,
+  displayServerEnvironment,
+  displayServerSpawnOptions,
+  installExitFallback,
   installSignalHandlers,
   isolationTargets,
+  intendedApplicationEnvironmentNames,
+  unexpectedEnvironmentNames,
+  pinnedRoot,
+  verifyChildEnvironments,
   displayLockOwnedBy,
   occupiedDisplayNumbers,
   parseArguments,
@@ -733,10 +742,12 @@ test("ENFORCEMENT: interruption registers the same teardown as a normal exit", (
     on: (signal, bound) => registered.push([signal, bound]),
     handler: (signal) => seen.push(signal),
   });
-  assert.deepEqual(registered.map(([signal]) => signal), ["SIGINT", "SIGTERM"]);
-  assert.equal(installed.length, 2);
+  // Asserted against the decision rather than a pinned literal list, so adding
+  // or removing a signal is a change to the decision and its reasons.
+  assert.deepEqual(registered.map(([signal]) => signal), [...TERMINATING_SIGNALS]);
+  assert.equal(installed.length, TERMINATING_SIGNALS.length);
   for (const [, bound] of registered) bound();
-  assert.deepEqual(seen, ["SIGINT", "SIGTERM"]);
+  assert.deepEqual(seen, [...TERMINATING_SIGNALS]);
 });
 
 test("ENFORCEMENT: the application log is written scrubbed", () => {
@@ -879,6 +890,9 @@ const mainBody = captureSource.slice(captureSource.indexOf("export async functio
 test("WIRING: the composition root still calls every unit that enforces a safety property", () => {
   const required = [
     ["register interruption handlers", "installSignalHandlers({"],
+    ["register the exit fallback", "installExitFallback({"],
+    ["give the exit fallback a synchronous teardown", "teardown.runSync({ removeRunRoot })"],
+    ["verify no child inherited the Paseo environment", "verifyChildEnvironments("],
     ["derive its private layout through the tested helper", "runDirectoryLayout(outputDirectory, options.label)"],
     ["create private directories owner-only", "mode: PRIVATE_DIRECTORY_MODE"],
     ["claim a display through the ownership-proving path", "await claimDisplay("],
@@ -924,6 +938,22 @@ test("WIRING: the composition root holds no teardown state of its own", () => {
   assert.equal(/^\s*const tracked = new Map\(\);/mu.test(mainBody), false);
   assert.equal(/^\s*let root = null;/mu.test(mainBody), false);
   assert.equal(/^\s*let display = null;/mu.test(mainBody), false);
+});
+
+test("ENFORCEMENT: the launch options actually carry the minimal environment", () => {
+  const options = displayServerSpawnOptions({
+    PATH: "/usr/bin", PASEO_PASSWORD: "super-secret", DIRECTOR_PASEO_URL: "ws://h/ws",
+  });
+  assert.deepEqual(Object.keys(options.env), ["PATH"]);
+  assert.equal(JSON.stringify(options).includes("super-secret"), false);
+  assert.deepEqual(options.stdio, ["ignore", "ignore", "ignore"]);
+});
+
+test("WIRING: no child is ever spawned with the ambient environment", () => {
+  // The X server was previously spawned with no env argument at all, so the
+  // whole source is asserted rather than one call site.
+  assert.equal(/env:\s*process\.env/u.test(captureSource), false);
+  assert.equal(captureSource.includes("displayServerSpawnOptions()"), true);
 });
 
 test("WIRING: no raw loopback address or directory mode is left inline in main", () => {
@@ -1044,4 +1074,179 @@ test("ENFORCEMENT: every listener and endpoint this tool creates is loopback", (
     assert.throws(() => loopbackListen(bad), /valid TCP port/u, `${bad} must be refused`);
     assert.throws(() => loopbackDebuggingEndpoint(bad), /valid TCP port/u, `${bad} must be refused`);
   }
+});
+
+// --- the class of terminating signals, decided rather than accumulated ------
+
+test("ENFORCEMENT: every signal that can end this run either has a handler or a recorded reason", () => {
+  // The decision, not the contents. A signal whose default disposition
+  // terminates must appear in exactly one of the two sets, so adding a signal
+  // to the platform means making a choice rather than silently defaulting.
+  const terminatesByDefault = [
+    "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGABRT", "SIGFPE", "SIGKILL",
+    "SIGSEGV", "SIGPIPE", "SIGTERM", "SIGUSR1", "SIGUSR2", "SIGBUS", "SIGXCPU", "SIGXFSZ",
+  ];
+  for (const signal of terminatesByDefault) {
+    const handled = TERMINATING_SIGNALS.includes(signal);
+    const excused = Object.hasOwn(UNHANDLED_TERMINATING_SIGNALS, signal);
+    assert.equal(handled !== excused, true, `${signal} must be either handled or excused, not both or neither`);
+    if (excused) {
+      assert.equal(UNHANDLED_TERMINATING_SIGNALS[signal].length > 10, true, `${signal} needs a stated reason`);
+    }
+  }
+});
+
+test("REGRESSION: SIGHUP is handled — a closing terminal must not bypass teardown", () => {
+  // This is the defect: SIGHUP went to its default disposition and killed the
+  // run with its display, application, that application's daemon and its
+  // profile still live.
+  assert.equal(TERMINATING_SIGNALS.includes("SIGHUP"), true);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGQUIT"]) {
+    assert.equal(TERMINATING_SIGNALS.includes(signal), true);
+  }
+});
+
+test("the uncatchable signals are recorded as uncatchable, not as handled", () => {
+  for (const signal of ["SIGKILL", "SIGSTOP"]) {
+    assert.equal(TERMINATING_SIGNALS.includes(signal), false);
+    assert.match(UNHANDLED_TERMINATING_SIGNALS[signal], /cannot be caught/u);
+  }
+});
+
+test("ENFORCEMENT: every handled signal is registered", () => {
+  const registered = [];
+  const seen = [];
+  installSignalHandlers({ on: (signal, bound) => registered.push([signal, bound]), handler: (s) => seen.push(s) });
+  assert.deepEqual(registered.map(([signal]) => signal), [...TERMINATING_SIGNALS]);
+  for (const [, bound] of registered) bound();
+  assert.deepEqual(seen, [...TERMINATING_SIGNALS]);
+});
+
+test("ENFORCEMENT: an exit fallback covers termination paths no signal list can", () => {
+  const registered = [];
+  let ran = 0;
+  installExitFallback({ on: (event, bound) => registered.push([event, bound]), handler: () => { ran += 1; } });
+  assert.deepEqual(registered.map(([event]) => event), ["exit"]);
+  registered[0][1]();
+  assert.equal(ran, 1);
+});
+
+test("ENFORCEMENT: the synchronous fallback signals, clears the display and removes the run root", () => {
+  const table = processTable([[100, 1, 5000], [250, 100, 7000]]);
+  const { unit, killed, removed, displaySignals } = teardownHarness({ table: () => table, lockPid: 4242 });
+  unit.pinRoot({ pid: 100, startTime: 5000, exited: false });
+  unit.trackDescendants();
+  let removedRunRoot = 0;
+  const count = unit.runSync({ removeRunRoot: () => { removedRunRoot += 1; } });
+  assert.equal(count >= 1, true);
+  assert.deepEqual(killed, ["SIGKILL:100", "SIGKILL:250"], "no waiting is possible at exit, so go straight to SIGKILL");
+  assert.deepEqual(displaySignals, ["SIGKILL"]);
+  assert.deepEqual(removed, ["/tmp/.X11-unix/X120", "/tmp/.X120-lock"]);
+  assert.equal(removedRunRoot, 1, "a process that outlived the escalation must not leave the run root behind");
+});
+
+test("the synchronous fallback refuses an unconfirmed root and a foreign display", () => {
+  const table = processTable([[100, 1, 9999]]);
+  const { unit, killed, removed } = teardownHarness({ table: () => table, lockPid: 9999, serverPid: 4242 });
+  unit.pinRoot({ pid: 100, startTime: 5000, exited: false });
+  unit.runSync();
+  assert.deepEqual(killed, [], "a recycled root authorises no signal, at exit as anywhere else");
+  assert.deepEqual(removed, [], "a live foreign server's files are never deleted");
+});
+
+// --- the tool must not leak the credential into its own children ------------
+
+test("ENFORCEMENT: the display server is given an explicit minimal environment", () => {
+  const environment = displayServerEnvironment({
+    PATH: "/usr/bin", HOME: "/home/x", TMPDIR: "/tmp",
+    PASEO_PASSWORD: "super-secret", PASEO_HOME: "/home/x/.paseo",
+    PASEO_HOST: "tcp://host:6767?password=super-secret", DIRECTOR_PASEO_URL: "ws://host:6767/ws",
+    SOMETHING_ELSE: "also-dropped",
+  });
+  assert.deepEqual(Object.keys(environment).sort(), ["HOME", "PATH", "TMPDIR"]);
+  assert.equal(JSON.stringify(environment).includes("super-secret"), false);
+});
+
+test("ENFORCEMENT: the isolation check can see a child that inherited the credential", () => {
+  // The previous check looked only at directories, so it passed on a leaking
+  // child. A check that passes on a leak is worth less than no check.
+  const leaking = "PATH=/usr/bin\0PASEO_PASSWORD=super-secret\0DIRECTOR_PASEO_URL=ws://h/ws\0";
+  const clean = "PATH=/usr/bin\0HOME=/home/x\0";
+  assert.deepEqual(unexpectedEnvironmentNames(leaking), ["DIRECTOR_PASEO_URL", "PASEO_PASSWORD"]);
+  assert.deepEqual(unexpectedEnvironmentNames(clean), []);
+  assert.equal(verifyChildEnvironments([{ pid: 1, label: "the display server" }], () => clean), 1);
+  assert.throws(
+    () => verifyChildEnvironments([{ pid: 7, label: "the display server" }], () => leaking),
+    /the display server \(pid 7\) inherited DIRECTOR_PASEO_URL, PASEO_PASSWORD/u,
+  );
+});
+
+test("ENFORCEMENT: what the tool deliberately sets is allowed; what is inherited is not", () => {
+  // The first version of this check failed the real run by flagging the six
+  // variables the tool sets itself. The allowance is derived from
+  // applicationEnvironment, so it cannot drift from what is actually set, and
+  // an inherited credential is still caught.
+  const intended = intendedApplicationEnvironmentNames();
+  assert.equal(intended.includes("PASEO_HOME"), true);
+  assert.equal(intended.includes("PASEO_ELECTRON_USER_DATA_DIR"), true);
+  assert.equal(intended.includes("PASEO_PASSWORD"), false);
+  assert.equal(intended.includes("PASEO_HOST"), false);
+  const applicationEnviron = `${intended.map((name) => `${name}=x`).join("\0")}\0PATH=/usr/bin\0`;
+  assert.equal(verifyChildEnvironments([{ pid: 3, label: "the application", allowed: intended }], () => applicationEnviron), 1);
+  assert.throws(
+    () => verifyChildEnvironments(
+      [{ pid: 3, label: "the application", allowed: intended }],
+      () => `${applicationEnviron}PASEO_PASSWORD=super-secret\0`,
+    ),
+    /inherited PASEO_PASSWORD/u,
+  );
+  // The display server is allowed nothing at all.
+  assert.throws(
+    () => verifyChildEnvironments([{ pid: 4, label: "the display server", allowed: [] }], () => "PASEO_HOME=/x\0"),
+    /the display server \(pid 4\) inherited PASEO_HOME/u,
+  );
+});
+
+// --- guards and the two previously surviving mutants ------------------------
+
+test("ENFORCEMENT: claimDisplay refuses every owner that cannot hold a server, before spawning", async () => {
+  // Passed null it previously spawned a real server and only then threw, which
+  // is exactly the orphan the guard exists to prevent.
+  let spawned = 0;
+  const io = {
+    spawnServer: () => { spawned += 1; return fakeServer(1); },
+    socketExists: () => false, readLock: () => null, occupied: () => new Set(), wait: async () => {},
+  };
+  for (const owner of [undefined, null, {}, 0, "x", { adoptDisplay() {} }]) {
+    await assert.rejects(
+      () => claimDisplay({ minimum: 190, maximum: 190 }, io, 1, owner),
+      /requires the teardown/u,
+      `owner ${JSON.stringify(owner)} must be refused`,
+    );
+  }
+  assert.equal(spawned, 0, "nothing may be spawned before the owner is proved usable");
+});
+
+test("ENFORCEMENT: an unreadable start time refuses the run rather than pinning nothing", () => {
+  // Without this refusal teardown confirms nothing and signals nothing, which
+  // is indistinguishable from a clean run.
+  assert.deepEqual(pinnedRoot(4242, () => 5000), { pid: 4242, startTime: 5000, exited: false });
+  for (const unreadable of [null, undefined, Number.NaN, "5000", 1.5]) {
+    assert.throws(() => pinnedRoot(4242, () => unreadable), /refusing to continue/u);
+  }
+});
+
+test("an init process is never a teardown target, by either route", () => {
+  // pid 1 must be excluded whether it arrives as a parent-map descendant or as
+  // a recorded identity, so a fixture must exercise both.
+  const table = processTable([[100, 1, 5000], [1, 0, 1]]);
+  const root = { pid: 100, startTime: 5000, exited: false };
+  assert.deepEqual(
+    pidsOf(confirmedTeardownTargets({ root, tracked: new Map([[1, 1]]), processTable: table, selfPid: 999 })),
+    [100],
+  );
+  assert.deepEqual(
+    pidsOf(confirmedTeardownTargets({ root, tracked: new Map([[0, 0], [1, 1]]), processTable: table, selfPid: 999 })),
+    [100],
+  );
 });

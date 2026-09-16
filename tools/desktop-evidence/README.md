@@ -72,7 +72,25 @@ task rather than a build status.
   handed over from inside the spawn, before the call resolves; and the
   interruption handlers are installed before anything is created at all. A
   resource that exists before its owner can see it is a resource an interruption
-  orphans, which is why none of them do.
+  orphans. The display, the application and the run's directories are handed
+  over at creation; the Playwright connection is registered at the promise
+  boundary instead, because Playwright owns the connect, so that one window is
+  narrowed rather than closed — microseconds, and a socket rather than a
+  process.
+- **Interruption reaches teardown, and termination does not depend on a list.**
+  Every signal whose default disposition ends this process is either handled or
+  carries a recorded reason for not being — `SIGHUP` matters most, because a
+  closing terminal or a dropped ssh session sends it during a capture that runs
+  for minutes. `SIGKILL` and `SIGSTOP` cannot be caught by anything, and that is
+  stated rather than papered over. Because no list is ever complete, a
+  synchronous `exit` fallback runs one best-effort pass for every termination
+  path that reaches process exit.
+- **It does not leak the credential into its own children.** The application's
+  environment is filtered, and the X server is given an explicit minimal
+  allowlist rather than the ambient environment. The isolation check reads each
+  spawned child's `/proc/<pid>/environ` and fails the run if either namespace
+  reached it, because a check that passes on a leaking child is worth less than
+  no check.
 - **It only stops the processes it started.** The spawned process's identity is
   pinned immediately after spawn by reading its start time from `/proc`, and
   teardown signals nothing at all unless that pin still matches a live process.
@@ -134,6 +152,21 @@ task rather than a build status.
 - **It will not photograph a password.** Before the connection form is captured,
   the password field is asserted to be masked. If a build renders it as plain
   text the run fails instead of writing the screenshot.
+
+  **The credential guarantees above have never been exercised end to end.**
+  Every capture run so far has connected to a passwordless isolated daemon, so
+  `credentialUsed` is `false` in every evidence manifest on every Candidate, and
+  the first real run against a password-protected daemon will be the first time
+  that path executes. What *is* covered by the test suite, and therefore by CI,
+  is the decision logic those guarantees are made of: that the password field is
+  asserted masked before the connection form is captured, that every emitted
+  artifact is scrubbed where it is built including a secret split across stream
+  chunks, that `--daemon-host` is floored to loopback during argument parsing,
+  and that neither child process inherits anything this tool did not set. What
+  is not covered is those parts working together against a real daemon that
+  actually demands a password. Read the guarantees as well-tested intent, not as
+  observed behaviour.
+
 - **It does not weaken the application.** Remote debugging is enabled through the
   application's own shipped `PASEO_ELECTRON_FLAGS` channel rather than by
   appending to its argv, so the application's CLI parsing is untouched and the
