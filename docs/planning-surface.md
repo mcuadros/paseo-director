@@ -56,7 +56,8 @@ active-revision acknowledgement bindings.
 
 ## Presentation behavior
 
-The Project Board plugin panel now supplies:
+The Board/List surface — the Director Console's `Board` tab and the Project
+Board workspace panel, which render the same component — now supplies:
 
 - Project switching and virtualized Workspace/Epic navigation;
 - Board/List modes over the same query, with flat or Epic grouping that
