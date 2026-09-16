@@ -91,7 +91,15 @@ func readRuntimeState(path string) (runtimeState, bool, error) {
 	return state, true, nil
 }
 
-func runtimeBinding(prepared preparedRuntime, identity hostIdentity, hostSocket string) string {
+// engineAddress is the single place the Engine listen address is formed. The
+// supervisor starts its Engine here and reports the same value in its status,
+// so the connector binds its Director transports to the port it actually
+// serves instead of to an assumed default.
+func engineAddress(ports runtimePorts) string {
+	return fmt.Sprintf("127.0.0.1:%d", ports.engine)
+}
+
+func runtimeBinding(prepared preparedRuntime, identity hostIdentity, hostSocket string, ports runtimePorts) string {
 	return canonicalJSONDigest(struct {
 		SchemaVersion  int          `json:"schemaVersion"`
 		Candidate      string       `json:"candidate"`
@@ -104,7 +112,7 @@ func runtimeBinding(prepared preparedRuntime, identity hostIdentity, hostSocket 
 		HostSocket     string       `json:"hostSocket"`
 		Ports          [2]int       `json:"ports"`
 	}{1, prepared.SourceCandidate, prepared.Channel, prepared.Bootstrap.SHA256, prepared.Engine.Binary.SHA256,
-		prepared.Engine.ContractSHA256, prepared.Dolt.Binary.SHA256, identity, hostSocket, [2]int{defaultDoltPort, defaultEnginePort}})
+		prepared.Engine.ContractSHA256, prepared.Dolt.Binary.SHA256, identity, hostSocket, [2]int{ports.dolt, ports.engine}})
 }
 
 func requestControl(paths runtimePaths, request controlRequest) (runtimeStatus, error) {
@@ -126,7 +134,8 @@ func requestControl(paths runtimePaths, request controlRequest) (runtimeStatus, 
 	decoder := json.NewDecoder(bytes.NewReader(line))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&status); err != nil || status.SchemaVersion != controlProtocolVersion || !sha256Pattern.MatchString(status.Binding) ||
-		(status.State != "current" && status.State != "degraded") || !hostIDPattern.MatchString(status.Host.ID) || status.Host.Label != "Director" || !sha256Pattern.MatchString(status.ProjectAdminAuthorization) {
+		(status.State != "current" && status.State != "degraded") || !hostIDPattern.MatchString(status.Host.ID) || status.Host.Label != "Director" ||
+		!validEngineAddress(status.EngineAddress) || !sha256Pattern.MatchString(status.ProjectAdminAuthorization) {
 		return runtimeStatus{}, fail("DIRECTOR_BOOTSTRAP_CONTROL_INVALID")
 	}
 	return status, nil
@@ -171,6 +180,21 @@ func cleanupStale(paths runtimePaths, state runtimeState) error {
 	return nil
 }
 
+// adoptLiveOwner decides what an ensure may do with a live supervisor already
+// owning these runtime paths. An isolated runtime adopts only its own exact
+// binding: isolation adds a runtime beside an existing one and must never
+// release the instance it finds, which is what makes an isolation port pair
+// unusable as a way around the occupied-listener refusal.
+func adoptLiveOwner(isolated bool, owned, requested string) (bool, error) {
+	if owned == requested {
+		return true, nil
+	}
+	if isolated {
+		return false, fail("DIRECTOR_BOOTSTRAP_ISOLATION_OCCUPIED")
+	}
+	return false, nil
+}
+
 func ensureRuntime(candidate, bootstrapSHA, hostSocket string) (runtimeStatus, error) {
 	if !platformOK() || !gitSHAPattern.MatchString(candidate) || !sha256Pattern.MatchString(bootstrapSHA) || !filepath.IsAbs(hostSocket) || filepath.Clean(hostSocket) != hostSocket {
 		return runtimeStatus{}, fail("DIRECTOR_BOOTSTRAP_ARGUMENT")
@@ -179,7 +203,7 @@ func ensureRuntime(candidate, bootstrapSHA, hostSocket string) (runtimeStatus, e
 	if err != nil {
 		return runtimeStatus{}, err
 	}
-	paths, err := runtimeBasePaths()
+	paths, ports, err := runtimeLayout()
 	if err != nil {
 		return runtimeStatus{}, err
 	}
@@ -206,7 +230,7 @@ func ensureRuntime(candidate, bootstrapSHA, hostSocket string) (runtimeStatus, e
 	if _, err := privateSecret(paths.projectAdminToken); err != nil {
 		return runtimeStatus{}, err
 	}
-	binding := runtimeBinding(prepared, identity, hostSocket)
+	binding := runtimeBinding(prepared, identity, hostSocket, ports)
 	lock, err := acquireRuntimeLock(paths.lock)
 	if err != nil {
 		return runtimeStatus{}, err
@@ -222,7 +246,11 @@ func ensureRuntime(candidate, bootstrapSHA, hostSocket string) (runtimeStatus, e
 		if requestErr != nil || status.Binding != state.Binding {
 			return runtimeStatus{}, fail("DIRECTOR_BOOTSTRAP_FOREIGN_OWNER")
 		}
-		if state.Binding == binding {
+		adopt, err := adoptLiveOwner(ports.isolated, state.Binding, binding)
+		if err != nil {
+			return runtimeStatus{}, err
+		}
+		if adopt {
 			return requestControl(paths, controlRequest{SchemaVersion: controlProtocolVersion, Token: controlToken, Command: "ensure"})
 		}
 		if _, err := requestControl(paths, controlRequest{SchemaVersion: controlProtocolVersion, Token: controlToken, Command: "release"}); err != nil {
@@ -263,11 +291,11 @@ func ensureRuntime(candidate, bootstrapSHA, hostSocket string) (runtimeStatus, e
 	deadline := time.Now().Add(startTimeout)
 	for time.Now().Before(deadline) {
 		if content, readErr := os.ReadFile(paths.failure); readErr == nil {
-			var failure struct {
-				SchemaVersion int    `json:"schemaVersion"`
-				Code          string `json:"code"`
-			}
+			var failure runtimeFailure
 			if json.Unmarshal(content, &failure) == nil && failure.SchemaVersion == 1 {
+				if failure.Port > 0 {
+					return runtimeStatus{}, failOccupiedPort(failure.Code, failure.Port, failure.Holder, failure.PID)
+				}
 				return runtimeStatus{}, fail(failure.Code)
 			}
 			return runtimeStatus{}, fail("DIRECTOR_BOOTSTRAP_LAUNCH_FAILED")
@@ -284,7 +312,7 @@ func ensureRuntime(candidate, bootstrapSHA, hostSocket string) (runtimeStatus, e
 func selectedRuntimeEnvironment() []string {
 	home, _ := os.UserHomeDir()
 	values := map[string]string{"HOME": home, "DOLT_DISABLE_VERSION_CHECK": "1"}
-	for _, name := range []string{"XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"} {
+	for _, name := range append(runtimeXDGVariables[:], doltPortVariable, enginePortVariable) {
 		if value := os.Getenv(name); value != "" {
 			values[name] = value
 		}
@@ -307,6 +335,260 @@ func portInUse(port int) bool {
 }
 
 var runtimePortInUse = portInUse
+
+// answersLoopback reports whether a /proc local address would answer the
+// 127.0.0.1 dial this runtime makes: loopback itself or an unspecified
+// wildcard, in either family.
+func answersLoopback(address string) bool {
+	switch strings.ToUpper(address) {
+	case "0100007F", "00000000",
+		"00000000000000000000000000000000", "00000000000000000000000001000000",
+		"0000000000000000FFFF000000000000", "0000000000000000FFFF00000100007F":
+		return true
+	}
+	return false
+}
+
+// listeningSocketInodes collects the inodes of the sockets listening on port
+// which would answer a loopback connection, from both IPv4 and IPv6 tables.
+func listeningSocketInodes(port int) map[string]struct{} {
+	inodes := map[string]struct{}{}
+	for _, table := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		content, err := os.ReadFile(table)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(content), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 10 || fields[3] != "0A" {
+				continue
+			}
+			separator := strings.LastIndex(fields[1], ":")
+			if separator < 0 || !answersLoopback(fields[1][:separator]) {
+				continue
+			}
+			value, err := strconv.ParseUint(fields[1][separator+1:], 16, 32)
+			if err != nil || int(value) != port {
+				continue
+			}
+			inodes[fields[9]] = struct{}{}
+		}
+	}
+	return inodes
+}
+
+// holderProcess is what this user could read about the process holding a
+// required listener. An empty executable means the process exists but could
+// not be identified, which is never proof of anything.
+type holderProcess struct {
+	pid        int
+	executable string
+	arguments  []string
+}
+
+func processArguments(pid int) []string {
+	content, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return nil
+	}
+	return strings.FieldsFunc(string(content), func(value rune) bool { return value == 0 })
+}
+
+// portHolder resolves the process listening on a loopback port. A listener
+// owned by another user stays unresolved, which the caller reports as unproved
+// rather than as another Director.
+func portHolder(port int) holderProcess {
+	inodes := listeningSocketInodes(port)
+	if len(inodes) == 0 {
+		return holderProcess{}
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return holderProcess{}
+	}
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 0 {
+			continue
+		}
+		descriptors, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
+		if err != nil {
+			continue
+		}
+		for _, descriptor := range descriptors {
+			link, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", pid, descriptor.Name()))
+			if err != nil || !strings.HasPrefix(link, "socket:[") || !strings.HasSuffix(link, "]") {
+				continue
+			}
+			if _, ok := inodes[link[len("socket:["):len(link)-1]]; ok {
+				return holderProcess{pid: pid, executable: processExecutable(pid), arguments: processArguments(pid)}
+			}
+		}
+	}
+	return holderProcess{}
+}
+
+var runtimePortHolder = portHolder
+
+// preparedCacheExecutable reports whether a resolved executable is published
+// below a Director prepared-engine cache under its pinned name.
+func preparedCacheExecutable(path, name string) bool {
+	if filepath.Base(path) != name {
+		return false
+	}
+	segments := strings.Split(filepath.ToSlash(path), "/")
+	for index := 0; index+1 < len(segments); index++ {
+		if segments[index] == "director" && segments[index+1] == "engines" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasArgument(arguments []string, value string) bool {
+	for _, argument := range arguments {
+		if argument == value {
+			return true
+		}
+	}
+	return false
+}
+
+// directorChildKind classifies a process as a child a Director runtime
+// supervises, from its pinned executable and the argument vector only this
+// bootstrap produces. It returns "engine", "dolt", or an empty string.
+func directorChildKind(executable string, arguments []string) string {
+	if executable == "" || len(arguments) < 2 {
+		return ""
+	}
+	switch arguments[1] {
+	case "serve-board":
+		if !preparedCacheExecutable(executable, "director-engine") || !hasArgument(arguments, "--host-label=Director") {
+			return ""
+		}
+		for _, argument := range arguments {
+			if identity, found := strings.CutPrefix(argument, "--host-id="); found && hostIDPattern.MatchString(identity) {
+				return "engine"
+			}
+		}
+	case "sql-server":
+		if !preparedCacheExecutable(executable, "dolt") || !hasArgument(arguments, "--host=127.0.0.1") {
+			return ""
+		}
+		for _, argument := range arguments {
+			if socket, found := strings.CutPrefix(argument, "--socket="); found &&
+				strings.HasSuffix(filepath.ToSlash(socket), "/director/supervisor/dolt/mysql.sock") {
+				return "dolt"
+			}
+		}
+	}
+	return ""
+}
+
+// directorStatePathFlags are the arguments through which a supervised child
+// names a directory or socket its runtime keeps state in.
+var directorStatePathFlags = map[string][]string{
+	"engine": {"--taskstore-config=", "--host-socket=", "--runtime-root=", "--project-admin-token-file="},
+	"dolt":   {"--data-dir=", "--doltcfg-dir=", "--socket="},
+}
+
+// supervisorRootOf recovers the runtime root that owns a supervised child from
+// the one argument whose shape this bootstrap fixes. It identifies which
+// runtime a child belongs to, so a runtime never mistakes its own children for
+// another instance occupying its directories.
+func supervisorRootOf(kind string, arguments []string) string {
+	for _, argument := range arguments {
+		switch kind {
+		case "engine":
+			if work, found := strings.CutPrefix(argument, "--runtime-root="); found && filepath.Base(work) == "work" {
+				return filepath.Dir(filepath.Clean(work))
+			}
+		case "dolt":
+			if socket, found := strings.CutPrefix(argument, "--socket="); found &&
+				strings.HasSuffix(filepath.ToSlash(socket), "/director/supervisor/dolt/mysql.sock") {
+				return filepath.Dir(filepath.Dir(filepath.Clean(socket)))
+			}
+		}
+	}
+	return ""
+}
+
+// directorRuntimeChild proves that the holder of this exact port is a
+// supervised Director child serving that port, not merely a Director child.
+func directorRuntimeChild(port int, holder holderProcess) bool {
+	if holder.pid <= 0 {
+		return false
+	}
+	switch directorChildKind(holder.executable, holder.arguments) {
+	case "engine":
+		return hasArgument(holder.arguments, "--listen=127.0.0.1:"+strconv.Itoa(port))
+	case "dolt":
+		return hasArgument(holder.arguments, "--port="+strconv.Itoa(port))
+	}
+	return false
+}
+
+// liveRuntimeState is where one Director runtime running on this host keeps
+// its state, and which supervisor owns it.
+type liveRuntimeState struct {
+	supervisorRoot string
+	paths          []string
+}
+
+// liveDirectorRuntimes reports where the Director runtimes running on this
+// host under this user actually keep their state, read from the argument
+// vectors of their supervised children. It answers where a live instance
+// actually is, which the default-path baseline cannot: an instance started
+// with its own XDG bases does not live where a default installation would.
+func liveDirectorRuntimes() []liveRuntimeState {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var live []liveRuntimeState
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 0 || pid == os.Getpid() {
+			continue
+		}
+		arguments := processArguments(pid)
+		kind := directorChildKind(processExecutable(pid), arguments)
+		if kind == "" {
+			continue
+		}
+		state := liveRuntimeState{supervisorRoot: supervisorRootOf(kind, arguments)}
+		for _, flag := range directorStatePathFlags[kind] {
+			for _, argument := range arguments {
+				if value, found := strings.CutPrefix(argument, flag); found && filepath.IsAbs(value) {
+					state.paths = append(state.paths, filepath.Clean(value))
+				}
+			}
+		}
+		live = append(live, state)
+	}
+	return live
+}
+
+var runtimeLiveDirectorRuntimes = liveDirectorRuntimes
+
+// refuseOccupiedPort fails closed on any occupied required listener and names
+// what holds it. Only a proved Director runtime child reports the external-owner
+// refusal; an unrelated or unidentifiable process reports an occupied port and
+// is never described as another Director.
+func refuseOccupiedPort(port int) error {
+	if !runtimePortInUse(port) {
+		return nil
+	}
+	holder := runtimePortHolder(port)
+	switch {
+	case directorRuntimeChild(port, holder):
+		return failOccupiedPort("DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER", port, "director", holder.pid)
+	case holder.pid > 0 && holder.executable != "":
+		return failOccupiedPort("DIRECTOR_BOOTSTRAP_PORT_OCCUPIED", port, "foreign", holder.pid)
+	default:
+		return failOccupiedPort("DIRECTOR_BOOTSTRAP_PORT_OCCUPIED", port, "unproved", holder.pid)
+	}
+}
 
 func waitPort(port int, child *childProcess) error {
 	deadline := time.Now().Add(30 * time.Second)
@@ -406,7 +688,64 @@ func initializeTaskStore(paths runtimePaths, prepared preparedRuntime, identity 
 	return nil
 }
 
-func bootstrapTaskStore(paths runtimePaths, prepared preparedRuntime, identity hostIdentity) error {
+// admitIsolatedTaskStore refuses an isolated runtime whose data root already
+// holds a TaskStore that is not its own. The path baseline compares against
+// where a default installation would live, which is not where an instance
+// started with its own XDG bases actually lives, so reusing another instance's
+// XDG_DATA_HOME would otherwise reach the point of starting a second Dolt over
+// its TaskStore with only Dolt's own server lock in between.
+func admitIsolatedTaskStore(paths runtimePaths, identity hostIdentity) error {
+	if _, err := os.Lstat(filepath.Join(paths.doltDatabase, ".dolt")); err != nil {
+		return nil
+	}
+	// A TaskStore is present. It is this runtime's own only when this
+	// runtime's own configuration claims it, either under its identity or
+	// under the legacy identity its first start migrates.
+	storeID, _, err := taskStoreIdentity(paths.taskstore)
+	if err != nil || (storeID != identity.ID && storeID != "local-paseo") {
+		return fail("DIRECTOR_BOOTSTRAP_ISOLATION_FOREIGN_TASKSTORE")
+	}
+	return nil
+}
+
+// admitIsolatedTaskStoreAddress refuses an isolated runtime whose existing
+// TaskStore configuration does not name the Dolt listener it declared. The
+// configuration is reused verbatim once it exists, and the declared port
+// reaches only the branch that creates one, so without this an isolated
+// runtime reached through another instance's XDG_CONFIG_HOME would serve that
+// instance's TaskStore over the network while its own Dolt answered nobody.
+// It also refuses an isolated runtime whose declared Dolt port has changed
+// under a configuration still naming the old one.
+func admitIsolatedTaskStoreAddress(paths runtimePaths, ports runtimePorts) error {
+	if _, err := os.Lstat(paths.taskstore); err != nil {
+		return nil
+	}
+	info, err := privateRegular(paths.taskstore, maximumManifestBytes, false)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		return fail("DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS")
+	}
+	content, err := os.ReadFile(paths.taskstore)
+	if err != nil {
+		return fail("DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS")
+	}
+	var document map[string]any
+	if json.Unmarshal(content, &document) != nil {
+		return fail("DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS")
+	}
+	declared := fmt.Sprintf("127.0.0.1:%d", ports.dolt)
+	for _, role := range []string{"control", "writer", "maintenance"} {
+		section, ok := document[role].(map[string]any)
+		if !ok {
+			return fail("DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS")
+		}
+		if address, ok := section["address"].(string); !ok || address != declared {
+			return fail("DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS")
+		}
+	}
+	return nil
+}
+
+func bootstrapTaskStore(paths runtimePaths, prepared preparedRuntime, identity hostIdentity, ports runtimePorts) error {
 	control, err := privateSecret(filepath.Join(paths.credentials, "control.password"))
 	if err != nil {
 		return err
@@ -423,7 +762,7 @@ func bootstrapTaskStore(paths runtimePaths, prepared preparedRuntime, identity h
 	}
 	_ = maintenance
 	provisionArgs := func(output string) []string {
-		return []string{"bootstrap-taskstore", "--config-output", output, "--address", fmt.Sprintf("127.0.0.1:%d", defaultDoltPort), "--database", "director", "--store-id", identity.ID,
+		return []string{"bootstrap-taskstore", "--config-output", output, "--address", fmt.Sprintf("127.0.0.1:%d", ports.dolt), "--database", "director", "--store-id", identity.ID,
 			"--owner-user", "root", "--control-user", "director_control", "--writer-user", "director_writer", "--maintenance-user", "director_maintenance",
 			"--control-password-file", filepath.Join(paths.credentials, "control.password"), "--writer-password-file", filepath.Join(paths.credentials, "writer.password"),
 			"--maintenance-password-file", filepath.Join(paths.credentials, "maintenance.password"), "--privilege-file", paths.privilegeFile}
@@ -501,6 +840,7 @@ func taskStoreIdentity(path string) (string, []byte, error) {
 type runtimeController struct {
 	mu                sync.Mutex
 	paths             runtimePaths
+	ports             runtimePorts
 	prepared          preparedRuntime
 	identity          hostIdentity
 	binding           string
@@ -521,8 +861,8 @@ func (controller *runtimeController) snapshot() runtimeStatus {
 	controller.mu.Lock()
 	defer controller.mu.Unlock()
 	status := runtimeStatus{SchemaVersion: 1, Code: "DIRECTOR_BOOTSTRAP_RUNTIME_STATUS", State: controller.state, Binding: controller.binding,
-		Host: controller.identity, Engine: controller.prepared.Engine, Dolt: controller.prepared.Dolt, RestartCount: controller.restarts,
-		ProjectAdminAuthorization: controller.projectAdminToken}
+		EngineAddress: engineAddress(controller.ports), Host: controller.identity, Engine: controller.prepared.Engine, Dolt: controller.prepared.Dolt,
+		RestartCount: controller.restarts, ProjectAdminAuthorization: controller.projectAdminToken}
 	if controller.engine != nil && controller.engine.command.Process != nil {
 		status.EnginePID = controller.engine.command.Process.Pid
 	}
@@ -548,20 +888,30 @@ func (controller *runtimeController) writeState() error {
 }
 
 func (controller *runtimeController) startChildren() error {
-	if runtimePortInUse(defaultDoltPort) || runtimePortInUse(defaultEnginePort) {
-		return fail("DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER")
+	for _, port := range []int{controller.ports.dolt, controller.ports.engine} {
+		if err := refuseOccupiedPort(port); err != nil {
+			return err
+		}
+	}
+	if controller.ports.isolated {
+		if err := admitIsolatedTaskStore(controller.paths, controller.identity); err != nil {
+			return err
+		}
+		if err := admitIsolatedTaskStoreAddress(controller.paths, controller.ports); err != nil {
+			return err
+		}
 	}
 	if err := initializeTaskStore(controller.paths, controller.prepared, controller.identity); err != nil {
 		return err
 	}
-	dolt, err := startChild(controller.prepared.Dolt.Binary.Path, []string{"sql-server", "--host=127.0.0.1", fmt.Sprintf("--port=%d", defaultDoltPort), "--data-dir=" + controller.paths.doltRoot, "--doltcfg-dir=" + controller.paths.doltConfig, "--socket=" + controller.paths.doltSocket, "--loglevel=warning"}, controller.paths.doltDatabase)
+	dolt, err := startChild(controller.prepared.Dolt.Binary.Path, []string{"sql-server", "--host=127.0.0.1", fmt.Sprintf("--port=%d", controller.ports.dolt), "--data-dir=" + controller.paths.doltRoot, "--doltcfg-dir=" + controller.paths.doltConfig, "--socket=" + controller.paths.doltSocket, "--loglevel=warning"}, controller.paths.doltDatabase)
 	if err != nil {
 		return err
 	}
 	controller.mu.Lock()
 	controller.dolt = dolt
 	controller.mu.Unlock()
-	if err := waitPort(defaultDoltPort, dolt); err != nil {
+	if err := waitPort(controller.ports.dolt, dolt); err != nil {
 		stopChild(dolt)
 		return err
 	}
@@ -569,11 +919,11 @@ func (controller *runtimeController) startChildren() error {
 		stopChild(dolt)
 		return err
 	}
-	if err := bootstrapTaskStore(controller.paths, controller.prepared, controller.identity); err != nil {
+	if err := bootstrapTaskStore(controller.paths, controller.prepared, controller.identity, controller.ports); err != nil {
 		stopChild(dolt)
 		return err
 	}
-	engine, err := startChild(controller.prepared.Engine.Binary.Path, []string{"serve-board", fmt.Sprintf("--listen=127.0.0.1:%d", defaultEnginePort), "--taskstore-config=" + controller.paths.taskstore,
+	engine, err := startChild(controller.prepared.Engine.Binary.Path, []string{"serve-board", "--listen=" + engineAddress(controller.ports), "--taskstore-config=" + controller.paths.taskstore,
 		"--host-id=" + controller.identity.ID, "--host-label=" + controller.identity.Label, "--host-socket=" + controller.hostSocket,
 		"--runtime-root=" + controller.paths.workRoot, "--project-admin-token-file=" + controller.paths.projectAdminToken}, controller.paths.dataRoot)
 	if err != nil {
@@ -583,7 +933,7 @@ func (controller *runtimeController) startChildren() error {
 	controller.mu.Lock()
 	controller.engine = engine
 	controller.mu.Unlock()
-	if err := waitPort(defaultEnginePort, engine); err != nil {
+	if err := waitPort(controller.ports.engine, engine); err != nil {
 		stopChild(engine)
 		stopChild(dolt)
 		return err
@@ -717,7 +1067,7 @@ func (controller *runtimeController) monitor() error {
 }
 
 func runRuntime(candidate, bootstrapSHA, hostSocket string) error {
-	paths, err := runtimeBasePaths()
+	paths, ports, err := runtimeLayout()
 	if err != nil {
 		return err
 	}
@@ -741,7 +1091,7 @@ func runRuntime(candidate, bootstrapSHA, hostSocket string) error {
 	if err != nil {
 		return err
 	}
-	controller := &runtimeController{paths: paths, prepared: prepared, identity: identity, binding: runtimeBinding(prepared, identity, hostSocket), hostSocket: hostSocket,
+	controller := &runtimeController{paths: paths, ports: ports, prepared: prepared, identity: identity, binding: runtimeBinding(prepared, identity, hostSocket, ports), hostSocket: hostSocket,
 		controlToken: controlToken, projectAdminToken: projectToken, state: "degraded", leaseDeadline: time.Now().Add(leaseDuration), stop: make(chan struct{})}
 	if err := controller.serveControl(); err != nil {
 		return err
@@ -763,14 +1113,25 @@ func runRuntime(candidate, bootstrapSHA, hostSocket string) error {
 	return err
 }
 
+// runtimeFailure is the closed document the supervisor leaves for the ensure
+// that started it. It carries no free-form text, only the refusal code and the
+// occupied-listener facts an operator needs to act.
+type runtimeFailure struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Code          string `json:"code"`
+	Port          int    `json:"port,omitempty"`
+	Holder        string `json:"holder,omitempty"`
+	PID           int    `json:"pid,omitempty"`
+}
+
 func writeRuntimeFailure(err error) {
-	paths, pathErr := runtimeBasePaths()
-	if pathErr != nil {
+	// A runtime whose layout was never admitted owns no runtime root, so it
+	// must not leave a failure document in another instance's state.
+	paths, _, layoutErr := runtimeLayout()
+	if layoutErr != nil {
 		return
 	}
-	content, _ := json.Marshal(struct {
-		SchemaVersion int    `json:"schemaVersion"`
-		Code          string `json:"code"`
-	}{1, codeOf(err, "DIRECTOR_BOOTSTRAP_RUNTIME_FAILED")})
+	port, holder, pid := occupiedPortOf(err)
+	content, _ := json.Marshal(runtimeFailure{SchemaVersion: 1, Code: codeOf(err, "DIRECTOR_BOOTSTRAP_RUNTIME_FAILED"), Port: port, Holder: holder, PID: pid})
 	_ = writePrivateAtomic(paths.failure, append(content, '\n'), 0o600)
 }

@@ -237,10 +237,19 @@ deleting or overwriting them.
 For pre-load or activation failure, use `paseo plugin ls --json` and
 `paseo plugin logs director --json`. `DIRECTOR_MAIN_GO_TOOLCHAIN_MISSING`,
 `DIRECTOR_MAIN_GO_TOOLCHAIN_VERSION`, `DIRECTOR_MAIN_BUILD_FAILED`,
-`DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER`, `DIRECTOR_BOOTSTRAP_FOREIGN_OWNER`,
+`DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER`, `DIRECTOR_BOOTSTRAP_PORT_OCCUPIED`,
+`DIRECTOR_BOOTSTRAP_ENGINE_ADDRESS_MISMATCH`,
+`DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS`,
+`DIRECTOR_BOOTSTRAP_CONTROL_OWNERSHIP`,
+`DIRECTOR_BOOTSTRAP_FOREIGN_OWNER`,
 `DIRECTOR_BOOTSTRAP_INSTALL_NOT_PREPARED`,
 `DIRECTOR_RUNTIME_CHILDREN_NOT_READY`, `DIRECTOR_RUNTIME_BINDING_MISMATCH`, and
-`DIRECTOR_ACTIVATION_FAILED` are bounded path-free causes. Correct the release
+`DIRECTOR_ACTIVATION_FAILED` are bounded path-free causes. A host already
+running a Director accepts a second one only as the isolated runtime described
+in the [Operator guide](operator-guide.md); `DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER`
+reports another Director runtime holding a required listener, while
+`DIRECTOR_BOOTSTRAP_PORT_OCCUPIED` reports a named port held by something that
+is not one. Correct the release
 or runtime condition, then invoke only the public plugin-scoped
 reload/update command. Director Home, Doctor, and Repair are unavailable until
 the connector loads; once available, Doctor remains read-only and Repair does

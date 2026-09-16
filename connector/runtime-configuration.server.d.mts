@@ -34,7 +34,12 @@ export class RuntimeConfigurationError extends Error {
 }
 
 export const DEFAULT_ENGINE_MODE: "release";
+export const DEFAULT_ENGINE_PORT: 7041;
 export const DEFAULT_ENGINE_URL: "http://127.0.0.1:7041";
+export const DOLT_PORT_VARIABLE: "DIRECTOR_RUNTIME_DOLT_PORT";
+export const ENGINE_PORT_VARIABLE: "DIRECTOR_RUNTIME_ENGINE_PORT";
+export function directorEngineAddress(environment?: NodeJS.ProcessEnv): { address: string; isolated: boolean };
+export function directorEngineURL(environment?: NodeJS.ProcessEnv): { url: string; address: string; isolated: boolean };
 export const DEFAULT_PASEO_URL: "ws://127.0.0.1:6767/ws";
 export function directorRuntimePaths(environment?: NodeJS.ProcessEnv, home?: string): {
   root: string;

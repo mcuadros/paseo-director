@@ -81,6 +81,7 @@ import {
   type PlanningTransport,
 } from "./engine-planning.server.ts";
 import {
+  BootstrapLauncherError,
   ensureBootstrapRuntime,
   type BootstrapRuntimeHandle,
   type DirectorHostIdentity,
@@ -95,6 +96,7 @@ import {
 import { INSTALLED_CONNECTOR_METADATA } from "./install-metadata.server.ts";
 import {
   DEFAULT_ENGINE_URL,
+  directorEngineURL,
   directorRuntimePaths,
 } from "./runtime-configuration.server.mjs";
 import { startHostContractServer } from "./host-ipc.server.ts";
@@ -1488,16 +1490,22 @@ export function startInstalledConnectorShell(options: {
 }): PaseoHostConnector {
   const environment = options.environment ?? process.env;
   const runtime = directorRuntimePaths(environment);
+  // One declaration places the Engine. Resolving it here and asserting it
+  // against the address the bootstrap reports keeps an isolated instance's
+  // surface off another instance's Engine.
+  const engineEndpoint = directorEngineURL(environment);
   const selection: InstalledBootstrapSelection = selectInstalledBootstrap(
     options.installation ?? INSTALLED_CONNECTOR_METADATA,
   );
   const connectorSelection: ConnectorEngineSelection = { mode: selection.channel };
-  const configurationBytes = Buffer.from(`director-go-bootstrap/v1\nengine.mode=${selection.channel}\n`);
+  const configurationBytes = Buffer.from(
+    `director-go-bootstrap/v1\nengine.mode=${selection.channel}\nengine.url=${engineEndpoint.url}\n`,
+  );
   const configuration = {
     schemaVersion: 2 as const,
     engine: {
       mode: selection.channel,
-      url: DEFAULT_ENGINE_URL,
+      url: engineEndpoint.url,
       hostSocket: runtime.hostSocket,
       runtimeRoot: runtime.workRoot,
     },
@@ -1507,7 +1515,7 @@ export function startInstalledConnectorShell(options: {
       legacyEnvironment: "absent",
       settings: [
         { name: "engine.mode", source: "defaulted" },
-        { name: "engine.url", source: "defaulted" },
+        { name: "engine.url", source: engineEndpoint.isolated ? "overridden" : "defaulted" },
         { name: "engine.cache-base", source: environment.XDG_CACHE_HOME === undefined ? "defaulted" : "overridden" },
         { name: "engine.runtime-base", source: environment.XDG_RUNTIME_DIR === undefined && environment.XDG_CACHE_HOME === undefined ? "defaulted" : "overridden" },
       ],
@@ -1531,6 +1539,7 @@ export function startInstalledConnectorShell(options: {
       selection,
       environment,
       hostSocket: configuration.engine.hostSocket,
+      engineAddress: engineEndpoint.address,
     });
     return { engine: bootstrap.engine, dolt: bootstrap.dolt, bootstrap };
   });
@@ -1585,7 +1594,8 @@ export function startInstalledConnectorShell(options: {
       const code = typeof candidate === "string" && /^[A-Z0-9_]{3,96}$/u.test(candidate)
         ? candidate
         : "DIRECTOR_ACTIVATION_FAILED";
-      console.error(JSON.stringify({ code, lifecycle: "plugin-reload", result: "failed" }));
+      const diagnosis = error instanceof BootstrapLauncherError ? error.diagnosis : null;
+      console.error(JSON.stringify({ code, lifecycle: "plugin-reload", result: "failed", ...(diagnosis ?? {}) }));
     },
   );
   return connector;

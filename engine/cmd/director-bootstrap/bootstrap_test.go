@@ -56,16 +56,18 @@ func TestBindingIncludesChannelCandidateArtifactsIdentityAndHostSocket(t *testin
 		Bootstrap: preparedExecutable{SHA256: strings.Repeat("2", 64)}, Engine: preparedEngine{Binary: preparedExecutable{SHA256: strings.Repeat("3", 64)}, ContractSHA256: strings.Repeat("4", 64)},
 		Dolt: preparedDolt{Binary: preparedExecutable{SHA256: strings.Repeat("5", 64)}}}
 	host := hostIdentity{SchemaVersion: 1, ID: "director-" + strings.Repeat("6", 32), Label: "Director"}
-	base := runtimeBinding(prepared, host, "/private/host.sock")
+	installed := runtimePorts{dolt: defaultDoltPort, engine: defaultEnginePort}
+	base := runtimeBinding(prepared, host, "/private/host.sock", installed)
 	mutations := []string{
-		runtimeBinding(func() preparedRuntime { value := prepared; value.Channel = "release"; return value }(), host, "/private/host.sock"),
+		runtimeBinding(func() preparedRuntime { value := prepared; value.Channel = "release"; return value }(), host, "/private/host.sock", installed),
 		runtimeBinding(func() preparedRuntime {
 			value := prepared
 			value.SourceCandidate = strings.Repeat("7", 40)
 			return value
-		}(), host, "/private/host.sock"),
-		runtimeBinding(prepared, hostIdentity{SchemaVersion: 1, ID: "director-" + strings.Repeat("8", 32), Label: "Director"}, "/private/host.sock"),
-		runtimeBinding(prepared, host, "/private/other.sock"),
+		}(), host, "/private/host.sock", installed),
+		runtimeBinding(prepared, hostIdentity{SchemaVersion: 1, ID: "director-" + strings.Repeat("8", 32), Label: "Director"}, "/private/host.sock", installed),
+		runtimeBinding(prepared, host, "/private/other.sock", installed),
+		runtimeBinding(prepared, host, "/private/host.sock", runtimePorts{dolt: 13307, engine: 17041, isolated: true}),
 	}
 	for _, mutation := range mutations {
 		if mutation == base {
@@ -94,13 +96,30 @@ func TestTaskStoreIdentityAcceptsOnlyLegacyMigrationOrExactDirectorIdentity(t *t
 }
 
 func TestRuntimeRefusesForeignPortsBeforeLaunchingChildren(t *testing.T) {
-	previous := runtimePortInUse
-	runtimePortInUse = func(port int) bool { return port == defaultDoltPort }
-	t.Cleanup(func() { runtimePortInUse = previous })
-	controller := runtimeController{}
+	holdDirectorRuntimePorts(t, defaultDoltPort)
+	controller := runtimeController{ports: runtimePorts{dolt: defaultDoltPort, engine: defaultEnginePort}}
 	if err := controller.startChildren(); codeOf(err, "") != "DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER" {
 		t.Fatalf("foreign port was not refused before launch: %v", err)
 	}
+}
+
+// holdDirectorRuntimePorts makes the named ports look like the loopback
+// listeners of a Director runtime this user owns.
+func holdDirectorRuntimePorts(t *testing.T, held ...int) {
+	t.Helper()
+	occupied := map[int]struct{}{}
+	for _, port := range held {
+		occupied[port] = struct{}{}
+	}
+	previousInUse, previousHolder := runtimePortInUse, runtimePortHolder
+	runtimePortInUse = func(port int) bool { _, ok := occupied[port]; return ok }
+	runtimePortHolder = func(port int) holderProcess {
+		if _, ok := occupied[port]; !ok {
+			return holderProcess{}
+		}
+		return supervisedDirectorChild(port)
+	}
+	t.Cleanup(func() { runtimePortInUse, runtimePortHolder = previousInUse, previousHolder })
 }
 
 func TestReadyChildMustRemainTheExactPinnedExecutable(t *testing.T) {
@@ -137,9 +156,13 @@ func TestLegacyTaskStoreIdentityMigratesWithBackupAndNoReseed(t *testing.T) {
 	identity := hostIdentity{SchemaVersion: 1, ID: "director-" + strings.Repeat("a", 32), Label: "Director"}
 	previous := executeRuntimeCommand
 	provisions := 0
+	ports := runtimePorts{dolt: 13307, engine: 17041, isolated: true}
 	executeRuntimeCommand = func(_ string, args []string, _ string, _ time.Duration) error {
 		if index := indexOf(args, "--config-output"); index >= 0 {
 			provisions++
+			if address := indexOf(args, "--address"); address < 0 || args[address+1] != "127.0.0.1:13307" {
+				t.Fatalf("TaskStore provisioning ignored the isolated Dolt port: %q", args)
+			}
 			if err := os.WriteFile(args[index+1], []byte("{\"schemaVersion\":2,\"storeId\":\""+identity.ID+"\"}\n"), 0o600); err != nil {
 				return err
 			}
@@ -148,7 +171,7 @@ func TestLegacyTaskStoreIdentityMigratesWithBackupAndNoReseed(t *testing.T) {
 	}
 	t.Cleanup(func() { executeRuntimeCommand = previous })
 	prepared := preparedRuntime{Engine: preparedEngine{Binary: preparedExecutable{Path: "/private/director-engine"}}}
-	if err := bootstrapTaskStore(paths, prepared, identity); err != nil {
+	if err := bootstrapTaskStore(paths, prepared, identity, ports); err != nil {
 		t.Fatal(err)
 	}
 	storeID, _, err := taskStoreIdentity(paths.taskstore)
@@ -159,7 +182,7 @@ func TestLegacyTaskStoreIdentityMigratesWithBackupAndNoReseed(t *testing.T) {
 	if err != nil || !bytes.Equal(backup, original) {
 		t.Fatalf("legacy backup was not preserved: %v", err)
 	}
-	if err := bootstrapTaskStore(paths, prepared, identity); err != nil || provisions != 1 {
+	if err := bootstrapTaskStore(paths, prepared, identity, ports); err != nil || provisions != 1 {
 		t.Fatalf("migration replay was not idempotent: provisions=%d err=%v", provisions, err)
 	}
 }

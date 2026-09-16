@@ -9,7 +9,13 @@ import type { InstalledBootstrapSelection } from "./bootstrap-selection.server.t
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const HOST_ID_PATTERN = /^director-[0-9a-f]{32}$/u;
+// The Go bootstrap emits exactly this shape; keeping the mirror here lets the
+// launcher reject a status whose Engine address is not a usable loopback one.
+const ENGINE_ADDRESS_PATTERN = /^127\.0\.0\.1:([1-9][0-9]{0,4})$/u;
 const HEARTBEAT_MILLIS = 5_000;
+
+/** The closed occupied-listener facts an operator needs, never free text. */
+export type BootstrapOccupiedListener = { readonly port: number; readonly holder: "director" | "foreign" | "unproved" };
 
 export type DirectorHostIdentity = { readonly schemaVersion: 1; readonly id: string; readonly label: "Director" };
 export type ResolvedEngine = {
@@ -20,20 +26,26 @@ export type ResolvedEngine = {
 export type ResolvedDolt = { readonly version: "2.3.2"; readonly target: "linux-amd64"; readonly binaryPath: string; readonly binarySha256: string; readonly archiveSha256: string };
 export type BootstrapRuntimeStatus = { readonly state: "current" | "degraded"; readonly binding: string; readonly enginePid: number; readonly doltPid: number; readonly restartCount: number };
 export type BootstrapRuntimeHandle = {
-  readonly binding: string; readonly host: DirectorHostIdentity; readonly engine: ResolvedEngine; readonly dolt: ResolvedDolt;
+  readonly binding: string; readonly engineAddress: string; readonly host: DirectorHostIdentity; readonly engine: ResolvedEngine; readonly dolt: ResolvedDolt;
   projectAdminAuthorization(): string; status(): Promise<BootstrapRuntimeStatus>; close(): Promise<void>;
 };
 
 export class BootstrapLauncherError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) { super(message); this.name = "BootstrapLauncherError"; this.code = code; }
+  readonly diagnosis: BootstrapOccupiedListener | null;
+  constructor(code: string, message: string, diagnosis: BootstrapOccupiedListener | null = null) {
+    super(message);
+    this.name = "BootstrapLauncherError";
+    this.code = code;
+    this.diagnosis = diagnosis;
+  }
 }
 
 type BootstrapOutput = {
   schemaVersion: 1; code: string; state: "current" | "degraded"; binding: string; host: DirectorHostIdentity;
   engine: { mode: "main" | "release"; version: string; sourceCandidate: string; target: "linux-amd64"; binary: { path: string; sha256: string; size: number }; notices: { path: string; sha256: string; size: number }; contractVersion: string; contractSha256: string };
   dolt: { version: "2.3.2"; target: "linux-amd64"; binary: { path: string; sha256: string; size: number }; archiveSha256: string };
-  enginePid: number; doltPid: number; restartCount: number; projectAdminAuthorization: string;
+  engineAddress: string; enginePid: number; doltPid: number; restartCount: number; projectAdminAuthorization: string;
 };
 
 export type BootstrapLauncherDependencies = {
@@ -49,7 +61,28 @@ function closedEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
       selected[name] = value;
     }
   }
+  // An isolated second runtime declares its own loopback ports. The Go
+  // bootstrap owns admission; this launcher only forwards the declaration.
+  for (const name of ["DIRECTOR_RUNTIME_DOLT_PORT", "DIRECTOR_RUNTIME_ENGINE_PORT"] as const) {
+    const value = environment[name];
+    if (value !== undefined) selected[name] = value;
+  }
   return selected;
+}
+
+/** Reads the one bounded occupied-listener line the bootstrap emits, if any. */
+export function occupiedListenerDiagnosis(stderr: string): BootstrapOccupiedListener | null {
+  for (const line of String(stderr).split("\n")) {
+    if (!line.startsWith("{") || line.length > 256) continue;
+    let value: { port?: unknown; holder?: unknown };
+    try { value = JSON.parse(line) as { port?: unknown; holder?: unknown }; } catch { continue; }
+    const port = value.port;
+    const holder = value.holder;
+    if (!Number.isSafeInteger(port) || (port as number) <= 0 || (port as number) > 65_535) continue;
+    if (holder !== "director" && holder !== "foreign" && holder !== "unproved") continue;
+    return { port: port as number, holder };
+  }
+  return null;
 }
 
 function invokeBootstrap(path: string, args: readonly string[], options: { readonly env: NodeJS.ProcessEnv; readonly timeout: number }): Promise<string> {
@@ -57,13 +90,13 @@ function invokeBootstrap(path: string, args: readonly string[], options: { reado
     execFile(path, [...args], { encoding: "utf8", env: options.env, shell: false, timeout: options.timeout, maxBuffer: 128 * 1024 }, (error, stdout, stderr) => {
       if (error) {
         const code = /(?:^|\n)([A-Z][A-Z0-9_]{2,95})(?:\n|$)/u.exec(String(stderr))?.[1] ?? "DIRECTOR_BOOTSTRAP_LAUNCH_FAILED";
-        reject(new BootstrapLauncherError(code, "the Director Go bootstrap refused runtime startup"));
+        reject(new BootstrapLauncherError(code, "the Director Go bootstrap refused runtime startup", occupiedListenerDiagnosis(String(stderr))));
       } else accept(String(stdout).trim());
     });
   });
 }
 
-function parseOutput(raw: string, selection: InstalledBootstrapSelection): BootstrapOutput {
+function parseOutput(raw: string, selection: InstalledBootstrapSelection, engineAddress: string): BootstrapOutput {
   let value: BootstrapOutput;
   try { value = JSON.parse(raw) as BootstrapOutput; } catch { throw new BootstrapLauncherError("DIRECTOR_BOOTSTRAP_CONTROL_INVALID", "the Director Go bootstrap returned invalid status"); }
   if (value.schemaVersion !== 1 || value.code !== "DIRECTOR_BOOTSTRAP_RUNTIME_STATUS" || (value.state !== "current" && value.state !== "degraded") ||
@@ -73,32 +106,45 @@ function parseOutput(raw: string, selection: InstalledBootstrapSelection): Boots
     !SHA256_PATTERN.test(value.engine?.notices?.sha256 ?? "") || !SHA256_PATTERN.test(value.engine?.contractSha256 ?? "") || value.dolt?.version !== "2.3.2" ||
     value.dolt?.target !== "linux-amd64" || !isAbsolute(value.dolt?.binary?.path ?? "") || !SHA256_PATTERN.test(value.dolt?.binary?.sha256 ?? "") ||
     !SHA256_PATTERN.test(value.dolt?.archiveSha256 ?? "") || !Number.isSafeInteger(value.enginePid) || value.enginePid <= 0 || !Number.isSafeInteger(value.doltPid) || value.doltPid <= 0 ||
-    value.enginePid === value.doltPid || !SHA256_PATTERN.test(value.projectAdminAuthorization ?? "")) {
+    value.enginePid === value.doltPid || !SHA256_PATTERN.test(value.projectAdminAuthorization ?? "") ||
+    !ENGINE_ADDRESS_PATTERN.test(value.engineAddress ?? "")) {
     throw new BootstrapLauncherError("DIRECTOR_BOOTSTRAP_CONTROL_INVALID", "the Director Go bootstrap status identity is invalid");
+  }
+  if (value.engineAddress !== engineAddress) {
+    // The transports are already bound to engineAddress. A supervisor serving
+    // a different one would leave this instance's surface on another Engine.
+    throw new BootstrapLauncherError(
+      "DIRECTOR_BOOTSTRAP_ENGINE_ADDRESS_MISMATCH",
+      "the Director Go bootstrap serves an Engine address this connector is not bound to",
+    );
   }
   return value;
 }
 
 export async function ensureBootstrapRuntime(options: {
-  readonly selection: InstalledBootstrapSelection; readonly environment: NodeJS.ProcessEnv; readonly hostSocket: string; readonly dependencies?: BootstrapLauncherDependencies;
+  readonly selection: InstalledBootstrapSelection; readonly environment: NodeJS.ProcessEnv; readonly hostSocket: string;
+  readonly engineAddress: string; readonly dependencies?: BootstrapLauncherDependencies;
 }): Promise<BootstrapRuntimeHandle> {
   if (!isAbsolute(options.hostSocket)) throw new BootstrapLauncherError("DIRECTOR_BOOTSTRAP_HOST_SOCKET", "the Director host socket must be absolute");
+  if (!ENGINE_ADDRESS_PATTERN.test(options.engineAddress)) {
+    throw new BootstrapLauncherError("DIRECTOR_BOOTSTRAP_ENGINE_ADDRESS_MISMATCH", "the Director Engine address must be an exact loopback address");
+  }
   const invoke = options.dependencies?.invoke ?? invokeBootstrap;
   const args = ["ensure", "--candidate", options.selection.connectorCommit, "--bootstrap-sha256", options.selection.bootstrap.sha256, "--host-socket", options.hostSocket] as const;
   const commandOptions = { env: closedEnvironment(options.environment), timeout: 130_000 } as const;
-  const initial = parseOutput(await invoke(options.selection.bootstrap.path, args, commandOptions), options.selection);
+  const initial = parseOutput(await invoke(options.selection.bootstrap.path, args, commandOptions), options.selection, options.engineAddress);
   let latest = initial;
   let closed = false;
   let inflight: Promise<BootstrapOutput> | null = null;
   const refresh = () => {
     if (closed) return Promise.reject(new BootstrapLauncherError("DIRECTOR_BOOTSTRAP_HANDLE_CLOSED", "the Director bootstrap handle is closed"));
-    inflight ??= invoke(options.selection.bootstrap.path, args, commandOptions).then((raw) => parseOutput(raw, options.selection)).then((value) => { latest = value; return value; }).finally(() => { inflight = null; });
+    inflight ??= invoke(options.selection.bootstrap.path, args, commandOptions).then((raw) => parseOutput(raw, options.selection, options.engineAddress)).then((value) => { latest = value; return value; }).finally(() => { inflight = null; });
     return inflight;
   };
   const heartbeat = setInterval(() => { void refresh().catch(() => undefined); }, HEARTBEAT_MILLIS);
   heartbeat.unref();
   return {
-    binding: initial.binding, host: initial.host,
+    binding: initial.binding, engineAddress: initial.engineAddress, host: initial.host,
     engine: { mode: initial.engine.mode, version: initial.engine.version, sourceCandidate: initial.engine.sourceCandidate, target: "linux-amd64",
       binaryPath: initial.engine.binary.path, noticesPath: initial.engine.notices.path, binarySha256: initial.engine.binary.sha256,
       noticesSha256: initial.engine.notices.sha256, connectorCommit: options.selection.connectorCommit,

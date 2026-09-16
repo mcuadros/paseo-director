@@ -27,6 +27,17 @@ effect; this entry does not publish it.
 - Handler-scoped Paseo authority and a plugin-owned detached Engine/Dolt
   Go controller with no secondary daemon connection, system service, or
   restart.
+- A supported isolated second Director runtime, declaring its own loopback
+  ports together with its own private XDG state, which starts beside a running
+  instance without stopping or reconfiguring it. The declaration places the
+  whole instance: the connector resolves its Engine endpoint from it and
+  refuses a runtime serving a different address. A partial declaration fails
+  closed on both sides, an isolated runtime never releases a live one it finds,
+  and it refuses a data directory holding a TaskStore it does not own, a
+  TaskStore configuration naming a Dolt listener it did not declare, and any
+  directory a Director runtime already running on the host keeps its state in.
+  Where a running instance actually is now comes from its own supervised
+  children rather than from where a default installation would be.
 
 ### Security
 
@@ -36,6 +47,17 @@ effect; this entry does not publish it.
 
 ### Fixed
 
+- The operator guide now states what a runtime ended without being released
+  leaves behind, and when ending the process the refusal names is the recovery
+  rather than something never to touch. It also documents the one state that
+  does not clear itself, a control socket left with no runtime to own it, with
+  how to recognise it and the single file to remove.
+- The occupied-listener refusal now names the port and distinguishes a
+  supervised Director child from an unrelated process, instead of reporting
+  both as another Director. A holder that cannot be identified is reported as
+  unproved rather than asserted to be something else, and the closed port and
+  holder facts reach the operator's plugin log rather than only a direct
+  invocation.
 - Preserve the M6.17 client contributions, bounded runtime diagnostics, Home
   host-fact fingerprint correction, non-destructive TaskStore configuration
   mismatch guidance, and guarded public-CLI rollback procedure.

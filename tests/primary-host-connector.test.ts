@@ -266,6 +266,7 @@ test("an ordinary authenticated agent is recreated with exact Project administra
   host.attachBootstrapRuntime(Promise.resolve({
     bootstrap: {
       binding: "e".repeat(64),
+      engineAddress: "127.0.0.1:7041",
       host: { schemaVersion: 1 as const, id: `director-${"c".repeat(32)}`, label: "Director" as const },
       engine: {
         mode: "release" as const, version: "1.0.0", sourceCandidate: "0".repeat(40), target: "linux-amd64" as const,
