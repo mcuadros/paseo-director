@@ -121,28 +121,41 @@ task rather than a build status.
 
 ### What the composition root supplies, and what it cannot
 
-Every function here that touches the machine defaults its own effects, and the
-tests call each one with the argument absent so the real default runs. That is
-deliberate rather than stylistic: an argument with no default is supplied only
-at the composition root, where no test executes, so neutralising it there
-changes nothing any test can see. Eleven such arguments existed at one point and
-all eleven survived mutation; nine are now defaults exercised without them.
+Most functions here that touch the machine default their own effects, and a test
+calls each one with the argument absent so the real default runs. That is
+deliberate rather than stylistic: an argument supplied only at the composition
+root, where no test executes, can be neutralised there without any test
+noticing.
 
-Two things remain that a test cannot reach, and they are named rather than
-implied:
+The count is exact because it was measured rather than asserted. Each effect
+default was replaced with an inert one and the suite re-run: of seventeen,
+twelve are caught, so twelve are genuinely exercised with the argument absent.
+Five are not, and one further value supplied by `main` is not a default at all.
+All six are listed here rather than left to be discovered, with the reason each
+is not a path to a false result:
 
-- **Timing.** `wait` is still injectable, and replacing it with a no-op survives
-  mutation. That is equivalent for every asserted property: the isolation poll
-  still performs its bounded number of reads and still refuses an empty
-  directory, and the escalation still re-proves identity before every signal and
-  still ends at `SIGKILL`. The only difference is elapsed time, and its one
-  behavioural effect — a process gets less time to exit on `SIGTERM` before
-  `SIGKILL` — fails in the safe direction.
-- **What the composition root hands on.** `main` receives the environment and
-  passes it to the units that derive the run's secret from it. Verifying that it
-  passes its own input, rather than something emptied, requires executing `main`,
-  which needs an X server, a daemon and Playwright. This is the boundary the
-  wiring contract covers by assertion rather than by execution.
+- **`wait`, in `verifyRunIsolation` and `createTeardown`.** Replacing it with a
+  no-op survives, and is equivalent for every asserted property: the isolation
+  poll still performs its bounded reads and still refuses an empty directory,
+  and the escalation still re-proves identity before every signal and still ends
+  at `SIGKILL`. Its one behavioural effect — less time to exit on `SIGTERM`
+  before `SIGKILL` — fails in the safe direction.
+- **`displayLockOwnedBy`'s `readLock`.** Unreachable in production: all three
+  call sites pass a reader explicitly, so a defect in the default cannot affect
+  a run.
+- **`claimDisplay`'s `io` and `attempts`.** Also unreachable: `main` supplies
+  `defaultDisplayIo` and `50` at the call site, so the defaults never take
+  effect unless a second edit removes those arguments too.
+- **`removeRunRoot`'s body, built by `main`.** Reached, and the one here that is
+  not a default. Emptying it leaves the private run directory behind. That is a
+  visible residue an operator finds, not a false statement in the evidence: the
+  result document, the transcript and the screenshots are unaffected.
+
+And one boundary no arrangement of defaults removes: `main` receives the
+environment and passes it to the units that derive the run's secret from it.
+Verifying that it passes its own input, rather than something emptied, requires
+executing `main`, which needs an X server, a daemon and Playwright. That is the
+boundary the wiring contract covers by assertion rather than by execution.
 
 ### Where a failed read could mean "fine", and what happens instead
 
