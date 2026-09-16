@@ -177,6 +177,7 @@ test("accessibility preferences and announcements work without web-only APIs", a
 
 test("integrated product surfaces keep compact, native, reflow, and host-owned boundaries", () => {
   const sources = [
+    "ui/director-console.client.tsx",
     "ui/director-home.client.tsx",
     "ui/project-operations.client.tsx",
     "ui/planning-surface.client.tsx",
@@ -225,7 +226,7 @@ test("integrated product surfaces keep compact, native, reflow, and host-owned b
   assert.match(home, /repair\.isPending[\s\S]*accessibilityPreferences\.reduceMotion/);
 
   const entry = readFileSync("index.ts", "utf8");
-  assert.match(entry, /addSurface\("home", DirectorHome\)/);
+  assert.match(entry, /addSurface\("home", DirectorConsole\)/);
   assert.match(entry, /id: "project-board"/);
   assert.match(entry, /id: "task-inspector"/);
   assert.match(entry, /addClientSide\(contributeTaskNavigation\)/);

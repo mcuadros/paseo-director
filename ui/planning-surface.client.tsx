@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Client-only React Native presentation of engine-owned planning projections.
 
-import type { PluginWorkspacePanelProps } from "@getpaseo/plugin";
+import type { PluginSurfaceProps, PluginWorkspacePanelProps } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin";
 import { Icon } from "./host-primitives.client.tsx";
 import { Modal } from "./paseo-ui.client.tsx";
@@ -198,7 +198,23 @@ type PlanningSurfaceProps = Pick<
   navigation?: PluginWorkspacePanelProps["navigation"];
 };
 
+/**
+ * The workspace panel. It forwards no Workspace: the Board queries planning
+ * data with `projectId` null and an empty `workspaceIds` list, so it has never
+ * derived scope from the Workspace hosting it (PLAN section 16.6).
+ */
 export function ProjectBoard(props: PluginWorkspacePanelProps) {
+  return (
+    <ProjectBoardSurface
+      host={props.host}
+      layout={props.layout}
+      navigation={props.navigation}
+      theme={props.theme}
+    />
+  );
+}
+
+export function ProjectBoardSurface(props: PluginSurfaceProps) {
   const queryPlanning = useRpc(planningQueryRpc);
   const queryTaskDetail = useRpc(planningTaskDetailRpc);
   const mutatePlanning = useRpc(planningMutationRpc);

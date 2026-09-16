@@ -31,12 +31,35 @@ import {
   useResponsiveCompactLayout,
 } from "./accessibility.client.tsx";
 
-export function DirectorWorkers({
+/**
+ * The aggregate for one root Workspace, independent of how the host reached it.
+ * The workspace panel supplies `workspaceId` from its own host context; the
+ * Director Console supplies one per root Workspace from its Project facts and
+ * labels each view with a heading, because a global surface hosts several.
+ */
+export type DirectorWorkersViewProps = Pick<
+  PluginWorkspacePanelProps,
+  "theme" | "layout" | "navigation" | "workspaceId"
+> & { heading?: string };
+
+export function DirectorWorkers(props: PluginWorkspacePanelProps) {
+  return (
+    <DirectorWorkersView
+      layout={props.layout}
+      navigation={props.navigation}
+      theme={props.theme}
+      workspaceId={props.workspaceId}
+    />
+  );
+}
+
+export function DirectorWorkersView({
   theme,
   layout,
   navigation,
   workspaceId,
-}: PluginWorkspacePanelProps) {
+  heading,
+}: DirectorWorkersViewProps) {
   const accessibilityPreferences = useAccessibilityPreferences();
   const loadWorkers = useRpc(directorWorkersRpc);
   const queryClient = useQueryClient();
@@ -142,7 +165,7 @@ export function DirectorWorkers({
     <AccessibilityProvider focusColor={theme.colors.accent} preferences={accessibilityPreferences}>
     <ScrollView contentContainerStyle={styles.screen}>
       <Text accessibilityRole="header" style={styles.title}>
-        Director Workers
+        {heading ?? "Director Workers"}
       </Text>
       <Text style={styles.body}>
         Live top-level Task Agents and Reviewers registered to this root

@@ -151,6 +151,9 @@ test("Home actions require exact host, freshness, engine availability, and nativ
 
 test("Director Home uses host-scoped pagination, current-data action gates, tokens, and touch-safe responsive controls", () => {
   const source = readFileSync("ui/director-home.client.tsx", "utf8");
+  // Pagination and refresh moved into the one shared snapshot hook the Console
+  // and the Overview body both read, so they are asserted where they now live.
+  const query = readFileSync("ui/director-home-query.client.ts", "utf8");
   for (const token of [
     '["director", "home", hostId]',
     "useInfiniteQuery",
@@ -158,6 +161,12 @@ test("Director Home uses host-scoped pagination, current-data action gates, toke
     "refetchOnMount: \"always\"",
     "refetchOnReconnect: true",
     "refetchInterval: 30_000",
+  ]) {
+    assert.ok(query.includes(token), `missing ${token}`);
+  }
+  for (const token of [
+    "useDirectorHomeSnapshot(hostId)",
+    "directorHomeQueryKey(hostId), exact: true",
     "homeActionEnabled",
     "entry.hostId !== hostId",
     "useEffect",

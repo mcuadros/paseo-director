@@ -88,6 +88,7 @@ test("the Paseo 0.7.2 client bundle contains no Director server runtime symbol",
     sidebar: ["home"],
     panels: ["director-workers", "project-board", "task-inspector"],
     commands: [
+      "open-director",
       "open-director-workers",
       "create-director-administration-session",
       "return-to-director-board",
@@ -113,7 +114,7 @@ test("the Paseo 0.7.2 client bundle contains no Director server runtime symbol",
     addCommandCenterItem() { optionalFailure.commands += 1; },
     addClientSide() { throw new Error("OPTIONAL_CLIENT_CONTRIBUTION_UNAVAILABLE"); },
   });
-  assert.deepEqual(optionalFailure, { surfaces: 1, sidebar: 1, panels: 3, commands: 5 });
+  assert.deepEqual(optionalFailure, { surfaces: 1, sidebar: 1, panels: 3, commands: 6 });
   await cleanupAfterOptionalFailure();
 });
 

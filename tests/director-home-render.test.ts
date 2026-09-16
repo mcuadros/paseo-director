@@ -102,6 +102,8 @@ function loadHomeComponent(
       case "../generated/planning-contract.shared.ts": return PlanningContract;
       case "../rpc/planning.shared.ts": return PlanningRpc;
       case "./director-home-model.client.ts": return HomeModel;
+      case "./director-home-query.client.ts":
+        return loadClientModule("ui/director-home-query.client.ts", require);
       case "./director-host.client.ts": return { useDirectorHostIdentity: () => ({ identity: { schemaVersion: 1, id: "host-a", label: "Director" }, isPending: false, isError: false, error: null }) };
       case "./shell-layout.client.ts": return ShellLayout;
       case "./accessibility.client.tsx":
@@ -111,7 +113,7 @@ function loadHomeComponent(
     }
   };
   Function("require", "module", "exports", compiled)(require, module, module.exports);
-  return module.exports.DirectorHome as React.ComponentType<Record<string, unknown>>;
+  return module.exports.DirectorOverview as React.ComponentType<Record<string, unknown>>;
 }
 
 async function takePending(pending: Deferred[]): Promise<Deferred> {
@@ -121,7 +123,7 @@ async function takePending(pending: Deferred[]): Promise<Deferred> {
     if (value) return value;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error("DirectorHome did not issue the expected RPC");
+  throw new Error("DirectorOverview did not issue the expected RPC");
 }
 
 function renderedText(renderer: TestRenderer.ReactTestRenderer): string {
@@ -137,11 +139,11 @@ async function waitForText(renderer: TestRenderer.ReactTestRenderer, expected: R
   assert.match(renderedText(renderer), expected);
 }
 
-test("DirectorHome renders current data, exact navigation, entry points, and stale cached refusal", async () => {
+test("DirectorOverview renders current data, exact navigation, entry points, and stale cached refusal", async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const pending: Deferred[] = [];
   const homeRpc = () => new Promise((resolve, reject) => pending.push({ resolve, reject }));
-  const DirectorHome = loadHomeComponent(homeRpc, async () => { throw new Error("unused"); });
+  const DirectorOverview = loadHomeComponent(homeRpc, async () => { throw new Error("unused"); });
   const queryClient = new ReactQuery.QueryClient({ defaultOptions: { queries: { retry: false } } });
   const opened: string[] = [];
   const props = {
@@ -152,7 +154,7 @@ test("DirectorHome renders current data, exact navigation, entry points, and sta
   };
   let renderer!: TestRenderer.ReactTestRenderer;
   await act(async () => {
-    renderer = TestRenderer.create(React.createElement(ReactQuery.QueryClientProvider, { client: queryClient }, React.createElement(DirectorHome, props)));
+    renderer = TestRenderer.create(React.createElement(ReactQuery.QueryClientProvider, { client: queryClient }, React.createElement(DirectorOverview, props)));
   });
   assert.match(renderedText(renderer), /Loading Director Home/);
 
@@ -191,7 +193,7 @@ test("DirectorHome renders current data, exact navigation, entry points, and sta
   queryClient.clear();
 });
 
-test("DirectorHome native Paseo Project onboarding submits generated Preview before exact confirmed Apply", async () => {
+test("DirectorOverview native Paseo Project onboarding submits generated Preview before exact confirmed Apply", async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const calls: Record<string, unknown>[] = [];
   const previewId = "c".repeat(64);
@@ -222,7 +224,7 @@ test("DirectorHome native Paseo Project onboarding submits generated Preview bef
     organizerCandidate: "/srv/.native-director-organizer", factsRevision: "e".repeat(64),
     workspaces: [{ id: "native-workspace", name: "Native Workspace", projectRootPath: "/srv/native", workspaceDirectory: "/srv/native",
       workspaceKind: "directory", remoteUrl: "https://github.com/example/native.git", baseBranch: "main" }] };
-  const DirectorHome = loadHomeComponent(async () => snapshot(), async () => { throw new Error("unused"); }, organizerRpc,
+  const DirectorOverview = loadHomeComponent(async () => snapshot(), async () => { throw new Error("unused"); }, organizerRpc,
     undefined, undefined, async () => ({ schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION,
       contractHash: PLANNING_CONTRACT_SHA256, hostId: "host-a", observedAt: "2026-09-12T19:30:00Z", projects: [nativeProject] }));
   const queryClient = new ReactQuery.QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -233,7 +235,7 @@ test("DirectorHome native Paseo Project onboarding submits generated Preview bef
   };
   let renderer!: TestRenderer.ReactTestRenderer;
   await act(async () => {
-    renderer = TestRenderer.create(React.createElement(ReactQuery.QueryClientProvider, { client: queryClient }, React.createElement(DirectorHome, props)));
+    renderer = TestRenderer.create(React.createElement(ReactQuery.QueryClientProvider, { client: queryClient }, React.createElement(DirectorOverview, props)));
   });
   await act(async () => waitForText(renderer, /Rendered Project/));
   const create = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Create Project")[0]!;
@@ -266,7 +268,7 @@ test("DirectorHome native Paseo Project onboarding submits generated Preview bef
   queryClient.clear();
 });
 
-test("DirectorHome renders engine-owned Doctor and exact server-confirmed Repair states", async () => {
+test("DirectorOverview renders engine-owned Doctor and exact server-confirmed Repair states", async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const doctorReport = {
     schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION, contractHash: PLANNING_CONTRACT_SHA256,
@@ -293,7 +295,7 @@ test("DirectorHome renders engine-owned Doctor and exact server-confirmed Repair
       ? { schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION, contractHash: PLANNING_CONTRACT_SHA256, hostId: "host-a", projectId: "project-shared", cursor: "9", requestId: input.requestId, status: "preview", message: "Preview ready", preview, projectVersion: null, refusalCode: null }
       : { schemaVersion: 1, contractVersion: PLANNING_CONTRACT_VERSION, contractHash: PLANNING_CONTRACT_SHA256, hostId: "host-a", projectId: "project-shared", cursor: "10", requestId: input.requestId, status: "applied", message: "The exact confirmed Repair was applied by Director Engine.", preview: null, projectVersion: "4", refusalCode: null };
   };
-  const DirectorHome = loadHomeComponent(async () => snapshot(), async () => { throw new Error("unused"); }, undefined, async () => doctorReport, repairRpc);
+  const DirectorOverview = loadHomeComponent(async () => snapshot(), async () => { throw new Error("unused"); }, undefined, async () => doctorReport, repairRpc);
   const queryClient = new ReactQuery.QueryClient({ defaultOptions: { queries: { retry: false } } });
   const props = {
     host: { id: "host-a", label: "Client host label" },
@@ -302,7 +304,7 @@ test("DirectorHome renders engine-owned Doctor and exact server-confirmed Repair
   };
   let renderer!: TestRenderer.ReactTestRenderer;
   await act(async () => {
-    renderer = TestRenderer.create(React.createElement(ReactQuery.QueryClientProvider, { client: queryClient }, React.createElement(DirectorHome, props)));
+    renderer = TestRenderer.create(React.createElement(ReactQuery.QueryClientProvider, { client: queryClient }, React.createElement(DirectorOverview, props)));
   });
   await act(async () => waitForText(renderer, /Rendered Project/));
 
@@ -344,7 +346,7 @@ test("DirectorHome renders engine-owned Doctor and exact server-confirmed Repair
   queryClient.clear();
 });
 
-test("DirectorHome renders fail-closed Repair refusal without hiding the reason", async () => {
+test("DirectorOverview renders fail-closed Repair refusal without hiding the reason", async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const repairRpc = async (raw: unknown) => {
     const input = raw as Record<string, unknown>;
@@ -358,14 +360,14 @@ test("DirectorHome renders fail-closed Repair refusal without hiding the reason"
     }
     return { ...base, cursor: "10", status: "refused", message: "Repair refused because Project facts changed.", preview: null, projectVersion: null, refusalCode: "repair_preview_stale" };
   };
-  const DirectorHome = loadHomeComponent(async () => snapshot(), async () => { throw new Error("unused"); }, undefined, undefined, repairRpc);
+  const DirectorOverview = loadHomeComponent(async () => snapshot(), async () => { throw new Error("unused"); }, undefined, undefined, repairRpc);
   const queryClient = new ReactQuery.QueryClient({ defaultOptions: { queries: { retry: false } } });
   const props = {
     host: { id: "host-a", label: "Client host label" }, layout: { compact: true, platform: "android" },
     theme: { colors: { accent: "accent", accentForeground: "accent-foreground", border: "border", foreground: "foreground", foregroundMuted: "muted", statusDanger: "danger", statusSuccess: "success", statusWarning: "warning", surface0: "surface-0", surface1: "surface-1", surface2: "surface-2" } },
   };
   let renderer!: TestRenderer.ReactTestRenderer;
-  await act(async () => { renderer = TestRenderer.create(React.createElement(ReactQuery.QueryClientProvider, { client: queryClient }, React.createElement(DirectorHome, props))); });
+  await act(async () => { renderer = TestRenderer.create(React.createElement(ReactQuery.QueryClientProvider, { client: queryClient }, React.createElement(DirectorOverview, props))); });
   await act(async () => waitForText(renderer, /Rendered Project/));
   const open = renderer.root.findAll((node) => String(node.type) === "Text" && node.children.join("") === "Repair…")[0]!;
   await act(async () => open.parent!.props.onPress());

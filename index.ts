@@ -3,7 +3,7 @@
 import type { PluginContext } from "@getpaseo/plugin";
 
 import { TaskInspector } from "./ui/task-inspector.client";
-import { DirectorHome } from "./ui/director-home.client";
+import { DirectorConsole } from "./ui/director-console.client";
 import { ProjectBoard } from "./ui/planning-surface.client";
 import { DirectorWorkers } from "./ui/director-workers-panel.client";
 import { contributeTaskNavigation } from "./ui/task-navigation.client";
@@ -14,7 +14,7 @@ import { recreateProjectAdminSessionRpc } from "./rpc/project-admin.shared";
 export default function contribute(plugin: PluginContext) {
   let serverCleanup: () => void | Promise<void> = () => {};
 
-  plugin.addSurface("home", DirectorHome);
+  plugin.addSurface("home", DirectorConsole);
   plugin.addSidebarItem({
     id: "home",
     title: "Director",
@@ -43,6 +43,16 @@ export default function contribute(plugin: PluginContext) {
     context: "agent",
     locations: ["workspace", "explorer"],
     Component: TaskInspector,
+  });
+  plugin.addCommandCenterItem({
+    id: "open-director",
+    title: "Open Director",
+    icon: "PanelsTopLeft",
+    keywords: ["director", "console", "board", "workers", "overview"],
+    context: "global",
+    onSelect({ openSurface }) {
+      openSurface("home");
+    },
   });
   plugin.addCommandCenterItem({
     id: "open-director-workers",

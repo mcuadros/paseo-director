@@ -26,10 +26,11 @@ test("the host UI shell has distinct compact and wide layouts", () => {
 test("Director for Paseo retains every planned top-level UI shell", () => {
   const entry = readFileSync(resolve("index.ts"), "utf8");
   for (const registration of [
-    'addSurface("home", DirectorHome)',
+    'addSurface("home", DirectorConsole)',
     'id: "director-workers"',
     'id: "project-board"',
     'id: "task-inspector"',
+    'id: "open-director",',
     'id: "open-project-board"',
     'id: "open-director-workers"',
     'id: "create-director-administration-session"',

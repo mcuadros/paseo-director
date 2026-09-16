@@ -5,7 +5,6 @@ import { useRpc } from "@getpaseo/plugin";
 import { Icon } from "./host-primitives.client.tsx";
 import { Modal, useToast } from "./paseo-ui.client.tsx";
 import {
-  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
@@ -28,7 +27,6 @@ import {
   type HomeAction,
   type HomeActionKind,
   type HomeProject,
-  type HomeSnapshot,
   type DoctorQueryInput,
   type PlanningMutationInput,
   type PlanningMutationIntent,
@@ -38,7 +36,6 @@ import {
 } from "../generated/planning-contract.shared.ts";
 import {
   doctorQueryRpc,
-  homeQueryRpc,
   planningMutationRpc,
   organizerBootstrapRpc,
   nativePaseoProjectsRpc,
@@ -56,11 +53,13 @@ import {
   homeActionEnabled,
   homeProjectKey,
 } from "./director-home-model.client.ts";
+import {
+  directorHomeQueryKey,
+  useDirectorHomeSnapshot,
+} from "./director-home-query.client.ts";
 import { useDirectorHostIdentity } from "./director-host.client.ts";
 import { shellMetrics } from "./shell-layout.client.ts";
 import { ProjectOperations } from "./project-operations.client.tsx";
-
-const HOME_PAGE_SIZE = 25;
 
 type OrganizerEntry = {
   hostId: string;
@@ -123,9 +122,8 @@ function mutationIntent(action: HomeAction): PlanningMutationIntent | null {
   }
 }
 
-export function DirectorHome({ theme, layout, navigation }: PluginSurfaceProps) {
+export function DirectorOverview({ theme, layout, navigation }: PluginSurfaceProps) {
   const accessibilityPreferences = useAccessibilityPreferences();
-  const loadHome = useRpc(homeQueryRpc);
   const mutatePlanning = useRpc(planningMutationRpc);
   const bootstrapOrganizer = useRpc(organizerBootstrapRpc);
   const loadNativePaseoProjects = useRpc(nativePaseoProjectsRpc);
@@ -144,22 +142,7 @@ export function DirectorHome({ theme, layout, navigation }: PluginSurfaceProps) 
   } | null>(null);
   const [operationsProject, setOperationsProject] = useState<string | null>(null);
   const [operationsInitialTab, setOperationsInitialTab] = useState<"health" | "audit" | "logs" | "support">("health");
-  const home = useInfiniteQuery({
-    queryKey: ["director", "home", hostId],
-    initialPageParam: null as string | null,
-    queryFn: async ({ pageParam }) => {
-      const result = await loadHome({ hostId, cursor: pageParam, pageSize: HOME_PAGE_SIZE });
-      if (!("page" in result)) throw result;
-      return result;
-    },
-    getNextPageParam: (lastPage: HomeSnapshot) => lastPage.page.nextCursor,
-    enabled: hostId !== "",
-    retry: false,
-    staleTime: 0,
-    refetchOnMount: "always",
-    refetchOnReconnect: true,
-    refetchInterval: 30_000,
-  });
+  const home = useDirectorHomeSnapshot(hostId);
   const scene = directorHomeScene({
     pages: home.data?.pages,
     expectedHostId: hostId,
@@ -179,7 +162,7 @@ export function DirectorHome({ theme, layout, navigation }: PluginSurfaceProps) 
     mutationFn: (input: PlanningMutationInput) => mutatePlanning(input),
     onSuccess: async (result) => {
       toast.show(result.message, { variant: result.status === "accepted" ? "success" : "warning" });
-      await queryClient.invalidateQueries({ queryKey: ["director", "home", hostId], exact: true });
+      await queryClient.invalidateQueries({ queryKey: directorHomeQueryKey(hostId), exact: true });
     },
     onError: () => toast.error("The operational action was rejected by current engine facts."),
   });
@@ -189,7 +172,7 @@ export function DirectorHome({ theme, layout, navigation }: PluginSurfaceProps) 
       if (result.status === "applied") {
         toast.show(result.message, { variant: "success" });
         setEntry(null);
-        await queryClient.resetQueries({ queryKey: ["director", "home", hostId], exact: true });
+        await queryClient.resetQueries({ queryKey: directorHomeQueryKey(hostId), exact: true });
       } else if (result.status === "rejected") {
         toast.show(result.message, { variant: "warning" });
       }
@@ -204,7 +187,7 @@ export function DirectorHome({ theme, layout, navigation }: PluginSurfaceProps) 
     onSuccess: async (result) => {
       if (result.status === "applied") {
         toast.show(result.message, { variant: "success" });
-        await queryClient.resetQueries({ queryKey: ["director", "home", hostId], exact: true });
+        await queryClient.resetQueries({ queryKey: directorHomeQueryKey(hostId), exact: true });
       } else if (result.status === "refused") {
         toast.show(result.message, { variant: "warning" });
       }
@@ -710,7 +693,7 @@ export function DirectorHome({ theme, layout, navigation }: PluginSurfaceProps) 
             accessibilityHint="Clears only this host’s cached Home snapshot and loads it again"
             accessibilityLabel="Refresh Director Home for this exact host"
             accessibilityRole="button"
-            onPress={() => void queryClient.resetQueries({ queryKey: ["director", "home", hostId], exact: true })}
+            onPress={() => void queryClient.resetQueries({ queryKey: directorHomeQueryKey(hostId), exact: true })}
             style={[styles.action, styles.more]}
           >
             <Text style={styles.actionText}>Refresh exact host</Text>
