@@ -93,6 +93,13 @@ export function stripComments(source) {
 // and its defined fallback renders instead.
 export const FALLBACK_WARNING = /optional host primitive .* is unavailable/iu;
 
+/** The daemon password for this run, derived from the environment in one place
+ *  so it is not an argument two call sites can each be given a different value
+ *  for. */
+export function runPassword(environment) {
+  return environment?.PASEO_PASSWORD ?? "";
+}
+
 export function scrubSecret(text, secret) {
   if (!secret) return String(text);
   return String(text).split(secret).join("<redacted>");
@@ -508,7 +515,7 @@ export async function claimDisplay({ minimum, maximum }, io = defaultDisplayIo, 
     for (let attempt = 0; attempt < attempts && !failed; attempt += 1) {
       // The socket appearing is not proof the display is ours: another server
       // may have taken the number between the occupancy sample and this launch.
-      if (io.socketExists(socket) && parseDisplayLockPid(io.readLock(lock)) === child.pid) {
+      if (io.socketExists(socket) && displayLockOwnedBy(lock, child.pid, io.readLock)) {
         return record;
       }
       await io.wait(100);
@@ -532,7 +539,13 @@ export async function claimDisplay({ minimum, maximum }, io = defaultDisplayIo, 
  *
  *  Every effect is injected, so all of the above is exercised by tests at the
  *  point it is enforced. */
-export function createTeardown({ readTable, kill, wait, readLock, removePath }) {
+export function createTeardown({
+  readTable = readProcessTable,
+  kill = (pid, signal) => process.kill(pid, signal),
+  wait = () => sleep(2000),
+  readLock = (path) => defaultReadLock(path),
+  removePath = (path) => rmSync(path, { force: true }),
+} = {}) {
   const tracked = new Map();
   let root = null;
   let display = null;
@@ -554,7 +567,7 @@ export function createTeardown({ readTable, kill, wait, readLock, removePath }) 
     record.process.kill("SIGKILL");
     // Re-proved here, not assumed: if our server died and another took the
     // number, these files belong to that server and must not be removed.
-    const ours = parseDisplayLockPid(readLock(record.lock)) === record.serverPid;
+    const ours = displayLockOwnedBy(record.lock, record.serverPid, readLock);
     if (ours) {
       removePath(record.socket);
       removePath(record.lock);
@@ -594,7 +607,7 @@ export function createTeardown({ readTable, kill, wait, readLock, removePath }) 
         } catch {
           // Already gone.
         }
-        if (parseDisplayLockPid(readLock(display.lock)) === display.serverPid) {
+        if (displayLockOwnedBy(display.lock, display.serverPid, readLock)) {
           removePath(display.socket);
           removePath(display.lock);
         }
@@ -657,7 +670,12 @@ export function spawnApplication(executable, baseEnvironment, isolation, registe
   });
 }
 
-export async function driveDirectorSurface({ page, daemonHost, daemonPort, password, screenshot, note, errorCount }) {
+export async function driveDirectorSurface({
+  page, daemonHost, daemonPort, environment, outputDirectory, label, note, errorCount,
+  writeScreenshot = (target, path) => target.screenshot({ path }),
+}) {
+  const password = runPassword(environment);
+  const screenshot = (name) => writeScreenshot(page, join(outputDirectory, `${label}-${name}.png`));
   const testIds = () => page.evaluate(() =>
     Array.from(document.querySelectorAll("[data-testid]")).map((element) => element.getAttribute("data-testid")));
   const bodyText = () => page.evaluate(() => document.body.innerText);
@@ -891,8 +909,8 @@ export async function verifyRunIsolation({
   paseoHome,
   root,
   display,
-  listDirectory,
-  wait,
+  listDirectory = (directory) => readdirSync(directory),
+  wait = (milliseconds) => sleep(milliseconds),
   readEnviron = readChildEnvironment,
   readTable = readProcessTable,
   attempts,
@@ -1010,7 +1028,7 @@ export const UNHANDLED_TERMINATING_SIGNALS = Object.freeze(Object.fromEntries(
 ));
 
 /** Registers teardown for every signal this tool chooses to handle. */
-export function installSignalHandlers({ on, handler, signals = TERMINATING_SIGNALS }) {
+export function installSignalHandlers({ on = (signal, bound) => process.on(signal, bound), handler, signals = TERMINATING_SIGNALS }) {
   const installed = signals.map((signal) => [signal, () => handler(signal)]);
   for (const [signal, bound] of installed) on(signal, bound);
   return installed;
@@ -1027,7 +1045,7 @@ export function installSignalHandlers({ on, handler, signals = TERMINATING_SIGNA
  *  this is not a substitute for classifying signals. The handled set carries
  *  that weight; this carries the non-signal paths and the case where a process
  *  outlived the escalation budget and recreated the private run directory. */
-export function installExitFallback({ on, handler }) {
+export function installExitFallback({ on = (event, bound) => process.on(event, bound), handler }) {
   const bound = () => handler();
   on("exit", bound);
   return bound;
@@ -1036,7 +1054,8 @@ export function installExitFallback({ on, handler }) {
 /** The run's durable artifacts. Built here rather than at the write site so the
  *  properties that matter — the application log is scrubbed, and metrics are
  *  computed only from renderer observations — are enforced in tested code. */
-export function buildRunArtifacts({ label, userAgent, display, outcome, rendererEvents, notes, mainLog, password }) {
+export function buildRunArtifacts({ label, userAgent, display, outcome, rendererEvents, notes, mainLog, environment }) {
+  const password = runPassword(environment);
   const summary = summarizeRendererEvents(rendererEvents);
   const result = {
     label,
@@ -1073,7 +1092,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
   const outputDirectory = resolve(options.out);
   const { runRoot, userDataDir, paseoHome } = runDirectoryLayout(outputDirectory, options.label);
 
-  const password = environment.PASEO_PASSWORD ?? "";
+  const password = runPassword(environment);
   const rendererEvents = [];
   const notes = [];
   const stamp = () => new Date().toISOString();
@@ -1083,13 +1102,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
   let child = null;
   let browser = null;
 
-  const teardown = createTeardown({
-    readTable: readProcessTable,
-    kill: (pid, signal) => process.kill(pid, signal),
-    wait: () => sleep(2000),
-    readLock: (path) => defaultReadLock(path),
-    removePath: (path) => rmSync(path, { force: true }),
-  });
+  const teardown = createTeardown();
 
   const performCleanup = async () => {
     if (browser !== null) await browser.close().catch(() => {});
@@ -1113,16 +1126,10 @@ export async function main(argv = process.argv.slice(2), environment = process.e
   const removeRunRoot = () => {
     if (!options.keepUserData) rmSync(runRoot, { recursive: true, force: true });
   };
-  const handlers = installSignalHandlers({
-    on: (signal, bound) => process.on(signal, bound),
-    handler: onSignal,
-  });
+  const handlers = installSignalHandlers({ handler: onSignal });
   // Runs after everything else, so a process that outlived the escalation
   // budget cannot leave its display or recreate the private run directory.
-  installExitFallback({
-    on: (event, bound) => process.on(event, bound),
-    handler: () => teardown.runSync({ removeRunRoot }),
-  });
+  installExitFallback({ handler: () => teardown.runSync({ removeRunRoot }) });
 
   mkdirSync(outputDirectory, { recursive: true });
   rmSync(runRoot, { recursive: true, force: true });
@@ -1172,14 +1179,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
 
     // Verified, not assumed: both overrides fail silently on a build that
     // ignores them, and an unisolated run must not pass as an isolated one.
-    await verifyRunIsolation({
-      userDataDir,
-      paseoHome,
-      root: launched.root,
-      display,
-      listDirectory: (directory) => readdirSync(directory),
-      wait: (ms) => sleep(ms),
-    });
+    await verifyRunIsolation({ userDataDir, paseoHome, root: launched.root, display });
 
     const { chromium } = await loadPlaywright(environment);
     browser = await chromium.connectOverCDP(loopbackDebuggingEndpoint(cdpPort));
@@ -1197,15 +1197,13 @@ export async function main(argv = process.argv.slice(2), environment = process.e
       at: stamp(), kind: "pageerror", type: "error", text: scrubSecret(error.message, password),
     }));
 
-    const screenshot = async (name) => {
-      await page.screenshot({ path: join(outputDirectory, `${options.label}-${name}.png`) });
-    };
     const outcome = await driveDirectorSurface({
       page,
       daemonHost: options.daemonHost,
       daemonPort: options.daemonPort,
-      password,
-      screenshot,
+      environment,
+      outputDirectory,
+      label: options.label,
       note,
       errorCount,
     });
@@ -1219,7 +1217,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
       rendererEvents,
       notes,
       mainLog,
-      password,
+      environment,
     });
     for (const file of artifacts.files) writeFileSync(join(outputDirectory, file.name), file.contents);
     const result = artifacts.result;

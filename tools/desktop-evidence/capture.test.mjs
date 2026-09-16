@@ -12,9 +12,12 @@
 // ./README.md.
 
 import assert from "node:assert/strict";
+import osConstants from "node:os";
 import { test } from "node:test";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
 
 import {
   DEFAULT_DISPLAY_RANGE,
@@ -59,6 +62,7 @@ import {
   loopbackDebuggingEndpoint,
   loopbackListen,
   runDirectoryLayout,
+  runPassword,
   scrubSecret,
   spawnApplication,
   stripComments,
@@ -768,7 +772,7 @@ test("ENFORCEMENT: the application log is written scrubbed", () => {
     rendererEvents: [],
     notes: [{ at: "t", text: "note" }],
     mainLog: ["prefix hun", "ter2 suffix"],
-    password: "hunter2",
+    environment: { PASEO_PASSWORD: "hunter2" },
   });
   const appLog = artifacts.files.find((file) => file.name.endsWith("-app-main.log"));
   assert.equal(appLog.contents.includes("hunter2"), false, "a secret must never reach the durable log");
@@ -791,7 +795,7 @@ test("ENFORCEMENT: metrics are computed from renderer observations, not from not
       { at: "t", text: "probe surface text: Optional host primitive Icon is unavailable" },
     ],
     mainLog: [],
-    password: "",
+    environment: { PASEO_PASSWORD: "" },
   });
   assert.equal(artifacts.result.react130, false, "page text must not manufacture a React #130");
   assert.equal(artifacts.result.rendererErrorsTotal, 0);
@@ -823,14 +827,17 @@ function stubPage({ passwordInputType = "password", reducedMotion = true, testId
   };
 }
 
+const shots = [];
 const driveWith = (page, password = "hunter2") => driveDirectorSurface({
   page,
   daemonHost: "127.0.0.1",
   daemonPort: 44613,
-  password,
-  screenshot: async () => {},
+  environment: password ? { PASEO_PASSWORD: password } : {},
+  outputDirectory: "/tmp/evidence",
+  label: "0.6.1",
   note: () => {},
   errorCount: () => 0,
+  writeScreenshot: (target, path) => { shots.push(path); },
 });
 
 test("ENFORCEMENT: the connection form is not photographed when the password field is unmasked", async () => {
@@ -897,10 +904,10 @@ const mainBody = captureSource.slice(captureSource.indexOf("export async functio
 
 test("WIRING: the composition root still calls every unit that enforces a safety property", () => {
   const required = [
-    ["register interruption handlers", "installSignalHandlers({"],
-    ["register the exit fallback", "installExitFallback({"],
+    ["register interruption handlers", "installSignalHandlers({ handler: onSignal })"],
+    ["register the exit fallback", "installExitFallback({ handler:"],
     ["give the exit fallback a synchronous teardown", "teardown.runSync({ removeRunRoot })"],
-    ["hand it the spawned root and the adopted display", "      root: launched.root,"],
+    ["hand it the spawned root and the adopted display", "root: launched.root, display }"],
     ["derive its private layout through the tested helper", "runDirectoryLayout(outputDirectory, options.label)"],
     ["create private directories owner-only", "mode: PRIVATE_DIRECTORY_MODE"],
     ["claim a display through the ownership-proving path", "await claimDisplay("],
@@ -912,6 +919,7 @@ test("WIRING: the composition root still calls every unit that enforces a safety
     ["record descendants while the root is alive", "teardown.trackDescendants()"],
     ["verify isolation through the one executable step", "await verifyRunIsolation({"],
     ["build artifacts through the tested builder", "buildRunArtifacts({"],
+    ["take no injectable effect from the composition root", "createTeardown()"],
     ["write exactly those artifacts", "for (const file of artifacts.files) writeFileSync("],
     ["run teardown on every exit path", "await cleanup();"],
   ];
@@ -1064,7 +1072,7 @@ test("ENFORCEMENT: every emitted artifact is scrubbed, not only the application 
     rendererEvents: [{ at: "t", kind: "console", type: "log", text: "connecting with hunter2" }],
     notes: [{ at: "t", text: "note containing hunter2" }],
     mainLog: ["log with hun", "ter2 split across chunks"],
-    password: "hunter2",
+    environment: { PASEO_PASSWORD: "hunter2" },
   });
   for (const file of artifacts.files) {
     assert.equal(file.contents.includes("hunter2"), false, `${file.name} must carry no secret`);
@@ -1620,4 +1628,181 @@ test("ENFORCEMENT: the first open retries rather than looking once", async () =>
   const outcome = await driveWith(page);
   assert.equal(outcome.directorTestId, "plugin-sidebar-director-home");
   assert.equal(looks >= 3, true, "the entry must be found by retrying, not on the first look");
+});
+
+// --- effects have production defaults, exercised with the argument absent ----
+//
+// The class this closes: a parameter with no default is supplied only where no
+// test runs, so neutralising it at the composition root changes nothing any
+// test can see. Eleven such parameters existed and all eleven survived
+// mutation. Each injectable effect now defaults inside its own unit, and the
+// tests below call each unit WITHOUT the argument so the real default runs.
+
+test("ENFORCEMENT: verifyRunIsolation's own listDirectory sees an empty private directory", async () => {
+  // The mutant was `listDirectory: () => ["ignored"]` at the call site, which
+  // deleted the isolation guarantee stated one line above it.
+  // Two genuinely empty private directories: the exact state of a build that
+  // ignored both overrides.
+  const { root, display, table } = pinnedPair();
+  const base = mkdtempSync(joinPath(tmpdir(), "capture-isolation-"));
+  try {
+    await assert.rejects(
+      () => verifyRunIsolation({
+        userDataDir: base, paseoHome: base,
+        root, display, attempts: 1, readTable: () => table,
+        readEnviron: () => "PATH=/usr/bin\0",
+        // listDirectory and wait deliberately absent: the real ones must run.
+      }),
+      /wrote nothing to its private/u,
+      "the default listDirectory must really read the filesystem",
+    );
+    // Populated: the same default must then let the run proceed.
+    writeFileSync(joinPath(base, "written-by-the-application"), "x");
+    assert.equal(
+      await verifyRunIsolation({
+        userDataDir: base, paseoHome: base, root, display, attempts: 1,
+        readTable: () => table, readEnviron: () => "PATH=/usr/bin\0",
+      }),
+      2,
+    );
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("ENFORCEMENT: createTeardown needs no effects from its caller", async () => {
+  // `createTeardown()` with no argument must still be usable, so the caller has
+  // no kill, readLock or removePath to neutralise.
+  const unit = createTeardown();
+  assert.equal(typeof unit.pinRoot, "function");
+  assert.equal(typeof unit.runSync, "function");
+  // No root and no display: signals nothing, removes nothing, and says so.
+  const outcome = await unit.run();
+  assert.deepEqual(outcome.targets, []);
+  assert.equal(outcome.displayRemoved, false);
+});
+
+test("ENFORCEMENT: the signal and exit registrations default to the real process", () => {
+  const before = process.listenerCount("SIGUSR2");
+  const handlers = installSignalHandlers({ handler: () => {} });
+  assert.equal(process.listenerCount("SIGUSR2"), before + 1, "the default `on` must be process.on");
+  for (const [signal, bound] of handlers) process.off(signal, bound);
+  assert.equal(process.listenerCount("SIGUSR2"), before);
+
+  const exitBefore = process.listenerCount("exit");
+  const bound = installExitFallback({ handler: () => {} });
+  assert.equal(process.listenerCount("exit"), exitBefore + 1);
+  process.off("exit", bound);
+});
+
+test("ENFORCEMENT: the run's secret comes from one derivation, not two arguments", () => {
+  // `password` was a separate argument to two units, each neutralisable on its
+  // own. Both now derive it from the environment through this one function.
+  assert.equal(runPassword({ PASEO_PASSWORD: "hunter2" }), "hunter2");
+  assert.equal(runPassword({}), "");
+  assert.equal(runPassword(undefined), "");
+  const artifacts = buildRunArtifacts({
+    label: "x", userAgent: "u", display: ":120",
+    outcome: { directorTestId: "d", reducedMotionActive: true, errorsBeforeProbe: 0 },
+    rendererEvents: [], notes: [{ at: "t", text: "note hunter2" }],
+    mainLog: ["log hun", "ter2"], environment: { PASEO_PASSWORD: "hunter2" },
+  });
+  for (const file of artifacts.files) assert.equal(file.contents.includes("hunter2"), false);
+});
+
+test("ENFORCEMENT: the surface routine writes its own screenshot paths", async () => {
+  // `screenshot` was a closure the composition root supplied and could have
+  // replaced with a no-op. The routine now builds it from page, output
+  // directory and label.
+  const written = [];
+  const page = stubPage();
+  await driveDirectorSurface({
+    page, daemonHost: "127.0.0.1", daemonPort: 1,
+    environment: {}, outputDirectory: "/tmp/evidence", label: "0.7.2",
+    note: () => {}, errorCount: () => 0,
+    writeScreenshot: (target, path) => { written.push(path); },
+  });
+  assert.equal(written.includes("/tmp/evidence/0.7.2-17-reduced-motion-icon.png"), true);
+  assert.equal(written.every((path) => path.startsWith("/tmp/evidence/0.7.2-")), true);
+});
+
+// --- the remaining defaults, exercised against real resources ---------------
+
+test("ENFORCEMENT: platformSignals reads the platform, not the policy table", () => {
+  // A named required action from an earlier Review that I dropped: nothing
+  // exercised the derivation, so rewriting the body to read SIGNAL_POLICY left
+  // the suite green and the guarantee — that the domain comes from the system —
+  // unproven.
+  assert.deepEqual(platformSignals(), Object.keys(osConstants.constants.signals).sort());
+  assert.notDeepEqual(platformSignals(), Object.keys(SIGNAL_POLICY).sort().filter((s) => s !== "SIGIOT"));
+  // Injected: the parameter is honoured, which is what the eighth Review proved
+  // externally with a loader hook.
+  assert.deepEqual(platformSignals({ SIGB: 2, SIGA: 1 }), ["SIGA", "SIGB"]);
+  assert.deepEqual(unclassifiedSignals(platformSignals({ SIGA: 1 })), ["SIGA"]);
+});
+
+test("ENFORCEMENT: teardown's own kill really signals, and its own removePath really removes", async () => {
+  // createTeardown() takes no effects, so these defaults are the only place
+  // left. A no-op kill or removePath would otherwise leave every test green.
+  // Long-lived on purpose: a child that exits by itself would satisfy a weaker
+  // assertion and let a no-op kill pass, which is exactly what happened when
+  // this test used a thirty-second timer.
+  const child = spawn(process.execPath, ["-e", "setTimeout(()=>{},300000)"], { stdio: "ignore" });
+  await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+  const base = mkdtempSync(joinPath(tmpdir(), "capture-teardown-"));
+  const socket = joinPath(base, "X999");
+  const lock = joinPath(base, ".X999-lock");
+  writeFileSync(socket, "");
+  writeFileSync(lock, `   ${process.pid}\n`);
+  const unit = createTeardown({ wait: async () => {} });
+  unit.pinRoot({ pid: child.pid, startTime: processStartTime(child.pid), exited: false });
+  // The display record names this process, so the real readLock must confirm it.
+  unit.adoptDisplay({ display: ":999", socket, lock, serverPid: process.pid, process: { kill() {} } });
+  try {
+    const outcome = await unit.run();
+    assert.deepEqual(outcome.targets.map((target) => target.pid), [child.pid]);
+    const exited = await Promise.race([
+      new Promise((resolve) => child.once("exit", () => resolve(true))),
+      new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
+    ]);
+    assert.equal(exited, true, "the default kill must really signal, within a bounded wait");
+    assert.equal(child.signalCode, "SIGTERM", "and it must be a signal, not a natural exit");
+    assert.equal(outcome.displayRemoved, true, "the default readLock must confirm our own lock");
+    assert.equal(existsSync(socket), false, "the default removePath must really remove");
+    assert.equal(existsSync(lock), false);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("ENFORCEMENT: teardown's own readLock refuses a lock naming another server", async () => {
+  const base = mkdtempSync(joinPath(tmpdir(), "capture-foreign-"));
+  const socket = joinPath(base, "X998");
+  const lock = joinPath(base, ".X998-lock");
+  writeFileSync(socket, "");
+  writeFileSync(lock, "   999999\n");
+  try {
+    const unit = createTeardown({ wait: async () => {} });
+    unit.adoptDisplay({ display: ":998", socket, lock, serverPid: process.pid, process: { kill() {} } });
+    const outcome = await unit.run();
+    assert.equal(outcome.displayRemoved, false);
+    assert.equal(existsSync(socket), true, "a live foreign server's files must survive");
+    assert.equal(existsSync(lock), true);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("ENFORCEMENT: the surface routine's own writeScreenshot really asks the page", async () => {
+  const captured = [];
+  const page = stubPage();
+  page.screenshot = async ({ path }) => { captured.push(path); };
+  await driveDirectorSurface({
+    page, daemonHost: "127.0.0.1", daemonPort: 1,
+    environment: {}, outputDirectory: "/tmp/evidence", label: "0.7.2",
+    note: () => {}, errorCount: () => 0,
+    // writeScreenshot deliberately absent: the real default must run.
+  });
+  assert.equal(captured.includes("/tmp/evidence/0.7.2-17-reduced-motion-icon.png"), true);
 });

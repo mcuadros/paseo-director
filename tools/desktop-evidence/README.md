@@ -109,14 +109,40 @@ task rather than a build status.
   run is refused rather than reported clean. The subject's identity is re-proved
   first, with the same pin-at-spawn the rest of the tool uses, because an
   environment read says nothing unless it belongs to the process this run
-  spawned. The whole step is one unit that owns its own target set and its own
-  reader, so a caller has nothing left to empty or swap. The two children are judged
+  spawned. The whole step is one unit that owns its own target set, its own
+  reader and its own directory listing, so the composition root supplies it no
+  effect that could be neutralised. The two children are judged
   differently on purpose: the display server exhaustively, against the allowlist
   its environment is built from, and the application only over `PASEO_*` and
   `DIRECTOR_*`, because it must inherit `PATH`, `HOME` and the rest. A secret in
   some third namespace would pass the application's check — that is the limit of
   a filter over an open domain, and it is the one hand-written list in this tool
   whose domain cannot be derived.
+
+### What the composition root supplies, and what it cannot
+
+Every function here that touches the machine defaults its own effects, and the
+tests call each one with the argument absent so the real default runs. That is
+deliberate rather than stylistic: an argument with no default is supplied only
+at the composition root, where no test executes, so neutralising it there
+changes nothing any test can see. Eleven such arguments existed at one point and
+all eleven survived mutation; nine are now defaults exercised without them.
+
+Two things remain that a test cannot reach, and they are named rather than
+implied:
+
+- **Timing.** `wait` is still injectable, and replacing it with a no-op survives
+  mutation. That is equivalent for every asserted property: the isolation poll
+  still performs its bounded number of reads and still refuses an empty
+  directory, and the escalation still re-proves identity before every signal and
+  still ends at `SIGKILL`. The only difference is elapsed time, and its one
+  behavioural effect — a process gets less time to exit on `SIGTERM` before
+  `SIGKILL` — fails in the safe direction.
+- **What the composition root hands on.** `main` receives the environment and
+  passes it to the units that derive the run's secret from it. Verifying that it
+  passes its own input, rather than something emptied, requires executing `main`,
+  which needs an X server, a daemon and Playwright. This is the boundary the
+  wiring contract covers by assertion rather than by execution.
 
 ### Where a failed read could mean "fine", and what happens instead
 
