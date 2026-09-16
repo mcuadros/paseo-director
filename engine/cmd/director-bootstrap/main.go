@@ -89,7 +89,18 @@ func main() {
 		err = fail("DIRECTOR_BOOTSTRAP_ARGUMENT")
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, codeOf(err, "DIRECTOR_BOOTSTRAP_FAILED"))
+		// Three channels, one refusal: the code alone on its own line for the
+		// pinned launcher, the closed occupied-listener document the launcher
+		// forwards to the operator's plugin log, and the sentence a reader of a
+		// direct invocation acts on.
+		code := codeOf(err, "DIRECTOR_BOOTSTRAP_FAILED")
+		fmt.Fprintln(os.Stderr, code)
+		if port, holder, pid := occupiedPortOf(err); port > 0 {
+			if document, marshalErr := json.Marshal(runtimeFailure{SchemaVersion: 1, Code: code, Port: port, Holder: holder, PID: pid}); marshalErr == nil {
+				fmt.Fprintln(os.Stderr, string(document))
+			}
+			fmt.Fprintln(os.Stderr, occupiedPortMessage(port, holder, pid))
+		}
 		os.Exit(1)
 	}
 }

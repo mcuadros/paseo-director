@@ -34,8 +34,45 @@ const LEGACY_DIRECTOR_ENVIRONMENT = new Set([
 ]);
 
 export const DEFAULT_ENGINE_MODE = "release";
-export const DEFAULT_ENGINE_URL = "http://127.0.0.1:7041";
+export const DEFAULT_ENGINE_PORT = 7041;
+export const DEFAULT_ENGINE_URL = `http://127.0.0.1:${DEFAULT_ENGINE_PORT}`;
 export const DEFAULT_PASEO_URL = "ws://127.0.0.1:6767/ws";
+export const DOLT_PORT_VARIABLE = "DIRECTOR_RUNTIME_DOLT_PORT";
+export const ENGINE_PORT_VARIABLE = "DIRECTOR_RUNTIME_ENGINE_PORT";
+const LOWEST_ISOLATED_PORT = 1024;
+const HIGHEST_PORT = 65535;
+
+function declaredPort(value) {
+  if (!/^[0-9]{1,5}$/u.test(value)) return null;
+  const port = Number(value);
+  return port >= LOWEST_ISOLATED_PORT && port <= HIGHEST_PORT ? port : null;
+}
+
+// directorEngineAddress resolves the same isolation declaration the Go
+// bootstrap consumes, so the connector's Director transports reach the Engine
+// the bootstrap actually starts instead of an assumed default. An incomplete
+// declaration fails closed here exactly as it does there: falling back to the
+// default port would point this instance's surface at another instance's
+// Engine.
+export function directorEngineAddress(environment = process.env) {
+  const dolt = (environment[DOLT_PORT_VARIABLE] ?? "").trim();
+  const engine = (environment[ENGINE_PORT_VARIABLE] ?? "").trim();
+  if (dolt === "" && engine === "") return { address: `127.0.0.1:${DEFAULT_ENGINE_PORT}`, isolated: false };
+  const doltPort = declaredPort(dolt);
+  const enginePort = declaredPort(engine);
+  if (doltPort === null || enginePort === null || doltPort === enginePort) {
+    fail(
+      "DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE",
+      `${DOLT_PORT_VARIABLE} and ${ENGINE_PORT_VARIABLE} must both declare distinct unprivileged ports`,
+    );
+  }
+  return { address: `127.0.0.1:${enginePort}`, isolated: true };
+}
+
+export function directorEngineURL(environment = process.env) {
+  const resolved = directorEngineAddress(environment);
+  return { url: `http://${resolved.address}`, address: resolved.address, isolated: resolved.isolated };
+}
 
 export function directorRuntimePaths(environment = process.env, home = homedir()) {
   const runtimeBase = environment.XDG_RUNTIME_DIR;

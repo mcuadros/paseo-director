@@ -23,6 +23,13 @@ TaskStore bootstrap, health/backoff, recovery, and controlled update handoff.
 TypeScript launches only the pinned bootstrap control command and owns none of
 those policies.
 
+One Director runtime per user is the supported default on a host. It binds
+`127.0.0.1:3307` for Dolt and `127.0.0.1:7041` for the Engine, and refuses to
+start a second runtime that would contend for either listener or for the same
+private state. Running a verification or staging Director beside a production
+one is supported only through the isolated second runtime described below;
+there is no other supported way to run two of them on one host.
+
 ## Install, update, and restart-free activation
 
 Every Git candidate starts with this committed preparation:
@@ -81,6 +88,58 @@ maintenance state, and backups are owner-only and outside repositories. A
 missing, linked, replaced, broad-mode, wrong-owner, stale, or mismatched file
 fails closed. Never repair identity or TaskStore ambiguity by deleting or
 reseeding state.
+
+## Running a second isolated runtime
+
+A verification or staging Director may run beside a production one on the same
+host. The second runtime is isolated rather than shared: it declares its own
+loopback ports and keeps its own private state, and the existing instance keeps
+running untouched. Starting one never requires stopping, moving, or
+reconfiguring the installation already present.
+
+Give the second runtime both loopback ports in its environment:
+
+```text
+DIRECTOR_RUNTIME_DOLT_PORT=13307
+DIRECTOR_RUNTIME_ENGINE_PORT=17041
+```
+
+Set `XDG_RUNTIME_DIR`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, and `XDG_DATA_HOME`
+in that same environment to absolute private directories outside the default
+installation's Director roots, and give every one of those directories to this
+instance alone. Both ports must be present, unprivileged, and different from
+each other.
+
+That environment must be the one the Paseo daemon hosting this second Director
+runs with. The declaration places the whole instance, not only its child
+processes: Director resolves its Engine endpoint from the same two variables
+its bootstrap consumes, so the second instance's Board, Home, Task detail,
+Inspector, Doctor, Operations and Repair all reach the Engine on the declared
+port. Director then refuses to adopt a runtime whose Engine serves a different
+address, so the surface and the runtime cannot drift apart.
+
+Isolation is all or nothing, because a partial one would contend instead of
+coexist:
+
+- one port without the other, an invalid port, or ports without all four
+  private XDG bases fail closed as `DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE`,
+  in the connector as well as in the runtime, so a partial declaration never
+  falls back to the default port where a running instance answers;
+- an isolated runtime never releases a live runtime it finds at its own paths.
+  It refuses with `DIRECTOR_BOOTSTRAP_ISOLATION_OCCUPIED`; only the default
+  installation performs the controlled update handoff;
+- an isolated runtime refuses a data directory that already holds a TaskStore
+  which is not its own, with `DIRECTOR_BOOTSTRAP_ISOLATION_FOREIGN_TASKSTORE`.
+  Reusing another instance's `XDG_DATA_HOME` is caught there rather than at the
+  Dolt server lock;
+- the occupied-listener refusal is unchanged for an isolated runtime. A
+  declared port that is already held refuses exactly as the fixed pair does.
+
+The two runtimes share no TaskStore, host identity, credentials, control
+socket, launch lock, cache, or XDG path, and neither can read or change the
+other's state. An isolated runtime therefore resolves against its own TaskStore
+and serves its own Director surface with its own content; a new one starts
+empty and shows none of the other instance's Projects or Tasks.
 
 ## Health, Doctor, and Repair
 
@@ -143,7 +202,12 @@ remote URLs. Director has no telemetry and never uploads the bundle.
 | `DIRECTOR_MAIN_GO_TOOLCHAIN_MISSING` or `DIRECTOR_MAIN_GO_TOOLCHAIN_VERSION` | Install exact Go `1.26.5` for default-main add/update; do not change channels implicitly. |
 | `DIRECTOR_MAIN_BUILD_FAILED` | Preserve the prior candidate and verified cache; correct the exact source/module-cache condition and retry update. |
 | `DIRECTOR_BOOTSTRAP_INSTALL_NOT_PREPARED` | The installed checkout lacks the exact prepared bootstrap pin; rerun the same public update, then plugin-scoped reload. |
-| `DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER` | A required listener belongs to an unproved process. Preserve it, identify ownership, and retry only after the conflict is safely resolved. |
+| `DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER` | Another Director runtime holds a required listener; the refusal names the port and the holding process. Preserve it, and start this runtime as an isolated second runtime instead. Never stop, signal, or delete the instance that owns it. |
+| `DIRECTOR_BOOTSTRAP_PORT_OCCUPIED` | A required listener named in the refusal is held by a process that is not a Director runtime, or by one this user cannot read. Nothing was started or signalled. Free that port or give this runtime its own isolated ports. |
+| `DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE` | The isolated runtime declaration is partial. Declare both ports, valid and different, together with all four private XDG bases outside the default installation. The existing instance is unaffected. |
+| `DIRECTOR_BOOTSTRAP_ISOLATION_OCCUPIED` | A live runtime with a different binding already owns these isolated paths. An isolated runtime never releases it; use that runtime's own lifecycle, or choose a different private XDG root. |
+| `DIRECTOR_BOOTSTRAP_ISOLATION_FOREIGN_TASKSTORE` | The declared `XDG_DATA_HOME` already holds a TaskStore this runtime does not own. Give the isolated runtime its own data directory; never point two runtimes at one TaskStore. |
+| `DIRECTOR_BOOTSTRAP_ENGINE_ADDRESS_MISMATCH` | The runtime serves an Engine address this instance's surface is not bound to. Correct the declared ports so the whole environment agrees; Director refuses rather than query another instance's Engine. |
 | `DIRECTOR_BOOTSTRAP_FOREIGN_OWNER` | Controller state or handoff identifies another owner. Preserve all state and reconcile the exact owner; never kill or delete it. |
 | `DIRECTOR_RUNTIME_BINDING_MISMATCH` | The connector and controller bindings differ. Preserve both and retry the supported update/handoff path. |
 | `DIRECTOR_RUNTIME_CHILDREN_NOT_READY` | Engine or Dolt ownership/readiness is incomplete. Inspect the deepest bounded bootstrap code and retry plugin-scoped reload after correction. |

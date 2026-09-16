@@ -16,6 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ensureBootstrapRuntime } from "../../connector/bootstrap-launcher.server.ts";
+import { directorEngineURL } from "../../connector/runtime-configuration.server.mjs";
 import { selectInstalledBootstrap } from "../../connector/bootstrap-selection.server.ts";
 import { startHostContractServer } from "../../connector/host-ipc.server.ts";
 import { EXPECTED_HOST_DESCRIPTOR } from "../../generated/host-contract.shared.ts";
@@ -280,27 +281,32 @@ export async function runReleaseRuntimeLifecycle() {
   const stopHost = await startHostContractServer({ async describe() { return EXPECTED_HOST_DESCRIPTOR; }, async invoke(commandValue) {
     return { schemaVersion: 1, requestId: commandValue.requestId, cursor: 1, result: { effectId: commandValue.arguments.effectId, status: "unavailable", bindingHash: commandValue.arguments.bindingHash, priorDispatcherAbsent: true, maximumAgeMillis: 30_000, factHash: "0".repeat(64) } };
   } }, hostSocket);
+  // The Engine placement comes from the same resolver the connector uses, so
+  // this gate follows a declared isolation instead of an assumed default.
+  const engine = directorEngineURL(environment);
   let first;
   let runtimeIdentities = [];
   try {
-    first = await ensureBootstrapRuntime({ selection, environment, hostSocket });
+    first = await ensureBootstrapRuntime({ selection, environment, hostSocket, engineAddress: engine.address });
     const status = await first.status(); assert.equal(status.state, "current");
     const state = JSON.parse(readFileSync(join(environment.XDG_RUNTIME_DIR, "director", "supervisor", "state.json"), "utf8"));
-    const bootstrap = processIdentity(state.pid); const engine = processIdentity(state.enginePid); const dolt = processIdentity(state.doltPid);
-    runtimeIdentities = [bootstrap, engine, dolt];
+    const bootstrap = processIdentity(state.pid); const engineChild = processIdentity(state.enginePid); const dolt = processIdentity(state.doltPid);
+    runtimeIdentities = [bootstrap, engineChild, dolt];
     if (typeof process.getuid === "function") {
       assert.deepEqual(runtimeIdentities.map((identity) => identity.uid), [process.getuid(), process.getuid(), process.getuid()]);
     }
-    assert.equal(engine.parentPid, bootstrap.pid); assert.equal(dolt.parentPid, bootstrap.pid);
-    assert.equal(engine.argv[1], "serve-board"); assert.equal(dolt.argv[1], "sql-server");
-    const adopted = await ensureBootstrapRuntime({ selection, environment, hostSocket });
+    assert.equal(engineChild.parentPid, bootstrap.pid); assert.equal(dolt.parentPid, bootstrap.pid);
+    assert.equal(engineChild.argv[1], "serve-board"); assert.equal(dolt.argv[1], "sql-server");
+    assert.ok(engineChild.argv.includes(`--listen=${engine.address}`), "the Engine child does not serve the resolved address");
+    assert.equal(first.engineAddress, engine.address);
+    const adopted = await ensureBootstrapRuntime({ selection, environment, hostSocket, engineAddress: engine.address });
     const adoptedStatus = await adopted.status(); assert.deepEqual([adoptedStatus.enginePid, adoptedStatus.doltPid], [status.enginePid, status.doltPid]);
     await adopted.close();
-    const response = await fetch("http://127.0.0.1:7041/v1/planning/home", { method: "POST", headers: { "content-type": "application/json",
+    const response = await fetch(`${engine.url}/v1/planning/home`, { method: "POST", headers: { "content-type": "application/json",
       "x-director-contract-version": PLANNING_CONTRACT_VERSION, "x-director-contract-hash": PLANNING_CONTRACT_SHA256 }, body: JSON.stringify({ hostId: first.host.id, pageSize: 25 }) });
     assert.equal(response.status, 200);
     await first.close();
-    await waitFor(() => !processAlive(bootstrap) && !processAlive(engine) && !processAlive(dolt));
+    await waitFor(() => !processAlive(bootstrap) && !processAlive(engineChild) && !processAlive(dolt));
     return { schemaVersion: 1, sourceCandidate: candidate, engineSha256: prepared.engine.binary.sha256, doltVersion: "2.3.2",
       bootstrapOwnsChildren: true, supervisorAdopted: true, homeStatus: 200, publishedRuntimeCompilerExecutions: 0,
       leaseExpiryStoppedChildren: true, persistentDataPreserved: existsSync(join(environment.XDG_DATA_HOME, "director", "taskstore", "dolt", "director", ".dolt")) };

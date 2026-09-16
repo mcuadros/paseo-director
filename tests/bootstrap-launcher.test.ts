@@ -7,8 +7,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
-import { ensureBootstrapRuntime } from "../connector/bootstrap-launcher.server.ts";
+import {
+  BootstrapLauncherError,
+  ensureBootstrapRuntime,
+  occupiedListenerDiagnosis,
+} from "../connector/bootstrap-launcher.server.ts";
 import { BootstrapSelectionError, selectInstalledBootstrap } from "../connector/bootstrap-selection.server.ts";
+import { directorEngineURL } from "../connector/runtime-configuration.server.mjs";
+import { startInstalledConnectorShell } from "../connector/paseo.server.ts";
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "director-bootstrap-launcher-"));
@@ -17,18 +23,16 @@ function fixture() {
   const bytes = Buffer.from("exact private Go bootstrap fixture\n");
   writeFileSync(path, bytes, { mode: 0o500 });
   const sha256 = createHash("sha256").update(bytes).digest("hex");
-  return {
-    root,
-    selection: selectInstalledBootstrap({
-      schemaVersion: 3, state: "prepared", connectorCommit: "1".repeat(40), channel: "main",
-      bootstrap: { schemaVersion: 1, target: "linux-amd64", path, sha256, size: bytes.byteLength },
-    }),
-  };
+  const installation = {
+    schemaVersion: 3, state: "prepared", connectorCommit: "1".repeat(40), channel: "main",
+    bootstrap: { schemaVersion: 1, target: "linux-amd64", path, sha256, size: bytes.byteLength },
+  } as const;
+  return { root, installation, selection: selectInstalledBootstrap(installation) };
 }
 
-function output() {
+function output(engineAddress = "127.0.0.1:7041") {
   return JSON.stringify({
-    schemaVersion: 1, code: "DIRECTOR_BOOTSTRAP_RUNTIME_STATUS", state: "current", binding: "2".repeat(64),
+    schemaVersion: 1, code: "DIRECTOR_BOOTSTRAP_RUNTIME_STATUS", state: "current", binding: "2".repeat(64), engineAddress,
     host: { schemaVersion: 1, id: `director-${"3".repeat(32)}`, label: "Director" },
     engine: { mode: "main", version: "0.0.0-main", sourceCandidate: "1".repeat(40), target: "linux-amd64",
       binary: { path: "/private/director-engine", sha256: "4".repeat(64), size: 42 },
@@ -47,6 +51,7 @@ test("minimal JavaScript launcher executes only the pinned Go bootstrap control 
       selection: value.selection,
       environment: { HOME: value.root, XDG_RUNTIME_DIR: join(value.root, "runtime"), PATH: "/poison" },
       hostSocket: join(value.root, "host.sock"),
+      engineAddress: "127.0.0.1:7041",
       dependencies: { async invoke(path, args, options) { calls.push({ path, args, env: options.env }); return output(); } },
     });
     assert.equal(handle.host.id, `director-${"3".repeat(32)}`);
@@ -64,6 +69,95 @@ test("minimal JavaScript launcher executes only the pinned Go bootstrap control 
   } finally { rmSync(value.root, { recursive: true, force: true }); }
 });
 
+test("the closed bootstrap environment forwards an isolated runtime declaration and nothing else", async () => {
+  const value = fixture();
+  const calls: NodeJS.ProcessEnv[] = [];
+  try {
+    const handle = await ensureBootstrapRuntime({
+      selection: value.selection,
+      environment: {
+        HOME: value.root, XDG_RUNTIME_DIR: join(value.root, "runtime"), XDG_CACHE_HOME: join(value.root, "cache"),
+        XDG_CONFIG_HOME: join(value.root, "config"), XDG_DATA_HOME: join(value.root, "data"),
+        DIRECTOR_RUNTIME_DOLT_PORT: "13307", DIRECTOR_RUNTIME_ENGINE_PORT: "17041",
+        PATH: "/poison", DIRECTOR_RUNTIME_UNKNOWN: "poison",
+      },
+      hostSocket: join(value.root, "host.sock"),
+      engineAddress: "127.0.0.1:17041",
+      dependencies: { async invoke(_path, _args, options) { calls.push(options.env); return output("127.0.0.1:17041"); } },
+    });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(Object.keys(calls[0]).sort(), [
+      "DIRECTOR_RUNTIME_DOLT_PORT", "DIRECTOR_RUNTIME_ENGINE_PORT", "HOME",
+      "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
+    ]);
+    assert.equal(calls[0].DIRECTOR_RUNTIME_DOLT_PORT, "13307");
+    assert.equal(calls[0].DIRECTOR_RUNTIME_ENGINE_PORT, "17041");
+    await handle.close();
+  } finally { rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("a supervisor serving another Engine address is refused instead of adopted", async () => {
+  const value = fixture();
+  try {
+    await assert.rejects(
+      ensureBootstrapRuntime({
+        selection: value.selection,
+        environment: { HOME: value.root, DIRECTOR_RUNTIME_DOLT_PORT: "13307", DIRECTOR_RUNTIME_ENGINE_PORT: "17041" },
+        hostSocket: join(value.root, "host.sock"),
+        engineAddress: "127.0.0.1:17041",
+        // The running default installation's supervisor, not this one.
+        dependencies: { async invoke() { return output("127.0.0.1:7041"); } },
+      }),
+      (error: unknown) => error instanceof BootstrapLauncherError &&
+        error.code === "DIRECTOR_BOOTSTRAP_ENGINE_ADDRESS_MISMATCH",
+    );
+    await assert.rejects(
+      ensureBootstrapRuntime({
+        selection: value.selection,
+        environment: { HOME: value.root },
+        hostSocket: join(value.root, "host.sock"),
+        engineAddress: "0.0.0.0:7041",
+        dependencies: { async invoke() { return output(); } },
+      }),
+      (error: unknown) => error instanceof BootstrapLauncherError &&
+        error.code === "DIRECTOR_BOOTSTRAP_ENGINE_ADDRESS_MISMATCH",
+    );
+    for (const address of ["", "127.0.0.1:0", "localhost:7041", "127.0.0.1"]) {
+      await assert.rejects(
+        ensureBootstrapRuntime({
+          selection: value.selection,
+          environment: { HOME: value.root },
+          hostSocket: join(value.root, "host.sock"),
+          engineAddress: "127.0.0.1:7041",
+          dependencies: { async invoke() { return output(address); } },
+        }),
+        (error: unknown) => error instanceof BootstrapLauncherError &&
+          error.code === "DIRECTOR_BOOTSTRAP_CONTROL_INVALID",
+      );
+    }
+  } finally { rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("the occupied-listener refusal reaches the connector as closed port and holder facts", () => {
+  const stderr = [
+    "DIRECTOR_BOOTSTRAP_PORT_OCCUPIED",
+    JSON.stringify({ code: "DIRECTOR_BOOTSTRAP_PORT_OCCUPIED", port: 13309, holder: "foreign", pid: 1970137 }),
+    "127.0.0.1:13309 is occupied by pid 1970137, which is not a Director runtime.",
+  ].join("\n");
+  assert.deepEqual(occupiedListenerDiagnosis(stderr), { port: 13309, holder: "foreign" });
+  assert.deepEqual(
+    occupiedListenerDiagnosis(`DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER\n${JSON.stringify({ port: 3307, holder: "director" })}`),
+    { port: 3307, holder: "director" },
+  );
+  for (const rejected of [
+    "DIRECTOR_BOOTSTRAP_START_TIMEOUT",
+    JSON.stringify({ port: 0, holder: "foreign" }),
+    JSON.stringify({ port: 70_000, holder: "foreign" }),
+    JSON.stringify({ port: 3307, holder: "mystery" }),
+    "{not json}",
+  ]) assert.equal(occupiedListenerDiagnosis(rejected), null);
+});
+
 test("missing, mutable, or digest-poisoned bootstrap pins fail before execution", () => {
   const value = fixture();
   try {
@@ -73,6 +167,81 @@ test("missing, mutable, or digest-poisoned bootstrap pins fail before execution"
     assert.throws(() => selectInstalledBootstrap({ schemaVersion: 3, state: "prepared", connectorCommit: "1".repeat(40), channel: "main", bootstrap: value.selection.bootstrap }),
       (error: unknown) => error instanceof BootstrapSelectionError && error.code === "DIRECTOR_BOOTSTRAP_DIGEST");
   } finally { rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("an isolated declaration places the connector Engine endpoint on the declared port", () => {
+  const isolated = directorEngineURL({
+    DIRECTOR_RUNTIME_DOLT_PORT: "13307",
+    DIRECTOR_RUNTIME_ENGINE_PORT: "17041",
+  } as NodeJS.ProcessEnv);
+  assert.deepEqual(isolated, { url: "http://127.0.0.1:17041", address: "127.0.0.1:17041", isolated: true });
+  const installed = directorEngineURL({} as NodeJS.ProcessEnv);
+  assert.deepEqual(installed, { url: "http://127.0.0.1:7041", address: "127.0.0.1:7041", isolated: false });
+  // An incomplete declaration must not silently fall back to the default
+  // port, which is where a running instance's Engine answers.
+  for (const partial of [
+    { DIRECTOR_RUNTIME_ENGINE_PORT: "17041" },
+    { DIRECTOR_RUNTIME_DOLT_PORT: "13307" },
+    { DIRECTOR_RUNTIME_DOLT_PORT: "13307", DIRECTOR_RUNTIME_ENGINE_PORT: "13307" },
+    { DIRECTOR_RUNTIME_DOLT_PORT: "13307", DIRECTOR_RUNTIME_ENGINE_PORT: "1023" },
+    { DIRECTOR_RUNTIME_DOLT_PORT: "13307", DIRECTOR_RUNTIME_ENGINE_PORT: "65536" },
+    { DIRECTOR_RUNTIME_DOLT_PORT: "13307", DIRECTOR_RUNTIME_ENGINE_PORT: "seventeen" },
+  ]) {
+    assert.throws(
+      () => directorEngineURL(partial as NodeJS.ProcessEnv),
+      (error: unknown) => Reflect.get(error as object, "code") === "DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE",
+      `an incomplete declaration resolved to an Engine endpoint: ${JSON.stringify(partial)}`,
+    );
+  }
+});
+
+test("the installed shell hands the bootstrap the same Engine address it binds", async () => {
+  const value = fixture();
+  try {
+    for (const [environment, expected] of [
+      [{ HOME: value.root }, "127.0.0.1:7041"],
+      [{
+        HOME: value.root,
+        XDG_RUNTIME_DIR: join(value.root, "runtime"), XDG_CACHE_HOME: join(value.root, "cache"),
+        XDG_CONFIG_HOME: join(value.root, "config"), XDG_DATA_HOME: join(value.root, "data"),
+        DIRECTOR_RUNTIME_DOLT_PORT: "13307", DIRECTOR_RUNTIME_ENGINE_PORT: "17041",
+      }, "127.0.0.1:17041"],
+    ] as const) {
+      let requested = "";
+      const shell = startInstalledConnectorShell({
+        paseo: {} as never,
+        environment: environment as NodeJS.ProcessEnv,
+        installation: value.installation,
+        reportActivation: false,
+        dependencies: {
+          hostCompatibility: () => ({
+            paseoVersion: "0.7.2", nodeVersion: process.versions.node,
+            platform: "linux", architecture: "x64", target: "linux-amd64",
+          }),
+          async ensureBootstrapRuntime(options: { readonly engineAddress: string }) {
+            requested = options.engineAddress;
+            throw new Error("DIRECTOR_BOOTSTRAP_TEST_STOP");
+          },
+        } as never,
+      });
+      await shell.close().catch(() => undefined);
+      assert.equal(requested, expected, `the bootstrap was asked for ${requested}, not the declared ${expected}`);
+      assert.equal(directorEngineURL(environment as NodeJS.ProcessEnv).address, expected);
+    }
+  } finally { rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("every installed Director endpoint is built from the resolved Engine placement", () => {
+  const shell = readFileSync(resolve(import.meta.dirname, "..", "connector", "paseo.server.ts"), "utf8");
+  const installed = shell.slice(shell.indexOf("export function startInstalledConnectorShell"));
+  assert.match(installed, /const engineEndpoint = directorEngineURL\(environment\);/u);
+  assert.match(installed, /url: engineEndpoint\.url,/u);
+  // Board, planning, the connector's own engine URL and the terminal callback
+  // must all read the resolved placement; a literal default here is the defect
+  // that put an isolated surface on a running instance's Engine.
+  assert.equal(installed.match(/configuration\.engine\.url/gu)?.length, 4);
+  assert.doesNotMatch(installed, /DEFAULT_ENGINE_URL/u);
+  assert.match(installed, /engineAddress: engineEndpoint\.address,/u);
 });
 
 test("TypeScript contains no Engine/Dolt distribution, child supervision, or recovery implementation", () => {

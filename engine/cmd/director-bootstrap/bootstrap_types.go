@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -32,6 +33,10 @@ const (
 	defaultEnginePort      = 7041
 	defaultDoltPort        = 3307
 	controlProtocolVersion = 1
+	doltPortVariable       = "DIRECTOR_RUNTIME_DOLT_PORT"
+	enginePortVariable     = "DIRECTOR_RUNTIME_ENGINE_PORT"
+	lowestIsolatedPort     = 1024
+	highestPort            = 65535
 )
 
 var (
@@ -41,15 +46,63 @@ var (
 	sha256Pattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	gitSHAPattern      = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	hostIDPattern      = regexp.MustCompile(`^director-[0-9a-f]{32}$`)
+	// engineAddressPattern is the exact loopback address shape the connector
+	// must bind its Director transports to. The launcher mirrors it.
+	engineAddressPattern = regexp.MustCompile(`^127\.0\.0\.1:([1-9][0-9]{0,4})$`)
 )
 
 type bootstrapError struct {
-	code string
+	code   string
+	port   int
+	holder string
+	pid    int
 }
 
 func (e *bootstrapError) Error() string { return e.code }
 
 func fail(code string) error { return &bootstrapError{code: code} }
+
+// failOccupiedPort carries the closed occupied-listener detail an operator
+// needs: which loopback port refused startup, whether a Director runtime was
+// proved to hold it, and the holding process when this user can read it.
+func failOccupiedPort(code string, port int, holder string, pid int) error {
+	return &bootstrapError{code: code, port: port, holder: holder, pid: pid}
+}
+
+func occupiedPortOf(err error) (int, string, int) {
+	var typed *bootstrapError
+	if errors.As(err, &typed) {
+		return typed.port, typed.holder, typed.pid
+	}
+	return 0, "", 0
+}
+
+// occupiedPortMessage renders the one human line printed beside the code. It
+// never claims another Director owns a listener that was not proved to be one.
+func occupiedPortMessage(port int, holder string, pid int) string {
+	switch holder {
+	case "director":
+		return fmt.Sprintf("127.0.0.1:%d is held by another Director runtime (pid %d). Leave it running; start this runtime in isolation with %s, %s and private XDG paths.", port, pid, doltPortVariable, enginePortVariable)
+	case "foreign":
+		return fmt.Sprintf("127.0.0.1:%d is occupied by pid %d, which is not a Director runtime. Director started nothing and signalled nothing; free the port or isolate this runtime with %s and %s.", port, pid, doltPortVariable, enginePortVariable)
+	case "unproved":
+		if pid > 0 {
+			return fmt.Sprintf("127.0.0.1:%d is occupied by pid %d, which this user cannot identify, so no Director runtime was proved to own it. Director started nothing and signalled nothing; free the port or isolate this runtime with %s and %s.", port, pid, doltPortVariable, enginePortVariable)
+		}
+	}
+	return fmt.Sprintf("127.0.0.1:%d is occupied by a process this user cannot read, so no Director runtime was proved to own it. Director started nothing and signalled nothing; free the port or isolate this runtime with %s and %s.", port, doltPortVariable, enginePortVariable)
+}
+
+// validEngineAddress accepts only the exact loopback address shape, with a
+// real port, that the connector may bind its Director transports to.
+func validEngineAddress(value string) bool {
+	match := engineAddressPattern.FindStringSubmatch(value)
+	if match == nil {
+		return false
+	}
+	port, err := strconv.Atoi(match[1])
+	return err == nil && port <= highestPort
+}
 
 func codeOf(err error, fallback string) string {
 	var typed *bootstrapError
@@ -171,6 +224,7 @@ type runtimeStatus struct {
 	Code                      string         `json:"code"`
 	State                     string         `json:"state"`
 	Binding                   string         `json:"binding"`
+	EngineAddress             string         `json:"engineAddress"`
 	Host                      hostIdentity   `json:"host"`
 	Engine                    preparedEngine `json:"engine"`
 	Dolt                      preparedDolt   `json:"dolt"`
@@ -239,7 +293,20 @@ func decodeStrict(path string, maximum int64, value any) error {
 	return nil
 }
 
-func runtimeBasePaths() (runtimePaths, error) {
+// runtimeXDGVariables are the bases which place one Director runtime's private
+// state. An isolated second runtime must override every one of them.
+var runtimeXDGVariables = [4]string{"XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"}
+
+func runtimeBasePaths() (runtimePaths, error) { return resolveRuntimeBasePaths(os.Getenv) }
+
+// defaultRuntimeBasePaths resolves where the single default installation keeps
+// its state, ignoring every XDG override, so an isolated runtime can prove it
+// shares nothing with it.
+func defaultRuntimeBasePaths() (runtimePaths, error) {
+	return resolveRuntimeBasePaths(func(string) string { return "" })
+}
+
+func resolveRuntimeBasePaths(lookup func(string) string) (runtimePaths, error) {
 	home, err := os.UserHomeDir()
 	if err != nil || !filepath.IsAbs(home) {
 		return runtimePaths{}, fail("DIRECTOR_BOOTSTRAP_XDG_PATH")
@@ -253,19 +320,19 @@ func runtimeBasePaths() (runtimePaths, error) {
 		}
 		return value, nil
 	}
-	cacheBase, err := absolute(os.Getenv("XDG_CACHE_HOME"), filepath.Join(home, ".cache"))
+	cacheBase, err := absolute(lookup("XDG_CACHE_HOME"), filepath.Join(home, ".cache"))
 	if err != nil {
 		return runtimePaths{}, err
 	}
-	configBase, err := absolute(os.Getenv("XDG_CONFIG_HOME"), filepath.Join(home, ".config"))
+	configBase, err := absolute(lookup("XDG_CONFIG_HOME"), filepath.Join(home, ".config"))
 	if err != nil {
 		return runtimePaths{}, err
 	}
-	dataBase, err := absolute(os.Getenv("XDG_DATA_HOME"), filepath.Join(home, ".local", "share"))
+	dataBase, err := absolute(lookup("XDG_DATA_HOME"), filepath.Join(home, ".local", "share"))
 	if err != nil {
 		return runtimePaths{}, err
 	}
-	runtimeBase, err := absolute(os.Getenv("XDG_RUNTIME_DIR"), cacheBase)
+	runtimeBase, err := absolute(lookup("XDG_RUNTIME_DIR"), cacheBase)
 	if err != nil {
 		return runtimePaths{}, err
 	}
@@ -287,6 +354,86 @@ func runtimeBasePaths() (runtimePaths, error) {
 		privilegeFile: filepath.Join(dataRoot, "taskstore", "doltcfg", "privileges.db"),
 		workRoot:      filepath.Join(runtimeRoot, "work"),
 	}, nil
+}
+
+// runtimePorts are the loopback listeners of one Director runtime. The single
+// default installation uses the fixed pair; an isolated second runtime declares
+// both explicitly.
+type runtimePorts struct {
+	dolt     int
+	engine   int
+	isolated bool
+}
+
+// resolveRuntimePorts reads the declared isolation ports. Declaring one without
+// the other, a reserved or out-of-range port, or the same port twice is an
+// incomplete isolation rather than a partially honoured one.
+func resolveRuntimePorts(lookup func(string) string) (runtimePorts, error) {
+	dolt, engine := strings.TrimSpace(lookup(doltPortVariable)), strings.TrimSpace(lookup(enginePortVariable))
+	if dolt == "" && engine == "" {
+		return runtimePorts{dolt: defaultDoltPort, engine: defaultEnginePort}, nil
+	}
+	doltPort, doltErr := strconv.Atoi(dolt)
+	enginePort, engineErr := strconv.Atoi(engine)
+	if doltErr != nil || engineErr != nil || doltPort == enginePort ||
+		doltPort < lowestIsolatedPort || doltPort > highestPort || enginePort < lowestIsolatedPort || enginePort > highestPort {
+		return runtimePorts{}, fail("DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE")
+	}
+	return runtimePorts{dolt: doltPort, engine: enginePort, isolated: true}, nil
+}
+
+// runtimeRoots are the directories two runtimes must never share. Overlap in
+// any direction means one runtime can observe or mutate the other's TaskStore,
+// identity, credentials, socket, lock or cache.
+func runtimeRoots(paths runtimePaths) [5]string {
+	return [5]string{paths.runtimeRoot, paths.configRoot, paths.dataRoot, paths.cacheRoot, filepath.Dir(paths.hostIdentity)}
+}
+
+func nestedPath(child, parent string) bool {
+	return child == parent || strings.HasPrefix(child, parent+string(filepath.Separator))
+}
+
+// admitIsolatedPaths refuses an isolation request whose state is still the
+// default installation's. Without this an isolation port pair would start a
+// second Engine against the running instance's TaskStore instead of beside it.
+func admitIsolatedPaths(paths runtimePaths) error {
+	for _, name := range runtimeXDGVariables {
+		if strings.TrimSpace(os.Getenv(name)) == "" {
+			return fail("DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE")
+		}
+	}
+	installed, err := defaultRuntimeBasePaths()
+	if err != nil {
+		return err
+	}
+	for _, isolated := range runtimeRoots(paths) {
+		for _, standard := range runtimeRoots(installed) {
+			if nestedPath(isolated, standard) || nestedPath(standard, isolated) {
+				return fail("DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE")
+			}
+		}
+	}
+	return nil
+}
+
+// runtimeLayout resolves where this runtime lives and which loopback ports it
+// owns. An isolated runtime is admitted only when its ports and its state are
+// both private; isolation is never partial.
+func runtimeLayout() (runtimePaths, runtimePorts, error) {
+	paths, err := runtimeBasePaths()
+	if err != nil {
+		return runtimePaths{}, runtimePorts{}, err
+	}
+	ports, err := resolveRuntimePorts(os.Getenv)
+	if err != nil {
+		return runtimePaths{}, runtimePorts{}, err
+	}
+	if ports.isolated {
+		if err := admitIsolatedPaths(paths); err != nil {
+			return runtimePaths{}, runtimePorts{}, err
+		}
+	}
+	return paths, ports, nil
 }
 
 func ensurePrivateDir(path string) error {

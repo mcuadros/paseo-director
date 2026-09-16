@@ -24,11 +24,15 @@ the precompiled Engine/notices. Both channels let Go download and verify
 canonical Dolt 2.3.2; JavaScript does neither.
 An invalid channel fails closed and never falls back.
 
-The long-lived Go bootstrap starts its exact Dolt executable on `127.0.0.1:3307`, creates a
+The long-lived Go bootstrap starts its exact Dolt executable on its declared
+Dolt port, `127.0.0.1:3307` by default, creates a
 fresh private database only when no managed store exists, generates separated
 runtime credentials, invokes the prepared Engine's idempotent
 `bootstrap-taskstore`, removes transient bootstrap authority, and starts Engine
-on `127.0.0.1:7041` only after schema/grant/backup/cursor readback succeeds.
+on its declared Engine port, `127.0.0.1:7041` by default, only after
+schema/grant/backup/cursor readback succeeds. An isolated second runtime
+declares both ports and its own private XDG state together; the operator guide
+owns that procedure.
 Dolt remains separate from Beads on `127.0.0.1:3308`.
 
 Go also creates one owner-only opaque host identity and uses it for the
@@ -39,10 +43,12 @@ it. Update/reload/removal/reinstall preserve the identity and TaskStore.
 Reload adopts the same Go controller through an owner-only authenticated Unix
 control channel and 30-second lease; update performs a controlled binding
 handoff. Removing the plugin stops lease renewal and its
-owned processes while retaining the database and verified cache. An occupied
-listener with no exact owned child produces `DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER`;
-foreign controller/lock ownership produces `DIRECTOR_BOOTSTRAP_FOREIGN_OWNER`.
-Neither condition authorizes a signal or deletion.
+owned processes while retaining the database and verified cache. A required
+listener held by a proved Director runtime produces
+`DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER`; one held by anything else produces
+`DIRECTOR_BOOTSTRAP_PORT_OCCUPIED` naming that port; foreign controller/lock
+ownership produces `DIRECTOR_BOOTSTRAP_FOREIGN_OWNER`. No such condition
+authorizes a signal or deletion.
 
 ## 2. Create from a native Paseo Project
 
