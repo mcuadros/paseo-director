@@ -31,23 +31,45 @@ reobserves both GitHub merged state and the remote merge graph. For direct
 delivery, it consumes the exact completed direct-integration evidence. The
 binding also freezes the Project lease epoch, Task and Run versions, Candidate,
 base, tree, repository, canonical remote, source/common/worktree device and
-inode identities, task branch, owner digest, Task Agent, optional Reviewer,
-Paseo workspaces, and lifecycle state (`active`, `restored`, or `reclaimed`).
+inode identities, task branch, owner digest, Task Agent, every Reviewer this
+Task labelled, Paseo workspaces and Reviewer host views, and lifecycle state
+(`active`, `restored`, or `reclaimed`).
 
-Effects run in this order:
+The Reviewer leg completes before the Task Agent leg begins. That is the
+self-contained triple [independent review](independent-review.md) specifies:
+archive the Reviewer, archive its host view, then remove its exact owner-marked
+detached checkout. Effects run in this order:
 
-1. terminate and verify the exact remaining Reviewer Agent, then Task Agent;
-2. inspect and, when required, durably verify recovery;
-3. archive and verify the exact Reviewer and Task Paseo workspaces;
-4. remove the exact registered product worktree;
-5. delete the integrated remote Task ref with an explicit expected-OID lease;
-6. delete the exact local Task ref after proving no other worktree consumes it;
-7. retain recovery material until its separately guarded expiry.
+1. terminate and verify every live Reviewer Agent this Task labelled;
+2. archive and verify each of those Reviewers' exact Paseo host views;
+3. remove each exact owner-marked detached Reviewer checkout;
+4. terminate and verify the exact Task Agent;
+5. inspect and, when required, durably verify recovery;
+6. archive and verify the exact Task Paseo workspace;
+7. remove the exact registered product worktree;
+8. delete the integrated remote Task ref with an explicit expected-OID lease;
+9. delete the exact local Task ref after proving no other worktree consumes it;
+10. retain recovery material until its separately guarded expiry.
 
-The existing development coordinator `cleanup-plan` / `cleanup-apply` contract
-remains the repository handoff mechanism. It consumes the same exact M4.9
-integration evidence and uses the same agent → workspace → worktree → remote
-ref → local ref order for a clean Candidate checkout. Product cleanup does not
+Step 1 is every live Reviewer, not the one Reviewer whose Review authorized
+delivery. A Task has one Reviewer per Candidate it produced: each correction
+starts a new Reviewer and leaves the previous one alive, so a Task that
+corrected nine times ends with ten. Terminating only the last of them is what
+lets a Reviewer backlog accumulate silently behind a cleanup that reports
+success. Reviewer cleanup is admitted by durable Review verdict evidence rather
+than by integration, because the Reviewers of superseded Candidates reviewed
+commits that were never integrated and never published.
+
+The existing development coordinator contracts remain the repository handoff
+mechanism, as a Reviewer pair and a Task Agent pair. `reviewer-cleanup-plan` /
+`reviewer-cleanup-apply` bind one Reviewer, its host view and its disposable
+checkout, and use the same Reviewer agent → host view → checkout order on the
+authority of durable Review verdict evidence. `cleanup-plan` / `cleanup-apply`
+consume the same exact M4.9 integration evidence and use the agent → workspace
+→ worktree → remote ref → local ref order for a clean Candidate checkout; they
+refuse to begin while the Reviewer named by that Review evidence is unarchived
+or any other live agent still carries this Task's Reviewer labels, which is how
+the order above is enforced rather than assumed. Product cleanup does not
 give a Task Agent permission to invoke that coordinator lifecycle, publish a
 Candidate, close a Task, or clean the real development workspace.
 

@@ -554,10 +554,22 @@ test("public local Paseo MCP lifecycle reads isolate credentials and fail closed
     }
 
     writeFileSync(fixture.modePath, "timeout\n");
+    // The deadline constrains ONLY the lifecycle read under test. Applied to
+    // every child it made the assertion a race between processes: the six git
+    // stubs each take 45-62ms of Node startup against a 100ms budget, so on a
+    // loaded runner one of them exceeds it first and the refusal observed is
+    // EXTERNAL_COMMAND_FAILED for git rather than the lifecycle code. Both
+    // codes are correct for their own path; which one arrives was decided by
+    // machine speed. Constraining only the child whose deadline behaviour is
+    // being asserted removes the race without widening any window.
     const timeoutRun = (executable, args, options = {}) => defaultCommandRunner(
       executable,
       args,
-      { ...options, paseoPassword: parsed.options.paseoPassword, timeout: 100 },
+      {
+        ...options,
+        paseoPassword: parsed.options.paseoPassword,
+        ...(executable === "paseo" ? { timeout: 100 } : {}),
+      },
     );
     await assert.rejects(
       execute(parsed.command, parsed.options, { run: timeoutRun }),

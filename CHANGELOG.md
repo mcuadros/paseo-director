@@ -38,6 +38,26 @@ effect; this entry does not publish it.
   directory a Director runtime already running on the host keeps its state in.
   Where a running instance actually is now comes from its own supervised
   children rather than from where a default installation would be.
+- The documented Reviewer-resource cleanup step, which the coordinator CLI
+  previously had no parameter to name. A bound Reviewer leg archives the
+  Reviewer, archives its host view, then removes its owner-marked disposable
+  checkout, recording intent before every dispatch, adopting an
+  already-terminal resource without a second dispatch, and accepting a
+  destructive absence only where a recorded attempt or an explicit reclaimed
+  binding explains it. Its authority is durable Review verdict evidence rather
+  than integration, so Reviewers of closed Tasks and of superseded Candidates
+  are reconcilable through the supported path. Identity comes from the durable
+  Beads report — bound only by the Reviewer having written it and stating a
+  verdict in a `Verdict:` field or on the comment's own first line — the agent's
+  own frozen labels, and an owner marker read inside the checkout; nothing requires the Candidate to be reachable from published
+  history, because most of the accumulated debt is bound to commits no branch
+  or tag contains. `reviewer-survey` derives the set to reconcile from the
+  daemon and Beads at execution time and reports whether its bounded
+  enumeration was truncated, and `cleanup-plan`/`cleanup-apply` now refuse the
+  Task Agent leg until the exact Reviewer named by the Review is archived and
+  no other live agent carries the Task's own Reviewer labels, which is what a
+  corrected Candidate needs: each correction starts a new Reviewer and leaves
+  the previous one alive.
 
 ### Security
 
