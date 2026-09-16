@@ -195,6 +195,36 @@ test("an isolated declaration places the connector Engine endpoint on the declar
   }
 });
 
+test("the connector reads a declaration exactly as the runtime does", () => {
+  const byteOrderMark = "\u{FEFF}";
+  // Admitted on both sides.
+  for (const [dolt, engine] of [["13307", "17041"], [" 13307 ", "\t17041\n"]]) {
+    assert.deepEqual(
+      directorEngineURL({ DIRECTOR_RUNTIME_DOLT_PORT: dolt, DIRECTOR_RUNTIME_ENGINE_PORT: engine } as NodeJS.ProcessEnv),
+      { url: "http://127.0.0.1:17041", address: "127.0.0.1:17041", isolated: true },
+    );
+  }
+  // Absent on both sides.
+  assert.equal(directorEngineURL({} as NodeJS.ProcessEnv).isolated, false);
+  // Refused on both sides. A byte-order mark must not read as absent here and
+  // invalid there: that would bind this surface to the default port while the
+  // runtime refused to start, which is the divergence this pair must not have.
+  for (const [dolt, engine] of [
+    [byteOrderMark, byteOrderMark],
+    [`${byteOrderMark}13307`, `${byteOrderMark}17041`],
+    ["+13307", "+17041"],
+    ["013307", "017041"],
+    ["13307", ""],
+    ["13307", "13307"],
+  ]) {
+    assert.throws(
+      () => directorEngineURL({ DIRECTOR_RUNTIME_DOLT_PORT: dolt, DIRECTOR_RUNTIME_ENGINE_PORT: engine } as NodeJS.ProcessEnv),
+      (error: unknown) => Reflect.get(error as object, "code") === "DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE",
+      `${JSON.stringify([dolt, engine])} did not refuse in the connector`,
+    );
+  }
+});
+
 test("the installed shell hands the bootstrap the same Engine address it binds", async () => {
   const value = fixture();
   try {

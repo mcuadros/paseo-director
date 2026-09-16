@@ -42,6 +42,16 @@ export const ENGINE_PORT_VARIABLE = "DIRECTOR_RUNTIME_ENGINE_PORT";
 const LOWEST_ISOLATED_PORT = 1024;
 const HIGHEST_PORT = 65535;
 
+// The runtime trims exactly this cutset. String.prototype.trim also strips
+// U+FEFF and other Unicode blanks, which would read a byte-order-marked value
+// as an absent declaration here and an invalid one there.
+const ASCII_WHITESPACE = /^[ \t\n\v\f\r]+|[ \t\n\v\f\r]+$/gu;
+
+function trimDeclaration(value) {
+  return String(value ?? "").replace(ASCII_WHITESPACE, "");
+}
+
+// Plain decimal digits in the unprivileged range, matching the runtime.
 function declaredPort(value) {
   if (!/^[0-9]{1,5}$/u.test(value)) return null;
   const port = Number(value);
@@ -55,8 +65,8 @@ function declaredPort(value) {
 // default port would point this instance's surface at another instance's
 // Engine.
 export function directorEngineAddress(environment = process.env) {
-  const dolt = (environment[DOLT_PORT_VARIABLE] ?? "").trim();
-  const engine = (environment[ENGINE_PORT_VARIABLE] ?? "").trim();
+  const dolt = trimDeclaration(environment[DOLT_PORT_VARIABLE]);
+  const engine = trimDeclaration(environment[ENGINE_PORT_VARIABLE]);
   if (dolt === "" && engine === "") return { address: `127.0.0.1:${DEFAULT_ENGINE_PORT}`, isolated: false };
   const doltPort = declaredPort(dolt);
   const enginePort = declaredPort(engine);

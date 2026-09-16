@@ -454,43 +454,122 @@ func hasArgument(arguments []string, value string) bool {
 	return false
 }
 
-// directorRuntimeChild proves that the holder of this exact port is a child a
-// Director runtime supervises, not merely an executable with a Director-shaped
-// name and path. It requires the pinned executable and the argument vector
-// only this bootstrap produces, bound to the port being refused.
-func directorRuntimeChild(port int, holder holderProcess) bool {
-	if holder.pid <= 0 || holder.executable == "" || len(holder.arguments) < 2 {
-		return false
+// directorChildKind classifies a process as a child a Director runtime
+// supervises, from its pinned executable and the argument vector only this
+// bootstrap produces. It returns "engine", "dolt", or an empty string.
+func directorChildKind(executable string, arguments []string) string {
+	if executable == "" || len(arguments) < 2 {
+		return ""
 	}
-	switch holder.arguments[1] {
+	switch arguments[1] {
 	case "serve-board":
-		if !preparedCacheExecutable(holder.executable, "director-engine") ||
-			!hasArgument(holder.arguments, "--listen=127.0.0.1:"+strconv.Itoa(port)) ||
-			!hasArgument(holder.arguments, "--host-label=Director") {
-			return false
+		if !preparedCacheExecutable(executable, "director-engine") || !hasArgument(arguments, "--host-label=Director") {
+			return ""
 		}
-		for _, argument := range holder.arguments {
+		for _, argument := range arguments {
 			if identity, found := strings.CutPrefix(argument, "--host-id="); found && hostIDPattern.MatchString(identity) {
-				return true
+				return "engine"
 			}
 		}
-		return false
 	case "sql-server":
-		if !preparedCacheExecutable(holder.executable, "dolt") ||
-			!hasArgument(holder.arguments, "--host=127.0.0.1") ||
-			!hasArgument(holder.arguments, "--port="+strconv.Itoa(port)) {
-			return false
+		if !preparedCacheExecutable(executable, "dolt") || !hasArgument(arguments, "--host=127.0.0.1") {
+			return ""
 		}
-		for _, argument := range holder.arguments {
+		for _, argument := range arguments {
 			if socket, found := strings.CutPrefix(argument, "--socket="); found &&
 				strings.HasSuffix(filepath.ToSlash(socket), "/director/supervisor/dolt/mysql.sock") {
-				return true
+				return "dolt"
 			}
 		}
+	}
+	return ""
+}
+
+// directorStatePathFlags are the arguments through which a supervised child
+// names a directory or socket its runtime keeps state in.
+var directorStatePathFlags = map[string][]string{
+	"engine": {"--taskstore-config=", "--host-socket=", "--runtime-root=", "--project-admin-token-file="},
+	"dolt":   {"--data-dir=", "--doltcfg-dir=", "--socket="},
+}
+
+// supervisorRootOf recovers the runtime root that owns a supervised child from
+// the one argument whose shape this bootstrap fixes. It identifies which
+// runtime a child belongs to, so a runtime never mistakes its own children for
+// another instance occupying its directories.
+func supervisorRootOf(kind string, arguments []string) string {
+	for _, argument := range arguments {
+		switch kind {
+		case "engine":
+			if work, found := strings.CutPrefix(argument, "--runtime-root="); found && filepath.Base(work) == "work" {
+				return filepath.Dir(filepath.Clean(work))
+			}
+		case "dolt":
+			if socket, found := strings.CutPrefix(argument, "--socket="); found &&
+				strings.HasSuffix(filepath.ToSlash(socket), "/director/supervisor/dolt/mysql.sock") {
+				return filepath.Dir(filepath.Dir(filepath.Clean(socket)))
+			}
+		}
+	}
+	return ""
+}
+
+// directorRuntimeChild proves that the holder of this exact port is a
+// supervised Director child serving that port, not merely a Director child.
+func directorRuntimeChild(port int, holder holderProcess) bool {
+	if holder.pid <= 0 {
 		return false
+	}
+	switch directorChildKind(holder.executable, holder.arguments) {
+	case "engine":
+		return hasArgument(holder.arguments, "--listen=127.0.0.1:"+strconv.Itoa(port))
+	case "dolt":
+		return hasArgument(holder.arguments, "--port="+strconv.Itoa(port))
 	}
 	return false
 }
+
+// liveRuntimeState is where one Director runtime running on this host keeps
+// its state, and which supervisor owns it.
+type liveRuntimeState struct {
+	supervisorRoot string
+	paths          []string
+}
+
+// liveDirectorRuntimes reports where the Director runtimes running on this
+// host under this user actually keep their state, read from the argument
+// vectors of their supervised children. It answers where a live instance
+// actually is, which the default-path baseline cannot: an instance started
+// with its own XDG bases does not live where a default installation would.
+func liveDirectorRuntimes() []liveRuntimeState {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var live []liveRuntimeState
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 0 || pid == os.Getpid() {
+			continue
+		}
+		arguments := processArguments(pid)
+		kind := directorChildKind(processExecutable(pid), arguments)
+		if kind == "" {
+			continue
+		}
+		state := liveRuntimeState{supervisorRoot: supervisorRootOf(kind, arguments)}
+		for _, flag := range directorStatePathFlags[kind] {
+			for _, argument := range arguments {
+				if value, found := strings.CutPrefix(argument, flag); found && filepath.IsAbs(value) {
+					state.paths = append(state.paths, filepath.Clean(value))
+				}
+			}
+		}
+		live = append(live, state)
+	}
+	return live
+}
+
+var runtimeLiveDirectorRuntimes = liveDirectorRuntimes
 
 // refuseOccupiedPort fails closed on any occupied required listener and names
 // what holds it. Only a proved Director runtime child reports the external-owner
@@ -625,6 +704,43 @@ func admitIsolatedTaskStore(paths runtimePaths, identity hostIdentity) error {
 	storeID, _, err := taskStoreIdentity(paths.taskstore)
 	if err != nil || (storeID != identity.ID && storeID != "local-paseo") {
 		return fail("DIRECTOR_BOOTSTRAP_ISOLATION_FOREIGN_TASKSTORE")
+	}
+	return nil
+}
+
+// admitIsolatedTaskStoreAddress refuses an isolated runtime whose existing
+// TaskStore configuration does not name the Dolt listener it declared. The
+// configuration is reused verbatim once it exists, and the declared port
+// reaches only the branch that creates one, so without this an isolated
+// runtime reached through another instance's XDG_CONFIG_HOME would serve that
+// instance's TaskStore over the network while its own Dolt answered nobody.
+// It also refuses an isolated runtime whose declared Dolt port has changed
+// under a configuration still naming the old one.
+func admitIsolatedTaskStoreAddress(paths runtimePaths, ports runtimePorts) error {
+	if _, err := os.Lstat(paths.taskstore); err != nil {
+		return nil
+	}
+	info, err := privateRegular(paths.taskstore, maximumManifestBytes, false)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		return fail("DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS")
+	}
+	content, err := os.ReadFile(paths.taskstore)
+	if err != nil {
+		return fail("DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS")
+	}
+	var document map[string]any
+	if json.Unmarshal(content, &document) != nil {
+		return fail("DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS")
+	}
+	declared := fmt.Sprintf("127.0.0.1:%d", ports.dolt)
+	for _, role := range []string{"control", "writer", "maintenance"} {
+		section, ok := document[role].(map[string]any)
+		if !ok {
+			return fail("DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS")
+		}
+		if address, ok := section["address"].(string); !ok || address != declared {
+			return fail("DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS")
+		}
 	}
 	return nil
 }
@@ -779,6 +895,9 @@ func (controller *runtimeController) startChildren() error {
 	}
 	if controller.ports.isolated {
 		if err := admitIsolatedTaskStore(controller.paths, controller.identity); err != nil {
+			return err
+		}
+		if err := admitIsolatedTaskStoreAddress(controller.paths, controller.ports); err != nil {
 			return err
 		}
 	}

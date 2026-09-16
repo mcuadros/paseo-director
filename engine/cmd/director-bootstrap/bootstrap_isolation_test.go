@@ -154,7 +154,8 @@ func supervisedDirectorChild(port int) holderProcess {
 			arguments: []string{"/private/cache/director/engines/main/director-engine", "serve-board",
 				"--listen=127.0.0.1:" + strconv.Itoa(port), "--taskstore-config=/private/config/taskstore.json",
 				"--host-id=director-" + strings.Repeat("b", 32), "--host-label=Director",
-				"--host-socket=/private/runtime/host.sock", "--runtime-root=/private/runtime/work",
+				"--host-socket=/private/runtime/director/runtime/host.sock",
+				"--runtime-root=/private/runtime/director/supervisor/work",
 				"--project-admin-token-file=/private/config/project-admin.token"}}
 	}
 	return holderProcess{pid: 4102,
@@ -381,6 +382,268 @@ func TestIsolatedRuntimeRefusesADataRootHoldingAnotherInstanceTaskStore(t *testi
 	writeConfig(t, foreign, "director-"+strings.Repeat("d", 32))
 	if err := admitIsolatedTaskStore(foreign, identity); codeOf(err, "") != "DIRECTOR_BOOTSTRAP_ISOLATION_FOREIGN_TASKSTORE" {
 		t.Fatalf("a TaskStore owned by another identity was admitted: %v", err)
+	}
+}
+
+// liveInstanceOutsideTheDefaultPaths writes the on-disk state of an instance
+// that lives neither at the default location nor inside this runtime's own
+// roots, and returns the paths its supervised children would expose.
+func liveInstanceOutsideTheDefaultPaths(t *testing.T, root string, doltPort int) (string, string, []liveRuntimeState) {
+	t.Helper()
+	configBase := filepath.Join(root, "live", "config")
+	dataBase := filepath.Join(root, "live", "data")
+	runtimeBase := filepath.Join(root, "live", "runtime")
+	configRoot := filepath.Join(configBase, "director", "managed-runtime")
+	if err := os.MkdirAll(configRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	identity := "director-" + strings.Repeat("a", 32)
+	address := "127.0.0.1:" + strconv.Itoa(doltPort)
+	document := map[string]any{
+		"schemaVersion": 2, "storeId": identity,
+		"control":     map[string]any{"address": address, "user": "director_control"},
+		"writer":      map[string]any{"address": address, "user": "director_writer"},
+		"maintenance": map[string]any{"address": address, "user": "director_maintenance"},
+	}
+	content, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configRoot, "taskstore.json"), append(content, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	supervisorRoot := filepath.Join(runtimeBase, "director", "supervisor")
+	return configBase, identity, []liveRuntimeState{{
+		supervisorRoot: supervisorRoot,
+		paths: []string{
+			filepath.Join(configRoot, "taskstore.json"),
+			filepath.Join(configRoot, "project-admin.token"),
+			filepath.Join(supervisorRoot, "work"),
+			filepath.Join(dataBase, "director", "taskstore", "dolt"),
+			filepath.Join(supervisorRoot, "dolt", "mysql.sock"),
+		},
+	}}
+}
+
+func TestIsolationRefusesAConfigurationRootBelongingToALiveInstanceOutsideTheDefaultPaths(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	liveConfigBase, _, livePaths := liveInstanceOutsideTheDefaultPaths(t, root, defaultDoltPort)
+
+	// Everything private except the configuration base, which is the live
+	// instance's. The default-path baseline cannot see that: the live
+	// instance does not live where a default installation would.
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(root, "second", "runtime"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "second", "cache"))
+	t.Setenv("XDG_CONFIG_HOME", liveConfigBase)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "second", "data"))
+	t.Setenv(doltPortVariable, "13307")
+	t.Setenv(enginePortVariable, "17041")
+
+	previous := runtimeLiveDirectorRuntimes
+	t.Cleanup(func() { runtimeLiveDirectorRuntimes = previous })
+
+	// While that instance runs, its own children say where it is.
+	runtimeLiveDirectorRuntimes = func() []liveRuntimeState { return livePaths }
+	if _, _, err := runtimeLayout(); codeOf(err, "") != "DIRECTOR_BOOTSTRAP_ISOLATION_PATH_IN_USE" {
+		t.Fatalf("a live instance's configuration root was admitted: %v", err)
+	}
+
+	// With that instance stopped there is no process to see, so the state it
+	// left behind has to carry the refusal on its own.
+	runtimeLiveDirectorRuntimes = func() []liveRuntimeState { return nil }
+	paths, ports, err := runtimeLayout()
+	if err != nil {
+		t.Fatalf("the stopped case must reach the TaskStore admission, not refuse early: %v", err)
+	}
+	if err := admitIsolatedTaskStore(paths, hostIdentity{SchemaVersion: 1, ID: "director-" + strings.Repeat("a", 32), Label: "Director"}); err != nil {
+		t.Fatalf("the empty private data root was refused: %v", err)
+	}
+	if err := admitIsolatedTaskStoreAddress(paths, ports); codeOf(err, "") != "DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS" {
+		t.Fatalf("a configuration naming another instance's Dolt listener was admitted: %v", err)
+	}
+}
+
+func TestALiveIsolatedRuntimeDoesNotRefuseItsOwnRunningChildren(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	second := filepath.Join(root, "second")
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(second, "runtime"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(second, "cache"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(second, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(second, "data"))
+	t.Setenv(doltPortVariable, "13307")
+	t.Setenv(enginePortVariable, "17041")
+	paths, _, err := runtimeLayout()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	previous := runtimeLiveDirectorRuntimes
+	t.Cleanup(func() { runtimeLiveDirectorRuntimes = previous })
+
+	// This runtime's own children, supervised from its own runtime root. Every
+	// path they name is inside its directories by construction, so a check that
+	// only compared paths would refuse the runtime against itself on the first
+	// heartbeat after it started.
+	runtimeLiveDirectorRuntimes = func() []liveRuntimeState {
+		return []liveRuntimeState{{
+			supervisorRoot: paths.runtimeRoot,
+			paths: []string{
+				paths.taskstore, paths.projectAdminToken, paths.workRoot,
+				paths.doltRoot, paths.doltConfig, paths.doltSocket,
+			},
+		}}
+	}
+	if _, _, err := runtimeLayout(); err != nil {
+		t.Fatalf("a running isolated runtime refused its own supervised children: %v", err)
+	}
+
+	// The same paths, supervised from somewhere else, are another instance.
+	runtimeLiveDirectorRuntimes = func() []liveRuntimeState {
+		return []liveRuntimeState{{
+			supervisorRoot: filepath.Join(root, "elsewhere", "director", "supervisor"),
+			paths:          []string{paths.taskstore},
+		}}
+	}
+	if _, _, err := runtimeLayout(); codeOf(err, "") != "DIRECTOR_BOOTSTRAP_ISOLATION_PATH_IN_USE" {
+		t.Fatalf("another supervisor using this runtime's configuration was admitted: %v", err)
+	}
+}
+
+func TestIsolatedRuntimeRefusesATaskStoreConfigurationNamingAnotherListener(t *testing.T) {
+	isolated := runtimePorts{dolt: 13307, engine: 17041, isolated: true}
+	write := func(t *testing.T, document any) runtimePaths {
+		t.Helper()
+		root := t.TempDir()
+		paths := runtimePaths{configRoot: root, taskstore: filepath.Join(root, "taskstore.json")}
+		if document == nil {
+			return paths
+		}
+		content, err := json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(paths.taskstore, append(content, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return paths
+	}
+	roles := func(address string) map[string]any {
+		return map[string]any{
+			"schemaVersion": 2, "storeId": "director-" + strings.Repeat("b", 32),
+			"control":     map[string]any{"address": address},
+			"writer":      map[string]any{"address": address},
+			"maintenance": map[string]any{"address": address},
+		}
+	}
+
+	if err := admitIsolatedTaskStoreAddress(write(t, nil), isolated); err != nil {
+		t.Fatalf("a runtime with no configuration yet was refused: %v", err)
+	}
+	if err := admitIsolatedTaskStoreAddress(write(t, roles("127.0.0.1:13307")), isolated); err != nil {
+		t.Fatalf("this runtime's own declared listener was refused: %v", err)
+	}
+	for name, document := range map[string]any{
+		"the default installation's listener": roles("127.0.0.1:3307"),
+		"a previously declared listener":      roles("127.0.0.1:13308"),
+		"a non-loopback listener":             roles("10.0.0.5:13307"),
+		"a missing role section":              map[string]any{"schemaVersion": 2, "control": map[string]any{"address": "127.0.0.1:13307"}},
+		"an absent address":                   map[string]any{"schemaVersion": 2, "control": map[string]any{}, "writer": map[string]any{}, "maintenance": map[string]any{}},
+	} {
+		if err := admitIsolatedTaskStoreAddress(write(t, document), isolated); codeOf(err, "") != "DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS" {
+			t.Fatalf("%s was admitted: %v", name, err)
+		}
+	}
+	// One role disagreeing is enough; the Engine reads all three.
+	mixed := roles("127.0.0.1:13307")
+	mixed["writer"] = map[string]any{"address": "127.0.0.1:3307"}
+	if err := admitIsolatedTaskStoreAddress(write(t, mixed), isolated); codeOf(err, "") != "DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS" {
+		t.Fatalf("a configuration with one foreign role was admitted: %v", err)
+	}
+}
+
+func TestLiveDirectorPathsAreReadFromSupervisedChildArgumentsOnly(t *testing.T) {
+	engine := supervisedDirectorChild(17041)
+	if kind := directorChildKind(engine.executable, engine.arguments); kind != "engine" {
+		t.Fatalf("a supervised Engine child was not classified: %q", kind)
+	}
+	dolt := supervisedDirectorChild(13307)
+	if kind := directorChildKind(dolt.executable, dolt.arguments); kind != "dolt" {
+		t.Fatalf("a supervised Dolt child was not classified: %q", kind)
+	}
+	for name, holder := range map[string]holderProcess{
+		"an unrelated MySQL":       {executable: "/usr/sbin/mysqld", arguments: []string{"mysqld", "--port=3307"}},
+		"a hand-run Dolt server":   {executable: "/usr/bin/dolt", arguments: []string{"dolt", "sql-server", "--host=127.0.0.1"}},
+		"an unreadable executable": {executable: "", arguments: engine.arguments},
+		"a Director-shaped path":   {executable: "/srv/backups/director/engines/scratch/dolt", arguments: []string{"dolt", "sql-server", "--host=127.0.0.1"}},
+		"an argument vector alone": {executable: "/usr/bin/true", arguments: engine.arguments},
+	} {
+		if kind := directorChildKind(holder.executable, holder.arguments); kind != "" {
+			t.Fatalf("%s was classified as a supervised Director child: %q", name, kind)
+		}
+	}
+	// The real walk must stay bounded, absolute, and must not report itself.
+	for _, live := range liveDirectorRuntimes() {
+		for _, path := range live.paths {
+			if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+				t.Fatalf("a live Director path is not an exact absolute path: %q", path)
+			}
+		}
+	}
+	if got := supervisorRootOf("engine", supervisedDirectorChild(17041).arguments); got != "/private/runtime/director/supervisor" {
+		t.Fatalf("the Engine child's supervisor root was not recovered: %q", got)
+	}
+	if got := supervisorRootOf("dolt", supervisedDirectorChild(13307).arguments); got != "/private/runtime/director/supervisor" {
+		t.Fatalf("the Dolt child's supervisor root was not recovered: %q", got)
+	}
+}
+
+func TestBothResolversAgreeOnWhatADeclarationSays(t *testing.T) {
+	byteOrderMark := "\ufeff"
+	for _, declaration := range []struct {
+		dolt, engine string
+		isolated     bool
+	}{
+		{"13307", "17041", true},
+		{" 13307 ", "\t17041\n", true},
+		{"", "", false},
+		{byteOrderMark, byteOrderMark, false},
+		{byteOrderMark + "13307", byteOrderMark + "17041", false},
+		{"+13307", "+17041", false},
+		{"013307", "017041", false},
+		{"13307", "", false},
+		{"13307", "13307", false},
+	} {
+		ports, err := resolveRuntimePorts(environmentMap{doltPortVariable: declaration.dolt, enginePortVariable: declaration.engine}.Get)
+		if declaration.isolated {
+			if err != nil || !ports.isolated || ports.dolt != 13307 || ports.engine != 17041 {
+				t.Fatalf("%q/%q was not admitted: %#v %v", declaration.dolt, declaration.engine, ports, err)
+			}
+			continue
+		}
+		if declaration.dolt == "" && declaration.engine == "" {
+			if err != nil || ports.isolated {
+				t.Fatalf("an absent declaration was treated as isolation: %#v %v", ports, err)
+			}
+			continue
+		}
+		// Every remaining form must refuse rather than resolve, because the
+		// connector cannot read it as an absent declaration and bind 7041.
+		if codeOf(err, "") != "DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE" {
+			t.Fatalf("%q/%q did not refuse: %#v %v", declaration.dolt, declaration.engine, ports, err)
+		}
+	}
+	if trimDeclaration(byteOrderMark) == "" {
+		t.Fatal("a byte-order mark must not read as a blank declaration; the connector does not read it as one either")
 	}
 }
 

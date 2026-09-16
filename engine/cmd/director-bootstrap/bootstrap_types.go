@@ -37,6 +37,9 @@ const (
 	enginePortVariable     = "DIRECTOR_RUNTIME_ENGINE_PORT"
 	lowestIsolatedPort     = 1024
 	highestPort            = 65535
+	// asciiWhitespace is the exact cutset both the runtime and the connector
+	// strip from a declared value.
+	asciiWhitespace = " \t\n\v\f\r"
 )
 
 var (
@@ -49,6 +52,8 @@ var (
 	// engineAddressPattern is the exact loopback address shape the connector
 	// must bind its Director transports to. The launcher mirrors it.
 	engineAddressPattern = regexp.MustCompile(`^127\.0\.0\.1:([1-9][0-9]{0,4})$`)
+	// portPattern is the connector's declared-port shape, mirrored exactly.
+	portPattern = regexp.MustCompile(`^[0-9]{1,5}$`)
 )
 
 type bootstrapError struct {
@@ -365,18 +370,38 @@ type runtimePorts struct {
 	isolated bool
 }
 
+// trimDeclaration strips the ASCII whitespace a shell can leave around a
+// declared value and nothing else. The connector trims the same set: a value
+// that is blank for one side must be blank for the other, or the two would
+// disagree about whether an isolation was declared at all.
+func trimDeclaration(value string) string { return strings.Trim(value, asciiWhitespace) }
+
+// declaredPort accepts only plain decimal digits in the unprivileged range.
+// Signs, other digit systems and byte-order marks are refused here rather than
+// being normalised, because the connector cannot accept them either.
+func declaredPort(value string) (int, bool) {
+	trimmed := trimDeclaration(value)
+	if !portPattern.MatchString(trimmed) {
+		return 0, false
+	}
+	port, err := strconv.Atoi(trimmed)
+	if err != nil || port < lowestIsolatedPort || port > highestPort {
+		return 0, false
+	}
+	return port, true
+}
+
 // resolveRuntimePorts reads the declared isolation ports. Declaring one without
 // the other, a reserved or out-of-range port, or the same port twice is an
 // incomplete isolation rather than a partially honoured one.
 func resolveRuntimePorts(lookup func(string) string) (runtimePorts, error) {
-	dolt, engine := strings.TrimSpace(lookup(doltPortVariable)), strings.TrimSpace(lookup(enginePortVariable))
+	dolt, engine := trimDeclaration(lookup(doltPortVariable)), trimDeclaration(lookup(enginePortVariable))
 	if dolt == "" && engine == "" {
 		return runtimePorts{dolt: defaultDoltPort, engine: defaultEnginePort}, nil
 	}
-	doltPort, doltErr := strconv.Atoi(dolt)
-	enginePort, engineErr := strconv.Atoi(engine)
-	if doltErr != nil || engineErr != nil || doltPort == enginePort ||
-		doltPort < lowestIsolatedPort || doltPort > highestPort || enginePort < lowestIsolatedPort || enginePort > highestPort {
+	doltPort, doltOK := declaredPort(dolt)
+	enginePort, engineOK := declaredPort(engine)
+	if !doltOK || !engineOK || doltPort == enginePort {
 		return runtimePorts{}, fail("DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE")
 	}
 	return runtimePorts{dolt: doltPort, engine: enginePort, isolated: true}, nil
@@ -393,12 +418,15 @@ func nestedPath(child, parent string) bool {
 	return child == parent || strings.HasPrefix(child, parent+string(filepath.Separator))
 }
 
-// admitIsolatedPaths refuses an isolation request whose state is still the
-// default installation's. Without this an isolation port pair would start a
-// second Engine against the running instance's TaskStore instead of beside it.
+// admitIsolatedPaths refuses an isolation request whose state is not its own.
+// It asks two questions, because neither answers the other. Where would a
+// default installation live: cheap, certain, and true whether or not that
+// installation is running. Where does a Director runtime actually live right
+// now: the only way to see an instance started with its own XDG bases, which
+// is precisely what the default baseline cannot describe.
 func admitIsolatedPaths(paths runtimePaths) error {
 	for _, name := range runtimeXDGVariables {
-		if strings.TrimSpace(os.Getenv(name)) == "" {
+		if trimDeclaration(os.Getenv(name)) == "" {
 			return fail("DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE")
 		}
 	}
@@ -410,6 +438,22 @@ func admitIsolatedPaths(paths runtimePaths) error {
 		for _, standard := range runtimeRoots(installed) {
 			if nestedPath(isolated, standard) || nestedPath(standard, isolated) {
 				return fail("DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE")
+			}
+		}
+	}
+	for _, live := range runtimeLiveDirectorRuntimes() {
+		// A runtime's own children live inside its own directories by
+		// construction. Only a runtime supervised from somewhere else is
+		// another instance; contention for one supervisor root is what the
+		// launch lock, the recorded state and the control socket already own.
+		if live.supervisorRoot == paths.runtimeRoot {
+			continue
+		}
+		for _, used := range live.paths {
+			for _, isolated := range runtimeRoots(paths) {
+				if nestedPath(used, isolated) || nestedPath(isolated, used) {
+					return fail("DIRECTOR_BOOTSTRAP_ISOLATION_PATH_IN_USE")
+				}
 			}
 		}
 	}

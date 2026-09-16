@@ -33,7 +33,11 @@ effect; this entry does not publish it.
   whole instance: the connector resolves its Engine endpoint from it and
   refuses a runtime serving a different address. A partial declaration fails
   closed on both sides, an isolated runtime never releases a live one it finds,
-  and it refuses a data directory holding a TaskStore it does not own.
+  and it refuses a data directory holding a TaskStore it does not own, a
+  TaskStore configuration naming a Dolt listener it did not declare, and any
+  directory a Director runtime already running on the host keeps its state in.
+  Where a running instance actually is now comes from its own supervised
+  children rather than from where a default installation would be.
 
 ### Security
 

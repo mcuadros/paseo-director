@@ -128,18 +128,39 @@ coexist:
 - an isolated runtime never releases a live runtime it finds at its own paths.
   It refuses with `DIRECTOR_BOOTSTRAP_ISOLATION_OCCUPIED`; only the default
   installation performs the controlled update handoff;
+- an isolated runtime refuses a directory another Director runtime on this
+  host is keeping its state in, with `DIRECTOR_BOOTSTRAP_ISOLATION_PATH_IN_USE`.
+  Director reads where a running instance actually is from its own supervised
+  children rather than assuming it sits at the default location;
 - an isolated runtime refuses a data directory that already holds a TaskStore
   which is not its own, with `DIRECTOR_BOOTSTRAP_ISOLATION_FOREIGN_TASKSTORE`.
   Reusing another instance's `XDG_DATA_HOME` is caught there rather than at the
   Dolt server lock;
+- an isolated runtime refuses an existing TaskStore configuration that does not
+  name the Dolt listener it declared, with
+  `DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS`. That is what stops a
+  configuration reached through another instance's `XDG_CONFIG_HOME` from
+  putting this Engine on that instance's TaskStore, and it also refuses a
+  declared Dolt port that has changed under an existing configuration;
 - the occupied-listener refusal is unchanged for an isolated runtime. A
   declared port that is already held refuses exactly as the fixed pair does.
 
-The two runtimes share no TaskStore, host identity, credentials, control
-socket, launch lock, cache, or XDG path, and neither can read or change the
-other's state. An isolated runtime therefore resolves against its own TaskStore
-and serves its own Director surface with its own content; a new one starts
-empty and shows none of the other instance's Projects or Tasks.
+Every one of those refusals happens before any child process starts, so a
+rejected declaration leaves nothing running and nothing written.
+
+The two runtimes then share no TaskStore, host identity, credentials, control
+socket, launch lock or XDG state path, and neither can read or change the
+other's state. A prepared-engine cache is the one thing they may share safely:
+it is content-addressed and read only while a runtime is running. An isolated
+runtime resolves against its own TaskStore and serves its own Director surface
+with its own content; a new one starts empty and shows none of the other
+instance's Projects or Tasks.
+
+Director enforces that separation rather than assuming it, with one exception
+worth knowing: a configuration directory belonging to an instance that is **not
+running** and has not yet written a TaskStore configuration carries nothing
+Director can read to tell it apart from an unused one. Give each runtime its
+own four directories and that case cannot arise.
 
 ## Health, Doctor, and Repair
 
@@ -207,6 +228,8 @@ remote URLs. Director has no telemetry and never uploads the bundle.
 | `DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE` | The isolated runtime declaration is partial. Declare both ports, valid and different, together with all four private XDG bases outside the default installation. The existing instance is unaffected. |
 | `DIRECTOR_BOOTSTRAP_ISOLATION_OCCUPIED` | A live runtime with a different binding already owns these isolated paths. An isolated runtime never releases it; use that runtime's own lifecycle, or choose a different private XDG root. |
 | `DIRECTOR_BOOTSTRAP_ISOLATION_FOREIGN_TASKSTORE` | The declared `XDG_DATA_HOME` already holds a TaskStore this runtime does not own. Give the isolated runtime its own data directory; never point two runtimes at one TaskStore. |
+| `DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS` | The TaskStore configuration in the declared `XDG_CONFIG_HOME` names a Dolt listener this runtime did not declare, so it belongs to another runtime or to an earlier declaration. Give this runtime its own configuration directory, or restore the port it was provisioned with. |
+| `DIRECTOR_BOOTSTRAP_ISOLATION_PATH_IN_USE` | A Director runtime already running on this host keeps its state in one of the declared directories. Choose directories no other runtime is using; never make a second runtime share them. |
 | `DIRECTOR_BOOTSTRAP_ENGINE_ADDRESS_MISMATCH` | The runtime serves an Engine address this instance's surface is not bound to. Correct the declared ports so the whole environment agrees; Director refuses rather than query another instance's Engine. |
 | `DIRECTOR_BOOTSTRAP_FOREIGN_OWNER` | Controller state or handoff identifies another owner. Preserve all state and reconcile the exact owner; never kill or delete it. |
 | `DIRECTOR_RUNTIME_BINDING_MISMATCH` | The connector and controller bindings differ. Preserve both and retry the supported update/handoff path. |
