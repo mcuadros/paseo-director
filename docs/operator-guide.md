@@ -183,6 +183,39 @@ Both outcomes are safe, and they differ in what recovery costs:
 Director refuses in both cases rather than adopting a process it cannot prove
 it owns or ending one it cannot prove is orphaned.
 
+This applies to every Director runtime, the single default installation as much
+as an isolated second one.
+
+### A control socket left with no runtime to own it
+
+A runtime creates its control socket a moment before it records itself. A
+supervisor that dies inside that moment leaves the socket with no record beside
+it, and nothing removes a socket that no record claims. Every later start then
+refuses `DIRECTOR_BOOTSTRAP_CONTROL_OWNERSHIP`, and keeps refusing, until an
+operator removes it. This one does not clear itself.
+
+You are in that state when the refusal is
+`DIRECTOR_BOOTSTRAP_CONTROL_OWNERSHIP` and this directory holds a
+`control.sock` with no `state.json` beside it:
+
+```text
+$XDG_RUNTIME_DIR/director/supervisor/
+```
+
+`$XDG_CACHE_HOME` stands in when `XDG_RUNTIME_DIR` is unset, and the standard
+user cache base when neither is set. A runtime that is running always has both
+files; a stranded socket is the one that is on its own.
+
+Recovery is to delete that single `control.sock` and nothing else. The launch
+lock beside it never blocks a start, and Director clears its own failure record.
+The next start proceeds normally.
+
+Delete it only once you are sure no Director runtime is running. Removing a live
+instance's socket recovers nothing: the supervisor keeps serving on the socket
+it already bound while every later control request dials a path that is gone, so
+the next start refuses `DIRECTOR_BOOTSTRAP_FOREIGN_OWNER` and a healthy instance
+is unreachable until its lease expires and it releases itself.
+
 ## Health, Doctor, and Repair
 
 Director Home derives `Healthy`, `Degraded`, `Paused`, and `Needs you` from
@@ -252,6 +285,7 @@ remote URLs. Director has no telemetry and never uploads the bundle.
 | `DIRECTOR_BOOTSTRAP_ISOLATION_TASKSTORE_ADDRESS` | The TaskStore configuration in the declared `XDG_CONFIG_HOME` names a Dolt listener this runtime did not declare, so it belongs to another runtime or to an earlier declaration. Give this runtime its own configuration directory, or restore the port it was provisioned with. |
 | `DIRECTOR_BOOTSTRAP_ISOLATION_PATH_IN_USE` | A Director runtime already running on this host keeps its state in one of the declared directories. Choose directories no other runtime is using; never make a second runtime share them. |
 | `DIRECTOR_BOOTSTRAP_ENGINE_ADDRESS_MISMATCH` | The runtime serves an Engine address this instance's surface is not bound to. Correct the declared ports so the whole environment agrees; Director refuses rather than query another instance's Engine. |
+| `DIRECTOR_BOOTSTRAP_CONTROL_OWNERSHIP` | The control socket in the runtime directory is not this runtime's to bind. If no Director runtime is running, it is a socket left with no runtime to own it and it will refuse every start until removed; delete that one file as described above. Never delete a live instance's socket. |
 | `DIRECTOR_BOOTSTRAP_FOREIGN_OWNER` | Controller state or handoff identifies another owner. Preserve all state and reconcile the exact owner; never kill or delete it. |
 | `DIRECTOR_RUNTIME_BINDING_MISMATCH` | The connector and controller bindings differ. Preserve both and retry the supported update/handoff path. |
 | `DIRECTOR_RUNTIME_CHILDREN_NOT_READY` | Engine or Dolt ownership/readiness is incomplete. Inspect the deepest bounded bootstrap code and retry plugin-scoped reload after correction. |
