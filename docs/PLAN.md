@@ -914,8 +914,9 @@ The system prioritizes cleanliness without sacrificing recoverability.
 
 Director contributes:
 
-- a global Director Home sidebar surface;
-- the Project Board/List in Project/Organizer-repository context;
+- a global Director sidebar item whose surface is the Director Console, the Director layout of section 16.6;
+- the Project Board/List, in the Console and as a workspace panel in Project/Organizer-repository context;
+- the Director Workers projection, in the Console and as a workspace panel;
 - a Task Inspector in workspace/agent context;
 - Command Center actions for common operations;
 - plugin-owned timeline items where useful and supported.
@@ -934,6 +935,8 @@ Home provides:
 - `Adopt Organizer`;
 - health and active-work summaries by Project;
 - quick access to Board, Organizer repository/configuration, Doctor, Sync, Pause, and Needs-you items (ADR-0018).
+
+Home is the `Overview` tab of the Director Console (section 16.6); its content is unchanged by that placement.
 
 ### 16.3 Board and List
 
@@ -968,6 +971,32 @@ Mobile is a first-class client:
 The backend remains on the daemon; the phone is only a client.
 
 The current plugin API does not expose a general persistent native-notification contribution. `1.0` uses Director Home/Board and Paseo's agent-attention surfaces.
+
+### 16.6 Director Console
+
+Installing and activating Director contributes UI and registers the connector's RPC handlers; the connector runtime starts on the first RPC, and neither step creates a Paseo Project, Workspace, or agent. The Director layout is therefore something Director renders, not something a user assembles and then has to keep. The Director Console is that layout, and it is the layout Director guarantees: one sidebar item whose surface presents the tabs `Overview`, `Board`, `Workers`, `Administration`, and `Layout`.
+
+- `Overview` carries the Director Home content of section 16.2.
+- `Board` carries the Board/List surface of section 16.3.
+- `Workers` carries the Director Workers projection of section 12.4 for each root Workspace.
+- `Administration` opens a live Project-administration session or creates one on an explicit operator action (section 12.2 and ADR-0024).
+- `Layout` reopens the Workspace-context Director panels and reports a Director Workspace that Director cannot reach.
+
+**The guarantee is restorable, not unclosable.** A plugin cannot hold a host panel open. The exact Paseo `0.7.2` plugin contract offers `openSurface` and `openPanel` and no operation that observes, closes, or pins a panel, and the props a surface receives—its theme, its host identity, a layout of `compact` and `platform`, and optional navigation—report nothing about which panels are open. Director therefore states the guarantee it can keep rather than one the platform does not give:
+
+- The sidebar-anchored Console surface is the part that cannot be removed, as observed in the daemon-served web bundle: there it is rebuilt from the plugin registration on every bundle evaluation and offers no affordance that hides it. This section claims the non-removable surface for that bundle only; the same behaviour in a shipped desktop build is not established here. `dir-m6.35` records desktop evidence with the `tools/desktop-evidence` harness and corrects this section if the observation differs.
+- The `Director Workers`, `Director Board`, and `Task Inspector` workspace panels are convenience. They are user-closable host tabs, no plugin operation reports that one was closed, and Director cannot notice the loss. It does not have to: the Console carries the same Board and Workers views, and Task detail stays reachable from the Board (section 16.4).
+- Restoring a panel needs no host layout state. It does need a target: a panel is reopened by its registration id plus an explicit `workspaceId`, which the Console takes from its own Project projection because a global surface has no implicit Workspace. The Console's `Layout` tab is the documented path for the Workspace-context `Director Workers` and `Director Board`, and the agent-context `Task Inspector` keeps its Command Center action. Where the host does not supply the client context that reopening requires, the tab states that reason instead of failing silently.
+
+The three panel registrations stay. They give Workspace-local and agent-local context that a global surface does not, and section 16.4 already documents one of them: the Task Inspector in Explorer for the selected agent or Workspace. The agent-context Command Center item that the ADR-0024 reconnect instruction names by title stays registered as well. What changes is that no documented Director workflow requires an open panel once the Console ships.
+
+Hosting the Board in the Console changes no behaviour and creates no domain state. The Board issues its planning query with `projectId` null and an empty `workspaceIds` list, so it never derived scope from the Workspace hosting it and registering it as a workspace panel scoped nothing. Relocating it is rendering and host navigation only; every planning mutation keeps the authority and confirmation rules of sections 7.4, 12.2, and 17.1 unchanged.
+
+**An administration session is created only by an explicit operator action and never automatically**, in the `Administration` tab or through the equivalent Command Center item, and never as a side effect of installing Director or opening the Console or one of its tabs. The reason is what the act costs: creating the session creates a Paseo agent, selects the provider and model it runs on, and sends it an opening message, which starts a model turn. Invariant 12 forbids choosing a model, provider, or fallback silently, so Director cannot make that choice while a user is only navigating. When several eligible source agents exist, the tab presents the bounded choice with each provider and model instead of picking one; when a session is already live, it is opened rather than duplicated; when none can be created, it renders the ADR-0024 reconnect instruction.
+
+This preserves section 2.4 and section 16.1. Director still requires no standing planning agent, no standing Organizer conversation, and no dedicated agent tab: the `Administration` tab is a control, and an administration session remains a non-authoritative command and claim source with no lifecycle authority (ADR-0018 and ADR-0024).
+
+The Console is a surface description. It reverses no approved decision and requires no ADR.
 
 ## 17. Bootstrap and removal
 
