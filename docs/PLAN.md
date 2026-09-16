@@ -874,6 +874,16 @@ changed, unavailable, or ambiguous facts preserve the ref. This narrow rule
 does not apply to worktrees or other destructive targets, and `complete`
 remains terminal on later reappearance.
 
+Cleanup advances the lifecycle and checkout facts its own binding freezes, so an
+interrupted cleanup may be resumed only under the transitioned truth. A resumed
+run binds that truth in its own state and carries the interrupted run's recorded
+effects forward as read-only history. It is admitted only when every identity,
+ownership, and actor field is unchanged and the sole difference is lifecycle
+progress that advanced to the terminal value cleanup itself produces; a
+recovery fact cleanup never produces is not a resumable target. The immutable
+binding itself is never rewritten, no effect is re-executed, and a destructive
+absence no recorded intent explains still fails closed.
+
 Automatic ignored-tree recovery uses ADR-0013's measured Linux release envelope, which replaces ADR-0007's provisional ceilings:
 
 | Resource | Default and hard expansion ceiling |

@@ -98,6 +98,21 @@ compare-and-swap, and per-repository serialization ensure competing
 coordinators have one durable winner without claiming exactly-once external
 execution.
 
+Cleanup also transitions the lifecycle it runs from: terminating the agents and
+archiving the workspaces makes the frozen lifecycle state historical, and
+removing the worktree reclaims the checkout. Both facts are immutable in the
+binding, so an interrupted cleanup strands its own recorded intents behind a
+description that can no longer be asserted truthfully. Resumption therefore
+binds the transitioned truth and carries the earlier recorded effects forward as
+read-only history, under the same immutable identity, ownership, and actor
+binding and a transition that advances only to the terminal state cleanup itself
+produces. A recovery fact cleanup never produces is not a resumable target.
+Carrying an intent is not executing or adopting anything: every effect is still
+re-observed before its own decision, and a destructive absence stays ambiguous
+unless some recorded intent explains it. The development coordinator exposes
+this as `--resume-state-file` on `cleanup-plan` and `cleanup-apply`; see the
+[coordinator CLI contract](coordinator-cli.md).
+
 ## Projection and closure
 
 Cleanup failures populate the ordinary bounded `NeedsYou` record. Board and
