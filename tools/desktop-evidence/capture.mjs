@@ -38,6 +38,56 @@ export const DEFAULT_DISPLAY_RANGE = Object.freeze({ minimum: 120, maximum: 199 
 
 export const LABEL_PATTERN = /^[A-Za-z0-9._-]+$/u;
 
+/** The run's private directories are owner-only: they hold the Electron profile
+ *  and the daemon home for a run that may carry a credential. */
+export const PRIVATE_DIRECTORY_MODE = 0o700;
+
+export function runDirectoryLayout(outputDirectory, label) {
+  const runRoot = resolve(outputDirectory, `.run-${validateLabel(label)}`);
+  return { runRoot, userDataDir: join(runRoot, "electron-user-data"), paseoHome: join(runRoot, "paseo-home") };
+}
+
+/** Every listener and every endpoint this tool creates is loopback-only: the
+ *  bundled daemon must not be reachable off the machine, and the debugging
+ *  endpoint exposes the application's whole renderer. */
+export function loopbackListen(port) {
+  return `127.0.0.1:${assertUsablePort(port)}`;
+}
+
+export function loopbackDebuggingEndpoint(port) {
+  return `http://127.0.0.1:${assertUsablePort(port)}`;
+}
+
+function assertUsablePort(port) {
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+    throw new Error(`port must be a valid TCP port, got ${port}`);
+  }
+  return port;
+}
+
+/** Source with comments removed, so a wiring contract cannot be satisfied by a
+ *  call that has been commented out. */
+export function stripComments(source) {
+  return String(source)
+    .replace(/\/\*[\s\S]*?\*\//gu, " ")
+    .split("\n")
+    .map((line) => {
+      let quote = null;
+      for (let index = 0; index < line.length; index += 1) {
+        const character = line[index];
+        if (quote !== null) {
+          if (character === "\\") index += 1;
+          else if (character === quote) quote = null;
+          continue;
+        }
+        if (character === "\"" || character === "'" || character === "`") { quote = character; continue; }
+        if (character === "/" && line[index + 1] === "/") return line.slice(0, index);
+      }
+      return line;
+    })
+    .join("\n");
+}
+
 // The plugin-side diagnostic emitted when an optional host primitive is absent
 // and its defined fallback renders instead.
 export const FALLBACK_WARNING = /optional host primitive .* is unavailable/iu;
@@ -400,11 +450,18 @@ export const defaultDisplayIo = {
   wait: (ms) => sleep(ms),
 };
 
-export async function claimDisplay({ minimum, maximum }, io = defaultDisplayIo, attempts = 50) {
+export async function claimDisplay({ minimum, maximum }, io = defaultDisplayIo, attempts = 50, teardown) {
+  // The server is handed to teardown the instant it is spawned, not when this
+  // function returns. It is live for up to several seconds while the socket and
+  // lock appear, and an interruption in that window would otherwise orphan a
+  // running X server together with its socket and lock.
+  if (teardown === undefined) throw new Error("claimDisplay requires the teardown that will own the server");
   for (const number of displayCandidates({ minimum, maximum, occupied: io.occupied() })) {
     const socket = `/tmp/.X11-unix/X${number}`;
     const lock = `/tmp/.X${number}-lock`;
     const child = io.spawnServer(number);
+    const record = { number, display: `:${number}`, process: child, socket, lock, serverPid: child.pid };
+    teardown.adoptDisplay(record);
     let failed = false;
     child.on("exit", () => { failed = true; });
     child.on("error", () => { failed = true; });
@@ -412,11 +469,11 @@ export async function claimDisplay({ minimum, maximum }, io = defaultDisplayIo, 
       // The socket appearing is not proof the display is ours: another server
       // may have taken the number between the occupancy sample and this launch.
       if (io.socketExists(socket) && parseDisplayLockPid(io.readLock(lock)) === child.pid) {
-        return { number, display: `:${number}`, process: child, socket, lock, serverPid: child.pid };
+        return record;
       }
       await io.wait(100);
     }
-    child.kill("SIGKILL");
+    await teardown.releaseDisplay();
   }
   throw new Error(`no free display between :${minimum} and :${maximum}`);
 }
@@ -450,34 +507,52 @@ export function createTeardown({ readTable, kill, wait, readLock, removePath }) 
     }
   };
 
+  const stopDisplay = async (record) => {
+    if (record === null) return false;
+    record.process.kill("SIGTERM");
+    await wait();
+    record.process.kill("SIGKILL");
+    // Re-proved here, not assumed: if our server died and another took the
+    // number, these files belong to that server and must not be removed.
+    const ours = parseDisplayLockPid(readLock(record.lock)) === record.serverPid;
+    if (ours) {
+      removePath(record.socket);
+      removePath(record.lock);
+    }
+    return ours;
+  };
+
   return {
     pinRoot(value) { root = value; },
     adoptDisplay(value) { display = value; },
+    /** Stop and clear a display this run spawned but did not keep. Used by the
+     *  claiming loop when it abandons a candidate, so an abandoned server is
+     *  never left behind either. */
+    async releaseDisplay() {
+      const released = await stopDisplay(display);
+      display = null;
+      return released;
+    },
     trackDescendants,
     trackedSnapshot: () => new Map(tracked),
-    async run({ killDisplay = () => {}, removeRunRoot = () => {} } = {}) {
+    async run({ removeRunRoot = () => {} } = {}) {
       trackDescendants();
       const targets = confirmedTeardownTargets({ root, tracked, processTable: readTable() });
       const survivors = await terminateTargets({ targets, readTable, kill, wait });
-      let displayRemoved = false;
-      if (display !== null) {
-        // Re-proved here, not assumed: if our server died and another took the
-        // number, these files belong to that server and must not be removed.
-        const ours = parseDisplayLockPid(readLock(display.lock)) === display.serverPid;
-        killDisplay();
-        if (ours) {
-          removePath(display.socket);
-          removePath(display.lock);
-          displayRemoved = true;
-        }
-      }
+      const displayRemoved = await stopDisplay(display);
       removeRunRoot();
       return { targets, survivors, displayRemoved };
     },
   };
 }
 
-export function spawnApplication(executable, baseEnvironment, isolation) {
+export function spawnApplication(executable, baseEnvironment, isolation, registerRoot) {
+  // The pin is handed over inside this function, before the promise resolves.
+  // A caller that registered it afterwards would leave the application, and
+  // later its setsid'd daemon, live but invisible to teardown in between.
+  if (typeof registerRoot !== "function") {
+    throw new Error("spawnApplication requires a function that records the spawned root");
+  }
   // The filter is applied here rather than by the caller: a caller that forgot
   // it would hand the application the ambient Paseo environment, including a
   // credential. Applying it at the spawn itself removes that seam.
@@ -496,6 +571,7 @@ export function spawnApplication(executable, baseEnvironment, isolation) {
         fail(new Error(`could not read the start time of the spawned process ${child.pid}; refusing to continue`));
         return;
       }
+      registerRoot(root);
       done({ child, root, environment });
     });
   });
@@ -653,13 +729,16 @@ export function buildRunArtifacts({ label, userAgent, display, outcome, renderer
     ...rendererEvents.map((event) => `[${event.at}] ${event.kind}.${event.type}: ${event.text}`),
     ...notes.map((entry) => `[${entry.at}] note: ${entry.text}`),
   ].sort();
+  // Every emitted file is scrubbed here, not only the application log. The
+  // caller also scrubs upstream, but an evidence-file property must not depend
+  // on a caller remembering to.
   return {
     result,
     files: [
       { name: `${label}-result.json`, contents: `${JSON.stringify(result, null, 2)}\n` },
       { name: `${label}-console.log`, contents: `${transcript.join("\n")}\n` },
-      { name: `${label}-app-main.log`, contents: scrubSecret(mainLog.join(""), password) },
-    ],
+      { name: `${label}-app-main.log`, contents: mainLog.join("") },
+    ].map((file) => ({ name: file.name, contents: scrubSecret(file.contents, password) })),
   };
 }
 
@@ -667,26 +746,15 @@ export async function main(argv = process.argv.slice(2), environment = process.e
   const options = parseArguments(argv);
   const executable = resolveApplicationExecutable(options.app);
   const outputDirectory = resolve(options.out);
-  mkdirSync(outputDirectory, { recursive: true });
-
-  // The label is validated, so this cannot escape the output directory.
-  const runRoot = resolve(outputDirectory, `.run-${options.label}`);
-  const userDataDir = join(runRoot, "electron-user-data");
-  const paseoHome = join(runRoot, "paseo-home");
-  rmSync(runRoot, { recursive: true, force: true });
-  for (const directory of [runRoot, userDataDir, paseoHome]) mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const { runRoot, userDataDir, paseoHome } = runDirectoryLayout(outputDirectory, options.label);
 
   const password = environment.PASEO_PASSWORD ?? "";
-  // Renderer observations and narrative notes are kept apart: metrics are
-  // computed only from the former, so captured page text can never inflate the
-  // counts that are this tool's product.
   const rendererEvents = [];
   const notes = [];
   const stamp = () => new Date().toISOString();
   const note = (text) => { notes.push({ at: stamp(), text: scrubSecret(text, password) }); };
   const errorCount = () => summarizeRendererEvents(rendererEvents).rendererErrorsTotal;
 
-  let display = null;
   let child = null;
   let browser = null;
 
@@ -701,25 +769,16 @@ export async function main(argv = process.argv.slice(2), environment = process.e
   const performCleanup = async () => {
     if (browser !== null) await browser.close().catch(() => {});
     const outcome = await teardown.run({
-      killDisplay: () => {
-        display.process.kill("SIGTERM");
-        display.process.kill("SIGKILL");
-      },
       removeRunRoot: () => {
         if (!options.keepUserData) rmSync(runRoot, { recursive: true, force: true });
       },
     });
     if (child !== null && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    if (display !== null && !outcome.displayRemoved) {
-      console.error(`warning: display ${display.display} is no longer ours; leaving its socket and lock in place`);
-    }
     if (outcome.survivors.length > 0) {
       console.error(`warning: processes from this run did not stop: ${outcome.survivors.map((t) => t.pid).join(", ")}`);
     }
   };
 
-  // One cleanup, ever. A second signal awaits the first rather than starting a
-  // concurrent teardown or exiting through the middle of one.
   let cleanupPromise = null;
   const cleanup = () => {
     if (cleanupPromise === null) cleanupPromise = performCleanup();
@@ -728,27 +787,37 @@ export async function main(argv = process.argv.slice(2), environment = process.e
   const onSignal = (signal) => {
     cleanup().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
   };
+  // Installed before anything exists, so no resource is ever created while an
+  // interruption would bypass teardown entirely.
   const handlers = installSignalHandlers({
     on: (signal, bound) => process.on(signal, bound),
     handler: onSignal,
   });
 
+  mkdirSync(outputDirectory, { recursive: true });
+  rmSync(runRoot, { recursive: true, force: true });
+  for (const directory of [runRoot, userDataDir, paseoHome]) {
+    mkdirSync(directory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  }
+
   try {
-    display = await claimDisplay({ minimum: options.displayMinimum, maximum: options.displayMaximum });
-    teardown.adoptDisplay(display);
+    const display = await claimDisplay(
+      { minimum: options.displayMinimum, maximum: options.displayMaximum },
+      defaultDisplayIo,
+      50,
+      teardown,
+    );
     note(`claimed display ${display.display}`);
 
     const cdpPort = await freePort();
-    const daemonListen = `127.0.0.1:${await freePort()}`;
-    const launched = await spawnApplication(executable, environment, {
-      display: display.display,
-      paseoHome,
-      userDataDir,
-      listen: daemonListen,
-      cdpPort,
-    });
+    const daemonListen = loopbackListen(await freePort());
+    const launched = await spawnApplication(
+      executable,
+      environment,
+      { display: display.display, paseoHome, userDataDir, listen: daemonListen, cdpPort },
+      (root) => teardown.pinRoot(root),
+    );
     child = launched.child;
-    teardown.pinRoot(launched.root);
     note(`spawned application pid ${launched.root.pid}`);
     // Raw chunks, joined and scrubbed once at write time: a secret split across
     // a chunk boundary would survive per-chunk scrubbing.
@@ -762,7 +831,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
       await sleep(500);
       teardown.trackDescendants();
       try {
-        const response = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
+        const response = await fetch(`${loopbackDebuggingEndpoint(cdpPort)}/json/version`);
         if (response.ok) version = await response.json();
       } catch {
         // The debugging endpoint is not listening yet.
@@ -779,7 +848,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     });
 
     const { chromium } = await loadPlaywright(environment);
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+    browser = await chromium.connectOverCDP(loopbackDebuggingEndpoint(cdpPort));
     const context = browser.contexts()[0];
     let page = null;
     for (let attempt = 0; attempt < 60 && page === null; attempt += 1) {

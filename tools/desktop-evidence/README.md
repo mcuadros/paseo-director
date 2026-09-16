@@ -66,6 +66,13 @@ task rather than a build status.
 
 ## What it guarantees about the machine it runs on
 
+- **Every resource is owned from the moment it exists, not once its creator
+  returns.** The X server is handed to teardown the instant it is spawned, while
+  its socket and lock are still appearing; the application's identity pin is
+  handed over from inside the spawn, before the call resolves; and the
+  interruption handlers are installed before anything is created at all. A
+  resource that exists before its owner can see it is a resource an interruption
+  orphans, which is why none of them do.
 - **It only stops the processes it started.** The spawned process's identity is
   pinned immediately after spawn by reading its start time from `/proc`, and
   teardown signals nothing at all unless that pin still matches a live process.
@@ -104,10 +111,12 @@ task rather than a build status.
   the operator's own — the run aborts unless the application actually wrote into
   **both** private directories, so an unisolated run cannot be mistaken for an
   isolated one.
-- **It will not send a credential off the machine.** `--daemon-host` must be a
-  loopback address. The password is typed into the connection form, so an
-  arbitrary remote target would send both the credential and this host's
-  identity away; there is no opt-out flag for this.
+- **It will not send a credential off the machine, and it opens nothing others
+  can reach.** `--daemon-host` must be a loopback address: the password is typed
+  into the connection form, so an arbitrary remote target would send both the
+  credential and this host's identity away, and there is no opt-out flag. The
+  bundled daemon it starts and the debugging endpoint it opens are likewise
+  loopback-only, and the run's private directories are created owner-only.
 - **It drops the ambient Paseo and Director environment.** Every `PASEO_*` and `DIRECTOR_*`
   variable is removed from the application environment before the six this tool
   sets, so a secret added to either namespace in future is excluded without
@@ -116,9 +125,12 @@ task rather than a build status.
   on those two namespaces, not a general credential scrub. A daemon password,
   when one is needed, is read from this process's environment and typed into
   the connection form over the debugging channel.
-- **A secret cannot survive in a log.** Application output is buffered raw and
-  scrubbed once when the file is written, never per chunk, because a secret
-  split across an arbitrary chunk boundary would survive per-chunk scrubbing.
+- **A secret cannot survive in any emitted file.** Application output is
+  buffered raw and scrubbed once when the file is written, never per chunk,
+  because a secret split across an arbitrary chunk boundary would survive
+  per-chunk scrubbing. Every artifact the run emits — the result document, the
+  transcript and the application log — is scrubbed at the point it is built, so
+  the property does not depend on a caller having scrubbed upstream.
 - **It will not photograph a password.** Before the connection form is captured,
   the password field is asserted to be masked. If a build renders it as plain
   text the run fails instead of writing the screenshot.

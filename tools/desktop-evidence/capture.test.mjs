@@ -39,8 +39,13 @@ import {
   processStartTime,
   resolveApplicationExecutable,
   rootIsConfirmed,
+  PRIVATE_DIRECTORY_MODE,
+  loopbackDebuggingEndpoint,
+  loopbackListen,
+  runDirectoryLayout,
   scrubSecret,
   spawnApplication,
+  stripComments,
   summarizeRendererEvents,
   survivingTargets,
   terminateTargets,
@@ -494,7 +499,7 @@ test("spawnApplication establishes the pin at spawn and marks the root dead on e
   // The composition, not just its parts. If the start-time read were moved out
   // of spawn and into cleanup, the returned root would carry no pin and this
   // fails; if the exit handler were dropped, `exited` would stay false.
-  const { child, root } = await spawnApplication(process.execPath, { ...process.env, NODE_OPTIONS: "" }, { display: ":120", paseoHome: "/tmp/run/home", userDataDir: "/tmp/run/profile", listen: "127.0.0.1:1", cdpPort: 2 });
+  const { child, root } = await spawnApplication(process.execPath, { ...process.env, NODE_OPTIONS: "" }, { display: ":120", paseoHome: "/tmp/run/home", userDataDir: "/tmp/run/profile", listen: "127.0.0.1:1", cdpPort: 2 }, () => {});
   try {
     assert.equal(root.pid, child.pid);
     assert.equal(Number.isInteger(root.startTime), true, "the pin must be read at spawn");
@@ -517,7 +522,7 @@ test("spawnApplication establishes the pin at spawn and marks the root dead on e
 
 test("spawnApplication rejects rather than leaking an unhandled spawn error", async () => {
   await assert.rejects(
-    () => spawnApplication("/nonexistent/definitely-not-here", { ...process.env }, { display: ":120", paseoHome: "/tmp/run/home", userDataDir: "/tmp/run/profile", listen: "127.0.0.1:1", cdpPort: 2 }),
+    () => spawnApplication("/nonexistent/definitely-not-here", { ...process.env }, { display: ":120", paseoHome: "/tmp/run/home", userDataDir: "/tmp/run/profile", listen: "127.0.0.1:1", cdpPort: 2 }, () => {}),
     /ENOENT/u,
   );
 });
@@ -534,6 +539,16 @@ function fakeServer(pid) {
   return { pid, on() {}, kill() {} };
 }
 
+/** Records what claimDisplay hands over and when. */
+function recordingTeardown() {
+  const events = [];
+  return {
+    events,
+    adoptDisplay: (record) => events.push(["adopt", record === null ? null : record.serverPid]),
+    releaseDisplay: async () => { events.push(["release"]); },
+  };
+}
+
 function displayIo({ serverPid, lockPid, socketExists = true, occupied = new Set() }) {
   return {
     spawnServer: () => fakeServer(serverPid),
@@ -545,7 +560,8 @@ function displayIo({ serverPid, lockPid, socketExists = true, occupied = new Set
 }
 
 test("a display whose lock names our own server is adopted", async () => {
-  const claimed = await claimDisplay({ minimum: 120, maximum: 121 }, displayIo({ serverPid: 4242, lockPid: 4242 }));
+  const owner = recordingTeardown();
+  const claimed = await claimDisplay({ minimum: 120, maximum: 121 }, displayIo({ serverPid: 4242, lockPid: 4242 }), 50, owner);
   assert.equal(claimed.display, ":120");
   assert.equal(claimed.serverPid, 4242);
 });
@@ -554,12 +570,12 @@ test("ENFORCEMENT: a foreign server's display is never adopted, even with a sock
   // Dropping the ownership term from the adopt condition must fail here. The
   // socket exists throughout, so only the lock check can refuse the display.
   await assert.rejects(
-    () => claimDisplay({ minimum: 120, maximum: 122 }, displayIo({ serverPid: 4242, lockPid: 9999 }), 2),
+    () => claimDisplay({ minimum: 120, maximum: 122 }, displayIo({ serverPid: 4242, lockPid: 9999 }), 2, recordingTeardown()),
     /no free display/u,
     "a display whose lock names another server must not be adopted",
   );
   await assert.rejects(
-    () => claimDisplay({ minimum: 120, maximum: 122 }, displayIo({ serverPid: 4242, lockPid: null }), 2),
+    () => claimDisplay({ minimum: 120, maximum: 122 }, displayIo({ serverPid: 4242, lockPid: null }), 2, recordingTeardown()),
     /no free display/u,
     "an unreadable lock is not proof of ownership",
   );
@@ -577,8 +593,12 @@ function teardownHarness({ table, lockPid, serverPid = 4242 }) {
     readLock: () => (lockPid === null ? null : `   ${lockPid}\n`),
     removePath: (path) => removed.push(path),
   });
-  unit.adoptDisplay({ display: ":120", socket: "/tmp/.X11-unix/X120", lock: "/tmp/.X120-lock", serverPid });
-  return { unit, killed, removed, effects };
+  const displaySignals = [];
+  unit.adoptDisplay({
+    display: ":120", socket: "/tmp/.X11-unix/X120", lock: "/tmp/.X120-lock", serverPid,
+    process: { kill: (signal) => displaySignals.push(signal) },
+  });
+  return { unit, killed, removed, effects, displaySignals };
 }
 
 test("ENFORCEMENT: a descendant tracked during the run is still signalled after the root exits", async () => {
@@ -632,14 +652,10 @@ test("a display still ours has exactly its own socket and lock removed", async (
 test("the display server is stopped whether or not its files are ours to remove", async () => {
   for (const lockPid of [4242, 9999]) {
     const table = processTable([]);
-    let killDisplayCalls = 0;
     let removeRunRootCalls = 0;
-    const { unit } = teardownHarness({ table: () => table, lockPid });
-    await unit.run({
-      killDisplay: () => { killDisplayCalls += 1; },
-      removeRunRoot: () => { removeRunRootCalls += 1; },
-    });
-    assert.equal(killDisplayCalls, 1);
+    const { unit, displaySignals } = teardownHarness({ table: () => table, lockPid });
+    await unit.run({ removeRunRoot: () => { removeRunRootCalls += 1; } });
+    assert.deepEqual(displaySignals, ["SIGTERM", "SIGKILL"]);
     assert.equal(removeRunRootCalls, 1);
   }
 });
@@ -670,6 +686,7 @@ test("ENFORCEMENT: the spawned application really does not receive the Paseo env
       DIRECTOR_PASEO_CREDENTIAL_FILE: "/run/credential",
     },
     { display: ":120", paseoHome: "/tmp/run/home", userDataDir: "/tmp/run/profile", listen: "127.0.0.1:1", cdpPort: 2 },
+    () => {},
   );
   try {
     assert.equal(environment.PASEO_PASSWORD, undefined);
@@ -854,30 +871,177 @@ test("the surface routine fails when the Director entry never registers", async 
 // the composition root still calls each tested unit. It cannot prove the calls
 // are correct; the tests above do that.
 
-const captureSource = readFileSync(new URL("./capture.mjs", import.meta.url), "utf8");
+// Comments are stripped first: a substring match would otherwise be satisfied
+// by a call that has been commented out.
+const captureSource = stripComments(readFileSync(new URL("./capture.mjs", import.meta.url), "utf8"));
 const mainBody = captureSource.slice(captureSource.indexOf("export async function main("));
 
 test("WIRING: the composition root still calls every unit that enforces a safety property", () => {
   const required = [
-    ["pins the spawned root for teardown", "teardown.pinRoot("],
-    ["hands the claimed display to teardown", "teardown.adoptDisplay("],
-    ["records descendants while the root is alive", "teardown.trackDescendants()"],
-    ["verifies both private directories", "await verifyIsolation(isolationTargets({"],
-    ["registers interruption handlers", "installSignalHandlers({"],
-    ["builds artifacts through the tested builder", "buildRunArtifacts({"],
-    ["writes exactly those artifacts", "for (const file of artifacts.files) writeFileSync("],
-    ["runs teardown on every exit path", "await cleanup();"],
-    ["spawns through the filtered-environment path", "await spawnApplication(executable, environment, {"],
-    ["claims a display through the ownership-proving path", "await claimDisplay({"],
+    ["register interruption handlers", "installSignalHandlers({"],
+    ["derive its private layout through the tested helper", "runDirectoryLayout(outputDirectory, options.label)"],
+    ["create private directories owner-only", "mode: PRIVATE_DIRECTORY_MODE"],
+    ["claim a display through the ownership-proving path", "await claimDisplay("],
+    ["hand the display's owner to the claiming loop", "      teardown,"],
+    ["spawn through the filtered-environment path", "await spawnApplication("],
+    ["pin the root from inside the spawn", "(root) => teardown.pinRoot(root)"],
+    ["bind the bundled daemon to loopback", "loopbackListen(await freePort())"],
+    ["use a loopback debugging endpoint", "loopbackDebuggingEndpoint(cdpPort)"],
+    ["record descendants while the root is alive", "teardown.trackDescendants()"],
+    ["verify both private directories", "await verifyIsolation(isolationTargets({"],
+    ["build artifacts through the tested builder", "buildRunArtifacts({"],
+    ["write exactly those artifacts", "for (const file of artifacts.files) writeFileSync("],
+    ["run teardown on every exit path", "await cleanup();"],
   ];
   for (const [property, call] of required) {
     assert.equal(mainBody.includes(call), true, `main must still ${property} (missing: ${call})`);
   }
 });
 
+test("WIRING: the contract is not satisfied by a commented-out call", () => {
+  // The contract itself must resist the trick it is meant to catch.
+  const live = "  teardown.trackDescendants();";
+  assert.equal(stripComments(live).includes("teardown.trackDescendants()"), true);
+  assert.equal(stripComments(`  // ${live.trim()}`).includes("teardown.trackDescendants()"), false);
+  assert.equal(stripComments(`  /* ${live.trim()} */`).includes("teardown.trackDescendants()"), false);
+});
+
+test("WIRING: signal handlers are installed before any resource is created", () => {
+  // A resource created before the handlers exist would be orphaned outright,
+  // because the default signal disposition terminates without running teardown.
+  const handlers = mainBody.indexOf("installSignalHandlers({");
+  for (const [label, marker] of [
+    ["directories", "mkdirSync(outputDirectory"],
+    ["private directories", "mode: PRIVATE_DIRECTORY_MODE"],
+    ["the display", "await claimDisplay("],
+    ["the application", "await spawnApplication("],
+  ]) {
+    assert.equal(handlers < mainBody.indexOf(marker), true, `handlers must be installed before ${label}`);
+  }
+});
+
 test("WIRING: the composition root holds no teardown state of its own", () => {
-  // The three prior P1s all lived in caller-held state that a later edit could
-  // stop passing. `tracked` and the root pin belong to createTeardown now.
   assert.equal(/^\s*const tracked = new Map\(\);/mu.test(mainBody), false);
   assert.equal(/^\s*let root = null;/mu.test(mainBody), false);
+  assert.equal(/^\s*let display = null;/mu.test(mainBody), false);
+});
+
+test("WIRING: no raw loopback address or directory mode is left inline in main", () => {
+  assert.equal(/127\.0\.0\.1/u.test(mainBody), false, "loopback must come from the tested helpers");
+  assert.equal(/0o700/u.test(mainBody), false, "the private mode must come from the tested constant");
+});
+
+// --- ownership from the moment a resource exists ----------------------------
+
+test("ENFORCEMENT: claimDisplay hands the server to teardown before it starts polling", async () => {
+  // The server is live for up to several seconds while its socket and lock
+  // appear. Registering it only on return would orphan a running X server, its
+  // socket and its lock if an interruption arrived in that window.
+  const owner = recordingTeardown();
+  const io = displayIo({ serverPid: 4242, lockPid: 4242 });
+  let adoptedBeforeFirstPoll = null;
+  const watched = { ...io, socketExists: () => { adoptedBeforeFirstPoll ??= owner.events.length > 0; return true; } };
+  await claimDisplay({ minimum: 120, maximum: 121 }, watched, 50, owner);
+  assert.equal(adoptedBeforeFirstPoll, true, "the server must be owned before the first poll");
+  assert.deepEqual(owner.events[0], ["adopt", 4242]);
+});
+
+test("ENFORCEMENT: an abandoned candidate server is released, not left running", async () => {
+  const owner = recordingTeardown();
+  await assert.rejects(
+    () => claimDisplay({ minimum: 120, maximum: 121 }, displayIo({ serverPid: 4242, lockPid: 9999 }), 1, owner),
+    /no free display/u,
+  );
+  // Two candidates in range, each adopted then released.
+  assert.deepEqual(owner.events, [["adopt", 4242], ["release"], ["adopt", 4242], ["release"]]);
+});
+
+test("claimDisplay refuses to run without the owner that will hold the server", async () => {
+  await assert.rejects(
+    () => claimDisplay({ minimum: 120, maximum: 121 }, displayIo({ serverPid: 4242, lockPid: 4242 })),
+    /requires the teardown/u,
+  );
+});
+
+test("ENFORCEMENT: spawnApplication pins the root before it resolves", async () => {
+  const pinned = [];
+  const { child, root } = await spawnApplication(
+    process.execPath,
+    { ...process.env, NODE_OPTIONS: "" },
+    { display: ":120", paseoHome: "/tmp/run/home", userDataDir: "/tmp/run/profile", listen: "127.0.0.1:1", cdpPort: 2 },
+    (value) => pinned.push(value),
+  );
+  try {
+    assert.equal(pinned.length, 1, "the root must be registered by the time the promise resolves");
+    assert.equal(pinned[0], root);
+    assert.equal(Number.isInteger(pinned[0].startTime), true);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
+});
+
+test("spawnApplication refuses to run without somewhere to record the root", () => {
+  // Thrown synchronously, before any process exists, so a caller that forgot
+  // the registration cannot create something teardown will never see.
+  assert.throws(
+    () => spawnApplication(process.execPath, { ...process.env }, { display: ":1", paseoHome: "/a", userDataDir: "/b", listen: "127.0.0.1:1", cdpPort: 2 }),
+    /requires a function that records the spawned root/u,
+  );
+});
+
+test("a released display is stopped and forgotten", async () => {
+  const table = processTable([]);
+  const { unit, removed, displaySignals } = teardownHarness({ table: () => table, lockPid: 4242 });
+  assert.equal(await unit.releaseDisplay(), true);
+  assert.deepEqual(displaySignals, ["SIGTERM", "SIGKILL"]);
+  assert.deepEqual(removed, ["/tmp/.X11-unix/X120", "/tmp/.X120-lock"]);
+  // Forgotten, so a later teardown does not try to stop it twice.
+  const outcome = await unit.run();
+  assert.equal(outcome.displayRemoved, false);
+  assert.deepEqual(displaySignals, ["SIGTERM", "SIGKILL"]);
+});
+
+// --- evidence-file properties enforced in the builder -----------------------
+
+test("ENFORCEMENT: every emitted artifact is scrubbed, not only the application log", () => {
+  // Called directly, with the secret present in all three sources. The caller
+  // also scrubs upstream, but this property must not depend on it.
+  const artifacts = buildRunArtifacts({
+    label: "0.6.1",
+    userAgent: "Paseo/0.6.1 hunter2",
+    display: ":120",
+    outcome: { directorTestId: "plugin-sidebar-director-home", reducedMotionActive: true, errorsBeforeProbe: 0 },
+    rendererEvents: [{ at: "t", kind: "console", type: "log", text: "connecting with hunter2" }],
+    notes: [{ at: "t", text: "note containing hunter2" }],
+    mainLog: ["log with hun", "ter2 split across chunks"],
+    password: "hunter2",
+  });
+  for (const file of artifacts.files) {
+    assert.equal(file.contents.includes("hunter2"), false, `${file.name} must carry no secret`);
+    assert.equal(file.contents.includes("<redacted>"), true, `${file.name} must show the redaction`);
+  }
+});
+
+// --- security-relevant constants --------------------------------------------
+
+test("private run directories are owner-only", () => {
+  assert.equal(PRIVATE_DIRECTORY_MODE, 0o700);
+});
+
+test("the run layout stays inside the output directory and validates its label", () => {
+  const layout = runDirectoryLayout("/tmp/out", "0.6.1");
+  assert.equal(layout.runRoot, "/tmp/out/.run-0.6.1");
+  assert.equal(layout.userDataDir, "/tmp/out/.run-0.6.1/electron-user-data");
+  assert.equal(layout.paseoHome, "/tmp/out/.run-0.6.1/paseo-home");
+  for (const path of Object.values(layout)) assert.equal(path.startsWith("/tmp/out/"), true);
+  assert.throws(() => runDirectoryLayout("/tmp/out", "../../.."), /--label must match/u);
+});
+
+test("ENFORCEMENT: every listener and endpoint this tool creates is loopback", () => {
+  assert.equal(loopbackListen(44613), "127.0.0.1:44613");
+  assert.equal(loopbackDebuggingEndpoint(9333), "http://127.0.0.1:9333");
+  for (const bad of [0, -1, 65536, 1.5, "44613", undefined, null]) {
+    assert.throws(() => loopbackListen(bad), /valid TCP port/u, `${bad} must be refused`);
+    assert.throws(() => loopbackDebuggingEndpoint(bad), /valid TCP port/u, `${bad} must be refused`);
+  }
 });
