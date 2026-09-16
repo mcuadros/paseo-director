@@ -162,6 +162,27 @@ running** and has not yet written a TaskStore configuration carries nothing
 Director can read to tell it apart from an unused one. Give each runtime its
 own four directories and that case cannot arise.
 
+### When a runtime is ended without being released
+
+A runtime releases its Dolt and Engine children when its lease expires or when
+it is asked to release. A runtime that is killed instead runs no release, and
+its children keep running, because Director never ties a child's life to a
+signal it may not receive.
+
+Both outcomes are safe, and they differ in what recovery costs:
+
+- if the runtime had finished starting, its own record names its children, and
+  the next start reclaims them by their exact identity and continues;
+- if it was killed **while starting**, the record does not name them yet, so
+  nothing reclaims them. They keep the declared ports, and the next start
+  refuses `DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER` naming the port and that exact
+  process. Ending the named process is the recovery, and the refusal is what
+  tells you which one. Confirm first that no Director runtime is running:
+  a named process belonging to a live instance must be left alone.
+
+Director refuses in both cases rather than adopting a process it cannot prove
+it owns or ending one it cannot prove is orphaned.
+
 ## Health, Doctor, and Repair
 
 Director Home derives `Healthy`, `Degraded`, `Paused`, and `Needs you` from
@@ -223,7 +244,7 @@ remote URLs. Director has no telemetry and never uploads the bundle.
 | `DIRECTOR_MAIN_GO_TOOLCHAIN_MISSING` or `DIRECTOR_MAIN_GO_TOOLCHAIN_VERSION` | Install exact Go `1.26.5` for default-main add/update; do not change channels implicitly. |
 | `DIRECTOR_MAIN_BUILD_FAILED` | Preserve the prior candidate and verified cache; correct the exact source/module-cache condition and retry update. |
 | `DIRECTOR_BOOTSTRAP_INSTALL_NOT_PREPARED` | The installed checkout lacks the exact prepared bootstrap pin; rerun the same public update, then plugin-scoped reload. |
-| `DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER` | Another Director runtime holds a required listener; the refusal names the port and the holding process. Preserve it, and start this runtime as an isolated second runtime instead. Never stop, signal, or delete the instance that owns it. |
+| `DIRECTOR_BOOTSTRAP_EXTERNAL_OWNER` | A Director runtime child holds a required listener; the refusal names the port and the process. If a Director runtime is running, preserve it and start this runtime as an isolated second runtime instead; never stop, signal, or delete a live instance. If no runtime is running, the named process is an orphaned child (see below) and ending that exact process is the recovery. |
 | `DIRECTOR_BOOTSTRAP_PORT_OCCUPIED` | A required listener named in the refusal is held by a process that is not a Director runtime, or by one this user cannot read. Nothing was started or signalled. Free that port or give this runtime its own isolated ports. |
 | `DIRECTOR_BOOTSTRAP_ISOLATION_INCOMPLETE` | The isolated runtime declaration is partial. Declare both ports, valid and different, together with all four private XDG bases outside the default installation. The existing instance is unaffected. |
 | `DIRECTOR_BOOTSTRAP_ISOLATION_OCCUPIED` | A live runtime with a different binding already owns these isolated paths. An isolated runtime never releases it; use that runtime's own lifecycle, or choose a different private XDG root. |

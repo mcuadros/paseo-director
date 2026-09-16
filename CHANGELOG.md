@@ -47,6 +47,9 @@ effect; this entry does not publish it.
 
 ### Fixed
 
+- The operator guide now states what a runtime ended without being released
+  leaves behind, and when ending the process the refusal names is the recovery
+  rather than something never to touch.
 - The occupied-listener refusal now names the port and distinguishes a
   supervised Director child from an unrelated process, instead of reporting
   both as another Director. A holder that cannot be identified is reported as

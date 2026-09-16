@@ -283,7 +283,21 @@ export async function runReleaseRuntimeLifecycle() {
   } }, hostSocket);
   // The Engine placement comes from the same resolver the connector uses, so
   // this gate follows a declared isolation instead of an assumed default.
+  //
+  // This is also where the absent-declaration parity row lives, and it lives
+  // here rather than in the local suite on purpose. An absent declaration
+  // resolves to the fixed default pair by design, so exercising it end to end
+  // dials whatever holds 3307 and 7041. Here nothing holds them; on a host
+  // already running Director that is the running instance, which no test may
+  // reach. The local suites therefore cover the absent case at the resolvers
+  // only, and the end-to-end agreement is proved below: the connector resolves
+  // the default pair, the Engine child serves that exact address, and the
+  // supervisor reports it back.
   const engine = directorEngineURL(environment);
+  assert.equal(environment.DIRECTOR_RUNTIME_DOLT_PORT, undefined, "the absent-declaration row requires an undeclared Dolt port");
+  assert.equal(environment.DIRECTOR_RUNTIME_ENGINE_PORT, undefined, "the absent-declaration row requires an undeclared Engine port");
+  assert.deepEqual(engine, { url: "http://127.0.0.1:7041", address: "127.0.0.1:7041", isolated: false },
+    "an absent declaration must resolve to the fixed default pair");
   let first;
   let runtimeIdentities = [];
   try {
@@ -297,8 +311,10 @@ export async function runReleaseRuntimeLifecycle() {
     }
     assert.equal(engineChild.parentPid, bootstrap.pid); assert.equal(dolt.parentPid, bootstrap.pid);
     assert.equal(engineChild.argv[1], "serve-board"); assert.equal(dolt.argv[1], "sql-server");
-    assert.ok(engineChild.argv.includes(`--listen=${engine.address}`), "the Engine child does not serve the resolved address");
-    assert.equal(first.engineAddress, engine.address);
+    assert.ok(engineChild.argv.includes(`--listen=${engine.address}`),
+      "absent-declaration parity: the Engine child does not serve the address the connector resolved");
+    assert.equal(first.engineAddress, engine.address,
+      "absent-declaration parity: the supervisor reports an address the connector is not bound to");
     const adopted = await ensureBootstrapRuntime({ selection, environment, hostSocket, engineAddress: engine.address });
     const adoptedStatus = await adopted.status(); assert.deepEqual([adoptedStatus.enginePid, adoptedStatus.doltPid], [status.enginePid, status.doltPid]);
     await adopted.close();

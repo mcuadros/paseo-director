@@ -204,8 +204,13 @@ test("the connector reads a declaration exactly as the runtime does", () => {
       { url: "http://127.0.0.1:17041", address: "127.0.0.1:17041", isolated: true },
     );
   }
-  // Absent on both sides.
-  assert.equal(directorEngineURL({} as NodeJS.ProcessEnv).isolated, false);
+  // Absent on both sides, covered here at the resolver only. An absent
+  // declaration resolves to the fixed default pair by design, so the
+  // end-to-end form of this row dials whatever holds 3307 and 7041, which on a
+  // host already running Director is the running instance. That row runs in
+  // tools/packaging/release-runtime-lifecycle.mjs, where nothing holds them.
+  assert.deepEqual(directorEngineURL({} as NodeJS.ProcessEnv),
+    { url: "http://127.0.0.1:7041", address: "127.0.0.1:7041", isolated: false });
   // Refused on both sides. A byte-order mark must not read as absent here and
   // invalid there: that would bind this surface to the default port while the
   // runtime refused to start, which is the divergence this pair must not have.

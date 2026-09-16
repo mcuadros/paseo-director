@@ -508,14 +508,29 @@ func TestALiveIsolatedRuntimeDoesNotRefuseItsOwnRunningChildren(t *testing.T) {
 	}
 
 	// The same paths, supervised from somewhere else, are another instance.
+	elsewhere := filepath.Join(root, "elsewhere", "director", "supervisor")
 	runtimeLiveDirectorRuntimes = func() []liveRuntimeState {
-		return []liveRuntimeState{{
-			supervisorRoot: filepath.Join(root, "elsewhere", "director", "supervisor"),
-			paths:          []string{paths.taskstore},
-		}}
+		return []liveRuntimeState{{supervisorRoot: elsewhere, paths: []string{paths.taskstore}}}
 	}
 	if _, _, err := runtimeLayout(); codeOf(err, "") != "DIRECTOR_BOOTSTRAP_ISOLATION_PATH_IN_USE" {
 		t.Fatalf("another supervisor using this runtime's configuration was admitted: %v", err)
+	}
+
+	// Containment runs both ways. A live instance whose own state directory
+	// contains one of this runtime's roots is the same collision seen from the
+	// other side, and it is not visible by asking only whether its paths sit
+	// inside this runtime's.
+	for name, used := range map[string]string{
+		"a live data directory containing this runtime's data root":    filepath.Dir(paths.dataRoot),
+		"a live runtime directory containing this runtime's work root": filepath.Dir(paths.runtimeRoot),
+		"a live configuration containing this runtime's config root":   filepath.Dir(paths.configRoot),
+	} {
+		runtimeLiveDirectorRuntimes = func() []liveRuntimeState {
+			return []liveRuntimeState{{supervisorRoot: elsewhere, paths: []string{used}}}
+		}
+		if _, _, err := runtimeLayout(); codeOf(err, "") != "DIRECTOR_BOOTSTRAP_ISOLATION_PATH_IN_USE" {
+			t.Fatalf("%s was admitted: %v", name, err)
+		}
 	}
 }
 
@@ -631,8 +646,14 @@ func TestBothResolversAgreeOnWhatADeclarationSays(t *testing.T) {
 			continue
 		}
 		if declaration.dolt == "" && declaration.engine == "" {
-			if err != nil || ports.isolated {
-				t.Fatalf("an absent declaration was treated as isolation: %#v %v", ports, err)
+			// Covered here at the resolver only. An absent declaration
+			// resolves to the fixed default pair by design, so the end-to-end
+			// form of this row dials whatever holds 3307 and 7041, which on a
+			// host already running Director is the running instance. That row
+			// runs in tools/packaging/release-runtime-lifecycle.mjs, where
+			// nothing holds those ports.
+			if err != nil || ports.isolated || ports.dolt != defaultDoltPort || ports.engine != defaultEnginePort {
+				t.Fatalf("an absent declaration was not the fixed default pair: %#v %v", ports, err)
 			}
 			continue
 		}
