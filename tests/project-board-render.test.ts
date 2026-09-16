@@ -34,6 +34,7 @@ function loadProjectBoard(rpc: () => Promise<unknown>) {
   const reactModule = { ...React, default: React, __esModule: true };
   const require = (specifier: string): unknown => {
     switch (specifier) {
+      case "./host-primitives.client.tsx": return { Icon: "Icon" };
       case "@getpaseo/plugin":
         return { useRpc: () => rpc };
       case "@tanstack/react-query":

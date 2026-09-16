@@ -6,7 +6,7 @@ import type {
   PluginSurfaceProps,
   PluginTheme,
 } from "@getpaseo/plugin";
-import { Icon } from "@getpaseo/plugin";
+import { Icon } from "./host-primitives.client.tsx";
 import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,

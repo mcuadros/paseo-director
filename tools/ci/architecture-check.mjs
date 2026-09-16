@@ -92,6 +92,13 @@ const TS_ALLOWED_EXTERNAL_IMPORTS = {
   generated: new Set(["zod"]),
   connector: new Set(["@getpaseo/client"]),
 };
+// Decoration-only host UI values. The connected Paseo client build, not the
+// installed npm package, supplies the "@getpaseo/plugin" module object, and
+// shipped builds differ in which of these they map. They must therefore be read
+// only through the adapter that degrades to a defined fallback, so one absent
+// primitive can never take down a surface.
+const OPTIONAL_HOST_UI_PRIMITIVES = new Set(["Icon", "Modal", "useToast"]);
+const HOST_PRIMITIVE_ADAPTER = "ui/host-primitives.client.tsx";
 const POLICY_DECLARATION = /(?:Reducer|Policy|Scheduler|Orchestrator|TaskStore|Reconciler|StateTransition|DomainModel|ApplicationService|LifecycleDecision|LifecycleTransition|(?:Eligibility|Launch|Retry|Escalation|Routing|Closure)Decision)$/i;
 const ADAPTER_RUNTIME_POLICY_DECLARATION = /(?:Domain|Application|Orchestrat|Eligib|Schedul|Retry|Escalat|Rout|Reconcil|StateTransition|Lifecycle|TaskStore|Projection|Closure|Reducer|Policy|OrganizerRevisionState|ConfigurationRevisionState|RunConfigurationSnapshot)/i;
 const ADAPTER_RUNTIME_DATA_DECLARATIONS = new Set([
@@ -287,6 +294,31 @@ function importSpecifiers(source) {
   return [...imports];
 }
 
+/**
+ * Value bindings a module imports from the Paseo plugin SDK. Type-only imports
+ * are erased before the client bundle runs and cannot fail, so they are ignored.
+ * A namespace import is reported as "*" because it can reach any member.
+ */
+function hostSdkValueBindings(source) {
+  const bindings = new Set();
+  const pattern = /\bimport\s+(type\s+)?([^"'`;]*?)\s+from\s+["']([^"']+)["']/g;
+  for (const [, typeOnly, clause, specifier] of source.matchAll(pattern)) {
+    if (typeOnly) continue;
+    if (specifier !== "@getpaseo/plugin" && !specifier.startsWith("@getpaseo/plugin/")) {
+      continue;
+    }
+    if (/^\s*\*\s+as\s+/.test(clause)) bindings.add("*");
+    const named = clause.match(/\{([\s\S]*)\}/);
+    if (!named) continue;
+    for (const entry of named[1].split(",")) {
+      const trimmed = entry.trim();
+      if (trimmed === "" || /^type\s/.test(trimmed)) continue;
+      bindings.add(trimmed.split(/\s+as\s+/)[0].trim());
+    }
+  }
+  return bindings;
+}
+
 function packageName(specifier) {
   if (specifier.startsWith("@getpaseo/plugin/")) return specifier;
   if (specifier.startsWith("@")) return specifier.split("/").slice(0, 2).join("/");
@@ -324,6 +356,19 @@ export function typescriptBoundaryErrors(files) {
     }
     errors.push(...policyPathErrors(path));
     errors.push(...policyOwnershipErrors(path, source, "typescript"));
+    if (path !== HOST_PRIMITIVE_ADAPTER) {
+      for (const binding of hostSdkValueBindings(source)) {
+        if (binding === "*") {
+          errors.push(
+            `${path}: only ${HOST_PRIMITIVE_ADAPTER} may namespace-import the Paseo plugin SDK, because that reaches optional host primitives without a fallback`,
+          );
+        } else if (OPTIONAL_HOST_UI_PRIMITIVES.has(binding)) {
+          errors.push(
+            `${path}: optional host primitive ${binding} must be imported from ${HOST_PRIMITIVE_ADAPTER}, which degrades when the client build omits it`,
+          );
+        }
+      }
+    }
     for (const specifier of importSpecifiers(source)) {
       if (specifier.startsWith(".")) {
         const importedRole = relativeTypescriptRole(path, specifier);

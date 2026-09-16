@@ -3,7 +3,7 @@
 
 import type { PluginAgentPanelProps } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin";
-import { Icon } from "@getpaseo/plugin";
+import { Icon } from "./host-primitives.client.tsx";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import React, { useEffect, useMemo, useState } from "react";
 import {

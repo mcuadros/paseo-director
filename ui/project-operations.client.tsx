@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { PluginSurfaceProps } from "@getpaseo/plugin";
-import { Icon, useRpc } from "@getpaseo/plugin";
+import { useRpc } from "@getpaseo/plugin";
+import { Icon } from "./host-primitives.client.tsx";
 import { Modal, useToast } from "./paseo-ui.client.tsx";
 import { useMutation } from "@tanstack/react-query";
 import React, { useEffect, useMemo, useState } from "react";

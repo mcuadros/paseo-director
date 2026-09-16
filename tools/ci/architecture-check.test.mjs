@@ -1213,3 +1213,49 @@ test("focused architecture mutations are killed by their adversarial probes", as
     }
   }
 });
+
+test("only the host-primitive adapter may reach optional Paseo client primitives", () => {
+  const adapter = "ui/host-primitives.client.tsx";
+
+  for (const primitive of ["Icon", "Modal", "useToast"]) {
+    for (const specifier of ["@getpaseo/plugin", "@getpaseo/plugin/react-native"]) {
+      const errors = typescriptBoundaryErrors([
+        {
+          path: "ui/director-home.client.tsx",
+          source: `import { ${primitive} } from "${specifier}";\n`,
+        },
+      ]);
+      assert.ok(
+        errors.some((error) => error.includes(`optional host primitive ${primitive}`)),
+        `admitted ${primitive} from ${specifier}`,
+      );
+    }
+
+    assert.deepEqual(
+      typescriptBoundaryErrors([
+        { path: adapter, source: `import { ${primitive} } from "@getpaseo/plugin";\n` },
+      ]),
+      [],
+      `the adapter must be allowed to resolve ${primitive}`,
+    );
+  }
+
+  assert.ok(
+    typescriptBoundaryErrors([
+      { path: "ui/director-home.client.tsx", source: 'import * as sdk from "@getpaseo/plugin";\n' },
+    ]).some((error) => error.includes("namespace-import")),
+    "admitted a namespace import that reaches optional primitives",
+  );
+
+  // Type-only imports are erased before the client bundle runs, and the
+  // load-bearing data hooks stay with their own Task.
+  assert.deepEqual(
+    typescriptBoundaryErrors([
+      {
+        path: "ui/director-home.client.tsx",
+        source: 'import type { PluginIconProps } from "@getpaseo/plugin";\nimport { useRpc } from "@getpaseo/plugin";\n',
+      },
+    ]),
+    [],
+  );
+});
