@@ -114,8 +114,15 @@ function worker(agentId: string, taskId: string) {
   };
 }
 
+type Component = React.ComponentType<Record<string, unknown>>;
+
 type ConsoleHarness = {
-  Console: React.ComponentType<Record<string, unknown>>;
+  Console: Component;
+  /** The workspace panels the Console did not replace, loaded from the same
+   *  real module graph, so the wrappers this Task introduced are mounted here
+   *  rather than only typechecked. */
+  DirectorWorkers: Component;
+  ProjectBoard: Component;
   announcements: string[];
   homeRequests: unknown[];
   workerRequests: string[];
@@ -126,7 +133,10 @@ type ConsoleHarness = {
  * optional host-primitive adapter is stubbed; `tests/host-primitive-degradation`
  * covers the adapter itself against both shipped client builds.
  */
-function loadConsole(home: () => Promise<unknown>): ConsoleHarness {
+function loadConsole(
+  home: () => Promise<unknown>,
+  { highContrast = false }: { highContrast?: boolean } = {},
+): ConsoleHarness {
   const announcements: string[] = [];
   const homeRequests: unknown[] = [];
   const workerRequests: string[] = [];
@@ -135,6 +145,7 @@ function loadConsole(home: () => Promise<unknown>): ConsoleHarness {
   // Console's announcement is pinned here by what it does.
   const accessibilityInfo = {
     ...testAccessibilityInfo,
+    async isHighTextContrastEnabled() { return highContrast; },
     announceForAccessibility(message: string) { announcements.push(message); },
     announceForAccessibilityWithOptions(message: string) { announcements.push(message); },
   };
@@ -205,11 +216,22 @@ function loadConsole(home: () => Promise<unknown>): ConsoleHarness {
       }
     }
   };
-  const module = loadClientModule<{ DirectorConsole: React.ComponentType<Record<string, unknown>> }>(
+  const module = loadClientModule<{ DirectorConsole: Component }>(
     "ui/director-console.client.tsx",
     requireModule,
   );
-  return { Console: module.DirectorConsole, announcements, homeRequests, workerRequests };
+  // Reached through the same cache the Console populated, so the panel wrappers
+  // and the views they forward to are one module instance, not two.
+  const workersModule = requireModule("./director-workers-panel.client.tsx") as { DirectorWorkers: Component };
+  const boardModule = requireModule("./planning-surface.client.tsx") as { ProjectBoard: Component };
+  return {
+    Console: module.DirectorConsole,
+    DirectorWorkers: workersModule.DirectorWorkers,
+    ProjectBoard: boardModule.ProjectBoard,
+    announcements,
+    homeRequests,
+    workerRequests,
+  };
 }
 
 function renderedText(renderer: TestRenderer.ReactTestRenderer): string {
@@ -243,8 +265,8 @@ function homeCacheKeys(queryClient: ReactQuery.QueryClient): readonly unknown[][
     .filter((key) => key[0] === "director" && key[1] === "home");
 }
 
-async function mountConsole(
-  harness: ConsoleHarness,
+async function mount(
+  Component: Component,
   props: Record<string, unknown>,
 ): Promise<{ renderer: TestRenderer.ReactTestRenderer; queryClient: ReactQuery.QueryClient }> {
   const queryClient = new ReactQuery.QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -254,11 +276,70 @@ async function mountConsole(
       React.createElement(
         ReactQuery.QueryClientProvider,
         { client: queryClient },
-        React.createElement(harness.Console, { host: { id: "client-host", label: "Client" }, layout: { compact: false, platform: "web" }, theme, ...props }),
+        React.createElement(Component, { host: { id: "client-host", label: "Client" }, layout: { compact: false, platform: "web" }, theme, ...props }),
       ),
     );
   });
   return { renderer, queryClient };
+}
+
+function mountConsole(
+  harness: ConsoleHarness,
+  props: Record<string, unknown>,
+): Promise<{ renderer: TestRenderer.ReactTestRenderer; queryClient: ReactQuery.QueryClient }> {
+  return mount(harness.Console, props);
+}
+
+/** Reads one flattened style value off the Text node carrying `text`. The
+ *  hosted bodies size themselves from the layout prop the Console forwards, so
+ *  this is where a forwarded layout becomes observable. */
+function textStyleValue(
+  renderer: TestRenderer.ReactTestRenderer,
+  text: string,
+  key: string,
+): unknown {
+  const node = renderer.root.findAll(
+    (item) => String(item.type) === "Text" && item.children.join("") === text,
+  )[0]!;
+  const styles = [node.props.style].flat(3) as (Record<string, unknown> | null | undefined)[];
+  return styles.filter(Boolean).map((entry) => entry![key]).findLast((value) => value !== undefined);
+}
+
+/**
+ * Waits for a node rather than for text that happens to precede it. Waiting on
+ * rendered text and then querying immediately is a race: under full-suite load
+ * the text of a Board card appears before the pressable that carries its
+ * accessible name, and the query then reads undefined.
+ */
+async function waitForNode(
+  renderer: TestRenderer.ReactTestRenderer,
+  describe: string,
+  match: (node: TestRenderer.ReactTestInstance) => boolean,
+): Promise<TestRenderer.ReactTestInstance> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const found = renderer.root.findAll(match)[0];
+    if (found) return found;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(`${describe} never rendered`);
+}
+
+function waitForLabel(renderer: TestRenderer.ReactTestRenderer, label: string) {
+  return waitForNode(renderer, label, (node) => node.props.accessibilityLabel === label);
+}
+
+/** Opens the first Board card and its Task modal, which is where the Board's
+ *  navigation prop becomes observable. */
+async function openFirstBoardTask(renderer: TestRenderer.ReactTestRenderer): Promise<void> {
+  let card!: TestRenderer.ReactTestInstance;
+  await act(async () => {
+    card = await waitForNode(renderer, "the DIR-00001 Board card", (node) =>
+      typeof node.props.accessibilityLabel === "string" &&
+      node.props.accessibilityLabel.startsWith("DIR-00001,"));
+  });
+  await act(async () => { card.props.onPress(); });
+  await act(async () => { await waitForText(renderer, /Contract-first planning UI shell/); });
 }
 
 test("the Console mounts every tab from one Home snapshot query under one cache key", async () => {
@@ -280,18 +361,29 @@ test("the Console mounts every tab from one Home snapshot query under one cache 
   // The shell fans Workers out over the same snapshot the Overview body renders.
   // Two consumers, one request, one cache entry.
   assert.equal(harness.homeRequests.length, 1);
+  // and it carries the exact host the shared hook was given, not a default.
+  assert.deepEqual(harness.homeRequests, [{ hostId: "host-a", cursor: null, pageSize: 25 }]);
   assert.deepEqual(homeCacheKeys(queryClient), [["director", "home", "host-a"]]);
   assert.match(renderedText(renderer), /Overview Board Workers/);
   assert.match(renderedText(renderer), /Project health/);
+  // The Overview body sizes itself from the layout the Console forwards: 20 is
+  // the wide heading, 18 the compact one. A hard-coded layout changes this.
+  assert.equal(textStyleValue(renderer, "Project health", "fontSize"), 20);
   // Which tab is shown is the Console's only state, so a screen reader is told
   // when it changes. Asserted on the announcement, not on an import.
   assert.equal(harness.announcements.includes("Director Overview tab"), true);
+  // Which tab is selected is stated to assistive technology, not only drawn.
+  assert.deepEqual(
+    ["Overview", "Board", "Workers"].map((label) => tabControl(renderer, label).props.accessibilityState.selected),
+    [true, false, false],
+  );
 
-  // The Console is a new forwarding seam: a host that supplies navigation must
-  // reach it through every tab, not only be absent from it. The Overview body's
-  // own Board action is the reachable half here; the Workers half is asserted
-  // on its own tab below. Disambiguated by role, because the tab strip carries
-  // a control with the same accessible name.
+  // The Console forwards navigation through three tab branches, and each is
+  // asserted separately: dropping all three at once dies through the Overview
+  // and hides the other two. This is the Overview branch; the Workers branch is
+  // asserted on its own tab below and the Board branch in its own test.
+  // Disambiguated by role, because the tab strip carries a control with the
+  // same accessible name.
   const overviewBoardAction = renderer.root.findAll(
     (node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "Board",
   )[0]!;
@@ -304,12 +396,23 @@ test("the Console mounts every tab from one Home snapshot query under one cache 
   assert.doesNotMatch(renderedText(renderer), /Project health/);
   assert.deepEqual(homeCacheKeys(queryClient), [["director", "home", "host-a"]]);
   assert.equal(harness.announcements.includes("Director Board tab"), true);
+  // A wide Board shows every applicable lane; a compact one shows a single
+  // lane at a time. Two lanes together therefore pin the forwarded layout.
+  const boardLanes = renderedText(renderer);
+  assert.match(boardLanes, /Queued/);
+  assert.match(boardLanes, /Building/);
+  assert.deepEqual(
+    ["Overview", "Board", "Workers"].map((label) => tabControl(renderer, label).props.accessibilityState.selected),
+    [false, true, false],
+  );
 
   await act(async () => { tabControl(renderer, "Workers").props.onPress(); });
   await act(async () => { await waitForText(renderer, /Rendered Project · Checkout/); });
   const workers = renderedText(renderer);
   assert.match(workers, /Rendered Project · Repository/);
   assert.match(workers, /Worker dir-m6\.35/);
+  // 28 is shellMetrics' wide title, 22 the compact one.
+  assert.equal(textStyleValue(renderer, "Rendered Project · Repository", "fontSize"), 28);
   // One view per root Workspace, each bound to its own exact native Workspace.
   assert.deepEqual([...harness.workerRequests].sort(), ["native-a", "native-b"]);
   assert.deepEqual(homeCacheKeys(queryClient), [["director", "home", "host-a"]]);
@@ -385,6 +488,11 @@ test("the Workers tab states why it cannot render instead of offering a dead tab
   // Pressing the disabled tab neither navigates nor hides the Overview body.
   await act(async () => { workersTab.props.onPress?.(); });
   assert.match(renderedText(renderer), /Project health/);
+  // The announcement follows the tab actually shown, not the one requested, so
+  // a redirected request never names a tab the user is not looking at.
+  assert.equal(harness.announcements.includes("Director Workers tab"), false);
+  assert.equal(harness.announcements.includes("Director Overview tab"), true);
+  assert.equal(tabControl(renderer, "Overview").props.accessibilityState.selected, true);
 
   await act(async () => renderer.unmount());
   queryClient.clear();
@@ -414,4 +522,114 @@ test("the Workers tab states the reason while this host's Project facts are stil
 
   await act(async () => renderer.unmount());
   queryClient.clear();
+});
+
+test("the Board tab reaches the host's navigation, the branch the other two hide", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const harness = loadConsole(async () => snapshot([
+    { id: "workspace-repository", name: "Repository", paseoWorkspaceId: "native-a" },
+  ]));
+  const openedAgents: string[] = [];
+  const { renderer, queryClient } = await mountConsole(harness, {
+    navigation: { openAgent: ({ agentId }: { agentId: string }) => openedAgents.push(agentId), openWorkspace() {} },
+  });
+
+  await act(async () => { await waitForText(renderer, /Rendered Project/); });
+  await act(async () => { tabControl(renderer, "Board").props.onPress(); });
+  await act(async () => { await waitForText(renderer, /Needs you/); });
+  await openFirstBoardTask(renderer);
+
+  // navigation reaches the Board through ProjectBoardSurface and PlanningSurface
+  // and gates this control in the Task modal. Without it the label itself
+  // changes, so the assertion fails on an absent control rather than on a
+  // silent no-op.
+  let openAgent!: TestRenderer.ReactTestInstance;
+  await act(async () => { openAgent = await waitForLabel(renderer, "Open agent for DIR-00001"); });
+  assert.equal(openAgent.props.accessibilityState.disabled, false);
+  await act(async () => { openAgent.props.onPress(); });
+  assert.deepEqual(openedAgents, ["paseo-agent-task-0"]);
+
+  await act(async () => renderer.unmount());
+  queryClient.clear();
+});
+
+test("the workspace panel wrappers forward every prop to the views the Console shares", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const harness = loadConsole(async () => snapshot([]));
+  const openedAgents: string[] = [];
+  const navigation = {
+    openAgent: ({ agentId }: { agentId: string }) => openedAgents.push(agentId),
+    openWorkspace() {},
+  };
+
+  // DirectorWorkers became a pure forwarder in this Task. Nothing mounted it
+  // before, so workspaceId, navigation and the heading fallback were carried by
+  // the type checker alone.
+  const workers = await mount(harness.DirectorWorkers, {
+    context: "workspace",
+    navigation,
+    workspaceId: "wks_panel_root",
+  });
+  await act(async () => { await waitForText(workers.renderer, /Worker dir-m6\.35/); });
+  // workspaceId reaches the aggregate RPC, rather than an empty string.
+  assert.deepEqual(harness.workerRequests, ["wks_panel_root"]);
+  // The heading fallback is what gives the panel its own title; the Console
+  // overrides it per root Workspace and the panel must not inherit that.
+  assert.match(renderedText(workers.renderer), /Director Workers/);
+  assert.doesNotMatch(renderedText(workers.renderer), /·/);
+  // The panel sizes itself from the layout its wrapper forwards: 28 wide, 22
+  // compact.
+  assert.equal(textStyleValue(workers.renderer, "Director Workers", "fontSize"), 28);
+  let panelOpenAgent!: TestRenderer.ReactTestInstance;
+  await act(async () => { panelOpenAgent = await waitForLabel(workers.renderer, "Open agent for dir-m6.35"); });
+  assert.equal(panelOpenAgent.props.accessibilityState.disabled, false);
+  await act(async () => { panelOpenAgent.props.onPress(); });
+  assert.deepEqual(openedAgents, ["agent-wks_panel_root"]);
+  await act(async () => workers.renderer.unmount());
+  workers.queryClient.clear();
+
+  // ProjectBoard became a pure forwarder in the same way.
+  const board = await mount(harness.ProjectBoard, {
+    context: "workspace",
+    navigation,
+    workspaceId: "wks_panel_root",
+  });
+  await act(async () => { await waitForText(board.renderer, /Needs you/); });
+  // Wide shows every applicable lane, compact one at a time, so two lanes pin
+  // the layout this wrapper forwards.
+  assert.match(renderedText(board.renderer), /Queued/);
+  assert.match(renderedText(board.renderer), /Building/);
+  await openFirstBoardTask(board.renderer);
+  let boardOpenAgent!: TestRenderer.ReactTestInstance;
+  await act(async () => { boardOpenAgent = await waitForLabel(board.renderer, "Open agent for DIR-00001"); });
+  assert.equal(boardOpenAgent.props.accessibilityState.disabled, false);
+  await act(async () => { boardOpenAgent.props.onPress(); });
+  assert.deepEqual(openedAgents, ["agent-wks_panel_root", "paseo-agent-task-0"]);
+  await act(async () => board.renderer.unmount());
+  board.queryClient.clear();
+});
+
+test("the Console consumes the host's accessibility preferences, not a literal", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const plain = loadConsole(async () => snapshot([]));
+  const plainMount = await mountConsole(plain, { navigation: undefined });
+  await act(async () => { await waitForText(plainMount.renderer, /Rendered Project|No Projects|Project health/); });
+  const plainBorder = (tabControl(plainMount.renderer, "Overview").props.style as { borderWidth?: number }[])
+    .find((entry) => entry && typeof entry.borderWidth === "number")!.borderWidth;
+  assert.equal(plainBorder, 1);
+  await act(async () => plainMount.renderer.unmount());
+  plainMount.queryClient.clear();
+
+  // The shared source scan in tests/mobile-accessibility.test.ts matches the
+  // import, so it passes when the call is replaced by a literal. High contrast
+  // widens the tab strip's borders, so the preference is pinned here by the
+  // effect it has.
+  const contrast = loadConsole(async () => snapshot([]), { highContrast: true });
+  const contrastMount = await mountConsole(contrast, { navigation: undefined });
+  await act(async () => { await waitForText(contrastMount.renderer, /Rendered Project|No Projects|Project health/); });
+  const contrastBorder = (tabControl(contrastMount.renderer, "Overview").props.style as { borderWidth?: number }[])
+    .find((entry) => entry && typeof entry.borderWidth === "number")!.borderWidth;
+  assert.equal(contrastBorder, 2);
+  await act(async () => contrastMount.renderer.unmount());
+  contrastMount.queryClient.clear();
 });
