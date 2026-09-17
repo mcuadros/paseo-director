@@ -70,6 +70,46 @@ the host view, then removes the exact owner-marked detached checkout. An
 ambiguous identity or owner marker stops cleanup permanently for that attempt;
 unknown resources are never adopted or removed.
 
+The owner marker is a conjunction of facts read inside the checkout itself,
+not a token a caller can present. The path is a directory that owns its own
+Git directory and shares no Git common directory with another repository, so
+it is an independent clone rather than a registered worktree of the primary
+checkout; its `HEAD` is detached at exactly the bound Candidate; its bound
+remote resolves to exactly the bound repository; it holds no stash; and it
+carries no tracked or untracked modification. Regenerable ignored material is
+admitted deliberately, because a disposable review clone is regenerable by
+construction. The live Reviewer's own working directory must be that same
+path, and the Reviewer's frozen `director.role`, `director.task` and
+`director.candidate` labels must bind the same Task and Candidate.
+
+A Reviewer is bound to its recorded report by one fact: the Reviewer wrote it,
+and the comment states a verdict. Authorship is the only property of a comment
+that another party cannot produce; content rules admit records that describe a
+Review rather than being one, and the routine record announcing a Reviewer's
+creation names the Reviewer, names its Candidate and quotes an earlier verdict.
+The verdict requirement closes the other direction, where a note written
+mid-Review would read as a concluded one — and it reads only a `Verdict:` field
+or the comment's own first line, because a Reviewer quoting the previous round's
+verdict while still working is ordinary. Within what a comment contains the rule
+misses rather than invents; it does not defend against a comment written under a
+forged actor, and the author field is caller-supplied. What it misses is counted
+by a deliberately wider measure and refuses the binding that would write the
+miss away as a Review that never happened.
+
+None of those facts requires the Candidate to be reachable from a published
+branch, and none resolves it against the primary checkout. A Review that ended
+in `changes_requested` leaves a Candidate that was superseded and never
+published, so a cleanup that needed to find that commit in history would fail
+first on the oldest debt. Authority to remove comes from the durable Review
+evidence in Beads, the agent's own labels, and the marker above.
+
+A Reviewer is reconcilable only once its Review is over, and neither available
+signal proves that alone. A `running` agent is working. An idle agent whose
+Candidate has no durable verdict, on a Task that is still in progress, may be
+between turns of a Review that is still going. A Candidate absent from the
+integration branch is not evidence of anything: most superseded Candidates are
+absent and their Reviews completed normally.
+
 The setup-thrash regression fixtures contain only the bounded classifications
 learned from the `dir-m0.4` and `dir-m0.6` review churn. They contain no raw
 conversation history, credentials, private paths, filenames, or secret-shaped

@@ -49,6 +49,105 @@ reclaims them. Reclaimed lifecycle bindings are reported as recorded inputs
 with `verified: false`, never as verified archival. The literal `none` for both
 IDs is valid only when the Run never had those resources.
 
+The Reviewer leg binds its own resources, because a Reviewer is a second
+parentless agent with its own host view and its own disposable checkout:
+
+```text
+--reviewer-agent-id --reviewer-workspace-id --reviewer-lifecycle-state
+--reviewer-checkout --reviewer-checkout-state --reviewer-review-state
+```
+
+All six are required by `reviewer-cleanup-plan` and `reviewer-cleanup-apply`
+and refused by every other command. `--reviewer-workspace-id none` is valid
+when the Review had no host view or it is already gone. The Reviewer's two
+lifecycle facts are observed independently rather than inferred from one
+another: archiving the host view of an independent clone leaves the checkout in
+place, so `--reviewer-lifecycle-state reclaimed` with
+`--reviewer-checkout-state present` is a real state. A disposable checkout reaped
+from a temporary filesystem is bound `--reviewer-checkout-state reclaimed`: the
+owner marker exists to authorise a removal, so where there is nothing to remove
+it is not required, and its absence is recorded as the reason rather than
+standing in for a proof never taken. An agent whose checkout is gone is still
+archived normally. `reclaimed` is an assertion
+the daemon is asked to confirm, not one taken on trust: the Reviewer agent is
+inspected under every lifecycle binding, and a binding that calls a still-live
+agent or a still-live workspace card historical refuses
+`REVIEWER_LIFECYCLE_NOT_RECLAIMED`. The running guard and the frozen-label
+identity binding therefore apply under every binding rather than lapsing at the
+one an operator reaches for when they believe the resource is already gone. A Reviewer identity equal
+to the Task Agent, the coordinator actor, or the Task workspace is refused, as
+is a Reviewer checkout that overlaps the Task or control checkout.
+`--reviewer-review-state` is the explicit statement of why the Review is over:
+`verdict_recorded` requires a durable report in Beads that binds this exact
+Reviewer, and `abandoned` requires that no report binds it and that the Task is
+no longer in progress. `abandoned` asserts that no durable report binds this
+Reviewer, which is not the same as asserting that the Review never reported; it
+is refused outright where either counter is above zero.
+
+While the Task is still in progress, `abandoned` additionally requires a durable
+abandonment record, because nothing observable distinguishes a Reviewer that
+will never report from one that has not reported yet: both are idle, both carry
+the same labels, and neither can be asked. The difference is not a property of
+the Reviewer but a decision by the party that stopped waiting for it, so it is
+bound the way a report is — by the actor that wrote it. A comment whose own
+first line begins `REVIEW ABANDONED`, written under the actor running the
+cleanup, naming the Reviewer it abandons, discharges the in-progress refusal and
+nothing else. Without it the refusal stands, which is what keeps a Reviewer
+idle between turns of a running Review untouchable. Three Reviewers of closed
+Tasks need no such record; the case this exists for is the live one, where a
+Candidate is superseded after its Reviewer already exists.
+
+A running Reviewer is refused under
+either value.
+
+A report binds through exactly one fact: the Reviewer wrote it. The comment's
+author must equal the Reviewer's own `paseo:<agent id>`, and the comment must
+state a verdict — a `Verdict:` field carrying any token, or one of the three
+contract verdicts on the comment's own first line. The first-line restriction is
+load-bearing: read over the whole text, a note a Reviewer writes mid-Review
+while quoting the previous round's verdict binds as that Review's report, and a
+Reviewer sits idle between turns.
+
+Authorship is the strongest available binding, not an unforgeable one. Beads
+writes the author row, but the caller supplies the value: `bd` accepts a
+free-form `--actor` with no authentication, `$BEADS_ACTOR` does the same, and
+`bd export`/`import` round-trips the field verbatim, so a deliberate or scripted
+write under another agent's actor is a route. Nothing in this repository writes
+a comment programmatically — the coordinator only reads them — and every content
+rule this replaced was strictly easier to produce, since anyone could write a
+heading or a `Candidate:` line under their own actor. The residual is recorded
+as `dir-m6.48`, and this contract rests on it.
+Every content rule tried here could be satisfied by a comment that describes a
+Review rather than being one: the routine record announcing that a Reviewer was
+created names that Reviewer, names the Candidate it was created for, and quotes
+an earlier Review's verdict, so three tokens co-occur where no report exists.
+Narrowing which tokens, or how near they must stand, makes such a record harder
+to mistake without making it distinguishable. The verdict requirement closes the
+matching gap on the other side: without it, any note a Reviewer writes
+mid-Review — and it sits idle between turns — would read as a concluded Review,
+leaving the daemon's `running` status as the only thing protecting a Review in
+flight.
+
+Within what a comment contains, this rule fails by missing rather than by
+inventing; it does not defend against a comment written under a forged actor.
+Three misses are known and none is hypothetical: a verdict the coordinator
+transcribed on the Reviewer's behalf binds nothing; a report whose verdict is
+stated in neither readable place binds nothing, including the transcribed form
+whose verdict sits in prose; and a report concluding outside the contract
+vocabulary without a `Verdict:` field binds nothing. Every miss is refused, not merely reported. `unboundEvidence` counts comments
+that name this Reviewer — by actor or by bare identifier — and refer to a
+verdict without binding it, which is what a transcribed report leaves.
+`unreadableReports` counts comments this Reviewer wrote whose verdict could not
+be read. Both count a reference to a verdict *anywhere*, deliberately wider than
+what binds: if they narrowed alongside the binding rule, the reports the
+narrowing newly declines to read would become invisible at the same moment.
+Either counter above zero refuses `abandoned` with
+`REVIEWER_REPORT_EVIDENCE_UNRESOLVED`, so the surrendered coverage is a refusal
+rather than a sentence an operator is trusted to read. Neither counter ever
+widens `verdict_recorded`; that would be the withdrawn content anchor returning
+through a counter. A Reviewer in this state is reconcilable only after a human
+resolves what the evidence means.
+
 Mutating commands also require an absolute `--state-file` outside every Git
 checkout. The file is mode `0600`, atomically replaced and filesystem-synced.
 It records immutable bindings and effect phases before dispatch. A private
@@ -79,8 +178,10 @@ proven. Exit `2` is a structured fail-closed refusal or interruption. Exit `1`
 is an unexpected internal failure. Raw command output, credentials, paths from
 GitHub feedback, and comment bodies are not copied into refusals.
 
-For an active lifecycle binding on a password-protected exact Paseo `0.7.2`
-daemon, `DIRECTOR_PASEO_CREDENTIAL_FILE` must name the existing absolute
+For an active lifecycle binding, for every Reviewer command, and for the
+Reviewer-leg ordering check the two cleanup commands perform regardless of
+their own lifecycle binding, a password-protected exact Paseo `0.7.2` daemon
+requires that `DIRECTOR_PASEO_CREDENTIAL_FILE` name the existing absolute
 owner-only regular credential file with mode `0600`. The file contains only
 the exact password bytes, with no added line ending. It is the sole password
 authority: plaintext `PASEO_PASSWORD` is ignored, and a password in
@@ -89,14 +190,16 @@ file separate from the required `--ownership-file`; neither raw value nor
 either file path may enter output, diagnostics, evidence, handoff/state, PR
 content, or Beads.
 
-The coordinator uses exact Paseo `0.7.2`'s public Agent MCP `get_agent_status`
-and `list_workspaces` reads and its `archive_agent` and `archive_workspace`
-mutations. Without `PASEO_HOST`, a password-free `paseo daemon status --json`
+The coordinator uses exact Paseo `0.7.2`'s public Agent MCP `get_agent_status`,
+`list_workspaces` and `list_agents` reads and its `archive_agent` and
+`archive_workspace` mutations. The enumeration is issued with fixed bounded
+arguments and projects only each agent's lifecycle fields and its own
+`director.` labels. Without `PASEO_HOST`, a password-free `paseo daemon status --json`
 child discovers the documented same-host Unix socket, loopback, or active
 local-interface listener. An explicit host is bounded to a local Unix socket or
 loopback TCP target and must remain credential-free. Only the dedicated Agent
 MCP lifecycle child receives the password, through its exact `PASEO_PASSWORD`
-environment; its argv contains only the fixed child, one of those four
+environment; its argv contains only the fixed child, one of those five
 operations, and the public agent or workspace ID. Git, GitHub CLI, Beads, npm,
 Go, Paseo status, other Paseo verbs, and sibling executables receive neither
 the password nor credential-file path. That child authenticates over HTTP
@@ -179,9 +282,49 @@ instead of re-executing and no refusal is reported as an unproven archive.
   preserves every resource, records the observed merge/failure code, and asks
   the owner to decide repair or acceptance. Retrying cannot convert that
   anomaly into verified integration.
+- `reviewer-survey` derives the set of Reviewers awaiting reconciliation from
+  the daemon and the Beads record at the moment it runs, and mutates nothing.
+  It reads one bounded page of live agents, keeps those whose own
+  `director.role` label is `reviewer`, and joins each with its Task's status and
+  durable Review verdicts. Every Reviewer is classified `reconcilable`,
+  `review_in_flight`, `review_incomplete`, or `ambiguous`, including Reviewers
+  of closed Tasks, of superseded Candidates, and of Reviews that never reported.
+  Each record carries `reportSource`, which is `authored` or `null`, plus
+  `unboundEvidence`, `unreadableReports` and `abandonedBy`, so a record says
+  what its conclusion rests on and what it could not read. `reviewState` is
+  derived from what the leg will actually accept rather than from the
+  classification, so a row the leg refuses never displays the binding it
+  refuses — an operator acts on the display.
+  Each record's `reviewState` is the `--reviewer-review-state` that record
+  admits, and `null` where it admits none, so a Review still in flight is never
+  described as finished. The result carries the requested page limit and a
+  `saturated` flag: a page returned at its own limit is evidence of nothing
+  beyond itself, so a truncated enumeration never reads as a complete one. Adopt
+  nothing from an `ambiguous` record; it names a resource this contract cannot
+  identify.
+- `reviewer-cleanup-plan` emits a hashed plan for exactly one bound Reviewer:
+  its agent, its host view, and its owner-marked disposable checkout. It
+  requires no integration evidence and no in-progress Task, because Reviewer
+  cleanup is authorized by durable verdict evidence rather than by delivery.
+  Plan schema v1 binds the Reviewer fields alongside the delivery binding.
+- `reviewer-cleanup-apply` requires `--state-file` and `--plan-file` and
+  performs the leg in the documented order: archive the Reviewer, archive the
+  host view, then remove the exact owner-marked detached checkout. Each effect
+  records intent before dispatch, an already-terminal resource is adopted
+  without another dispatch, and the destructive removal accepts absence only
+  after a recorded attempt or an explicit reclaimed binding. Removal re-proves
+  the marker and the directory's device and inode immediately before it runs. It
+  accepts the same optional `--resume-state-file`.
 - `cleanup-plan` requires the completed integration state and emits a hashed
   plan for only the exact agent, workspace/worktree, local Task ref, and remote
-  Task ref. Dirty or ignored data, a running agent, ambiguous ownership, or a
+  Task ref. It also requires `--review-file` and refuses `REVIEWER_LEG_PENDING`
+  unless the exact Reviewer named by that durable Review evidence is already
+  archived and no other live agent carries this Task's own Reviewer labels.
+  That second rule is what a corrected Candidate needs: each correction creates
+  a new Reviewer and leaves the previous one alive, so ordering only the last
+  Review would let every earlier Reviewer outlive the Task. The emitted plan
+  records the enumeration's own `saturated` flag, so a closure record derived
+  from it inherits the scope the check could actually establish. Dirty or ignored data, a running agent, ambiguous ownership, or a
   changed ref refuses the plan. Cleanup-plan schema v2 binds only
   `ownershipTokenHash`. Schema-v1 plans are not migrated because they are
   derived artifacts. State migration also invalidates any legacy
@@ -189,7 +332,9 @@ instead of re-executing and no refusal is reported as an unproven archive.
   use that newly emitted v2 document without editing private state. Optional
   `--resume-state-file` carries an interrupted run's recorded effects across its
   own lifecycle transition; see Resuming an interrupted cleanup.
-- `cleanup-apply` requires `--state-file` and `--plan-file`. The plan file may
+- `cleanup-apply` requires `--state-file`, `--plan-file`, and the same
+  `--review-file`, and repeats the Reviewer-leg ordering check before its first
+  effect, so a Reviewer that came back preserves every Task resource. The plan file may
   be the complete JSON emitted by `cleanup-plan`. Every resource is re-read
   before its effect. Agent and workspace archival are dispatched through the
   same bounded authenticated Agent MCP child as the lifecycle reads and are
@@ -232,8 +377,14 @@ while a fresh state bound to the transitioned truth knows nothing about them and
 correctly refuses `DESTRUCTIVE_ABSENCE_AMBIGUOUS` for a ref this coordinator had
 already recorded deleting.
 
-`cleanup-plan` and `cleanup-apply` accept `--resume-state-file` to close that
-gap. It names the interrupted run's absolute owner-only mode-`0600` state file
+The Reviewer leg advances its own two fields the same way: archiving the
+Reviewer makes `--reviewer-lifecycle-state` historical, and removing the
+disposable checkout reclaims `--reviewer-checkout-state`. Lifecycle progress is
+compared only over the fields a binding actually carries, so a command that
+binds no Reviewer keeps exactly its original two-field comparison.
+
+`cleanup-plan`, `cleanup-apply`, `reviewer-cleanup-plan` and
+`reviewer-cleanup-apply` accept `--resume-state-file` to close that gap. It names the interrupted run's absolute owner-only mode-`0600` state file
 outside every Git checkout, and that file is only ever read: the resumed run
 writes exclusively to its own `--state-file`, which it may create. The resumed
 state is admitted only when every identity, ownership, actor, repository,
@@ -283,9 +434,18 @@ node tools/coordinator/cli.mjs remote-ci <immutable context and CI workflow/chec
 node tools/coordinator/cli.mjs publish <immutable context options and publication evidence>
 node tools/coordinator/cli.mjs gate <immutable context options and required checks>
 node tools/coordinator/cli.mjs integrate <same gate options plus state file>
-node tools/coordinator/cli.mjs cleanup-plan <immutable context plus state file> > /private/control/cleanup-plan.json
-node tools/coordinator/cli.mjs cleanup-apply <same context plus state and plan files>
+node tools/coordinator/cli.mjs reviewer-survey <immutable context options>
+node tools/coordinator/cli.mjs reviewer-cleanup-plan <immutable context plus Reviewer binding and state file> > /private/control/reviewer-plan.json
+node tools/coordinator/cli.mjs reviewer-cleanup-apply <same context plus state and plan files>
+node tools/coordinator/cli.mjs cleanup-plan <immutable context plus state and review files> > /private/control/cleanup-plan.json
+node tools/coordinator/cli.mjs cleanup-apply <same context plus state, review, and plan files>
 ```
+
+The Reviewer leg precedes the Task Agent leg, and `cleanup-plan` refuses until
+it has run. Reviewers left behind by earlier Runs are reconciled through the
+same two commands: `reviewer-survey` derives the current set, and each
+`reconcilable` record supplies the binding for one plan/apply pair. Nothing in
+that path requires the Task to be open or the Candidate to be reachable.
 
 The coordinator records each returned JSON result in Beads under its explicit
 `paseo:<agent-id>` actor. It never pushes `main`, uses `--admin`/`--auto`,

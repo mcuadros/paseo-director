@@ -10,6 +10,21 @@ const MAXIMUM_RESPONSE_BYTES = 1_048_576;
 const REQUEST_TIMEOUT_MS = 15_000;
 const STATUS_TIMEOUT_MS = 10_000;
 const PARENT_AGENT_ID_LABEL = "paseo.parent-agent-id";
+// The coordinator's Reviewer identity proof reads the agent's own Director
+// labels, so exactly that namespace is projected and nothing else. Bounds are
+// applied here rather than downstream: a label map is daemon-controlled input.
+const DIRECTOR_LABEL_PREFIX = "director.";
+const MAXIMUM_DIRECTOR_LABELS = 32;
+const MAXIMUM_LABEL_KEY_BYTES = 64;
+const MAXIMUM_LABEL_VALUE_BYTES = 256;
+// The documented public maxima of the exact `list_agents` request. The page is
+// bounded two ways and both bound what its result can establish: a response
+// holding `limit` records is indistinguishable from a truncated one, and every
+// response whatever its size excludes agents older than the window. Both travel
+// with the result so the coordinator states the scope it actually observed
+// rather than reading an unsaturated page as a complete one.
+const AGENT_LIST_LIMIT = 200;
+const AGENT_LIST_SINCE_HOURS = 720;
 
 const EXIT = Object.freeze({
   authRequired: 64,
@@ -20,7 +35,7 @@ const EXIT = Object.freeze({
 });
 
 /**
- * The four bounded lifecycle operations this child may perform, each mapped to
+ * The five bounded lifecycle operations this child may perform, each mapped to
  * exactly one documented public Paseo 0.7.2 Agent MCP tool. Mutations are
  * dispatched here for the same reason reads are: the HTTP bearer boundary
  * accepts a valid delimiter-rich password that the CLI's WebSocket subprotocol
@@ -29,6 +44,19 @@ const EXIT = Object.freeze({
 const OPERATIONS = new Map([
   ["agent.inspect", { tool: "get_agent_status", argument: "agentId", mutation: false }],
   ["workspace.list", { tool: "list_workspaces", argument: null, mutation: false }],
+  [
+    "agent.list",
+    {
+      tool: "list_agents",
+      argument: null,
+      mutation: false,
+      fixedArguments: {
+        includeArchived: false,
+        limit: AGENT_LIST_LIMIT,
+        sinceHours: AGENT_LIST_SINCE_HOURS,
+      },
+    },
+  ],
   ["agent.archive", { tool: "archive_agent", argument: "agentId", mutation: true }],
   ["workspace.archive", { tool: "archive_workspace", argument: "workspaceId", mutation: true }],
 ]);
@@ -269,6 +297,27 @@ function normalizedMcpResult(document, requestId) {
   return result.structuredContent;
 }
 
+function normalizedDirectorLabels(labels) {
+  const entries = Object.entries(labels).filter(([key]) =>
+    key.startsWith(DIRECTOR_LABEL_PREFIX),
+  );
+  if (entries.length > MAXIMUM_DIRECTOR_LABELS) {
+    throw new Error("invalid agent labels");
+  }
+  const projected = {};
+  for (const [key, label] of entries) {
+    if (
+      typeof label !== "string" ||
+      Buffer.byteLength(key) > MAXIMUM_LABEL_KEY_BYTES ||
+      Buffer.byteLength(label) > MAXIMUM_LABEL_VALUE_BYTES
+    ) {
+      throw new Error("invalid agent labels");
+    }
+    projected[key] = label;
+  }
+  return projected;
+}
+
 function normalizedAgent(value) {
   if (!isObject(value) || !isObject(value.snapshot) || value.status !== value.snapshot.status) {
     throw new Error("invalid agent snapshot");
@@ -298,6 +347,51 @@ function normalizedAgent(value) {
     ArchivedAt: archivedAt,
     Cwd: snapshot.cwd,
     ParentAgentId: parent ?? null,
+    Labels: normalizedDirectorLabels(snapshot.labels),
+  };
+}
+
+/**
+ * Projects one bounded page of live agents. The requested limit and window
+ * travel with the records: a full page carries no evidence that the daemon had
+ * nothing more to report, and no page at all carries evidence about agents
+ * older than the window.
+ */
+function normalizedAgents(value) {
+  if (!isObject(value) || !Array.isArray(value.agents)) {
+    throw new Error("invalid agent list");
+  }
+  if (value.agents.length > AGENT_LIST_LIMIT) throw new Error("invalid agent list");
+  return {
+    Limit: AGENT_LIST_LIMIT,
+    WindowHours: AGENT_LIST_SINCE_HOURS,
+    Agents: value.agents.map((agent) => {
+      if (
+        !isObject(agent) || typeof agent.id !== "string" || agent.id.length === 0 ||
+        typeof agent.title !== "string" || typeof agent.cwd !== "string" ||
+        typeof agent.status !== "string" || !isObject(agent.labels)
+      ) {
+        throw new Error("invalid agent list");
+      }
+      const archivedAt = agent.archivedAt ?? null;
+      if (archivedAt !== null && typeof archivedAt !== "string") {
+        throw new Error("invalid agent list");
+      }
+      const parent = agent.labels[PARENT_AGENT_ID_LABEL];
+      if (parent !== undefined && (typeof parent !== "string" || parent.length === 0)) {
+        throw new Error("invalid agent list");
+      }
+      return {
+        Id: agent.id,
+        Name: agent.title,
+        Status: agent.status,
+        Archived: archivedAt !== null,
+        ArchivedAt: archivedAt,
+        Cwd: agent.cwd,
+        ParentAgentId: parent ?? null,
+        Labels: normalizedDirectorLabels(agent.labels),
+      };
+    }),
   };
 }
 
@@ -359,7 +453,9 @@ async function main() {
     method: "tools/call",
     params: {
       name: selected.tool,
-      arguments: selected.argument === null ? {} : { [selected.argument]: identifier },
+      arguments: selected.argument === null
+        ? { ...(selected.fixedArguments ?? {}) }
+        : { [selected.argument]: identifier },
     },
   });
   if (response.body.includes(Buffer.from(password))) {
@@ -403,9 +499,9 @@ async function main() {
   }
   let normalized;
   try {
-    normalized = operation === "agent.inspect"
-      ? normalizedAgent(structured)
-      : normalizedWorkspaces(structured);
+    if (operation === "agent.inspect") normalized = normalizedAgent(structured);
+    else if (operation === "agent.list") normalized = normalizedAgents(structured);
+    else normalized = normalizedWorkspaces(structured);
   } catch {
     fail("PASEO_LIFECYCLE_OUTPUT_INVALID");
   }

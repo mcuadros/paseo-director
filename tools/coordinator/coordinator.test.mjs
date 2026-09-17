@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -324,6 +325,18 @@ function fakeExternalCommands(fixture, overrides = {}) {
     agentArchived: false,
     agentArchiveDispatches: 0,
     archiveRemovesWorktree: false,
+    // The documented order puts the Reviewer leg first, so the delivery
+    // fixtures describe a world in which it already ran. A test that exercises
+    // the ordering flips this.
+    reviewerArchived: true,
+    reviewerArchiveDispatches: 0,
+    reviewerStatus: "idle",
+    reviewerCheckout: null,
+    reviewerLabels: null,
+    reviewerParentAgentId: null,
+    agentListLimit: 200,
+    agentListWindowHours: 720,
+    extraListedAgents: [],
     beadsComments: [
       {
         id: "decision-0001",
@@ -364,6 +377,7 @@ function fakeExternalCommands(fixture, overrides = {}) {
     draftCreateDispatches: 0,
     readyDispatches: 0,
     taskStatus: "in_progress",
+    taskStatuses: {},
     mergeDispatches: 0,
     mergeBaseDriftDuringDispatch: false,
     mergeSupported: true,
@@ -423,6 +437,39 @@ function fakeExternalCommands(fixture, overrides = {}) {
     };
   }
 
+  function agentRecord(id) {
+    if (id === "agent-0001") {
+      return {
+        Id: "agent-0001",
+        Name: TITLE,
+        Status: "idle",
+        Archived: state.agentArchived,
+        ArchivedAt: state.agentArchived ? "2026-09-08T00:00:00Z" : null,
+        Cwd: fixture.checkout,
+        Worktree: BRANCH,
+        ParentAgentId: null,
+        Labels: { "director.role": "task-agent", "director.task": TASK },
+      };
+    }
+    if (id === "reviewer-0001") {
+      return {
+        Id: "reviewer-0001",
+        Name: `Review ${TASK} Candidate ${fixture.candidate.slice(0, 8)}`,
+        Status: state.reviewerStatus,
+        Archived: state.reviewerArchived,
+        ArchivedAt: state.reviewerArchived ? "2026-09-08T00:00:00Z" : null,
+        Cwd: state.reviewerCheckout ?? fixture.checkout,
+        ParentAgentId: state.reviewerParentAgentId,
+        Labels: state.reviewerLabels ?? {
+          "director.role": "reviewer",
+          "director.task": TASK,
+          "director.candidate": fixture.candidate,
+        },
+      };
+    }
+    return null;
+  }
+
   function ok(value = "") {
     return {
       error: undefined,
@@ -446,13 +493,23 @@ function fakeExternalCommands(fixture, overrides = {}) {
       return defaultCommandRunner(executable, args, options);
     }
     if (executable === "bd") {
-      if (args.includes("comments")) return ok(state.beadsComments);
+      const requested = args[3];
+      if (args.includes("comments")) {
+        return ok(
+          // A comment without an explicit issue belongs to the Task under test,
+          // which keeps the delivery fixtures unchanged while the survey can
+          // still model several Tasks at once.
+          state.beadsComments.filter(
+            (comment) => (comment.issue_id ?? TASK) === requested,
+          ),
+        );
+      }
       return ok([
         {
-          id: TASK,
+          id: requested,
           title: TITLE,
           issue_type: "task",
-          status: state.taskStatus,
+          status: state.taskStatuses[requested] ?? state.taskStatus,
           assignee: TASK_ASSIGNEE,
           acceptance_criteria: "The exact coordinator gates are deterministic.",
         },
@@ -460,28 +517,52 @@ function fakeExternalCommands(fixture, overrides = {}) {
     }
     if (executable === "paseo") {
       if (args[0] === "inspect") {
+        const record = agentRecord(args[1]);
+        if (record === null) {
+          return {
+            error: undefined,
+            status: 1,
+            stdout: "",
+            stderr: "PASEO_LIFECYCLE_READ_FAILED\n",
+          };
+        }
+        return ok(record);
+      }
+      if (args[0] === "agents" && args[1] === "ls") {
         return ok({
-          Id: "agent-0001",
-          Name: TITLE,
-          Status: state.agentArchived ? "idle" : "idle",
-          Archived: state.agentArchived,
-          ArchivedAt: state.agentArchived ? "2026-09-08T00:00:00Z" : null,
-          Cwd: fixture.checkout,
-          Worktree: BRANCH,
-          ParentAgentId: null,
+          Limit: state.agentListLimit,
+          WindowHours: state.agentListWindowHours,
+          Agents: [
+            agentRecord("agent-0001"),
+            agentRecord("reviewer-0001"),
+            ...state.extraListedAgents,
+          ],
         });
       }
       if (args[0] === "archive") {
+        if (args[1] === "reviewer-0001") {
+          state.reviewerArchiveDispatches += 1;
+          state.reviewerArchived = true;
+          return ok({ agentId: "reviewer-0001", status: "archived" });
+        }
         state.agentArchiveDispatches += 1;
         state.agentArchived = true;
         return ok({ agentId: "agent-0001", status: "archived" });
       }
       if (args[0] === "workspace" && args[1] === "ls") return ok(state.workspaces);
       if (args[0] === "workspace" && args[1] === "archive") {
+        if (args[2] === "reviewer-workspace-0001") {
+          state.workspaces = state.workspaces.filter(
+            (workspace) => workspace.workspaceId !== args[2],
+          );
+          return ok({ workspaceId: args[2], status: "archived" });
+        }
         if (state.archiveRemovesWorktree && existsSync(fixture.checkout)) {
           git(fixture.control, ["worktree", "remove", "--", fixture.checkout]);
         }
-        state.workspaces = [];
+        state.workspaces = state.workspaces.filter(
+          (workspace) => workspace.workspaceId !== "workspace-0001",
+        );
         return ok({ workspaceId: "workspace-0001", status: "archived" });
       }
     }
@@ -596,6 +677,253 @@ function fakeExternalCommands(fixture, overrides = {}) {
   return { runner, state };
 }
 
+const REVIEWER_AGENT = "reviewer-0001";
+const REVIEWER_WORKSPACE = "reviewer-workspace-0001";
+
+// A disposable Reviewer checkout is an independent clone detached at the exact
+// Candidate, never a registered worktree of the control repository. Building it
+// that way is what makes the leg's owner-marker checks meaningful.
+function createReviewerCheckout(fixture, fake, { candidate, name = "reviewer" } = {}) {
+  const path = join(fixture.root, name);
+  git(fixture.root, ["clone", "--quiet", "--no-hardlinks", fixture.control, path]);
+  git(path, ["remote", "set-url", "origin", "https://github.com/acme/director.git"]);
+  if (candidate === undefined) {
+    git(path, ["checkout", "--quiet", "--detach", fixture.candidate]);
+  } else {
+    git(path, ["checkout", "--quiet", "--detach", candidate]);
+  }
+  fake.state.reviewerCheckout = path;
+  fake.state.workspaces = [
+    ...fake.state.workspaces,
+    {
+      workspaceId: REVIEWER_WORKSPACE,
+      project: "Director",
+      name: "Reviewer",
+      isolation: "local",
+      cwd: path,
+    },
+  ];
+  return path;
+}
+
+// A Candidate that exists only inside the Reviewer clone reproduces the real
+// backlog: the commit is in no published history and the control repository has
+// never seen it.
+function createOrphanedReviewerCheckout(fixture, fake, { name = "orphan-reviewer" } = {}) {
+  const path = join(fixture.root, name);
+  git(fixture.root, ["clone", "--quiet", "--no-hardlinks", fixture.control, path]);
+  git(path, ["remote", "set-url", "origin", "https://github.com/acme/director.git"]);
+  git(path, ["config", "user.name", "Director Test"]);
+  git(path, ["config", "user.email", "director@example.invalid"]);
+  git(path, ["checkout", "--quiet", "--detach", fixture.candidate]);
+  writeFileSync(join(path, "superseded.txt"), "superseded candidate\n");
+  git(path, ["add", "superseded.txt"]);
+  git(path, ["commit", "--quiet", "-m", "superseded candidate"]);
+  const candidate = git(path, ["rev-parse", "HEAD"]);
+  assert.notEqual(
+    defaultCommandRunner("git", ["cat-file", "-e", `${candidate}^{commit}`], {
+      cwd: fixture.control,
+    }).status,
+    0,
+    "the control repository must never have seen the orphaned Candidate",
+  );
+  fake.state.reviewerCheckout = path;
+  fake.state.reviewerLabels = {
+    "director.role": "reviewer",
+    "director.task": TASK,
+    "director.candidate": candidate,
+  };
+  fake.state.workspaces = [
+    ...fake.state.workspaces,
+    {
+      workspaceId: REVIEWER_WORKSPACE,
+      project: "Director",
+      name: "Reviewer",
+      isolation: "local",
+      cwd: path,
+    },
+  ];
+  return { candidate, path };
+}
+
+// Report forms are supplied verbatim so a fixture can build any comment the
+// live record actually holds, including forms every anchor must reject. A
+// helper that composes the text itself can only ever emit the shape its author
+// already believed in, which is why a suite of them could not express the input
+// that defeated the previous reader.
+function recordComment(fake, { task = TASK, id, author, text }) {
+  fake.state.beadsComments = [
+    ...fake.state.beadsComments,
+    { id, issue_id: task, author, text, created_at: "2026-09-16T00:00:00Z" },
+  ];
+}
+
+// The four forms this repository is known to hold, each reproduced from a real
+// comment on a real Task rather than invented.
+const REPORT_FORMS = {
+  // dir-m6.30: heading, then Candidate/Base/Verdict lines.
+  headingAndLines: ({ candidate, base, verdict }) =>
+    `INDEPENDENT REVIEW\nCandidate: ${candidate}\nBase: ${base}\nVerdict: ${verdict}\n`,
+  // dir-m6.35: verdict in the heading, Candidate named in prose, no Verdict line.
+  headingOnly: ({ candidate, verdict, agentId }) =>
+    `INDEPENDENT REVIEW — ${verdict}.\n\nCANDIDATE ${candidate} over base, reviewer paseo:${agentId}.\n`,
+  // dir-m6.13: no heading at all; Verdict and Candidate lines only.
+  linesOnly: ({ candidate, base, verdict }) =>
+    `Verdict: ${verdict}\nCandidate: ${candidate}\nBase: ${base}\n\nIndependent review complete.\n`,
+  // dir-m6.20: a heading that is not the recognised one, plus a Candidate line
+  // and a verdict that appears only in that heading.
+  otherHeading: ({ candidate, base, verdict, agentId }) =>
+    `INDEPENDENT EXACT-SHA REVIEW — ${verdict}\n\nReviewer: paseo:${agentId}, parentAgentId null.\nCandidate: ${candidate}\nBase: ${base}\n`,
+  // dir-m6.3: transcribed by the coordinator. No heading the reader knows, no
+  // Candidate line; the Reviewer and the Candidate appear only in prose.
+  transcribed: ({ candidate, base, verdict, agentId }) =>
+    `INDEPENDENT_REVIEW_VERDICT — ${TASK} Candidate ${candidate.slice(0, 8)}\n\nReviewer paseo:${agentId} (parentless; detached disposable checkout) returned\nverdict ${verdict} for Candidate ${candidate} over base ${base}.\n`,
+  // dir-m6.3's bootstrap record: names the Reviewer and carries an exact
+  // Candidate line, and reports nothing. Every anchor must reject it.
+  bootstrapRecord: ({ candidate, base, agentId }) =>
+    `REVIEWER_BOOTSTRAP_COMPLETE — ${TASK}\n\nReviewer Agent: paseo:${agentId}\nCandidate: ${candidate}\nBase: ${base}\nParentAgentId: null\n`,
+};
+
+function recordReviewReport(
+  fake,
+  {
+    form = "headingAndLines",
+    task = TASK,
+    candidate,
+    base,
+    verdict = "approve_candidate",
+    id = "review-0001",
+    agentId = REVIEWER_AGENT,
+    author = `paseo:${REVIEWER_AGENT}`,
+  },
+) {
+  recordComment(fake, {
+    task,
+    id,
+    author,
+    text: REPORT_FORMS[form]({ candidate, base, verdict, agentId }),
+  });
+}
+
+// The default recorded report is the Reviewer's own, in the recognised form.
+function recordReviewVerdict(fake, options) {
+  recordReviewReport(fake, { ...options, form: "headingAndLines" });
+}
+
+// The coordinator's routine record announcing that it CREATED a Reviewer. It
+// names the Reviewer, names the Candidate it was created for, and quotes an
+// earlier Review's verdict in prose. Copied in shape from the live comment that
+// bound a Reviewer which had authored nothing. It must bind nothing.
+function recordDispatchRecord(
+  fake,
+  { task = TASK, id = "dispatch-0001", candidate, agentId = REVIEWER_AGENT },
+) {
+  recordComment(fake, {
+    task,
+    id,
+    author: "paseo:coordinator-0001",
+    text: [
+      "COORDINATOR — corrected Candidate published to the draft, authoritative CI recorded,",
+      "second independent Review started.",
+      "",
+      `Draft pull request 106 moved to ${candidate}, remote head read back as the Candidate.`,
+      "Manifest f0ae3987 binds ONE prior finding — the Review that returned changes_requested —",
+      "which is the correction-turn binding working rather than something anyone asserted.",
+      "",
+      `Reviewer paseo:${agentId}, the first created outside /tmp. Parentage verified where the`,
+      "refusal reads it, and labels frozen with the Candidate.",
+      "",
+    ].join("\n"),
+  });
+}
+
+// The coordinator's disposition of a verdict. Its FIRST LINE carries the token
+// and it names the Reviewer, so it defeats the narrowed fallback and is stopped
+// only by authorship. Copied in shape from the live record.
+function recordDispositionRecord(
+  fake,
+  { task = TASK, id = "disposition-0001", agentId = REVIEWER_AGENT },
+) {
+  recordComment(fake, {
+    task,
+    id,
+    author: "paseo:coordinator-0001",
+    text: [
+      "COORDINATOR DISPOSITION — second Review returned approve_candidate on the",
+      "corrected Candidate. A correction turn is not required.",
+      "",
+      `Reviewer paseo:${agentId}, parentless, harness v2 attempt 1.`,
+      "",
+    ].join("\n"),
+  });
+}
+
+// A note a Reviewer writes about its own Review without concluding it, CARRYING
+// A VERDICT TOKEN. The token is the dangerous property: a Reviewer sits idle
+// between turns and routinely quotes the previous round's verdict while forming
+// its own, so a note without one tests the case that was never in doubt. The
+// clause below is verbatim from the coordinator's real dispatch record.
+function recordReviewerProgressNote(
+  fake,
+  { task = TASK, id = "progress-0001", agentId = REVIEWER_AGENT },
+) {
+  recordComment(fake, {
+    task,
+    id,
+    author: `paseo:${agentId}`,
+    text: [
+      "PROGRESS — harness attempt 1 complete, still reviewing.",
+      "",
+      "I am re-deriving the finding from the Review that returned changes_requested",
+      "on the previous Candidate before I form my own conclusion. No verdict yet.",
+      "",
+    ].join("\n"),
+  });
+}
+
+function recordAuthoredReviewReport(
+  fake,
+  { task = TASK, verdict = "approve_candidate", id = "review-authored", agentId = REVIEWER_AGENT, candidate = "0".repeat(40) },
+) {
+  recordReviewReport(fake, {
+    task,
+    id,
+    agentId,
+    candidate,
+    base: "1".repeat(40),
+    verdict,
+    form: "headingOnly",
+    author: `paseo:${agentId}`,
+  });
+}
+
+function reviewerOptions(fixture, changes = {}) {
+  return {
+    ...fixture.options,
+    "state-file": join(fixture.root, "reviewer-state.json"),
+    "reviewer-agent-id": REVIEWER_AGENT,
+    "reviewer-workspace-id": REVIEWER_WORKSPACE,
+    "reviewer-lifecycle-state": "active",
+    "reviewer-checkout": fixture.reviewerCheckout,
+    "reviewer-checkout-state": "present",
+    "reviewer-review-state": "verdict_recorded",
+    ...changes,
+  };
+}
+
+async function reviewerPlanAndApply(fixture, fake, changes = {}, dependencies = {}) {
+  const options = reviewerOptions(fixture, changes);
+  const plan = await execute("reviewer-cleanup-plan", options, { run: fake.runner });
+  const planFile = join(fixture.root, `reviewer-plan-${digest(plan).slice(0, 12)}.json`);
+  writeFileSync(planFile, `${canonicalJson(plan)}\n`, { mode: 0o600 });
+  const applied = await execute(
+    "reviewer-cleanup-apply",
+    { ...options, "plan-file": planFile },
+    { ...dependencies, run: fake.runner },
+  );
+  return { applied, options, plan, planFile };
+}
+
 function publicationOptions(fixture, changes = {}) {
   return {
     ...fixture.options,
@@ -669,6 +997,7 @@ async function prepareIntegratedCleanup(fixture, fake) {
   const integratedOptions = {
     ...gateOptions(fixture),
     "state-file": fixture.stateFile,
+    "review-file": fixture.reviewFile,
   };
   await execute("integrate", integratedOptions, { run: fake.runner });
   const plan = await execute("cleanup-plan", integratedOptions, {
@@ -2544,6 +2873,7 @@ test("post-handoff commands operate from exact refs after the Task checkout and 
     const integratedOptions = {
       ...gateOptions(fixture),
       "state-file": fixture.stateFile,
+      "review-file": fixture.reviewFile,
     };
     const gated = await execute("gate", integratedOptions, {
       run: fake.runner,
@@ -2565,9 +2895,23 @@ test("post-handoff commands operate from exact refs after the Task checkout and 
       { ...integratedOptions, "plan-file": fixture.planFile },
       { run: fake.runner },
     );
-    assert.equal(
-      fake.state.calls.filter((call) => call.executable === "paseo").length,
-      paseoCallsBeforeReclaim,
+    // A reclaimed binding is a statement about the Task Agent's own resources,
+    // so nothing asks the daemon about them again. The Reviewer is a separate
+    // parentless agent whose liveness the schedule never reclaimed, so ordering
+    // the Reviewer leg first costs each cleanup command exactly one read of the
+    // Review's own Reviewer and one bounded page for the rest of this Task's
+    // Reviewers. Neither names the Task Agent or the Task workspace.
+    const afterReclaim = fake.state.calls
+      .filter((call) => call.executable === "paseo")
+      .slice(paseoCallsBeforeReclaim);
+    assert.deepEqual(
+      afterReclaim.map((call) => call.args),
+      [
+        ["inspect", "reviewer-0001", "--json"],
+        ["agents", "ls", "--json"],
+        ["inspect", "reviewer-0001", "--json"],
+        ["agents", "ls", "--json"],
+      ],
     );
   } finally {
     fixture.cleanup();
@@ -4178,6 +4522,1387 @@ test("handoff supports active, restored, and historical workspace facts", async 
     );
     assert.equal(historical.result.snapshot.paseo.binding, "recorded_reclaimed");
     assert.equal(historical.result.snapshot.paseo.verified, false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the Reviewer leg archives the agent, archives the host view, then removes the exact checkout", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    const { applied, plan } = await reviewerPlanAndApply(fixture, fake);
+
+    assert.equal(plan.result.command, "reviewer-cleanup-plan");
+    assert.equal(plan.result.resources.agent.archived, false);
+    assert.equal(plan.result.resources.workspace.id, "reviewer-workspace-0001");
+    assert.equal(plan.result.resources.checkout.candidate, fixture.candidate);
+    assert.equal(plan.result.resources.review.verdict, "approve_candidate");
+    assert.equal(applied.result.resources, "complete");
+    assert.equal(existsSync(fixture.reviewerCheckout), false);
+    assert.equal(fake.state.reviewerArchived, true);
+    assert.equal(fake.state.reviewerArchiveDispatches, 1);
+
+    const state = JSON.parse(
+      readFileSync(join(fixture.root, "reviewer-state.json"), "utf8"),
+    );
+    for (const effect of [
+      "cleanup.reviewer-agent",
+      "cleanup.reviewer-workspace",
+      "cleanup.reviewer-checkout",
+    ]) {
+      assert.equal(state.effects[effect].phase, "complete", effect);
+      assert.equal(state.effects[effect].attempts, 1, effect);
+    }
+    assert.equal(state.effects["cleanup.reviewer-agent"].class, "idempotent_close");
+    assert.equal(
+      state.effects["cleanup.reviewer-checkout"].class,
+      "destructive_terminal",
+    );
+    // The documented order inside the leg: agent, then host view, then the
+    // owner-marked checkout.
+    const dispatched = fake.state.calls
+      .filter((call) => call.executable === "paseo")
+      .map((call) => call.args.slice(0, 2).join(" "))
+      .filter((call) => call === "archive reviewer-0001" || call === "workspace archive");
+    assert.deepEqual(dispatched, ["archive reviewer-0001", "workspace archive"]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the Reviewer leg adopts an already-archived Reviewer without a second dispatch", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: true });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    // The host view is already gone too, which is exactly what an interrupted
+    // or externally archived Reviewer leaves behind.
+    fake.state.workspaces = fake.state.workspaces.filter(
+      (workspace) => workspace.workspaceId !== "reviewer-workspace-0001",
+    );
+    const { applied } = await reviewerPlanAndApply(fixture, fake, {
+      "reviewer-workspace-id": "none",
+    });
+    assert.equal(applied.result.resources, "complete");
+    assert.equal(fake.state.reviewerArchiveDispatches, 0);
+    assert.equal(existsSync(fixture.reviewerCheckout), false);
+    const state = JSON.parse(
+      readFileSync(join(fixture.root, "reviewer-state.json"), "utf8"),
+    );
+    assert.equal(state.effects["cleanup.reviewer-agent"].phase, "complete");
+    assert.equal(state.effects["cleanup.reviewer-agent"].attempts, 0);
+    assert.equal(state.effects["cleanup.reviewer-workspace"], undefined);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a completed Reviewer leg records no duplicate effect when it is replayed", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    const { options, planFile } = await reviewerPlanAndApply(fixture, fake);
+    const replayOptions = {
+      ...options,
+      "reviewer-checkout-state": "reclaimed",
+      "reviewer-lifecycle-state": "reclaimed",
+      "plan-file": planFile,
+    };
+    // The replay is bound to the world the first run produced, so it needs its
+    // own plan; the completed effects it carries are never dispatched again.
+    const replan = await execute(
+      "reviewer-cleanup-plan",
+      { ...replayOptions, "state-file": join(fixture.root, "replay-state.json"),
+        "resume-state-file": options["state-file"] },
+      { run: fake.runner },
+    );
+    const replanFile = join(fixture.root, "replay-plan.json");
+    writeFileSync(replanFile, `${canonicalJson(replan)}\n`, { mode: 0o600 });
+    const replayed = await execute(
+      "reviewer-cleanup-apply",
+      {
+        ...replayOptions,
+        "state-file": join(fixture.root, "replay-state.json"),
+        "resume-state-file": options["state-file"],
+        "plan-file": replanFile,
+      },
+      { run: fake.runner },
+    );
+    assert.equal(replayed.result.resources, "complete");
+    assert.equal(fake.state.reviewerArchiveDispatches, 1);
+    const state = JSON.parse(
+      readFileSync(join(fixture.root, "replay-state.json"), "utf8"),
+    );
+    assert.equal(state.effects["cleanup.reviewer-agent"].attempts, 1);
+    assert.equal(state.effects["cleanup.reviewer-checkout"].attempts, 1);
+    assert.equal(state.effects["cleanup.reviewer-checkout"].phase, "complete");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the Reviewer leg refuses an unmarked or ambiguous disposable checkout", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    const plan = () =>
+      execute("reviewer-cleanup-plan", reviewerOptions(fixture), {
+        run: fake.runner,
+      });
+
+    // Baseline: the marked checkout is admitted.
+    await plan();
+
+    const cases = [
+      [
+        "REVIEWER_CHECKOUT_ATTACHED",
+        () => git(fixture.reviewerCheckout, ["checkout", "--quiet", "-B", "attached"]),
+        () => git(fixture.reviewerCheckout, ["checkout", "--quiet", "--detach", fixture.candidate]),
+      ],
+      [
+        "REVIEWER_CHECKOUT_CANDIDATE_MISMATCH",
+        () => git(fixture.reviewerCheckout, ["checkout", "--quiet", "--detach", fixture.base]),
+        () => git(fixture.reviewerCheckout, ["checkout", "--quiet", "--detach", fixture.candidate]),
+      ],
+      [
+        "REVIEWER_CHECKOUT_DIRTY",
+        () => writeFileSync(join(fixture.reviewerCheckout, "probe.txt"), "probe\n"),
+        () => rmSync(join(fixture.reviewerCheckout, "probe.txt")),
+      ],
+      [
+        "REVIEWER_CHECKOUT_UNMARKED",
+        () => {
+          rmSync(join(fixture.reviewerCheckout, ".git-moved"), {
+            recursive: true,
+            force: true,
+          });
+          renameSync(
+            join(fixture.reviewerCheckout, ".git"),
+            join(fixture.reviewerCheckout, ".git-moved"),
+          );
+        },
+        () =>
+          renameSync(
+            join(fixture.reviewerCheckout, ".git-moved"),
+            join(fixture.reviewerCheckout, ".git"),
+          ),
+      ],
+      [
+        "REVIEWER_IDENTITY_AMBIGUOUS",
+        () => {
+          fake.state.reviewerLabels = {
+            "director.role": "reviewer",
+            "director.task": TASK,
+            "director.candidate": fixture.base,
+          };
+        },
+        () => {
+          fake.state.reviewerLabels = null;
+        },
+      ],
+      [
+        "REVIEWER_PARENTED",
+        () => {
+          fake.state.reviewerParentAgentId = "agent-0001";
+        },
+        () => {
+          fake.state.reviewerParentAgentId = null;
+        },
+      ],
+      [
+        "REVIEWER_CHECKOUT_OWNERSHIP_MISMATCH",
+        () => {
+          fake.state.reviewerCheckout = fixture.control;
+        },
+        () => {
+          fake.state.reviewerCheckout = fixture.reviewerCheckout;
+        },
+      ],
+    ];
+    for (const [code, breakIt, restore] of cases) {
+      breakIt();
+      await assert.rejects(plan(), (error) => {
+        assert.equal(error.code, code);
+        return true;
+      });
+      restore();
+      await plan();
+    }
+    // Nothing was removed while identity was in doubt.
+    assert.equal(existsSync(fixture.reviewerCheckout), true);
+    assert.equal(fake.state.reviewerArchiveDispatches, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the Reviewer leg never treats a Candidate absent from published history as dead", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    const orphan = createOrphanedReviewerCheckout(fixture, fake);
+    fixture.reviewerCheckout = orphan.path;
+    recordReviewVerdict(fake, {
+      candidate: orphan.candidate,
+      base: fixture.base,
+      verdict: "changes_requested",
+    });
+    fake.state.taskStatus = "closed";
+    const { applied } = await reviewerPlanAndApply(fixture, fake, {
+      candidate: orphan.candidate,
+    });
+    assert.equal(applied.result.resources, "complete");
+    assert.equal(existsSync(orphan.path), false);
+    // The control repository was never asked to resolve the superseded
+    // Candidate: a pruned object store must not strand the oldest debt.
+    const controlReads = fake.state.calls.filter(
+      (call) => call.executable === "git" && call.args.includes(orphan.candidate),
+    );
+    assert.deepEqual(controlReads, []);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the Reviewer leg refuses a Review that is still working", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+
+    // Running: the daemon says a turn is in flight.
+    fake.state.reviewerStatus = "running";
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", reviewerOptions(fixture), { run: fake.runner }),
+      (error) => error.code === "REVIEWER_REVIEW_IN_FLIGHT",
+    );
+
+    // Idle with no durable verdict while its Task is still in progress: a
+    // Review that has not reported is not a Review that is over.
+    fake.state.reviewerStatus = "idle";
+    fake.state.beadsComments = fake.state.beadsComments.filter(
+      (comment) => comment.id !== "review-0001",
+    );
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-plan",
+        reviewerOptions(fixture, { "reviewer-review-state": "abandoned" }),
+        { run: fake.runner },
+      ),
+      (error) => error.code === "REVIEWER_REVIEW_IN_FLIGHT",
+    );
+    // The same binding also cannot claim a verdict that Beads does not hold.
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", reviewerOptions(fixture), { run: fake.runner }),
+      (error) => error.code === "REVIEWER_VERDICT_NOT_DURABLE",
+    );
+    // An abandoned Review of a closed Task is handled explicitly.
+    fake.state.taskStatus = "closed";
+    const abandoned = await execute(
+      "reviewer-cleanup-plan",
+      reviewerOptions(fixture, { "reviewer-review-state": "abandoned" }),
+      { run: fake.runner },
+    );
+    assert.equal(abandoned.result.resources.review.state, "abandoned");
+    assert.equal(abandoned.result.resources.review.verdict, null);
+    assert.equal(existsSync(fixture.reviewerCheckout), true);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("cleanup refuses the Task Agent leg until the Review's exact Reviewer is terminal", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    rebindReviewRouting(fixture, {
+      agentId: "agent-0001",
+      lifecycleState: "active",
+      workspaceId: "workspace-0001",
+    });
+    Object.assign(fixture.options, {
+      "agent-id": "agent-0001",
+      "lifecycle-state": "active",
+      "workspace-id": "workspace-0001",
+    });
+    await publishReadyFixture(fixture, fake);
+    const integratedOptions = {
+      ...gateOptions(fixture),
+      "state-file": fixture.stateFile,
+      "review-file": fixture.reviewFile,
+    };
+    await execute("integrate", integratedOptions, { run: fake.runner });
+    await assert.rejects(
+      execute("cleanup-plan", integratedOptions, { run: fake.runner }),
+      (error) => error.code === "REVIEWER_LEG_PENDING",
+    );
+
+    // The Reviewer leg runs first, and only then does the Task Agent leg admit
+    // a plan at all.
+    fake.state.reviewerArchived = true;
+
+    // A Reviewer of an earlier Candidate of this same Task is still alive.
+    // Ordering the Review's own Reviewer is not enough: this is exactly how a
+    // Task accumulates Reviewers nobody reconciles.
+    fake.state.extraListedAgents = [
+      {
+        Id: "reviewer-0000",
+        Name: "Review of a superseded Candidate",
+        Status: "idle",
+        Archived: false,
+        ArchivedAt: null,
+        Cwd: join(fixture.root, "superseded-review"),
+        ParentAgentId: null,
+        Labels: {
+          "director.role": "reviewer",
+          "director.task": TASK,
+          "director.candidate": fixture.base,
+        },
+      },
+    ];
+    await assert.rejects(
+      execute("cleanup-plan", integratedOptions, { run: fake.runner }),
+      (error) => error.code === "REVIEWER_LEG_PENDING",
+    );
+    fake.state.extraListedAgents[0].Archived = true;
+
+    const plan = await execute("cleanup-plan", integratedOptions, { run: fake.runner });
+    assert.equal(plan.result.resources.reviewer.agentId, "reviewer-0001");
+    assert.equal(plan.result.resources.reviewer.enumeration.saturated, false);
+    writeFileSync(fixture.planFile, `${canonicalJson(plan)}\n`, { mode: 0o600 });
+
+    // A Reviewer that came back blocks the Task Agent leg before any effect.
+    fake.state.reviewerArchived = false;
+    await assert.rejects(
+      execute(
+        "cleanup-apply",
+        { ...integratedOptions, "plan-file": fixture.planFile },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "REVIEWER_LEG_PENDING",
+    );
+    assert.equal(fake.state.agentArchiveDispatches, 0);
+    assert.equal(fake.state.agentArchived, false);
+    assert.equal(existsSync(fixture.checkout), true);
+
+    fake.state.reviewerArchived = true;
+    const applied = await execute(
+      "cleanup-apply",
+      { ...integratedOptions, "plan-file": fixture.planFile },
+      { run: fake.runner },
+    );
+    assert.equal(applied.result.resources, "complete");
+    assert.equal(fake.state.agentArchived, true);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("an interrupted Reviewer leg resumes truthfully across its own lifecycle transition", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    const options = reviewerOptions(fixture);
+    const plan = await execute("reviewer-cleanup-plan", options, { run: fake.runner });
+    const planFile = join(fixture.root, "interrupted-plan.json");
+    writeFileSync(planFile, `${canonicalJson(plan)}\n`, { mode: 0o600 });
+
+    // The interruption lands after the agent archive reached the daemon but
+    // before its result was recorded, which is the moment the run's own effect
+    // makes its lifecycle binding unassertable.
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-apply",
+        { ...options, "plan-file": planFile },
+        {
+          run: fake.runner,
+          hook(phase, effect) {
+            if (phase === "after" && effect === "cleanup.reviewer-agent") {
+              throw new CoordinatorInterruption(effect);
+            }
+          },
+        },
+      ),
+      (error) => error instanceof CoordinatorInterruption,
+    );
+    const interrupted = JSON.parse(readFileSync(options["state-file"], "utf8"));
+    assert.equal(interrupted.effects["cleanup.reviewer-agent"].phase, "dispatching");
+    assert.equal(fake.state.reviewerArchived, true);
+
+    // The truthful binding now records the archived Reviewer, and the resumed
+    // state supplies the intent the transitioned binding cannot hold.
+    fake.state.workspaces = fake.state.workspaces.filter(
+      (workspace) => workspace.workspaceId !== "reviewer-workspace-0001",
+    );
+    const resumedOptions = {
+      ...options,
+      "reviewer-lifecycle-state": "reclaimed",
+      "state-file": join(fixture.root, "resumed-reviewer-state.json"),
+      "resume-state-file": options["state-file"],
+    };
+    const resumedPlan = await execute("reviewer-cleanup-plan", resumedOptions, {
+      run: fake.runner,
+    });
+    const resumedPlanFile = join(fixture.root, "resumed-plan.json");
+    writeFileSync(resumedPlanFile, `${canonicalJson(resumedPlan)}\n`, { mode: 0o600 });
+    const resumed = await execute(
+      "reviewer-cleanup-apply",
+      { ...resumedOptions, "plan-file": resumedPlanFile },
+      { run: fake.runner },
+    );
+    assert.equal(resumed.result.resources, "complete");
+    assert.equal(existsSync(fixture.reviewerCheckout), false);
+    assert.equal(fake.state.reviewerArchiveDispatches, 1);
+
+    const state = JSON.parse(readFileSync(resumedOptions["state-file"], "utf8"));
+    assert.equal(state.continuation.priorReviewerLifecycleState, "active");
+    assert.equal(state.continuation.priorReviewerCheckoutState, "present");
+    assert.ok(
+      state.continuation.adoptedEffects.includes("cleanup.reviewer-agent"),
+      "the interrupted archive intent is carried into the transitioned binding",
+    );
+    assert.equal(state.effects["cleanup.reviewer-agent"].phase, "complete");
+    assert.equal(state.effects["cleanup.reviewer-checkout"].phase, "complete");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a resumed Reviewer leg still refuses a removal absence nothing recorded", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: true });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    const options = reviewerOptions(fixture);
+    const plan = await execute("reviewer-cleanup-plan", options, { run: fake.runner });
+    const planFile = join(fixture.root, "unrecorded-plan.json");
+    writeFileSync(planFile, `${canonicalJson(plan)}\n`, { mode: 0o600 });
+    // Something outside cleanup removes the checkout while the leg is running.
+    // No recorded intent explains the absence, so it is refused rather than
+    // reported as a completed removal.
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-apply",
+        { ...options, "plan-file": planFile },
+        {
+          run: fake.runner,
+          hook(phase, effect) {
+            if (phase === "before" && effect === "cleanup.reviewer-workspace") {
+              rmSync(fixture.reviewerCheckout, { recursive: true, force: true });
+            }
+          },
+        },
+      ),
+      (error) => error.code === "DESTRUCTIVE_ABSENCE_AMBIGUOUS",
+    );
+    const state = JSON.parse(readFileSync(options["state-file"], "utf8"));
+    assert.equal(state.effects["cleanup.reviewer-checkout"], undefined);
+
+    // Binding a checkout that is already gone as still present is refused
+    // before any effect, rather than being reconciled into a removal.
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-apply",
+        { ...options, "plan-file": planFile },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "PATH_UNAVAILABLE",
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a report authored by another Reviewer binds this one nothing", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    fake.state.taskStatus = "closed";
+    // Two Reviewers of the same Candidate. One reported; the other did not, and
+    // must not inherit the report through the Candidate they share.
+    recordAuthoredReviewReport(fake, { agentId: "reviewer-9999", id: "review-other" });
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", reviewerOptions(fixture), { run: fake.runner }),
+      (error) => error.code === "REVIEWER_VERDICT_NOT_DURABLE",
+    );
+    const abandoned = await execute(
+      "reviewer-cleanup-plan",
+      reviewerOptions(fixture, { "reviewer-review-state": "abandoned" }),
+      { run: fake.runner },
+    );
+    assert.equal(abandoned.result.resources.review.reportSource, null);
+    assert.equal(abandoned.result.resources.review.unboundEvidence, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("every report form the live record holds binds its Reviewer, and nothing else does", async () => {
+  // Each form is taken from a real comment on a real Task. Written by the
+  // Reviewer, every one binds; written by anyone else, the identical text binds
+  // nothing, because what makes a comment a report is who wrote it.
+  // The three that name the Reviewer in their text leave unbound evidence when
+  // someone else writes them; the two that do not, leave none.
+  // `binds` is whether the form states its verdict where this rule reads: a
+  // `Verdict:` field, or the comment's own first line. The transcribed form
+  // states it in neither, so narrowing the fallback to the first line costs it
+  // even when the Reviewer writes it — a miss, and it is counted as one.
+  const forms = [
+    ["headingAndLines", 0, true],
+    ["headingOnly", 1, true],
+    ["linesOnly", 0, true],
+    ["otherHeading", 1, true],
+    ["transcribed", 1, false],
+  ];
+  for (const [form, namesReviewer, binds] of forms) {
+    for (const authoredByReviewer of [true, false]) {
+      const fixture = createRepositoryFixture();
+      try {
+        const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+        fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+        fake.state.taskStatus = "closed";
+        recordReviewReport(fake, {
+          form,
+          author: authoredByReviewer ? `paseo:${"reviewer-0001"}` : "paseo:coordinator-0001",
+          candidate: fixture.candidate,
+          base: fixture.base,
+          verdict: "approve_candidate",
+        });
+        if (authoredByReviewer && !binds) {
+          // Written by the Reviewer but stating its verdict nowhere this rule
+          // reads: refused, and counted as a report it could not read.
+          await assert.rejects(
+            execute("reviewer-cleanup-plan", reviewerOptions(fixture), { run: fake.runner }),
+            (error) => error.code === "REVIEWER_VERDICT_NOT_DURABLE",
+            form,
+          );
+          await assert.rejects(
+            execute(
+              "reviewer-cleanup-plan",
+              reviewerOptions(fixture, { "reviewer-review-state": "abandoned" }),
+              { run: fake.runner },
+            ),
+            (error) => {
+              assert.equal(error.code, "REVIEWER_REPORT_EVIDENCE_UNRESOLVED", form);
+              assert.equal(error.details.unreadableReports, 1, form);
+              return true;
+            },
+          );
+        } else if (authoredByReviewer) {
+          const plan = await execute("reviewer-cleanup-plan", reviewerOptions(fixture), {
+            run: fake.runner,
+          });
+          assert.equal(plan.result.resources.review.reportSource, "authored", form);
+          assert.equal(plan.result.resources.review.verdict, "approve_candidate", form);
+          // The Reviewer's own bound report is not also counted as evidence
+          // that something unbound names it.
+          assert.equal(plan.result.resources.review.unboundEvidence, 0, form);
+        } else {
+          await assert.rejects(
+            execute("reviewer-cleanup-plan", reviewerOptions(fixture), { run: fake.runner }),
+            (error) => error.code === "REVIEWER_VERDICT_NOT_DURABLE",
+            form,
+          );
+          // The miss is not merely surfaced, it is refused: a form that names
+          // this Reviewer with a verdict makes `abandoned` unavailable, so the
+          // surrendered coverage cannot be bound away by an operator.
+          const abandon = () =>
+            execute(
+              "reviewer-cleanup-plan",
+              reviewerOptions(fixture, { "reviewer-review-state": "abandoned" }),
+              { run: fake.runner },
+            );
+          if (namesReviewer > 0) {
+            await assert.rejects(abandon(), (error) => {
+              assert.equal(error.code, "REVIEWER_REPORT_EVIDENCE_UNRESOLVED", form);
+              assert.equal(error.details.unboundEvidence, namesReviewer, form);
+              return true;
+            });
+          } else {
+            const abandoned = await abandon();
+            assert.equal(abandoned.result.resources.review.reportSource, null, form);
+            assert.equal(abandoned.result.resources.review.unboundEvidence, 0, form);
+          }
+        }
+      } finally {
+        fixture.cleanup();
+      }
+    }
+  }
+});
+
+test("a comment that reports nothing binds nothing, whoever wrote it", async () => {
+  // Three records that name the Reviewer, or the Candidate, or both, and report
+  // no verdict about this Review. Every one must bind nothing; the first is the
+  // live comment that bound a Reviewer which had authored nothing.
+  const records = [
+    ["coordinator dispatch record", recordDispatchRecord],
+    ["coordinator disposition record", recordDispositionRecord],
+    ["the Reviewer's own progress note", recordReviewerProgressNote],
+    [
+      "the bootstrap record",
+      (fake, options) => recordReviewReport(fake, { ...options, form: "bootstrapRecord", author: "paseo:coordinator-0001" }),
+    ],
+  ];
+  for (const [label, record] of records) {
+    const fixture = createRepositoryFixture();
+    try {
+      const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+      fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+      record(fake, { candidate: fixture.candidate, base: fixture.base });
+      await assert.rejects(
+        execute("reviewer-cleanup-plan", reviewerOptions(fixture), { run: fake.runner }),
+        (error) => error.code === "REVIEWER_VERDICT_NOT_DURABLE",
+        label,
+      );
+      // And while its Task is in progress it cannot be abandoned either, so a
+      // Review that is still running has no admissible binding at all.
+      await assert.rejects(
+        execute(
+          "reviewer-cleanup-plan",
+          reviewerOptions(fixture, { "reviewer-review-state": "abandoned" }),
+          { run: fake.runner },
+        ),
+        (error) => error.code === "REVIEWER_REVIEW_IN_FLIGHT",
+        label,
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test("the operative verdict is the last one the Reviewer stated", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    fake.state.taskStatus = "closed";
+    // A note before the report, and a correction after it. The report in the
+    // middle must not be displaced by the note, and the correction supersedes.
+    recordReviewerProgressNote(fake, {});
+    recordReviewVerdict(fake, {
+      candidate: fixture.candidate,
+      base: fixture.base,
+      verdict: "changes_requested",
+    });
+    recordReviewReport(fake, {
+      form: "headingOnly",
+      id: "review-corrected",
+      author: `paseo:${"reviewer-0001"}`,
+      candidate: fixture.candidate,
+      base: fixture.base,
+      verdict: "approve_candidate",
+    });
+    const plan = await execute("reviewer-cleanup-plan", reviewerOptions(fixture), {
+      run: fake.runner,
+    });
+    assert.equal(plan.result.resources.review.verdict, "approve_candidate");
+    // The note it wrote before reporting is counted as something this rule
+    // declined to read, not silently dropped.
+    assert.equal(plan.result.resources.review.unreadableReports, 1);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a report this rule cannot read leaves a visible trace rather than an absence", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    fake.state.taskStatus = "closed";
+    // Copied from the live record: the Reviewer's own report, concluding in a
+    // vocabulary outside the contract, with no Verdict field to read.
+    recordComment(fake, {
+      id: "review-heading-only-verdict",
+      author: `paseo:${"reviewer-0001"}`,
+      text: `INDEPENDENT REVIEW — INCONCLUSIVE (not an approval)\n\nReviewer: paseo:reviewer-0001, parentless.\nCandidate: ${fixture.candidate}. Base: ${fixture.base}.\n`,
+    });
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", reviewerOptions(fixture), { run: fake.runner }),
+      (error) => error.code === "REVIEWER_VERDICT_NOT_DURABLE",
+    );
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-plan",
+        reviewerOptions(fixture, { "reviewer-review-state": "abandoned" }),
+        { run: fake.runner },
+      ),
+      (error) => {
+        assert.equal(error.code, "REVIEWER_REPORT_EVIDENCE_UNRESOLVED");
+        assert.equal(error.details.unreadableReports, 1);
+        return true;
+      },
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a verdict token outside the closed set is still a stated verdict", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    // dir-m6.20 holds exactly this: a report whose Verdict line reads
+    // "inconclusive". A reader that admits only the three contract verdicts
+    // reports it as a Review that never happened.
+    recordComment(fake, {
+      id: "review-inconclusive",
+      author: `paseo:${"reviewer-0001"}`,
+      text: `INDEPENDENT REVIEW — INCONCLUSIVE (not an approval)\n\nVerdict: inconclusive\nCandidate: ${fixture.candidate}\nBase: ${fixture.base}\n`,
+    });
+    const plan = await execute("reviewer-cleanup-plan", reviewerOptions(fixture), {
+      run: fake.runner,
+    });
+    assert.equal(plan.result.resources.review.reportSource, "authored");
+    assert.equal(plan.result.resources.review.verdict, "inconclusive");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the disposable checkout is re-proved between the owner marker and the removal", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: true });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    const options = reviewerOptions(fixture, { "reviewer-workspace-id": "none" });
+    const plan = await execute("reviewer-cleanup-plan", options, { run: fake.runner });
+    const planFile = join(fixture.root, "toctou-plan.json");
+    writeFileSync(planFile, `${canonicalJson(plan)}\n`, { mode: 0o600 });
+
+    // The directory is replaced by a different one at the same path, after the
+    // marker was proved and before the removal runs. Path identity is not
+    // identity; the device and inode are.
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-apply",
+        { ...options, "plan-file": planFile },
+        {
+          run: fake.runner,
+          hook(phase, effect) {
+            if (phase === "before" && effect === "cleanup.reviewer-checkout") {
+              // Moved aside rather than deleted, so the original inode stays
+              // allocated and the substitute cannot be handed the same number.
+              renameSync(fixture.reviewerCheckout, `${fixture.reviewerCheckout}-moved`);
+              mkdirSync(fixture.reviewerCheckout, { recursive: true });
+              writeFileSync(join(fixture.reviewerCheckout, "not-the-checkout"), "x\n");
+            }
+          },
+        },
+      ),
+      (error) => error.code === "REVIEWER_CHECKOUT_IDENTITY_INVALID",
+    );
+    // The substituted directory is still there: nothing was removed on a proof
+    // that no longer described it.
+    assert.equal(existsSync(join(fixture.reviewerCheckout, "not-the-checkout")), true);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a reclaimed Reviewer binding is checked against the daemon rather than trusted", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    const reclaimed = reviewerOptions(fixture, {
+      "reviewer-lifecycle-state": "reclaimed",
+    });
+    // No workspace is bound for the agent assertions, so only the agent read
+    // can produce the refusal and the guard is not masked by the workspace one.
+    const agentOnly = reviewerOptions(fixture, {
+      "reviewer-lifecycle-state": "reclaimed",
+      "reviewer-workspace-id": "none",
+    });
+
+    // The agent is live. Binding it as historical is refused rather than
+    // accepted as a statement about a resource nobody looked at.
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", agentOnly, { run: fake.runner }),
+      (error) => error.code === "REVIEWER_LIFECYCLE_NOT_RECLAIMED",
+    );
+
+    // A running Review is refused under the reclaimed binding too, not only
+    // under active: the daemon is read either way.
+    fake.state.reviewerStatus = "running";
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", agentOnly, { run: fake.runner }),
+      (error) => error.code === "REVIEWER_LIFECYCLE_NOT_RECLAIMED",
+    );
+
+    // And a live workspace card under a reclaimed binding is refused on its own
+    // terms, with the agent already archived so only that read can refuse.
+    fake.state.reviewerStatus = "idle";
+    fake.state.reviewerArchived = true;
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", reclaimed, { run: fake.runner }),
+      (error) => error.code === "REVIEWER_LIFECYCLE_NOT_RECLAIMED",
+    );
+    fake.state.reviewerArchived = false;
+
+    // The frozen labels bind under the reclaimed path as well.
+    fake.state.reviewerStatus = "idle";
+    fake.state.reviewerArchived = true;
+    fake.state.reviewerLabels = {
+      "director.role": "reviewer",
+      "director.task": TASK,
+      "director.candidate": fixture.base,
+    };
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", reclaimed, { run: fake.runner }),
+      (error) => error.code === "REVIEWER_IDENTITY_AMBIGUOUS",
+    );
+
+    // With the agent genuinely archived and its labels intact, the binding is
+    // admitted and the workspace card is expected to be gone with it.
+    fake.state.reviewerLabels = null;
+    fake.state.workspaces = fake.state.workspaces.filter(
+      (workspace) => workspace.workspaceId !== "reviewer-workspace-0001",
+    );
+    const plan = await execute("reviewer-cleanup-plan", reclaimed, { run: fake.runner });
+    assert.equal(plan.result.resources.agent.archived, true);
+    assert.equal(plan.result.resources.workspace.observation, "recorded_reclaimed");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a running Reviewer stays in flight even once its report is recorded", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    fake.state.reviewerStatus = "running";
+    fake.state.taskStatus = "closed";
+
+    // A recorded report does not end a turn that the daemon says is still
+    // running, so the survey must rank the daemon fact first.
+    const survey = await execute("reviewer-survey", fixture.options, { run: fake.runner });
+    const record = survey.result.reviewers.find((item) => item.agentId === "reviewer-0001");
+    assert.equal(record.classification, "review_in_flight");
+    assert.equal(record.reviewState, null);
+    // And the leg refuses it outright.
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", reviewerOptions(fixture), { run: fake.runner }),
+      (error) => error.code === "REVIEWER_REVIEW_IN_FLIGHT",
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a Reviewer whose checkout was reaped is reconciled without an owner marker", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    // The machine reaped the disposable checkout from /tmp. The agent and its
+    // host view are still live, and there is no marker left to read.
+    const reaped = join(fixture.root, "reaped-reviewer");
+    fake.state.reviewerCheckout = reaped;
+    fake.state.workspaces = [
+      ...fake.state.workspaces,
+      {
+        workspaceId: "reviewer-workspace-0001",
+        project: "Director",
+        name: "Reviewer",
+        isolation: "local",
+        cwd: reaped,
+      },
+    ];
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    fake.state.taskStatus = "closed";
+    assert.equal(existsSync(reaped), false);
+
+    const options = reviewerOptions(fixture, {
+      "reviewer-checkout": reaped,
+      "reviewer-checkout-state": "reclaimed",
+    });
+    // A path the agent never worked in is refused even though nothing would be
+    // removed, so the plan cannot record a checkout never tied to its agent.
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-plan",
+        { ...options, "reviewer-checkout": join(fixture.root, "never-the-agents-cwd") },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "REVIEWER_CHECKOUT_OWNERSHIP_MISMATCH",
+    );
+
+    const plan = await execute("reviewer-cleanup-plan", options, { run: fake.runner });
+    // The marker exists to authorise a removal. With nothing to remove it is
+    // not required, and its absence is recorded as the reason rather than
+    // standing in for a proof that was never taken.
+    assert.equal(plan.result.resources.checkout.absent, true);
+    assert.equal(plan.result.resources.checkout.source, "recorded_reclaimed");
+    const planFile = join(fixture.root, "reaped-plan.json");
+    writeFileSync(planFile, `${canonicalJson(plan)}\n`, { mode: 0o600 });
+
+    const applied = await execute(
+      "reviewer-cleanup-apply",
+      { ...options, "plan-file": planFile },
+      { run: fake.runner },
+    );
+    assert.equal(applied.result.resources, "complete");
+    assert.equal(fake.state.reviewerArchived, true);
+    const state = JSON.parse(readFileSync(options["state-file"], "utf8"));
+    assert.equal(state.effects["cleanup.reviewer-agent"].phase, "complete");
+    assert.equal(state.effects["cleanup.reviewer-workspace"].phase, "complete");
+    assert.equal(state.effects["cleanup.reviewer-checkout"].phase, "complete");
+    assert.equal(
+      state.effects["cleanup.reviewer-checkout"].evidence.source,
+      "recorded_reclaimed",
+    );
+
+    // A reaped checkout is still refused if the path came back as something
+    // else: absence is bound, not assumed.
+    mkdirSync(reaped, { recursive: true });
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", options, { run: fake.runner }),
+      (error) => error.code === "RECLAIMED_CHECKOUT_PRESENT",
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a transcription naming the Reviewer by a bare identifier is counted", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    fake.state.taskStatus = "closed";
+    // The live record holds a Reviewer referred to by bare UUID. Bound by
+    // nothing and counted by nothing, it would be the one case where a miss is
+    // invisible on both counters.
+    recordComment(fake, {
+      id: "transcript-bare-id",
+      author: "paseo:coordinator-0001",
+      text: `INDEPENDENT_REVIEW_VERDICT — ${TASK}\n\nReviewer reviewer-0001 returned verdict approve_candidate for Candidate ${fixture.candidate}.\n`,
+    });
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", reviewerOptions(fixture), { run: fake.runner }),
+      (error) => error.code === "REVIEWER_VERDICT_NOT_DURABLE",
+    );
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-plan",
+        reviewerOptions(fixture, { "reviewer-review-state": "abandoned" }),
+        { run: fake.runner },
+      ),
+      (error) => {
+        assert.equal(error.code, "REVIEWER_REPORT_EVIDENCE_UNRESOLVED");
+        assert.equal(error.details.unboundEvidence, 1);
+        return true;
+      },
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a superseded Review on a live Task is reclaimable only once its coordinator records abandoning it", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    // The deadlock: the Task is in progress because cleanup requires it, the
+    // Reviewer never reported, and `abandoned` was refused for exactly that
+    // reason. No ordering discharges all three, and it recurs for every
+    // Candidate superseded after its Reviewer exists.
+    assert.equal(fake.state.taskStatus, "in_progress");
+    const options = reviewerOptions(fixture, { "reviewer-review-state": "abandoned" });
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", options, { run: fake.runner }),
+      (error) => error.code === "REVIEWER_REVIEW_IN_FLIGHT",
+    );
+
+    // A declaration by someone else does not discharge it.
+    recordComment(fake, {
+      id: "abandon-wrong-actor",
+      author: "paseo:someone-else-0001",
+      text: `REVIEW ABANDONED — paseo:${"reviewer-0001"} superseded.\n`,
+    });
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", options, { run: fake.runner }),
+      (error) => error.code === "REVIEWER_REVIEW_IN_FLIGHT",
+    );
+
+    // Nor one that abandons a different Reviewer.
+    recordComment(fake, {
+      id: "abandon-other-reviewer",
+      author: ACTOR,
+      text: "REVIEW ABANDONED — paseo:reviewer-9999 superseded.\n",
+    });
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", options, { run: fake.runner }),
+      (error) => error.code === "REVIEWER_REVIEW_IN_FLIGHT",
+    );
+
+    // Nor a coordinator comment that merely mentions an abandonment below the
+    // first line, which is how it would be narrated rather than declared.
+    recordComment(fake, {
+      id: "abandon-narrated",
+      author: ACTOR,
+      text: `COORDINATOR — the Candidate was superseded.\n\nREVIEW ABANDONED for paseo:${"reviewer-0001"}.\n`,
+    });
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", options, { run: fake.runner }),
+      (error) => error.code === "REVIEWER_REVIEW_IN_FLIGHT",
+    );
+
+    // Declared by this coordinator, on the first line, naming this Reviewer.
+    recordComment(fake, {
+      id: "abandon-0001",
+      author: ACTOR,
+      text: `REVIEW ABANDONED — paseo:${"reviewer-0001"} on a superseded Candidate.\n\nNo verdict was produced and none is awaited.\n`,
+    });
+    const plan = await execute("reviewer-cleanup-plan", options, { run: fake.runner });
+    assert.equal(plan.result.resources.review.abandonedBy, ACTOR);
+    assert.equal(plan.result.resources.review.taskStatus, "in_progress");
+
+    // And the guard that made this hard is untouched: an agent mid-turn is
+    // still refused, declaration or not.
+    fake.state.reviewerStatus = "running";
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", options, { run: fake.runner }),
+      (error) => error.code === "REVIEWER_REVIEW_IN_FLIGHT",
+    );
+    fake.state.reviewerStatus = "idle";
+
+    // Unresolved evidence still refuses, so a declaration cannot bind away a
+    // report the rule could not read.
+    recordComment(fake, {
+      id: "unbound-transcript",
+      author: "paseo:coordinator-0001",
+      text: `INDEPENDENT_REVIEW_VERDICT — paseo:${"reviewer-0001"} returned verdict approve_candidate.\n`,
+    });
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", options, { run: fake.runner }),
+      (error) => error.code === "REVIEWER_REPORT_EVIDENCE_UNRESOLVED",
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the survey shows only the binding the leg will accept", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    fake.state.taskStatus = "closed";
+    // The cell nothing previously reached: review_incomplete crossed with a
+    // non-zero counter. It must display no binding, because the binding a
+    // classification alone would suggest is the one the leg refuses, and the
+    // operator acts on the display.
+    recordComment(fake, {
+      id: "unbound-transcript",
+      author: "paseo:coordinator-0001",
+      text: `INDEPENDENT_REVIEW_VERDICT — paseo:${"reviewer-0001"} returned verdict approve_candidate.\n`,
+    });
+    const survey = await execute("reviewer-survey", fixture.options, { run: fake.runner });
+    const row = survey.result.reviewers.find((item) => item.agentId === "reviewer-0001");
+    assert.equal(row.classification, "review_incomplete");
+    assert.equal(row.unboundEvidence, 1);
+    assert.equal(row.reviewState, null);
+    // And the leg does refuse exactly that binding, so the record agrees with
+    // the gate rather than contradicting it.
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-plan",
+        reviewerOptions(fixture, { "reviewer-review-state": "abandoned" }),
+        { run: fake.runner },
+      ),
+      (error) => error.code === "REVIEWER_REPORT_EVIDENCE_UNRESOLVED",
+    );
+
+    // The same cell on a live Task with clean counters: no binding until the
+    // coordinator declares one, and `abandoned` the moment it does.
+    fake.state.beadsComments = fake.state.beadsComments.filter(
+      (comment) => comment.id !== "unbound-transcript",
+    );
+    fake.state.taskStatus = "in_progress";
+    const live = await execute("reviewer-survey", fixture.options, { run: fake.runner });
+    assert.equal(
+      live.result.reviewers.find((item) => item.agentId === "reviewer-0001").reviewState,
+      null,
+    );
+    recordComment(fake, {
+      id: "abandon-0001",
+      author: ACTOR,
+      text: `REVIEW ABANDONED — paseo:${"reviewer-0001"} on a superseded Candidate.\n`,
+    });
+    const declared = await execute("reviewer-survey", fixture.options, { run: fake.runner });
+    const row2 = declared.result.reviewers.find((item) => item.agentId === "reviewer-0001");
+    assert.equal(row2.reviewState, "abandoned");
+    assert.equal(row2.abandonedBy, ACTOR);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("the Reviewer survey derives the set to reconcile from the daemon and Beads", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    fake.state.extraListedAgents = [
+      {
+        Id: "reviewer-closed-task",
+        Name: "Review dir-m6.30",
+        Status: "idle",
+        Archived: false,
+        ArchivedAt: null,
+        Cwd: join(fixture.root, "closed-task-review"),
+        ParentAgentId: null,
+        Labels: {
+          "director.role": "reviewer",
+          "director.task": "dir-m6.30",
+          "director.candidate": "a".repeat(40),
+        },
+      },
+      {
+        Id: "reviewer-running",
+        Name: "Review dir-m6.35",
+        Status: "running",
+        Archived: false,
+        ArchivedAt: null,
+        Cwd: join(fixture.root, "running-review"),
+        ParentAgentId: null,
+        Labels: {
+          "director.role": "reviewer",
+          "director.task": "dir-m6.35",
+          "director.candidate": "b".repeat(40),
+        },
+      },
+      {
+        // Idle between turns, on a Task still in progress, with nothing durable
+        // recorded: this is the exact shape of a Review that is working.
+        Id: "reviewer-idle-in-flight",
+        Name: "Review dir-m6.35",
+        Status: "idle",
+        Archived: false,
+        ArchivedAt: null,
+        Cwd: join(fixture.root, "idle-in-flight-review"),
+        ParentAgentId: null,
+        Labels: {
+          "director.role": "reviewer",
+          "director.task": "dir-m6.35",
+          "director.candidate": "c".repeat(40),
+        },
+      },
+      {
+        // The same shape once its Task is no longer in progress: a Review that
+        // never reported, handled explicitly rather than assumed reconcilable.
+        Id: "reviewer-never-reported",
+        Name: "Review dir-m6.30",
+        Status: "idle",
+        Archived: false,
+        ArchivedAt: null,
+        Cwd: join(fixture.root, "never-reported-review"),
+        ParentAgentId: null,
+        Labels: {
+          "director.role": "reviewer",
+          "director.task": "dir-m6.30",
+          "director.candidate": "d".repeat(40),
+        },
+      },
+      {
+        // No readable Task at all: the counters are unknowable rather than
+        // zero, and the record must still carry both keys the contract
+        // promises rather than omitting them.
+        Id: "reviewer-taskless",
+        Name: "Review of nothing",
+        Status: "idle",
+        Archived: false,
+        ArchivedAt: null,
+        Cwd: join(fixture.root, "taskless-review"),
+        ParentAgentId: null,
+        Labels: { "director.role": "reviewer", "director.candidate": "e".repeat(40) },
+      },
+      {
+        Id: "reviewer-unlabelled",
+        Name: "Review of nothing",
+        Status: "idle",
+        Archived: false,
+        ArchivedAt: null,
+        Cwd: join(fixture.root, "unlabelled-review"),
+        ParentAgentId: null,
+        Labels: { "director.role": "reviewer", "director.task": "dir-m6.30" },
+      },
+    ];
+    fake.state.taskStatuses = { "dir-m6.30": "closed", "dir-m6.35": "in_progress" };
+    fake.state.beadsComments = [
+      ...fake.state.beadsComments,
+      {
+        id: "review-m630",
+        issue_id: "dir-m6.30",
+        author: "paseo:reviewer-closed-task",
+        text: `INDEPENDENT REVIEW\nCandidate: ${"a".repeat(40)}\nBase: ${fixture.base}\nVerdict: changes_requested\n`,
+        created_at: "2026-09-16T00:00:00Z",
+      },
+    ];
+
+    const survey = await execute("reviewer-survey", fixture.options, {
+      run: fake.runner,
+    });
+    const byId = new Map(
+      survey.result.reviewers.map((record) => [record.agentId, record]),
+    );
+    assert.equal(survey.result.totals.reviewers, 7);
+    // A superseded Candidate of a closed Task whose verdict is durable is
+    // reconcilable; the Task Agent in the same list is not a Reviewer at all.
+    assert.equal(byId.get("reviewer-closed-task").classification, "reconcilable");
+    assert.equal(byId.get("reviewer-closed-task").reviewState, "verdict_recorded");
+    assert.equal(byId.get("reviewer-0001").classification, "reconcilable");
+    assert.equal(byId.get("reviewer-running").classification, "review_in_flight");
+    assert.equal(byId.get("reviewer-idle-in-flight").classification, "review_in_flight");
+    // A record that admits no binding suggests none, rather than describing a
+    // Review that is still going as abandoned.
+    assert.equal(byId.get("reviewer-idle-in-flight").reviewState, null);
+    assert.equal(byId.get("reviewer-running").reviewState, null);
+    assert.equal(byId.get("reviewer-unlabelled").reviewState, null);
+    assert.equal(byId.get("reviewer-never-reported").classification, "review_incomplete");
+    assert.equal(byId.get("reviewer-never-reported").reviewState, "abandoned");
+    assert.equal(byId.get("reviewer-never-reported").reportSource, null);
+    assert.equal(byId.get("reviewer-closed-task").reportSource, "authored");
+    assert.equal(byId.get("reviewer-0001").reportSource, "authored");
+    assert.equal(byId.get("reviewer-unlabelled").classification, "ambiguous");
+    const taskless = byId.get("reviewer-taskless");
+    assert.equal(taskless.classification, "ambiguous");
+    assert.ok("unboundEvidence" in taskless && "unreadableReports" in taskless);
+    assert.equal(taskless.unboundEvidence, null);
+    assert.equal(taskless.unreadableReports, null);
+    assert.equal(byId.has("agent-0001"), false);
+    assert.equal(survey.result.enumeration.saturated, false);
+    // An unsaturated page is not a complete enumeration: it still excludes
+    // every agent last active before the window, and `complete` is the only
+    // field that would license "and there are no others".
+    assert.equal(survey.result.enumeration.windowHours, 720);
+    assert.equal(survey.result.enumeration.complete, false);
+
+    // The survey adopts and removes nothing.
+    assert.equal(fake.state.reviewerArchiveDispatches, 0);
+    assert.equal(existsSync(fixture.reviewerCheckout), true);
+
+    // A page returned at its own limit cannot support a claim that the set is
+    // complete, and the survey says so instead of reading as exhaustive.
+    fake.state.agentListLimit = 8;
+    const saturated = await execute("reviewer-survey", fixture.options, {
+      run: fake.runner,
+    });
+    assert.equal(saturated.result.enumeration.saturated, true);
+    assert.equal(saturated.result.enumeration.returned, 8);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("Reviewer options are bound immutably and refused outside the Reviewer leg", async () => {
+  const fixture = createRepositoryFixture();
+  try {
+    const fake = fakeExternalCommands(fixture, { reviewerArchived: false });
+    fixture.reviewerCheckout = createReviewerCheckout(fixture, fake);
+    recordReviewVerdict(fake, { candidate: fixture.candidate, base: fixture.base });
+    await assert.rejects(
+      execute(
+        "snapshot",
+        { ...fixture.options, "reviewer-agent-id": "reviewer-0001" },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "OPTION_INVALID",
+    );
+    const { "reviewer-checkout-state": _omitted, ...incomplete } =
+      reviewerOptions(fixture);
+    await assert.rejects(
+      execute("reviewer-cleanup-plan", incomplete, { run: fake.runner }),
+      (error) => error.code === "OPTION_REQUIRED",
+    );
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-plan",
+        reviewerOptions(fixture, { "reviewer-checkout": fixture.control }),
+        { run: fake.runner },
+      ),
+      (error) => error.code === "REVIEWER_CHECKOUT_NOT_DISPOSABLE",
+    );
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-plan",
+        reviewerOptions(fixture, {
+          "agent-id": "agent-0001",
+          "workspace-id": "workspace-0001",
+          "lifecycle-state": "active",
+          "reviewer-agent-id": "agent-0001",
+        }),
+        { run: fake.runner },
+      ),
+      (error) => error.code === "REVIEWER_NOT_INDEPENDENT",
+    );
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-plan",
+        reviewerOptions(fixture, {
+          "agent-id": "agent-0001",
+          "workspace-id": "workspace-0001",
+          "lifecycle-state": "active",
+          "reviewer-workspace-id": "workspace-0001",
+        }),
+        { run: fake.runner },
+      ),
+      (error) => error.code === "REVIEWER_NOT_INDEPENDENT",
+    );
+
+    // A plan admitted under one Reviewer binding is never admitted under
+    // another.
+    const options = reviewerOptions(fixture);
+    const plan = await execute("reviewer-cleanup-plan", options, { run: fake.runner });
+    const planFile = join(fixture.root, "bound-plan.json");
+    writeFileSync(planFile, `${canonicalJson(plan)}\n`, { mode: 0o600 });
+    fake.state.workspaces = [
+      ...fake.state.workspaces,
+      {
+        workspaceId: "reviewer-workspace-0002",
+        project: "Director",
+        name: "Reviewer",
+        isolation: "local",
+        cwd: fixture.reviewerCheckout,
+      },
+    ];
+    await assert.rejects(
+      execute(
+        "reviewer-cleanup-apply",
+        {
+          ...options,
+          "reviewer-workspace-id": "reviewer-workspace-0002",
+          "state-file": join(fixture.root, "other-binding-state.json"),
+          "plan-file": planFile,
+        },
+        { run: fake.runner },
+      ),
+      (error) => error.code === "CLEANUP_PLAN_BINDING_MISMATCH",
+    );
+    assert.equal(existsSync(fixture.reviewerCheckout), true);
   } finally {
     fixture.cleanup();
   }

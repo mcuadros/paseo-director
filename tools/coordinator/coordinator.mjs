@@ -11,6 +11,7 @@ import {
   openSync,
   readFileSync,
   realpathSync,
+  rmSync,
 } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,6 +56,7 @@ const PASEO_LIFECYCLE_CHILD = fileURLToPath(
 const LEGACY_STATE_SCHEMA_VERSION = 1;
 const STATE_SCHEMA_VERSION = 2;
 const CLEANUP_PLAN_SCHEMA_VERSION = 2;
+const REVIEWER_PLAN_SCHEMA_VERSION = 1;
 const OUTPUT_SCHEMA_VERSION = 1;
 const PASEO_AGENT_STATUSES = new Set([
   "initializing",
@@ -93,6 +95,26 @@ const COMMON_OPTIONS = [
   "workspace-id",
   "lifecycle-state",
   "pr",
+];
+// The Reviewer leg's immutable inputs. They are a distinct group rather than a
+// reuse of the Task Agent's because both resources exist at once and cleanup
+// must be able to name each exactly: the Reviewer is a second parentless agent
+// with its own host view and its own disposable checkout.
+const REVIEWER_OPTIONS = [
+  "reviewer-agent-id",
+  "reviewer-workspace-id",
+  "reviewer-lifecycle-state",
+  "reviewer-checkout",
+  "reviewer-checkout-state",
+  "reviewer-review-state",
+];
+const REVIEWER_BINDING_KEYS = [
+  "reviewerAgentId",
+  "reviewerCheckout",
+  "reviewerCheckoutState",
+  "reviewerLifecycleState",
+  "reviewerReviewState",
+  "reviewerWorkspaceId",
 ];
 const STATE_BINDING_KEYS = [
   "actor",
@@ -147,6 +169,8 @@ const LIVE_LIFECYCLE_STATES = new Set(["active", "restored"]);
 const LIFECYCLE_PROGRESS_RANKS = Object.freeze({
   checkoutState: Object.freeze({ present: 0, reclaimed: 1 }),
   lifecycleState: Object.freeze({ active: 0, restored: 1, reclaimed: 2 }),
+  reviewerCheckoutState: Object.freeze({ present: 0, reclaimed: 1 }),
+  reviewerLifecycleState: Object.freeze({ active: 0, restored: 1, reclaimed: 2 }),
 });
 // Each field advances only to the single terminal value cleanup itself
 // produces. `restored` is a recovery fact produced by something other than
@@ -159,6 +183,8 @@ const LIFECYCLE_PROGRESS_RANKS = Object.freeze({
 const LIFECYCLE_PROGRESS_TARGETS = Object.freeze({
   checkoutState: "reclaimed",
   lifecycleState: "reclaimed",
+  reviewerCheckoutState: "reclaimed",
+  reviewerLifecycleState: "reclaimed",
 });
 const LIFECYCLE_PROGRESS_KEYS = Object.freeze(
   Object.keys(LIFECYCLE_PROGRESS_RANKS),
@@ -180,9 +206,32 @@ const EFFECT_PHASES = new Set([
 const EFFECT_NAME_PATTERN = /^[a-z][a-z_]{0,31}\.[a-z][a-z-]{0,31}$/u;
 const MAXIMUM_RESUMED_EFFECTS = 64;
 
-const MUTATING_COMMANDS = new Set(["publish-draft", "remote-ci", "publish", "integrate", "cleanup-apply"]);
-const STATE_LOCK_COMMANDS = new Set([...MUTATING_COMMANDS, "cleanup-plan"]);
-const RESUMABLE_COMMANDS = new Set(["cleanup-plan", "cleanup-apply"]);
+const MUTATING_COMMANDS = new Set([
+  "publish-draft",
+  "remote-ci",
+  "publish",
+  "integrate",
+  "cleanup-apply",
+  "reviewer-cleanup-apply",
+]);
+const STATE_LOCK_COMMANDS = new Set([
+  ...MUTATING_COMMANDS,
+  "cleanup-plan",
+  "reviewer-cleanup-plan",
+]);
+const RESUMABLE_COMMANDS = new Set([
+  "cleanup-plan",
+  "cleanup-apply",
+  "reviewer-cleanup-plan",
+  "reviewer-cleanup-apply",
+]);
+// The Reviewer leg's own commands. `reviewer-survey` derives the set to
+// reconcile and mutates nothing; the plan/apply pair reconciles exactly one
+// bound Reviewer.
+const REVIEWER_BOUND_COMMANDS = new Set([
+  "reviewer-cleanup-plan",
+  "reviewer-cleanup-apply",
+]);
 const COMMANDS = new Set([
   "snapshot",
   "review-handoff",
@@ -191,9 +240,18 @@ const COMMANDS = new Set([
   "publish",
   "gate",
   "integrate",
+  "reviewer-survey",
+  "reviewer-cleanup-plan",
+  "reviewer-cleanup-apply",
   "cleanup-plan",
   "cleanup-apply",
 ]);
+// A Reviewer is reconcilable only when its Review is over. `running` is the
+// daemon's statement that a turn is in flight, and a Task still in progress may
+// start or resume one, so neither fact alone terminates a Review.
+const REVIEWER_REVIEW_STATES = new Set(["verdict_recorded", "abandoned"]);
+const MAXIMUM_SURVEYED_TASKS = 64;
+const MAXIMUM_REPORTED_REVIEWERS = 32;
 
 export class CoordinatorInterruption extends Error {
   constructor(effect) {
@@ -221,6 +279,9 @@ function paseoLifecycleCall(executable, args) {
     }
     if (args[0] === "workspace" && args[1] === "ls") {
       return { operation: "workspace.list", identifier: null, mutation: false };
+    }
+    if (args[0] === "agents" && args[1] === "ls") {
+      return { operation: "agent.list", identifier: null, mutation: false };
     }
   }
   if (
@@ -658,6 +719,7 @@ function validateOptions(command, rawOptions) {
     "remote-ci-file",
     "handoff-file",
     "resume-state-file",
+    ...REVIEWER_OPTIONS,
   ]);
   const unknown = Object.keys(rawOptions).filter((key) => !allowed.has(key));
   refuse(
@@ -771,6 +833,99 @@ function validateOptions(command, rawOptions) {
     command,
   };
 
+  const boundReviewer = REVIEWER_BOUND_COMMANDS.has(command);
+  const suppliedReviewerOptions = REVIEWER_OPTIONS.filter(
+    (key) => rawOptions[key] !== undefined,
+  );
+  refuse(
+    !boundReviewer && suppliedReviewerOptions.length > 0,
+    "OPTION_INVALID",
+    "Reviewer options are valid only for reviewer-cleanup-plan and reviewer-cleanup-apply",
+  );
+  if (boundReviewer) {
+    for (const key of REVIEWER_OPTIONS) {
+      refuse(rawOptions[key] === undefined, "OPTION_REQUIRED", `--${key} is required`);
+    }
+    refuse(
+      rawOptions["reviewer-agent-id"] === "none",
+      "OPTION_INVALID",
+      "the Reviewer leg always names an exact Reviewer agent",
+    );
+    options.reviewerAgentId = requireString(
+      rawOptions["reviewer-agent-id"],
+      ID_PATTERN,
+      "Reviewer agent ID",
+    );
+    options.reviewerWorkspaceId =
+      rawOptions["reviewer-workspace-id"] === "none"
+        ? "none"
+        : requireString(
+            rawOptions["reviewer-workspace-id"],
+            ID_PATTERN,
+            "Reviewer workspace ID",
+          );
+    options.reviewerLifecycleState = requireString(
+      rawOptions["reviewer-lifecycle-state"],
+      /^(?:active|restored|reclaimed)$/u,
+      "Reviewer lifecycle state",
+    );
+    options.reviewerReviewState = requireString(
+      rawOptions["reviewer-review-state"],
+      /^(?:verdict_recorded|abandoned)$/u,
+      "Reviewer review state",
+    );
+    const reviewerCheckoutState = requireString(
+      rawOptions["reviewer-checkout-state"],
+      /^(?:present|reclaimed)$/u,
+      "Reviewer checkout state",
+    );
+    options.reviewerCheckoutState = reviewerCheckoutState;
+    refuse(
+      !isAbsolute(rawOptions["reviewer-checkout"]),
+      "PATH_NOT_ABSOLUTE",
+      "Reviewer checkout must be absolute",
+    );
+    options.reviewerCheckout = canonicalPath(
+      rawOptions["reviewer-checkout"],
+      "Reviewer checkout",
+      {
+        mustExist: reviewerCheckoutState === "present",
+        allowMissingParents: reviewerCheckoutState === "reclaimed",
+      },
+    );
+    refuse(
+      reviewerCheckoutState === "reclaimed" && existsSync(options.reviewerCheckout),
+      "RECLAIMED_CHECKOUT_PRESENT",
+      "Reviewer checkout recorded as reclaimed is still present",
+    );
+    // The Reviewer's host view is a card over an independent clone, so
+    // archiving it leaves the checkout in place. The two lifecycle facts are
+    // therefore observed separately and never inferred from one another.
+    refuse(
+      options.reviewerCheckout === checkout ||
+        options.reviewerCheckout === controlRepo ||
+        pathIsWithin(controlRepo, options.reviewerCheckout) ||
+        pathIsWithin(options.reviewerCheckout, controlRepo) ||
+        pathIsWithin(checkout, options.reviewerCheckout) ||
+        pathIsWithin(options.reviewerCheckout, checkout),
+      "REVIEWER_CHECKOUT_NOT_DISPOSABLE",
+      "Reviewer checkout overlaps the Task or control Git checkout",
+    );
+    refuse(
+      options.reviewerAgentId === options.agentId ||
+        `paseo:${options.reviewerAgentId}` === options.actor ||
+        options.reviewerAgentId === options.actor,
+      "REVIEWER_NOT_INDEPENDENT",
+      "Reviewer identity matches the Task Agent or coordinator actor",
+    );
+    refuse(
+      options.reviewerWorkspaceId !== "none" &&
+        options.reviewerWorkspaceId === options.workspaceId,
+      "REVIEWER_NOT_INDEPENDENT",
+      "Reviewer workspace identity matches the Task workspace",
+    );
+  }
+
   if (
     STATE_LOCK_COMMANDS.has(command) || rawOptions["state-file"] !== undefined
   ) {
@@ -784,9 +939,11 @@ function validateOptions(command, rawOptions) {
     });
     refuse(
       pathIsWithin(checkout, options.stateFile) ||
-        pathIsWithin(controlRepo, options.stateFile),
+        pathIsWithin(controlRepo, options.stateFile) ||
+        (options.reviewerCheckout !== undefined &&
+          pathIsWithin(options.reviewerCheckout, options.stateFile)),
       "STATE_INSIDE_REPOSITORY",
-      "state file must be outside the Task and control Git checkouts",
+      "state file must be outside the Task, control, and Reviewer checkouts",
     );
   }
 
@@ -803,9 +960,11 @@ function validateOptions(command, rawOptions) {
     );
     refuse(
       pathIsWithin(checkout, options.resumeStateFile) ||
-        pathIsWithin(controlRepo, options.resumeStateFile),
+        pathIsWithin(controlRepo, options.resumeStateFile) ||
+        (options.reviewerCheckout !== undefined &&
+          pathIsWithin(options.reviewerCheckout, options.resumeStateFile)),
       "RESUME_STATE_INSIDE_REPOSITORY",
-      "resumed state file must be outside the Task and control Git checkouts",
+      "resumed state file must be outside the Task, control, and Reviewer checkouts",
     );
     refuse(
       options.resumeStateFile === options.stateFile,
@@ -940,7 +1099,29 @@ function stateBinding(options) {
     agentId: options.agentId,
     lifecycleState: options.lifecycleState,
     workspaceId: options.workspaceId,
+    ...(options.reviewerAgentId === undefined
+      ? {}
+      : {
+          reviewerAgentId: options.reviewerAgentId,
+          reviewerCheckout: options.reviewerCheckout,
+          reviewerCheckoutState: options.reviewerCheckoutState,
+          reviewerLifecycleState: options.reviewerLifecycleState,
+          reviewerReviewState: options.reviewerReviewState,
+          reviewerWorkspaceId: options.reviewerWorkspaceId,
+        }),
   };
+}
+
+/**
+ * The exact keys a state bound to these options must carry. A command that
+ * binds a Reviewer carries the Reviewer fields and a command that does not must
+ * not, so a state file written under one contract is never admitted under the
+ * other.
+ */
+function stateBindingKeys(options) {
+  return options.reviewerAgentId === undefined
+    ? STATE_BINDING_KEYS
+    : [...STATE_BINDING_KEYS, ...REVIEWER_BINDING_KEYS];
 }
 
 function legacyStateBinding(options) {
@@ -999,6 +1180,8 @@ function loadState(options, { required = false } = {}) {
         "priorBindingHash",
         "priorCheckoutState",
         "priorLifecycleState",
+        "priorReviewerCheckoutState",
+        "priorReviewerLifecycleState",
       ],
       "state continuation",
       "STATE_INVALID",
@@ -1063,7 +1246,7 @@ function loadState(options, { required = false } = {}) {
   );
   assertExactKeys(
     state.binding,
-    STATE_BINDING_KEYS,
+    stateBindingKeys(options),
     "state binding",
     "STATE_INVALID",
   );
@@ -1164,7 +1347,7 @@ function loadResumedState(options) {
   );
   assertExactKeys(
     resumed.binding,
-    STATE_BINDING_KEYS,
+    stateBindingKeys(options),
     "resumed state binding",
     "RESUME_STATE_INVALID",
   );
@@ -1177,6 +1360,13 @@ function loadResumedState(options) {
   );
   let advanced = 0;
   for (const key of LIFECYCLE_PROGRESS_KEYS) {
+    const bound = Object.hasOwn(current, key);
+    refuse(
+      bound !== Object.hasOwn(resumed.binding, key),
+      "RESUME_STATE_LIFECYCLE_INVALID",
+      "resumed lifecycle progress cannot be compared with the current binding",
+    );
+    if (!bound) continue;
     const before = lifecycleProgressRank(key, resumed.binding[key]);
     const after = lifecycleProgressRank(key, current[key]);
     refuse(
@@ -1290,6 +1480,15 @@ function adoptResumedState(options, state) {
     priorBindingHash,
     priorCheckoutState: resumed.binding.checkoutState,
     priorLifecycleState: resumed.binding.lifecycleState,
+    // A Reviewer leg advances its own two lifecycle fields, so the continuation
+    // record states which world it resumed from rather than describing only the
+    // Task Agent's, which a Reviewer cleanup never moves.
+    ...(resumed.binding.reviewerLifecycleState === undefined
+      ? {}
+      : {
+          priorReviewerCheckoutState: resumed.binding.reviewerCheckoutState,
+          priorReviewerLifecycleState: resumed.binding.reviewerLifecycleState,
+        }),
   };
   if (
     mutated ||
@@ -2804,6 +3003,525 @@ function cleanupFacts(run, options, task, { allowAbsentWorkspace = false } = {})
   };
 }
 
+/**
+ * The verdict a comment states, if it states one. A `Verdict:` field is read
+ * wherever it appears in the comment, including a token outside the contract
+ * set, because this record holds one whose verdict is `inconclusive`. Failing
+ * that, a contract verdict anywhere in the text is accepted.
+ *
+ * This is deliberately not a test of whether the comment is a report. A
+ * coordinator comment narrating a previous Review states a verdict too. What
+ * separates a report from a mention is who wrote it, which is checked
+ * elsewhere and cannot be read out of the text at all.
+ */
+function statedVerdict(text) {
+  const field = text.match(/^Verdict:\s*([A-Za-z][A-Za-z0-9_-]{2,31})\b/mu)?.[1];
+  if (field !== undefined) return field;
+  // The fallback reads the comment's own first line and nothing else. Read over
+  // the whole text it matched any comment that merely quotes a verdict, and a
+  // Reviewer writing a note mid-Review quotes the previous round's verdict
+  // routinely: that made a note that concludes nothing bind as the Review's
+  // report, which reduces the two-fact rule to the daemon's status alone on
+  // exactly the resource that must not be reclaimed. A report states its
+  // verdict where a reader looks first.
+  const [firstLine] = text.split("\n", 1);
+  return firstLine.match(
+    /\b(approve_candidate|changes_requested|needs_human_decision)\b/u,
+  )?.[1] ?? null;
+}
+
+/**
+ * Whether a comment refers to a verdict anywhere at all. This is deliberately
+ * wider than what binds, and is used only by the counters that make a missed
+ * report visible. The two notions must not be the same one: narrowing what
+ * binds is what stops an invention, and if the counters narrowed with it, the
+ * reports the narrowing newly declines to read would become invisible at the
+ * same moment — which is the coverage the counters exist to hold.
+ */
+function mentionsVerdict(text) {
+  return (
+    /^Verdict:\s*[A-Za-z]/mu.test(text) ||
+    /\b(approve_candidate|changes_requested|needs_human_decision)\b/u.test(text)
+  );
+}
+
+/**
+ * Every Beads comment on one Task, projected into the facts the report binding
+ * reads. Nothing is filtered: a shape gate here would decide, once and for
+ * everything downstream, which comments exist at all.
+ */
+function taskReviewReports(run, options, taskId) {
+  const comments = runJson(run, "bd", [
+    "--actor",
+    options.actor,
+    "comments",
+    taskId,
+    "--json",
+  ], { cwd: options.controlRepo });
+  refuse(!Array.isArray(comments), "TASK_COMMENTS_INVALID", "Beads comments are invalid");
+  refuse(
+    comments.length > 1_000,
+    "TASK_COMMENTS_OVERSIZE",
+    "Beads comments exceed the bounded review manifest",
+  );
+  return comments.map((comment) => {
+    refuse(
+      typeof comment?.text !== "string" || typeof comment?.author !== "string",
+      "TASK_COMMENT_INVALID",
+      "a Beads comment lacks bounded identity fields",
+    );
+    return {
+      author: comment.author,
+      mentionsVerdict: mentionsVerdict(comment.text),
+      text: comment.text,
+      verdict: statedVerdict(comment.text),
+    };
+  });
+}
+
+/**
+ * Whether the coordinator running this cleanup has durably abandoned this exact
+ * Review.
+ *
+ * No observable fact distinguishes a Reviewer that will never report from one
+ * that has not reported yet. Both are idle, both carry the same labels, both own
+ * the same checkout, and neither can be asked. The difference is not a property
+ * of the Reviewer at all: it is that some party stopped waiting for it. That
+ * party is the coordinator that started the Review, and its decision is
+ * knowable only if it records one.
+ *
+ * So abandonment is bound the same way a report is — by the actor that wrote it,
+ * declared on the comment's own first line. The declaring actor must be the
+ * actor running this cleanup, which is the coordinator identity frozen into the
+ * Review, and the comment must name the Reviewer it abandons. This adds no way
+ * to infer abandonment and no way to guess it; it adds a way to state it.
+ */
+function reviewAbandonment(reports, agentId, actor) {
+  const reviewer = agentId.startsWith("paseo:") ? agentId : `paseo:${agentId}`;
+  const bare = reviewer.slice("paseo:".length);
+  const record = reports.find(
+    (comment) =>
+      comment.author === actor &&
+      /^REVIEW ABANDONED\b/u.test(comment.text) &&
+      (comment.text.includes(reviewer) || comment.text.includes(bare)),
+  );
+  return record === undefined ? null : { by: actor };
+}
+
+/**
+ * Whether this exact Reviewer reported, and on what evidence.
+ *
+ * A report is bound by ONE fact: the Reviewer wrote it. Authorship is the only
+ * property of a comment that another party cannot produce, and every content
+ * rule tried here could be satisfied by a comment that merely describes a
+ * Review rather than being one. The coordinator's routine record announcing
+ * that it created a Reviewer names that Reviewer, names the Candidate it was
+ * created for, and quotes an earlier Review's verdict; three tokens co-occur
+ * and no report exists. Narrowing which tokens, or how near they must be, makes
+ * that record harder to mistake without making it distinguishable, and the next
+ * legible coordinator comment reintroduces it.
+ *
+ * The comment must also state a verdict. Without that, any note a Reviewer
+ * writes mid-Review — and it sits idle between turns — would read as a
+ * concluded Review, which reduces the two-fact rule to the daemon's status
+ * alone on exactly the resource that must not be reclaimed.
+ *
+ * Both failures this rule can produce are misses, never inventions:
+ *
+ *   a report the Reviewer did not write, such as a verdict the coordinator
+ *   transcribed on its behalf, binds nothing;
+ *   a report by the Reviewer that states no verdict binds nothing.
+ *
+ * Both are surfaced rather than hidden, and by different counts because they
+ * leave different traces. `unboundEvidence` counts comments that name this
+ * Reviewer and state a verdict without binding it, which is what a transcribed
+ * report leaves behind. `unreadableReports` counts comments this Reviewer wrote
+ * whose verdict this rule could not read, which is what a report concluding in
+ * a vocabulary outside the contract leaves behind — the record holds one whose
+ * heading concludes INCONCLUSIVE and which carries no `Verdict:` field. Either
+ * count beside an absent `reportSource` tells an operator that something is
+ * there which this rule declined to read, rather than letting the absence read
+ * as a Review that never happened. Neither authorises anything; every binding
+ * still requires the report itself.
+ */
+function reviewerReport(reports, agentId) {
+  const actor = agentId.startsWith("paseo:") ? agentId : `paseo:${agentId}`;
+  // The last report wins: a Reviewer that corrects itself states its operative
+  // verdict last, and a note written before the report must not displace it.
+  const authored = reports.filter(
+    (comment) => comment.author === actor && comment.verdict !== null,
+  );
+  const report = authored.at(-1);
+  const bare = actor.slice("paseo:".length);
+  const unboundEvidence = reports.filter(
+    (comment) =>
+      comment.author !== actor &&
+      comment.mentionsVerdict &&
+      (comment.text.includes(actor) || comment.text.includes(bare)),
+  ).length;
+  const unreadableReports = reports.filter(
+    (comment) => comment.author === actor && comment.verdict === null,
+  ).length;
+  if (report !== undefined) {
+    return {
+      reported: true,
+      source: "authored",
+      unboundEvidence,
+      unreadableReports,
+      verdict: report.verdict,
+    };
+  }
+  return {
+    reported: false,
+    source: null,
+    unboundEvidence,
+    unreadableReports,
+    verdict: null,
+  };
+}
+
+/**
+ * Reads one Task's bounded status without the in-progress requirement the
+ * delivery commands impose. Most Reviewers awaiting reconciliation belong to
+ * Tasks that are already closed, so refusing those here would make the debt
+ * unreachable by the supported path.
+ */
+function surveyedTaskStatus(run, options, taskId) {
+  const value = runJson(run, "bd", [
+    "--actor",
+    options.actor,
+    "show",
+    taskId,
+    "--json",
+  ], { cwd: options.controlRepo });
+  refuse(
+    !Array.isArray(value) || value.length !== 1,
+    "TASK_AMBIGUOUS",
+    "Beads Task lookup was ambiguous",
+  );
+  const task = value[0];
+  refuse(task.id !== taskId, "TASK_IDENTITY_MISMATCH", "Beads returned a different Task");
+  refuse(
+    typeof task.status !== "string" || task.status.length === 0,
+    "TASK_STATE_INVALID",
+    "Beads Task has no bounded status",
+  );
+  return task.status;
+}
+
+function validatedReviewerAgent(agent, options) {
+  refuse(!isObject(agent), "PASEO_AGENT_RESPONSE_INVALID", "Paseo agent response is invalid");
+  refuse(
+    agent.Id !== options.reviewerAgentId,
+    "PASEO_AGENT_MISMATCH",
+    "Paseo returned a different agent",
+  );
+  refuse(
+    typeof agent.Archived !== "boolean" ||
+      !PASEO_AGENT_STATUSES.has(agent.Status) ||
+      typeof agent.Cwd !== "string" ||
+      !isObject(agent.Labels),
+    "PASEO_AGENT_RESPONSE_INVALID",
+    "Paseo agent response lacks bounded lifecycle facts",
+  );
+  refuse(
+    agent.Archived
+      ? typeof agent.ArchivedAt !== "string" ||
+        agent.ArchivedAt.length === 0 ||
+        agent.ArchivedAt.length > 64 ||
+        !Number.isFinite(Date.parse(agent.ArchivedAt))
+      : agent.ArchivedAt !== null && agent.ArchivedAt !== undefined,
+    "PASEO_AGENT_RESPONSE_INVALID",
+    "Paseo agent archive facts are invalid",
+  );
+  refuse(agent.ParentAgentId !== null, "REVIEWER_PARENTED", "Reviewer Agent is not top-level");
+  // Identity comes from the agent's own frozen labels, never from its title and
+  // never from the Candidate being reachable, because the Reviewers with the
+  // oldest debt are bound to commits no published history contains.
+  refuse(
+    agent.Labels["director.role"] !== "reviewer" ||
+      agent.Labels["director.task"] !== options.task ||
+      agent.Labels["director.candidate"] !== options.candidate,
+    "REVIEWER_IDENTITY_AMBIGUOUS",
+    "Reviewer labels do not bind the exact Task and Candidate",
+  );
+  return agent;
+}
+
+/**
+ * The owner marker of a disposable Reviewer checkout, stated as the exact facts
+ * that make removal safe rather than as a single forgeable token. Every one is
+ * read inside the checkout itself or from the control repository's own
+ * registration table; none resolves the Candidate against published history.
+ */
+function reviewerCheckoutFacts(run, options) {
+  if (options.reviewerCheckoutState === "reclaimed") {
+    refuse(
+      existsSync(options.reviewerCheckout),
+      "RECLAIMED_CHECKOUT_PRESENT",
+      "Reviewer checkout recorded as reclaimed is still present",
+    );
+    return { absent: true, source: "recorded_reclaimed" };
+  }
+  if (!existsSync(options.reviewerCheckout)) return { absent: true, source: "observed" };
+  const status = lstatSync(options.reviewerCheckout);
+  refuse(
+    !status.isDirectory() || status.isSymbolicLink(),
+    "REVIEWER_CHECKOUT_IDENTITY_INVALID",
+    "Reviewer checkout must be a directory",
+  );
+  const registrations = worktreeRecords(
+    gitChecked(run, options.controlRepo, ["worktree", "list", "--porcelain"]),
+  ).filter((record) => {
+    try {
+      return realpathSync(record.worktree) === options.reviewerCheckout;
+    } catch {
+      return resolve(record.worktree) === options.reviewerCheckout;
+    }
+  });
+  refuse(
+    registrations.length > 0,
+    "REVIEWER_CHECKOUT_NOT_DISPOSABLE",
+    "Reviewer checkout is a registered worktree of the control repository",
+  );
+  let gitStatus;
+  try {
+    gitStatus = lstatSync(resolve(options.reviewerCheckout, ".git"));
+  } catch {
+    throw new CoordinatorError(
+      "REVIEWER_CHECKOUT_UNMARKED",
+      "Reviewer checkout is not a Git repository",
+    );
+  }
+  refuse(
+    !gitStatus.isDirectory() || gitStatus.isSymbolicLink(),
+    "REVIEWER_CHECKOUT_NOT_DISPOSABLE",
+    "Reviewer checkout does not own its Git directory",
+  );
+  const common = commonDirectory(run, options.reviewerCheckout);
+  refuse(
+    !pathIsWithin(options.reviewerCheckout, common),
+    "REVIEWER_CHECKOUT_NOT_DISPOSABLE",
+    "Reviewer checkout shares a Git directory with another repository",
+  );
+  refuse(
+    gitRaw(run, options.reviewerCheckout, ["symbolic-ref", "--quiet", "HEAD"]).status === 0,
+    "REVIEWER_CHECKOUT_ATTACHED",
+    "Reviewer checkout is not detached",
+  );
+  const head = gitChecked(run, options.reviewerCheckout, ["rev-parse", "HEAD"]);
+  refuse(
+    head !== options.candidate,
+    "REVIEWER_CHECKOUT_CANDIDATE_MISMATCH",
+    "Reviewer checkout is not the bound Candidate",
+  );
+  const remoteUrl = gitChecked(run, options.reviewerCheckout, [
+    "remote",
+    "get-url",
+    options.remote,
+  ]);
+  refuse(
+    githubRepositoryIdentity(remoteUrl)?.toLowerCase() !== options.repo.toLowerCase(),
+    "REVIEWER_CHECKOUT_REMOTE_MISMATCH",
+    "Reviewer checkout remote does not match the explicit GitHub repository",
+  );
+  refuse(
+    gitChecked(run, options.reviewerCheckout, [
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/stash",
+    ]) !== "",
+    "REVIEWER_CHECKOUT_NOT_DISPOSABLE",
+    "Reviewer checkout holds stashed work",
+  );
+  // Ignored material is admitted deliberately: a disposable review clone is
+  // regenerable by construction, and the tracked/untracked state is what proves
+  // the Reviewer changed nothing.
+  refuse(
+    gitChecked(run, options.reviewerCheckout, [
+      "status",
+      "--porcelain=v2",
+      "--untracked-files=all",
+    ]) !== "",
+    "REVIEWER_CHECKOUT_DIRTY",
+    "Reviewer checkout contains dirty or untracked material",
+  );
+  return {
+    absent: false,
+    candidate: head,
+    commonDirectoryHash: digest(common),
+    // One composite value rather than two fields: a device-only difference
+    // cannot be produced at a fixed path in a test, so comparing the halves
+    // separately would leave one of them permanently unfalsifiable.
+    identity: `${status.dev}:${status.ino}`,
+  };
+}
+
+/**
+ * Classifies whether the bound Reviewer's Review is over, from two independent
+ * facts that must agree with the operator's explicit binding. A Candidate that
+ * is absent from `main` says nothing here: most of the debt is bound to
+ * superseded Candidates whose Reviews completed normally.
+ */
+function reviewerReviewFacts(run, options, agent) {
+  const reports = taskReviewReports(run, options, options.task);
+  const report = reviewerReport(reports, options.reviewerAgentId);
+  const abandonment = reviewAbandonment(reports, options.reviewerAgentId, options.actor);
+  const taskStatus = surveyedTaskStatus(run, options, options.task);
+  refuse(
+    agent !== null && agent.archived !== true && agent.status === "running",
+    "REVIEWER_REVIEW_IN_FLIGHT",
+    "Reviewer Agent is still running",
+  );
+  if (options.reviewerReviewState === "verdict_recorded") {
+    refuse(
+      !report.reported,
+      "REVIEWER_VERDICT_NOT_DURABLE",
+      "no durable Review report binds this exact Reviewer or its Candidate",
+    );
+  } else {
+    refuse(
+      report.reported,
+      "REVIEWER_REVIEW_STATE_MISMATCH",
+      "a durable Review report exists and must be bound as verdict_recorded",
+    );
+    // While the Task is in progress an idle Reviewer that never reported is
+    // indistinguishable from the reviewing agent between turns, so the Review
+    // being over cannot be inferred — only declared. Without a declaration this
+    // stays refused, which is the rule round one proved load-bearing; with one,
+    // the coordinator has said it is no longer waiting, and the running guard
+    // above still refuses an agent that is mid-turn.
+    refuse(
+      taskStatus === "in_progress" && abandonment === null,
+      "REVIEWER_REVIEW_IN_FLIGHT",
+      "an unfinished Review cannot be abandoned while its Task is in progress "
+        + "unless this coordinator durably recorded abandoning it",
+    );
+    // `abandoned` asserts that no report binds this Reviewer. Where something
+    // names it with a verdict this rule declined to read, that assertion is not
+    // available: the surrendered coverage is a refusal, not a note an operator
+    // is trusted to read. This never widens `verdict_recorded`, which would be
+    // the withdrawn content anchor returning through a counter.
+    refuse(
+      report.unboundEvidence > 0 || report.unreadableReports > 0,
+      "REVIEWER_REPORT_EVIDENCE_UNRESOLVED",
+      "comments name this Reviewer with a verdict this rule did not bind",
+      {
+        unboundEvidence: report.unboundEvidence,
+        unreadableReports: report.unreadableReports,
+      },
+    );
+  }
+  return {
+    abandonedBy: abandonment?.by ?? null,
+    reportSource: report.source,
+    state: options.reviewerReviewState,
+    taskStatus,
+    unboundEvidence: report.unboundEvidence,
+    unreadableReports: report.unreadableReports,
+    verdict: report.verdict,
+  };
+}
+
+function reviewerFacts(run, options, { allowAbsentWorkspace = false } = {}) {
+  let workspace = null;
+  // The Reviewer agent is inspected under every lifecycle binding, including
+  // `reclaimed`. Skipping it there silently withdrew both the daemon running
+  // guard and the frozen-label identity binding at exactly the binding an
+  // operator reaches for when they believe the resource is already historical,
+  // leaving `abandoned` resting on one Beads fact. An archived agent remains
+  // inspectable, so `reclaimed` is an assertion this read can check rather than
+  // one it has to take on trust.
+  const inspected = validatedReviewerAgent(
+    runJson(run, "paseo", ["inspect", options.reviewerAgentId, "--json"]),
+    options,
+  );
+  refuse(
+    options.reviewerLifecycleState === "reclaimed" && inspected.Archived !== true,
+    "REVIEWER_LIFECYCLE_NOT_RECLAIMED",
+    "Reviewer bound as reclaimed is still live on the daemon",
+  );
+  if (inspected.Archived !== true) {
+    // A reclaimed checkout cannot be canonicalised, but the daemon still
+    // reports the cwd the agent was created in, so the binding is compared as a
+    // path either way. Without this the plan records, for a reaped checkout, an
+    // absolute path never tied to the agent it claims to describe.
+    refuse(
+      options.reviewerCheckoutState === "present"
+        ? canonicalExistingDirectory(inspected.Cwd, "Reviewer Agent cwd") !==
+          options.reviewerCheckout
+        : resolve(inspected.Cwd) !== options.reviewerCheckout,
+      "REVIEWER_CHECKOUT_OWNERSHIP_MISMATCH",
+      "Reviewer Agent cwd is not the bound disposable checkout",
+    );
+  }
+  const agent = {
+    archived: inspected.Archived === true,
+    archivedAt: inspected.ArchivedAt ?? null,
+    id: inspected.Id,
+    status: inspected.Status,
+  };
+  {
+    if (options.reviewerWorkspaceId !== "none") {
+      const workspaces = validatedPaseoWorkspaces(
+        runJson(run, "paseo", ["workspace", "ls", "--json"]),
+      );
+      const matches = workspaces.filter(
+        (item) => item.workspaceId === options.reviewerWorkspaceId,
+      );
+      refuse(
+        matches.length > 1,
+        "PASEO_WORKSPACE_AMBIGUOUS",
+        "Reviewer workspace identity is ambiguous",
+      );
+      if (matches.length === 1) {
+        refuse(
+          options.reviewerLifecycleState === "restored",
+          "PASEO_WORKSPACE_RESTORATION_NOT_OBSERVED",
+          "recorded Reviewer workspace is active and must be bound as active",
+        );
+        refuse(
+          options.reviewerLifecycleState === "reclaimed",
+          "REVIEWER_LIFECYCLE_NOT_RECLAIMED",
+          "Reviewer workspace bound as reclaimed is still live on the daemon",
+        );
+        refuse(
+          options.reviewerCheckoutState === "present" &&
+            canonicalExistingDirectory(matches[0].cwd, "Reviewer workspace cwd") !==
+              options.reviewerCheckout,
+          "PASEO_WORKSPACE_OWNERSHIP_MISMATCH",
+          "Reviewer workspace does not view the bound disposable checkout",
+        );
+        workspace = { id: matches[0].workspaceId, isolation: matches[0].isolation };
+      } else if (options.reviewerLifecycleState === "restored") {
+        workspace = {
+          id: options.reviewerWorkspaceId,
+          observation: "recorded_restored",
+          verified: false,
+        };
+      } else if (options.reviewerLifecycleState === "reclaimed") {
+        workspace = {
+          id: options.reviewerWorkspaceId,
+          observation: "recorded_reclaimed",
+          verified: false,
+        };
+      } else {
+        refuse(
+          !allowAbsentWorkspace,
+          "PASEO_WORKSPACE_ABSENT",
+          "Reviewer workspace is absent before a recorded archive attempt",
+        );
+      }
+    }
+  }
+  return {
+    agent,
+    checkout: reviewerCheckoutFacts(run, options),
+    review: reviewerReviewFacts(run, options, agent),
+    workspace,
+  };
+}
+
 function validateCleanupPlan(options) {
   refuse(!options.planFile, "OPTION_REQUIRED", "--plan-file is required");
   const document = readJsonFile(options.planFile, "cleanup plan");
@@ -3244,6 +3962,491 @@ function dispatchPaseoArchive(run, options, args) {
   return result;
 }
 
+function reviewerDeliveryBinding(options) {
+  return { ...stateBinding(options), pr: options.pr };
+}
+
+function validateReviewerPlan(options) {
+  refuse(!options.planFile, "OPTION_REQUIRED", "--plan-file is required");
+  const document = readJsonFile(options.planFile, "Reviewer cleanup plan");
+  refuse(
+    containsProtectedMaterial(
+      document,
+      options.ownership,
+      options.ownershipFile,
+      options.paseoPassword,
+      options.paseoCredentialFile,
+    ),
+    "CLEANUP_PLAN_OWNERSHIP_MATERIAL_FORBIDDEN",
+    "Reviewer cleanup plan contains raw ownership material",
+  );
+  const plan =
+    document?.schemaVersion === OUTPUT_SCHEMA_VERSION &&
+    document?.command === "reviewer-cleanup-plan" &&
+    document?.outcome === "complete"
+      ? document.result
+      : document;
+  assertExactKeys(
+    plan,
+    ["schemaVersion", "command", "binding", "resources", "planHash"],
+    "Reviewer cleanup plan",
+  );
+  refuse(
+    plan.schemaVersion !== REVIEWER_PLAN_SCHEMA_VERSION ||
+      plan.command !== "reviewer-cleanup-plan",
+    "CLEANUP_PLAN_SCHEMA_UNSUPPORTED",
+    "Reviewer cleanup plan schema is unsupported; regenerate it from current coordinator state",
+  );
+  assertExactKeys(
+    plan.binding,
+    [...DELIVERY_BINDING_KEYS, ...REVIEWER_BINDING_KEYS],
+    "Reviewer cleanup plan binding",
+    "CLEANUP_PLAN_INVALID",
+  );
+  const withoutHash = { ...plan };
+  delete withoutHash.planHash;
+  refuse(
+    plan.planHash !== digest(withoutHash),
+    "CLEANUP_PLAN_HASH_MISMATCH",
+    "Reviewer cleanup plan hash is invalid",
+  );
+  refuse(
+    canonicalJson(plan.binding) !== canonicalJson(reviewerDeliveryBinding(options)),
+    "CLEANUP_PLAN_BINDING_MISMATCH",
+    "Reviewer cleanup plan is bound to different immutable inputs",
+  );
+  return plan;
+}
+
+/**
+ * Removes the exact disposable checkout after re-proving, immediately before
+ * the call, that the directory still carries the identity the plan bound. The
+ * device and inode close the window between the proof and the removal.
+ */
+function removeReviewerCheckout(options, proven) {
+  const status = lstatSync(options.reviewerCheckout);
+  refuse(
+    !status.isDirectory() ||
+      status.isSymbolicLink() ||
+      `${status.dev}:${status.ino}` !== proven.identity,
+    "REVIEWER_CHECKOUT_IDENTITY_INVALID",
+    "Reviewer checkout identity changed before removal",
+  );
+  rmSync(options.reviewerCheckout, { recursive: true, force: false });
+}
+
+async function reviewerCleanupApply(run, options, deps) {
+  const plan = validateReviewerPlan(options);
+  const state = loadState(options, { required: false });
+  adoptResumedState(options, state);
+  if (state.cleanupPlanHash !== undefined) {
+    refuse(
+      state.cleanupPlanHash !== plan.planHash,
+      "CLEANUP_PLAN_REPLACED",
+      "another Reviewer cleanup plan was already admitted",
+    );
+  } else {
+    state.cleanupPlanHash = plan.planHash;
+    persistState(options, state);
+  }
+
+  const workspaceDispatched = () =>
+    state.effects["cleanup.reviewer-workspace"]?.phase === "dispatching" ||
+    state.effects["cleanup.reviewer-workspace"]?.phase === "complete";
+
+  if (options.reviewerLifecycleState === "reclaimed") {
+    // The recorded binding is the only authority for a historical resource, so
+    // the adopted effects claim nothing observed. Recording them keeps an
+    // archive interrupted before its own transition from stranding a
+    // nonterminal intent no admitted run could ever finish. The binding is
+    // proven first: adoption must never outlive a refusal.
+    reviewerFacts(run, options, { allowAbsentWorkspace: true });
+    for (const effect of ["cleanup.reviewer-agent", "cleanup.reviewer-workspace"]) {
+      if (state.effects[effect]?.phase === "complete") continue;
+      if (
+        effect === "cleanup.reviewer-workspace" &&
+        options.reviewerWorkspaceId === "none"
+      ) {
+        continue;
+      }
+      markEffect(options, state, effect, "idempotent_close", "complete", {
+        source: "recorded_reclaimed",
+        verified: false,
+      });
+    }
+  } else {
+    let facts = reviewerFacts(run, options, { allowAbsentWorkspace: workspaceDispatched() });
+    if (facts.agent?.archived) {
+      markEffect(options, state, "cleanup.reviewer-agent", "idempotent_close", "complete", {
+        archivedAt: facts.agent.archivedAt,
+      });
+    } else {
+      markDispatch(options, state, "cleanup.reviewer-agent", "idempotent_close");
+      await dispatchHook(deps, "before", "cleanup.reviewer-agent", { options, state });
+      const archived = dispatchPaseoArchive(
+        run,
+        options,
+        ["archive", options.reviewerAgentId, "--json"],
+      );
+      await dispatchHook(deps, "after", "cleanup.reviewer-agent", {
+        options,
+        result: archived,
+        state,
+      });
+      const observed = validatedReviewerAgent(
+        runJson(run, "paseo", ["inspect", options.reviewerAgentId, "--json"]),
+        options,
+      );
+      refuse(
+        observed.Archived !== true,
+        "AGENT_ARCHIVE_UNKNOWN",
+        "Reviewer Agent archive was not proven",
+      );
+      markEffect(options, state, "cleanup.reviewer-agent", "idempotent_close", "complete", {
+        archivedAt: observed.ArchivedAt,
+      });
+    }
+
+    if (options.reviewerWorkspaceId !== "none") {
+      facts = reviewerFacts(run, options, { allowAbsentWorkspace: workspaceDispatched() });
+      if (facts.workspace === null) {
+        refuse(
+          !workspaceDispatched(),
+          "WORKSPACE_ARCHIVE_AMBIGUOUS",
+          "Reviewer workspace absence is not tied to a recorded archive attempt",
+        );
+        markEffect(
+          options,
+          state,
+          "cleanup.reviewer-workspace",
+          "idempotent_close",
+          "complete",
+          { absent: true },
+        );
+      } else {
+        markDispatch(options, state, "cleanup.reviewer-workspace", "idempotent_close");
+        await dispatchHook(deps, "before", "cleanup.reviewer-workspace", { options, state });
+        const archived = dispatchPaseoArchive(
+          run,
+          options,
+          ["workspace", "archive", options.reviewerWorkspaceId, "--json"],
+        );
+        await dispatchHook(deps, "after", "cleanup.reviewer-workspace", {
+          options,
+          result: archived,
+          state,
+        });
+        const workspaces = validatedPaseoWorkspaces(
+          runJson(run, "paseo", ["workspace", "ls", "--json"]),
+        );
+        refuse(
+          workspaces.some((item) => item.workspaceId === options.reviewerWorkspaceId),
+          "WORKSPACE_ARCHIVE_UNKNOWN",
+          "Reviewer workspace archive was not proven",
+        );
+        markEffect(
+          options,
+          state,
+          "cleanup.reviewer-workspace",
+          "idempotent_close",
+          "complete",
+          { absent: true },
+        );
+      }
+    }
+  }
+
+  const phase = state.effects["cleanup.reviewer-checkout"]?.phase;
+  let checkout = reviewerCheckoutFacts(run, options);
+  if (checkout.absent) {
+    refuse(
+      options.reviewerCheckoutState !== "reclaimed" &&
+        phase !== "dispatching" &&
+        phase !== "complete",
+      "DESTRUCTIVE_ABSENCE_AMBIGUOUS",
+      "Reviewer checkout absence is not tied to a recorded removal attempt",
+    );
+    markEffect(
+      options,
+      state,
+      "cleanup.reviewer-checkout",
+      "destructive_terminal",
+      "complete",
+      { absent: true, source: checkout.source },
+    );
+  } else {
+    refuse(
+      phase === "dispatching" || phase === "unknown",
+      "DESTRUCTIVE_TARGET_PRESENT_AFTER_HANDOFF",
+      "Reviewer checkout remains present after a possible removal handoff",
+    );
+    markDispatch(options, state, "cleanup.reviewer-checkout", "destructive_terminal");
+    // The owner marker is proven, and only then does anything else get a turn.
+    // Whatever happens between this proof and the removal is exactly the window
+    // the device and inode comparison inside removeReviewerCheckout closes, so
+    // the proof has to be taken before that window opens rather than after it.
+    checkout = reviewerCheckoutFacts(run, options);
+    await dispatchHook(deps, "before", "cleanup.reviewer-checkout", { options, state });
+    if (!checkout.absent) {
+      removeReviewerCheckout(options, checkout);
+      await dispatchHook(deps, "after", "cleanup.reviewer-checkout", { options, state });
+      checkout = reviewerCheckoutFacts(run, options);
+    }
+    if (!checkout.absent) {
+      markEffect(
+        options,
+        state,
+        "cleanup.reviewer-checkout",
+        "destructive_terminal",
+        "unknown",
+        { present: true },
+      );
+      throw new CoordinatorError(
+        "DESTRUCTIVE_RESULT_UNKNOWN",
+        "Reviewer checkout removal was not proven",
+      );
+    }
+    markEffect(
+      options,
+      state,
+      "cleanup.reviewer-checkout",
+      "destructive_terminal",
+      "complete",
+      { absent: true },
+    );
+  }
+  return { planHash: plan.planHash, resources: "complete" };
+}
+
+/**
+ * Derives the Reviewers awaiting reconciliation from the daemon and the Beads
+ * record at the moment it runs. Nothing here is a count: the set is whatever
+ * the two sources currently describe, including Reviewers of closed Tasks, of
+ * superseded Candidates, and of Reviews that never produced a verdict.
+ */
+function liveReviewerPage(run, options, predicate) {
+  const listed = runJson(run, "paseo", ["agents", "ls", "--json"]);
+  refuse(
+    !isObject(listed) ||
+      !Array.isArray(listed.Agents) ||
+      !Number.isSafeInteger(listed.Limit) ||
+      !Number.isSafeInteger(listed.WindowHours),
+    "PASEO_AGENTS_INVALID",
+    "Paseo agent list is invalid",
+  );
+  const reviewers = [];
+  for (const agent of listed.Agents) {
+    refuse(
+      !isObject(agent) ||
+        typeof agent.Id !== "string" ||
+        typeof agent.Cwd !== "string" ||
+        !PASEO_AGENT_STATUSES.has(agent.Status) ||
+        typeof agent.Archived !== "boolean" ||
+        !isObject(agent.Labels),
+      "PASEO_AGENTS_INVALID",
+      "Paseo agent list lacks bounded lifecycle facts",
+    );
+    if (agent.Archived === true) continue;
+    if (agent.Labels["director.role"] !== "reviewer") continue;
+    if (predicate !== undefined && !predicate(agent)) continue;
+    reviewers.push(agent);
+  }
+  return {
+    // The scope this enumeration actually establishes, stated in full. A page
+    // returned at its own limit carries no evidence that the daemon had nothing
+    // further to report; and no page at all, saturated or not, says anything
+    // about an agent last active before the window. `complete` is the only
+    // field that licenses "and there are no others", and it requires both.
+    enumeration: {
+      complete: listed.Agents.length < listed.Limit && listed.WindowHours === null,
+      limit: listed.Limit,
+      returned: listed.Agents.length,
+      saturated: listed.Agents.length >= listed.Limit,
+      windowHours: listed.WindowHours,
+    },
+    reviewers,
+  };
+}
+
+function surveyReviewers(run, options) {
+  const { enumeration, reviewers } = liveReviewerPage(run, options);
+  const tasks = [...new Set(reviewers.map((agent) => agent.Labels["director.task"]))]
+    .filter((task) => typeof task === "string" && TASK_PATTERN.test(task))
+    .toSorted(compareText);
+  refuse(
+    tasks.length > MAXIMUM_SURVEYED_TASKS,
+    "REVIEWER_SURVEY_OVERSIZE",
+    "surveyed Reviewers span more Tasks than the bounded survey admits",
+  );
+  const byTask = new Map(
+    tasks.map((task) => [
+      task,
+      {
+        status: surveyedTaskStatus(run, options, task),
+        reports: taskReviewReports(run, options, task),
+      },
+    ]),
+  );
+  const cwdCounts = new Map();
+  for (const agent of reviewers) {
+    cwdCounts.set(agent.Cwd, (cwdCounts.get(agent.Cwd) ?? 0) + 1);
+  }
+  const records = reviewers
+    .map((agent) => {
+      const task = agent.Labels["director.task"];
+      const candidate = agent.Labels["director.candidate"];
+      const record = byTask.get(task);
+      const abandonment =
+        record === undefined
+          ? null
+          : reviewAbandonment(record.reports, agent.Id, options.actor);
+      const report =
+        record === undefined
+          ? {
+              reported: false,
+              source: null,
+              // Unknowable rather than zero: without a readable Task there are
+              // no comments to count, and reporting 0 would state that nothing
+              // names this Reviewer when nothing was looked at.
+              unboundEvidence: null,
+              unreadableReports: null,
+              verdict: null,
+            }
+          : reviewerReport(record.reports, agent.Id);
+      let classification;
+      if (
+        record === undefined ||
+        typeof candidate !== "string" ||
+        !SHA_PATTERN.test(candidate) ||
+        agent.ParentAgentId !== null ||
+        cwdCounts.get(agent.Cwd) !== 1
+      ) {
+        classification = "ambiguous";
+      } else if (agent.Status === "running") {
+        classification = "review_in_flight";
+      } else if (report.reported) {
+        classification = "reconcilable";
+      } else if (record.status === "in_progress" && abandonment === null) {
+        // In flight because nothing says otherwise. A declared abandonment is
+        // the something: the coordinator has stated it is no longer waiting, so
+        // the Review is over even though its Task is not. A running agent is
+        // still in flight regardless, which the branch above already decided.
+        classification = "review_in_flight";
+      } else {
+        classification = "review_incomplete";
+      }
+      return {
+        agentId: agent.Id,
+        candidate: typeof candidate === "string" ? candidate : null,
+        checkout: agent.Cwd,
+        checkoutPresent: existsSync(agent.Cwd),
+        classification,
+        // What bound this Reviewer to its report, so a record says which
+        // evidence it rests on rather than only its conclusion, and how many
+        // comments name it with a verdict without binding it — the shape a
+        // report this rule cannot bind leaves behind.
+        abandonedBy: abandonment?.by ?? null,
+        reportSource: report.source,
+        unboundEvidence: report.unboundEvidence,
+        unreadableReports: report.unreadableReports,
+        // The `--reviewer-review-state` this record admits, and null where it
+        // admits none. Derived from what the leg will actually accept rather
+        // than from the classification alone: a row the gate refuses must not
+        // display the binding it refuses, because the operator acts on the
+        // display. `abandoned` therefore requires both counters clear and
+        // either a Task no longer in progress or a recorded abandonment.
+        reviewState:
+          classification === "reconcilable"
+            ? "verdict_recorded"
+            : classification === "review_incomplete" &&
+                report.unboundEvidence === 0 &&
+                report.unreadableReports === 0 &&
+                (record?.status !== "in_progress" || abandonment !== null)
+              ? "abandoned"
+              : null,
+        status: agent.Status,
+        task: typeof task === "string" ? task : null,
+        taskStatus: record?.status ?? null,
+        verdict: report.verdict,
+      };
+    })
+    .toSorted((left, right) =>
+      compareText(`${left.task} ${left.agentId}`, `${right.task} ${right.agentId}`),
+    );
+  return {
+    enumeration,
+    reviewers: records,
+    totals: records.reduce(
+      (counts, record) => ({
+        ...counts,
+        [record.classification]: (counts[record.classification] ?? 0) + 1,
+      }),
+      { reviewers: records.length },
+    ),
+  };
+}
+
+/**
+ * The documented order: the exact remaining Reviewer of the Review that
+ * authorized this delivery is terminated before the Task Agent leg begins. The
+ * Reviewer is named by the durable Review evidence rather than by a fresh
+ * option, so the ordering cannot be satisfied by naming a different agent.
+ */
+function requireReviewerLegComplete(run, options) {
+  refuse(
+    !options.reviewFile,
+    "OPTION_REQUIRED",
+    "--review-file is required so cleanup can order the Reviewer leg first",
+  );
+  const review = readJsonFile(options.reviewFile, "review evidence");
+  refuse(
+    review?.schemaVersion !== 1,
+    "REVIEW_SCHEMA_UNSUPPORTED",
+    "review schema version is unsupported",
+  );
+  refuse(
+    review.task !== options.task ||
+      review.candidate !== options.candidate ||
+      review.base !== options.base,
+    "REVIEW_BINDING_MISMATCH",
+    "review does not bind the exact Task, Candidate, and base",
+  );
+  const agentId = requireString(
+    review.reviewer?.agentId,
+    ID_PATTERN,
+    "reviewer agent ID",
+  );
+  const inspected = runJson(run, "paseo", ["inspect", agentId, "--json"]);
+  refuse(!isObject(inspected), "PASEO_AGENT_RESPONSE_INVALID", "Paseo agent response is invalid");
+  refuse(inspected.Id !== agentId, "PASEO_AGENT_MISMATCH", "Paseo returned a different agent");
+  refuse(
+    inspected.Archived !== true,
+    "REVIEWER_LEG_PENDING",
+    "the Review's exact Reviewer Agent is not archived before the Task Agent leg",
+  );
+  // Ordering the Review's own Reviewer is not the whole order. A corrected
+  // Candidate creates a new Reviewer and leaves the previous one alive, which
+  // is how a Task accumulates Reviewers nobody reconciles. Every live Reviewer
+  // this Task labelled must be terminal before the Task Agent leg begins.
+  const { enumeration, reviewers } = liveReviewerPage(
+    run,
+    options,
+    (agent) =>
+      agent.Labels["director.task"] === options.task && agent.Id !== agentId,
+  );
+  const remaining = reviewers.map((agent) => agent.Id).toSorted(compareText);
+  refuse(
+    remaining.length > 0,
+    "REVIEWER_LEG_PENDING",
+    "live Reviewers of this Task remain before the Task Agent leg",
+    { remaining: remaining.slice(0, MAXIMUM_REPORTED_REVIEWERS) },
+  );
+  // A saturated page cannot support the claim that none remain, so the plan
+  // records what the enumeration could actually establish and the closure
+  // record inherits that scope instead of a summary adjective.
+  return { agentId, archivedAt: inspected.ArchivedAt ?? null, enumeration };
+}
+
 async function cleanupApply(run, options, deps) {
   const plan = validateCleanupPlan(options);
   const state = loadState(options, {
@@ -3251,6 +4454,7 @@ async function cleanupApply(run, options, deps) {
   });
   adoptResumedState(options, state);
   ensureIntegratedState(options, state);
+  requireReviewerLegComplete(run, options);
   if (state.cleanupPlanHash !== undefined) {
     refuse(state.cleanupPlanHash !== plan.planHash, "CLEANUP_PLAN_REPLACED", "another cleanup plan was already admitted");
   } else {
@@ -3503,8 +4707,9 @@ export async function execute(command, rawOptions, dependencies = {}) {
       });
       adoptResumedState(options, state);
       const integration = ensureIntegratedState(options, state);
+      const reviewer = requireReviewerLegComplete(run, options);
       const task = taskFacts(run, options);
-      const resources = cleanupFacts(run, options, task);
+      const resources = { ...cleanupFacts(run, options, task), reviewer };
       const plan = {
         schemaVersion: CLEANUP_PLAN_SCHEMA_VERSION,
         command: "cleanup-plan",
@@ -3515,6 +4720,20 @@ export async function execute(command, rawOptions, dependencies = {}) {
       result = { ...plan, planHash: digest(plan) };
     } else if (command === "cleanup-apply") {
       result = await cleanupApply(run, options, deps);
+    } else if (command === "reviewer-survey") {
+      result = surveyReviewers(run, options);
+    } else if (command === "reviewer-cleanup-plan") {
+      const state = loadState(options, { required: false });
+      adoptResumedState(options, state);
+      const plan = {
+        schemaVersion: REVIEWER_PLAN_SCHEMA_VERSION,
+        command: "reviewer-cleanup-plan",
+        binding: reviewerDeliveryBinding(options),
+        resources: reviewerFacts(run, options),
+      };
+      result = { ...plan, planHash: digest(plan) };
+    } else if (command === "reviewer-cleanup-apply") {
+      result = await reviewerCleanupApply(run, options, deps);
     }
     const output = {
       schemaVersion: OUTPUT_SCHEMA_VERSION,
